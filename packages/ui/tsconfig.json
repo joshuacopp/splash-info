@@ -1,0 +1,10 @@
+{
+  "extends": "@splash/config/tsconfig.next.json",
+  "compilerOptions": {
+    "outDir": "./dist",
+    "rootDir": "./src",
+    "noEmit": false,
+    "jsx": "react-jsx"
+  },
+  "include": ["src/**/*"]
+}

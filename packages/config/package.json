@@ -1,0 +1,19 @@
+{
+  "name": "@splash/config",
+  "version": "0.0.0",
+  "private": true,
+  "files": [
+    "tsconfig.base.json",
+    "tsconfig.worker.json",
+    "tsconfig.next.json",
+    "eslint.base.cjs",
+    "tailwind.base.cjs"
+  ],
+  "exports": {
+    "./tsconfig.base.json": "./tsconfig.base.json",
+    "./tsconfig.worker.json": "./tsconfig.worker.json",
+    "./tsconfig.next.json": "./tsconfig.next.json",
+    "./eslint.base.cjs": "./eslint.base.cjs",
+    "./tailwind.base.cjs": "./tailwind.base.cjs"
+  }
+}

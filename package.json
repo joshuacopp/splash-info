@@ -1,0 +1,30 @@
+{
+  "name": "splash-maxpass",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Splash Car Wash - MaxPass monorepo (Cloudflare Pages + Workers)",
+  "packageManager": "pnpm@9.12.0",
+  "engines": {
+    "node": ">=22.0.0",
+    "pnpm": ">=9.0.0"
+  },
+  "scripts": {
+    "dev": "turbo run dev",
+    "build": "turbo run build",
+    "lint": "turbo run lint",
+    "typecheck": "turbo run typecheck",
+    "deploy": "turbo run deploy",
+    "deploy:web": "turbo run deploy --filter=@splash/web",
+    "deploy:signup": "turbo run deploy --filter=@splash/signup-worker",
+    "deploy:sysadmin": "turbo run deploy --filter=@splash/sysadmin-worker",
+    "deploy:dashboard": "turbo run deploy --filter=@splash/dashboard-worker",
+    "deploy:performance": "turbo run deploy --filter=@splash/performance-worker",
+    "deploy:damage": "turbo run deploy --filter=@splash/damage-worker",
+    "clean": "turbo run clean && rm -rf node_modules"
+  },
+  "devDependencies": {
+    "turbo": "^2.3.0",
+    "typescript": "^5.6.0",
+    "prettier": "^3.3.0"
+  }
+}
