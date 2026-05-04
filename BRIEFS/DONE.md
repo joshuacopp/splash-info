@@ -16,3 +16,4 @@
 - 2026-05-04 15:19:57 brief-011b-auth-smoke-fixes.md (success)
 - 2026-05-04 15:29:05 brief-007-sysadmin-ui.md (success)
 - 2026-05-04 16:03:53 brief-016-staging-subdomain.md (success)
+- 2026-05-04 17:37:12 brief-017-service-bindings.md (success)

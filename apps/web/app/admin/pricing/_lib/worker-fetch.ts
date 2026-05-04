@@ -1,42 +1,41 @@
 // Server-side fetch helper for /admin/api/* — apps/web's pages call the
 // signup-worker's JSON API for pricing data.
 //
-// URL CONSTRUCTION HAS TWO MODES:
+// DUAL-MODE TRANSPORT (Brief 17):
 //
-//   1. NEXT_PUBLIC_SIGNUP_WORKER_URL is set (dev / staging cross-origin)
-//      The signup-worker lives on a different origin than apps/web (e.g.,
-//      apps/web on localhost:3001, signup-worker on splash-signup-next.<acct>.workers.dev).
-//      We use the env var as the absolute base. This unblocks admin pricing
-//      testing in dev — without this fork the request would resolve to
-//      localhost:3001/admin/api/locations and 404 on apps/web.
+//   PRODUCTION / STAGING (Cloudflare Workers runtime):
+//     env.SIGNUP_WORKER (service binding declared in apps/web/wrangler.toml)
+//     is called directly — env.SIGNUP_WORKER.fetch(req). Cloudflare routes
+//     the request internally without going back through the edge. This
+//     avoids CF's same-zone Worker-to-Worker subrequest gotcha (URL-based
+//     same-zone fetches loop through the edge and 522 after ~19s).
 //
-//   2. NEXT_PUBLIC_SIGNUP_WORKER_URL is empty (production same-origin)
-//      Post-cutover, apps/web AND signup-worker:/admin/api/* are both bound
-//      to splashcarwashes.info. We build the URL from the incoming request's
-//      host so the same code works without env-var configuration in prod.
-//      Cloudflare's edge routes splashcarwashes.info/admin/api/* to
-//      signup-worker per the wrangler.toml route binding. The cookie is
-//      same-origin (set on splashcarwashes.info), attaches to the incoming
-//      apps/web request automatically, and is forwarded explicitly via the
-//      Cookie header on the worker subrequest below.
+//   DEV (next dev outside the Workers runtime):
+//     getCloudflareContext() throws or env.SIGNUP_WORKER is undefined. We
+//     fall through to the URL-based fetch path. The URL is built from the
+//     NEXT_PUBLIC_SIGNUP_WORKER_URL env var when set (cross-origin dev) or
+//     the request host when unset (same-origin via next.config.mjs rewrites).
+//     CF Workers fetch doesn't accept relative URLs server-side, which is
+//     why we always build an absolute URL in this branch.
 //
-// CF Workers fetch doesn't accept relative URLs server-side, which is why
-// we always build an absolute URL.
+// HOST PLACEHOLDER:
+//   Service bindings ignore the URL host; only the path matters. Use
+//   `https://internal` consistently across helpers so logs are predictable.
 
 import { cookies, headers } from "next/headers";
+import { getCloudflareContext } from "@opennextjs/cloudflare";
 
 /**
  * Build an absolute URL for a /admin/api/* call. Server-only — uses
- * next/headers which is unavailable in client components.
+ * next/headers which is unavailable in client components. Used by the
+ * URL-based dev fallback.
  */
 async function workerUrl(path: string): Promise<string> {
   const trimmed = path.startsWith("/") ? path : `/${path}`;
-  // Mode 1: explicit base from env (dev cross-origin).
   const base = process.env.NEXT_PUBLIC_SIGNUP_WORKER_URL;
   if (base) {
     return `${base}${trimmed}`;
   }
-  // Mode 2: same-origin via the request host (production post-cutover).
   const headerStore = await headers();
   const host = headerStore.get("host") ?? "localhost:3000";
   const proto = headerStore.get("x-forwarded-proto") ?? "https";
@@ -54,13 +53,34 @@ async function workerUrl(path: string): Promise<string> {
  */
 export async function workerGetJson<T>(path: string): Promise<T | null> {
   const cookieStore = await cookies();
-  const url = await workerUrl(path);
+  const cookieHeader = cookieStore.toString();
 
-  const resp = await fetch(url, {
-    method: "GET",
-    headers: { Cookie: cookieStore.toString() },
-    cache: "no-store"
-  });
+  let resp: Response;
+  try {
+    const { env } = await getCloudflareContext({ async: true });
+    if (env.SIGNUP_WORKER) {
+      const trimmed = path.startsWith("/") ? path : `/${path}`;
+      const req = new Request(`https://internal${trimmed}`, {
+        method: "GET",
+        headers: { Cookie: cookieHeader }
+      });
+      resp = await env.SIGNUP_WORKER.fetch(req);
+    } else {
+      const url = await workerUrl(path);
+      resp = await fetch(url, {
+        method: "GET",
+        headers: { Cookie: cookieHeader },
+        cache: "no-store"
+      });
+    }
+  } catch {
+    const url = await workerUrl(path);
+    resp = await fetch(url, {
+      method: "GET",
+      headers: { Cookie: cookieHeader },
+      cache: "no-store"
+    });
+  }
 
   if (resp.status === 401 || resp.status === 403) return null;
   if (!resp.ok) {

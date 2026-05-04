@@ -23,6 +23,7 @@ navigation aid.
 | 13 | apps/web wrangler routes block | Not started | Both (cutover-time) | (not drafted) |
 | 15 | PRE_DEPLOY_WEB.md | Not started | Both (cutover prep) | (not drafted) |
 | 16 | Staging subdomain end-to-end testing (`staging.splashcarwashes.info`) | Completed (2026-05-04) | End-to-end UI verification | [brief-016-staging-subdomain.md](brief-016-staging-subdomain.md) |
+| 17 | Service bindings for apps/web -> worker subrequests (workaround CF same-zone 522 gotcha) | Completed (2026-05-04) | End-to-end UI testing on staging + production cutover | [brief-017-service-bindings.md](brief-017-service-bindings.md) |
 
 **Folded items** (work absorbed into earlier briefs):
 - Item 3 (URL drift /admin/{loc} <-> /admin/pricing/{loc}) - folded into Brief 2.

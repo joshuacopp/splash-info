@@ -243,6 +243,48 @@ When given a new task:
   (Dashboard + Change Password + Sign Out) on `/admin/*` and
   `/sysadmin/*`.
 
+### Service bindings (Brief 17)
+
+When apps/web SSR-fetches another worker, prefer the service binding
+over a URL-based fetch. apps/web's `wrangler.toml` declares 5
+`[[services]]` entries (`DASHBOARD_WORKER`, `SIGNUP_WORKER`,
+`PERFORMANCE_WORKER`, `SYSADMIN_WORKER`, `DAMAGE_WORKER`). Each helper
+under `apps/web/app/**/_lib/worker-fetch.ts` (and `_lib/me.ts`) tries
+the binding first via `getCloudflareContext({ async: true })` and falls
+back to a URL-based fetch when `getCloudflareContext()` throws or the
+binding is undefined (i.e., `next dev` outside the Workers runtime).
+
+Why: this is a CF same-zone limitation, not an apps/web choice.
+URL-based Worker-to-Worker fetches on the same zone loop through the
+edge inefficiently and 522 after ~19s. Service bindings route the
+subrequest internally and pass Cookie/headers cleanly. The dev fallback
+keeps localhost dev working (Next.js dev server runs outside the CF
+Workers runtime, so bindings aren't available).
+
+When adding a new server-side worker call:
+
+1. If the binding exists in apps/web/wrangler.toml, use it via
+   `getCloudflareContext({ async: true })`. Build a Request with
+   `https://internal` as the placeholder host (service bindings ignore
+   the host; only the path matters).
+2. Forward the user's Cookie via `cookies().toString()`.
+3. For POST helpers, set `Origin` explicitly so the worker's
+   `isOriginAllowed` CSRF gate passes (Origin from `new URL(url).origin`
+   works under both binding and URL paths).
+4. Wrap the binding call in `try/catch` and fall back to a URL-based
+   fetch in the catch branch. The catch branch covers `next dev` (where
+   `getCloudflareContext()` throws) AND any future runtime where the
+   binding is unbound.
+5. Type declarations for the bindings live in
+   `apps/web/cloudflare-env.d.ts` (declaration-merged into the global
+   `CloudflareEnv` interface).
+
+The dev fallback uses `NEXT_PUBLIC_<WORKER>_WORKER_URL` env vars when
+set (cross-origin dev), falling back to the request host (same-origin
+via `next.config.mjs` rewrites). Photo URLs and check-request preview
+URLs (consumed by the browser, not the apps/web Worker) stay
+URL-based — service bindings don't apply to those.
+
 ---
 
 ## Working with shared packages

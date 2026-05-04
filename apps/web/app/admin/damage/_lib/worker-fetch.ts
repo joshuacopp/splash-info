@@ -1,48 +1,83 @@
-// Server-side fetch helper for /manage/api/* — apps/web's pages call the
-// damage-worker's JSON API for claims data.
+// Server-side fetch helper for the damage-worker (claims data + write
+// actions + document upload). apps/web's pages call these helpers from
+// server components and server actions.
 //
-// URL CONSTRUCTION HAS TWO MODES:
+// DUAL-MODE TRANSPORT (Brief 17):
 //
-//   1. NEXT_PUBLIC_DAMAGE_WORKER_URL is set (dev / staging cross-origin)
-//      The damage-worker lives on a different origin than apps/web (e.g.,
-//      apps/web on localhost:3001, damage-worker on splash-damage.<acct>.workers.dev).
-//      We use the env var as the absolute base. Without this fork the request
-//      would resolve to localhost:3001/manage/api/claims and 404 on apps/web.
+//   PRODUCTION / STAGING (Cloudflare Workers runtime):
+//     env.DAMAGE_WORKER (service binding declared in apps/web/wrangler.toml)
+//     is called directly — env.DAMAGE_WORKER.fetch(req). Cloudflare routes
+//     the request internally without going back through the edge. This
+//     avoids CF's same-zone Worker-to-Worker subrequest gotcha (URL-based
+//     same-zone fetches loop through the edge and 522 after ~19s).
 //
-//   2. NEXT_PUBLIC_DAMAGE_WORKER_URL is empty (production same-origin)
-//      Post-cutover, apps/web AND damage-worker:/manage/api/* are both bound
-//      to splashcarwashes.info. We build the URL from the incoming request's
-//      host so the same code works without env-var configuration in prod.
-//      Cloudflare's edge routes splashcarwashes.info/manage/api/* to
-//      damage-worker per the wrangler.toml route binding. The cookie is
-//      same-origin (set on splashcarwashes.info), attaches to the incoming
-//      apps/web request automatically, and is forwarded explicitly via the
-//      Cookie header on the worker subrequest below.
+//   DEV (next dev outside the Workers runtime):
+//     getCloudflareContext() throws or env.DAMAGE_WORKER is undefined. We
+//     fall through to the URL-based fetch path. The URL is built from the
+//     NEXT_PUBLIC_DAMAGE_WORKER_URL env var when set (cross-origin dev) or
+//     the request host when unset (same-origin via next.config.mjs rewrites).
+//     CF Workers fetch doesn't accept relative URLs server-side, which is
+//     why we always build an absolute URL in this branch.
 //
-// CF Workers fetch doesn't accept relative URLs server-side, which is why
-// we always build an absolute URL.
+// HOST PLACEHOLDER:
+//   Service bindings ignore the URL host; only the path matters. Use
+//   `https://internal` consistently across helpers so logs are predictable.
 //
-// Lives in a damage-namespaced location so future damage-worker calls don't
-// share state with the pricing helper.
+// PHOTO URLS (damagePhotoUrl, damageCheckRequestUrl):
+//   Both return absolute URLs that are dropped into <img src> or <a href> —
+//   the browser fetches them, not the apps/web Worker. Service bindings
+//   don't apply. Stay URL-based and use the same env var / request-host
+//   resolution as the dev fallback.
 
 import { cookies, headers } from "next/headers";
+import { getCloudflareContext } from "@opennextjs/cloudflare";
 
 /**
- * Build an absolute URL for a /manage/api/* call. Server-only — uses
- * next/headers which is unavailable in client components.
+ * Build an absolute URL for a damage-worker call, used both by the
+ * URL-based dev fallback and by the photo-URL helpers (where the browser
+ * is the consumer, not the Worker). Server-only.
  */
 async function workerUrl(path: string): Promise<string> {
   const trimmed = path.startsWith("/") ? path : `/${path}`;
-  // Mode 1: explicit base from env (dev cross-origin).
   const base = process.env.NEXT_PUBLIC_DAMAGE_WORKER_URL;
   if (base) {
     return `${base}${trimmed}`;
   }
-  // Mode 2: same-origin via the request host (production post-cutover).
   const headerStore = await headers();
   const host = headerStore.get("host") ?? "localhost:3000";
   const proto = headerStore.get("x-forwarded-proto") ?? "https";
   return `${proto}://${host}${trimmed}`;
+}
+
+/**
+ * GET via service binding when available, falling back to a URL fetch in
+ * dev. Returns the raw Response so each public helper can implement its
+ * own status-handling contract.
+ */
+async function damageGetResponse(path: string): Promise<Response> {
+  const cookieStore = await cookies();
+  const cookieHeader = cookieStore.toString();
+
+  try {
+    const { env } = await getCloudflareContext({ async: true });
+    if (env.DAMAGE_WORKER) {
+      const trimmed = path.startsWith("/") ? path : `/${path}`;
+      const req = new Request(`https://internal${trimmed}`, {
+        method: "GET",
+        headers: { Cookie: cookieHeader }
+      });
+      return env.DAMAGE_WORKER.fetch(req);
+    }
+  } catch {
+    // Fall through to URL-based fetch (next dev / non-Workers runtime).
+  }
+
+  const url = await workerUrl(path);
+  return fetch(url, {
+    method: "GET",
+    headers: { Cookie: cookieHeader },
+    cache: "no-store"
+  });
 }
 
 /**
@@ -55,15 +90,7 @@ async function workerUrl(path: string): Promise<string> {
  *     error boundary handles.
  */
 export async function damageGetJson<T>(path: string): Promise<T | null> {
-  const cookieStore = await cookies();
-  const url = await workerUrl(path);
-
-  const resp = await fetch(url, {
-    method: "GET",
-    headers: { Cookie: cookieStore.toString() },
-    cache: "no-store"
-  });
-
+  const resp = await damageGetResponse(path);
   if (resp.status === 401 || resp.status === 403) return null;
   if (!resp.ok) {
     throw new Error(`Worker GET ${path} failed: ${resp.status}`);
@@ -86,15 +113,7 @@ export type DamageGetResult<T> = { data: T } | { status: number };
 export async function damageGetJsonOrStatus<T>(
   path: string
 ): Promise<DamageGetResult<T>> {
-  const cookieStore = await cookies();
-  const url = await workerUrl(path);
-
-  const resp = await fetch(url, {
-    method: "GET",
-    headers: { Cookie: cookieStore.toString() },
-    cache: "no-store"
-  });
-
+  const resp = await damageGetResponse(path);
   if (!resp.ok) return { status: resp.status };
   return { data: (await resp.json()) as T };
 }
@@ -111,11 +130,13 @@ export async function damageGetJsonOrStatus<T>(
  *
  * No auth on this endpoint (public per legacy:5666); no Cookie header
  * needed. Returns an absolute URL safe to drop into <img src>.
+ *
+ * NOTE: stays URL-based (not service-bound) — the browser fetches this URL,
+ * not the apps/web Worker, so the same-zone subrequest concern doesn't apply.
  */
 export async function damagePhotoUrl(r2Key: string): Promise<string> {
   const stripped = r2Key.startsWith("claims/") ? r2Key.slice("claims/".length) : r2Key;
   const segments = stripped.split("/").map(encodeURIComponent).join("/");
-  // workerUrl handles base/prod-host distinction and prepends the leading /.
   return workerUrl(`/claims-api/photo/${segments}`);
 }
 
@@ -127,6 +148,9 @@ export async function damagePhotoUrl(r2Key: string): Promise<string> {
  * top-level navigation (target=_blank link click), so this URL is safe to
  * drop directly into an <a href> — no extra plumbing needed for cross-origin
  * dev or same-origin prod.
+ *
+ * Stays URL-based for the same reason as damagePhotoUrl — the browser is
+ * the consumer.
  */
 export async function damageCheckRequestUrl(
   claimId: string,
@@ -151,7 +175,9 @@ export async function damageCheckRequestUrl(
  * Sets the `Origin` header to the target URL's origin so the worker's
  * `isOriginAllowed` CSRF check passes — server-side fetch wouldn't set
  * Origin otherwise, and the worker rejects mutations without a matching
- * Origin/Referer.
+ * Origin/Referer. Under the service binding the host is the placeholder
+ * `https://internal` and the worker's isOriginAllowed accepts the
+ * apps/web-derived Origin header same as in the URL-based fallback.
  *
  * Return shape:
  *   - { ok: true,  body }                      on 2xx
@@ -169,25 +195,17 @@ export async function damagePostForm(
   formData: FormData
 ): Promise<DamagePostResult> {
   const cookieStore = await cookies();
-  const url = await workerUrl(path);
-  const targetOrigin = new URL(url).origin;
-
+  const cookieHeader = cookieStore.toString();
   const params = new URLSearchParams();
   for (const [k, v] of formData.entries()) {
     params.append(k, typeof v === "string" ? v : "");
   }
+  const body = params.toString();
 
-  const resp = await fetch(url, {
-    method: "POST",
-    headers: {
-      Cookie: cookieStore.toString(),
-      "Content-Type": "application/x-www-form-urlencoded",
-      Origin: targetOrigin
-    },
-    body: params.toString(),
-    cache: "no-store"
+  const resp = await damagePost(path, body, {
+    "Content-Type": "application/x-www-form-urlencoded",
+    Cookie: cookieHeader
   });
-
   return parseDamagePostResponse(resp);
 }
 
@@ -201,7 +219,8 @@ export async function damagePostForm(
  * (undici) populates `multipart/form-data; boundary=...` automatically when
  * the body is a FormData instance — manually setting Content-Type here
  * strips the boundary and the worker's request.formData() call returns an
- * empty FormData, dropping the file field silently.
+ * empty FormData, dropping the file field silently. Same applies to
+ * env.DAMAGE_WORKER.fetch under the service binding.
  *
  * The damage-worker's upload handler reads the multipart body via
  * `request.formData()` directly (NOT via @splash/http readForm — readForm
@@ -215,21 +234,48 @@ export async function damagePostMultipart(
   formData: FormData
 ): Promise<DamagePostResult> {
   const cookieStore = await cookies();
-  const url = await workerUrl(path);
-  const targetOrigin = new URL(url).origin;
+  const cookieHeader = cookieStore.toString();
 
-  const resp = await fetch(url, {
+  const resp = await damagePost(path, formData, {
+    Cookie: cookieHeader
+    // NO Content-Type — fetch sets multipart boundary itself.
+  });
+  return parseDamagePostResponse(resp);
+}
+
+/**
+ * Internal POST dispatcher: prefers env.DAMAGE_WORKER service binding,
+ * falls back to URL-based fetch in dev. Sets `Origin` to the target URL's
+ * origin so the worker's isOriginAllowed CSRF gate passes.
+ */
+async function damagePost(
+  path: string,
+  body: BodyInit,
+  baseHeaders: Record<string, string>
+): Promise<Response> {
+  try {
+    const { env } = await getCloudflareContext({ async: true });
+    if (env.DAMAGE_WORKER) {
+      const trimmed = path.startsWith("/") ? path : `/${path}`;
+      const url = `https://internal${trimmed}`;
+      const req = new Request(url, {
+        method: "POST",
+        headers: { ...baseHeaders, Origin: new URL(url).origin },
+        body
+      });
+      return env.DAMAGE_WORKER.fetch(req);
+    }
+  } catch {
+    // Fall through to URL-based fetch (next dev / non-Workers runtime).
+  }
+
+  const url = await workerUrl(path);
+  return fetch(url, {
     method: "POST",
-    headers: {
-      Cookie: cookieStore.toString(),
-      Origin: targetOrigin
-      // NO Content-Type — fetch sets multipart boundary itself.
-    },
-    body: formData,
+    headers: { ...baseHeaders, Origin: new URL(url).origin },
+    body,
     cache: "no-store"
   });
-
-  return parseDamagePostResponse(resp);
 }
 
 /** Shared response parser for POST helpers. JSON-aware with text fallback. */

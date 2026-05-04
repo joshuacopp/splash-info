@@ -1,31 +1,35 @@
 // Server-side fetch helper for /sysadmin/api/* — apps/web's pages call the
 // sysadmin-worker's JSON API for super_admin user-management mutations.
 //
-// Mirror of apps/web/app/admin/damage/_lib/worker-fetch.ts. Same dev-vs-prod
-// URL fork; same Cookie + Origin forwarding; same { ok, body } / { ok: false,
-// status, error } return shape on POST.
+// DUAL-MODE TRANSPORT (Brief 17):
+//
+//   PRODUCTION / STAGING (Cloudflare Workers runtime):
+//     env.SYSADMIN_WORKER (service binding declared in apps/web/wrangler.toml)
+//     is called directly — env.SYSADMIN_WORKER.fetch(req). Cloudflare routes
+//     the request internally without going back through the edge. This
+//     avoids CF's same-zone Worker-to-Worker subrequest gotcha (URL-based
+//     same-zone fetches loop through the edge and 522 after ~19s).
+//
+//   DEV (next dev outside the Workers runtime):
+//     getCloudflareContext() throws or env.SYSADMIN_WORKER is undefined.
+//     We fall through to the URL-based fetch path. The URL is built from
+//     NEXT_PUBLIC_SYSADMIN_WORKER_URL when set (cross-origin dev) or the
+//     request host when unset (same-origin via next.config.mjs rewrites).
+//     CF Workers fetch doesn't accept relative URLs server-side, which is
+//     why we always build an absolute URL in this branch.
 //
 // IMPORTANT: sysadmin-worker reads JSON for all 5 mutation endpoints (it
 // calls request.json()), NOT form-encoded bodies. So sysadminPostJson sets
 // Content-Type: application/json and stringifies an object — different from
 // damagePostForm's URL-encoded body.
-//
-// URL CONSTRUCTION HAS TWO MODES:
-//
-//   1. NEXT_PUBLIC_SYSADMIN_WORKER_URL is set (dev / staging cross-origin)
-//      The sysadmin-worker lives on a different origin than apps/web. Use
-//      the env var as the absolute base.
-//
-//   2. NEXT_PUBLIC_SYSADMIN_WORKER_URL is empty (production same-origin)
-//      Post-cutover, apps/web AND sysadmin-worker:/sysadmin/api/* both bind
-//      to splashcarwashes.info. Build the URL from the incoming request's
-//      host so the same code works without env-var configuration.
 
 import { cookies, headers } from "next/headers";
+import { getCloudflareContext } from "@opennextjs/cloudflare";
 
 /**
  * Build an absolute URL for a /sysadmin/api/* call. Server-only — uses
- * next/headers which is unavailable in client components.
+ * next/headers which is unavailable in client components. Used by the
+ * URL-based dev fallback.
  */
 async function workerUrl(path: string): Promise<string> {
   const trimmed = path.startsWith("/") ? path : `/${path}`;
@@ -50,13 +54,34 @@ async function workerUrl(path: string): Promise<string> {
  */
 export async function sysadminGetJson<T>(path: string): Promise<T | null> {
   const cookieStore = await cookies();
-  const url = await workerUrl(path);
+  const cookieHeader = cookieStore.toString();
 
-  const resp = await fetch(url, {
-    method: "GET",
-    headers: { Cookie: cookieStore.toString() },
-    cache: "no-store"
-  });
+  let resp: Response;
+  try {
+    const { env } = await getCloudflareContext({ async: true });
+    if (env.SYSADMIN_WORKER) {
+      const trimmed = path.startsWith("/") ? path : `/${path}`;
+      const req = new Request(`https://internal${trimmed}`, {
+        method: "GET",
+        headers: { Cookie: cookieHeader }
+      });
+      resp = await env.SYSADMIN_WORKER.fetch(req);
+    } else {
+      const url = await workerUrl(path);
+      resp = await fetch(url, {
+        method: "GET",
+        headers: { Cookie: cookieHeader },
+        cache: "no-store"
+      });
+    }
+  } catch {
+    const url = await workerUrl(path);
+    resp = await fetch(url, {
+      method: "GET",
+      headers: { Cookie: cookieHeader },
+      cache: "no-store"
+    });
+  }
 
   if (resp.status === 401 || resp.status === 403) return null;
   if (!resp.ok) {
@@ -74,6 +99,9 @@ export async function sysadminGetJson<T>(path: string): Promise<T | null> {
  * Sets the `Origin` header to the target URL's origin so the worker's
  * `isOriginAllowed` CSRF check passes — server-side fetch doesn't auto-set
  * Origin and the worker rejects mutations without a matching Origin/Referer.
+ * Under the service binding, the host is the placeholder `https://internal`
+ * and the worker's isOriginAllowed accepts the apps/web-derived Origin
+ * header the same way it does in the URL-based fallback.
  *
  * Return shape:
  *   - { ok: true,  body }                  on 2xx
@@ -90,19 +118,51 @@ export async function sysadminPostJson<T>(
   body: T
 ): Promise<SysadminPostResult> {
   const cookieStore = await cookies();
-  const url = await workerUrl(path);
-  const targetOrigin = new URL(url).origin;
+  const cookieHeader = cookieStore.toString();
+  const stringified = JSON.stringify(body);
 
-  const resp = await fetch(url, {
-    method: "POST",
-    headers: {
-      Cookie: cookieStore.toString(),
-      "Content-Type": "application/json",
-      Origin: targetOrigin
-    },
-    body: JSON.stringify(body),
-    cache: "no-store"
-  });
+  let resp: Response;
+  try {
+    const { env } = await getCloudflareContext({ async: true });
+    if (env.SYSADMIN_WORKER) {
+      const trimmed = path.startsWith("/") ? path : `/${path}`;
+      const url = `https://internal${trimmed}`;
+      const req = new Request(url, {
+        method: "POST",
+        headers: {
+          Cookie: cookieHeader,
+          "Content-Type": "application/json",
+          Origin: new URL(url).origin
+        },
+        body: stringified
+      });
+      resp = await env.SYSADMIN_WORKER.fetch(req);
+    } else {
+      const url = await workerUrl(path);
+      resp = await fetch(url, {
+        method: "POST",
+        headers: {
+          Cookie: cookieHeader,
+          "Content-Type": "application/json",
+          Origin: new URL(url).origin
+        },
+        body: stringified,
+        cache: "no-store"
+      });
+    }
+  } catch {
+    const url = await workerUrl(path);
+    resp = await fetch(url, {
+      method: "POST",
+      headers: {
+        Cookie: cookieHeader,
+        "Content-Type": "application/json",
+        Origin: new URL(url).origin
+      },
+      body: stringified,
+      cache: "no-store"
+    });
+  }
 
   const ct = resp.headers.get("content-type") ?? "";
   let parsed: unknown = null;

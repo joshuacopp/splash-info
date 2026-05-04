@@ -37,6 +37,35 @@ routes = [
   { pattern = "staging.splashcarwashes.info/*", zone_name = "splashcarwashes.info" }
 ]
 
+# Service bindings (Brief 17) — apps/web SSR helpers call sibling workers
+# via direct in-runtime bindings instead of URL fetches. This avoids
+# Cloudflare's same-zone Worker-to-Worker subrequest gotcha (URL fetches
+# from one Worker to another on the same zone loop through the edge and
+# 522 after ~19s). With service bindings, env.<BINDING>.fetch(req) is
+# routed internally and Cookie/headers pass through cleanly. Service
+# names match the `name = "..."` in each sibling worker's wrangler.toml.
+# `[[services]]` are top-level array-of-tables and MUST appear before any
+# `[table]` header (e.g. `[assets]`).
+[[services]]
+binding = "DASHBOARD_WORKER"
+service = "splash-dashboard"
+
+[[services]]
+binding = "SIGNUP_WORKER"
+service = "splash-signup-next"
+
+[[services]]
+binding = "PERFORMANCE_WORKER"
+service = "splash-performance"
+
+[[services]]
+binding = "SYSADMIN_WORKER"
+service = "splash-sysadmin"
+
+[[services]]
+binding = "DAMAGE_WORKER"
+service = "splash-damage"
+
 # OpenNext static asset binding (CSS/JS/public/).
 [assets]
 directory = ".open-next/assets"
