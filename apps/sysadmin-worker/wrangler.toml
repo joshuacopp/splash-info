@@ -1,13 +1,4 @@
-# Splash Sysadmin Worker.
-#
-# DEPLOY STRATEGY (Step 6 — B2 cutover-only):
-# Production routes intentionally NOT bound. Worker is deployed to its
-# *.workers.dev fallback URL until apps/web ships in Step 7.
-#
-# Post-cutover route layout: this worker only owns `/sysadmin/api/*` —
-# the admin UI pages (`/sysadmin`, `/sysadmin/users`, `/sysadmin/locations`)
-# move to apps/web (Next.js server-fetches user data via @splash/db-supabase
-# and POSTs mutations here).
+
 
 name = "splash-sysadmin"
 main = "src/index.ts"

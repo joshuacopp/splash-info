@@ -1,19 +1,4 @@
-// Splash Damage Manager Worker — Chunk 4: COMPLETION.
-//
-// Largest port of the four non-production workers (5,684 legacy lines).
-// Broken into 4 chunks per Josh's request:
-//   Chunk 1 (done):         routing + auth gate skeleton + every handler 501.
-//   Chunk 2 (done):         read paths — list claims, claim detail, photo serve.
-//   Chunk 3 (done):         write paths — claim submission, note, transition,
-//                            document upload, document delete.
-//   Chunk 4 (this commit):  CSRF (isOriginAllowed) on every mutation,
-//                            document edit, check-request PDF preview,
-//                            Power Automate side-effects on transitions
-//                            (RM-approval → INCIDENTS_WEBHOOK_URL,
-//                            incidents-submission → AP_WEBHOOK_URL).
-//                            location_pretty D1-canonical resolution.
-//                            'document_removed' activity_type.
-//
+
 // SECURITY POSTURE (full):
 //   - Every authenticated write endpoint goes through:
 //       1. isOriginAllowed (CSRF)               — 403 bad origin
