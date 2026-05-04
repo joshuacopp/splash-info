@@ -9,6 +9,19 @@ import type {
 } from "@splash/types/auth";
 
 /**
+ * Compact user-search row returned by searchUsersByEmail. Drives the sysadmin
+ * UserPicker dropdown — includes role + tools so the picker can show current
+ * grants alongside the email match.
+ */
+export interface UserSearchRow {
+  user_id: string;
+  email: string;
+  role: UserRole | null;
+  tools: ToolName[];
+  must_change_password: boolean;
+}
+
+/**
  * All user_permissions rows for one user (a user may have multiple — one per
  * location_admin location). Source: legacy/sysadmin.js:254.
  */
@@ -287,4 +300,55 @@ export async function createUserPermissionsRow(
     .single();
   if (error) throw new Error(`Create user_permissions failed: ${error.message}`);
   return data as unknown as UserPermissionRow;
+}
+
+/* ============================================================
+ * User search (sysadmin UserPicker — Brief 18)
+ * ============================================================ */
+
+/**
+ * Substring search over auth_unified by email, returning compact rows for
+ * the sysadmin UserPicker typeahead. Used by GET /sysadmin/api/users.
+ *
+ * Empty / whitespace-only query returns []. Worker-side enforcement of the
+ * super_admin gate is the auth control; this helper does no scoping.
+ *
+ * Source view: auth_unified — already the canonical session-shape source
+ * across the workers (see auth-context.ts). Including role + tools lets
+ * the picker surface "current grants" alongside the email match.
+ */
+export async function searchUsersByEmail(
+  client: SupabaseClient,
+  query: string,
+  limit = 20
+): Promise<UserSearchRow[]> {
+  const needle = (query ?? "").trim();
+  if (needle.length === 0) return [];
+
+  // Escape wildcard chars so a stray '%' or ',' doesn't widen / break the OR.
+  const escaped = needle.replace(/[%_,()*]/g, "");
+  if (escaped.length === 0) return [];
+
+  const { data, error } = await client
+    .from("auth_unified")
+    .select("user_id,email,role,tools,must_change_password")
+    .ilike("email", `%${escaped}%`)
+    .order("email", { ascending: true })
+    .limit(limit);
+  if (error) throw error;
+
+  const rows = (data ?? []) as unknown as Array<{
+    user_id: string;
+    email: string;
+    role: UserRole | null;
+    tools: string[] | null;
+    must_change_password: boolean | null;
+  }>;
+  return rows.map((r) => ({
+    user_id: r.user_id,
+    email: r.email,
+    role: r.role,
+    tools: (r.tools ?? []) as ToolName[],
+    must_change_password: r.must_change_password === true
+  }));
 }

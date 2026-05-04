@@ -30,12 +30,17 @@
 //   - other 5xx-class / network -> generic error card
 //   - success -> the nine sections above.
 //
-// dc_role gating (Brief 11a): valid transitions are filtered both by the
-// claim's current status AND by the caller's dcRole. When session is null
-// (unreachable in practice — middleware would have redirected to /login —
-// but defensive) or session.dcRole is null ("no damage role assigned"),
-// zero transitions render and the "No further transitions" copy shows.
-// The worker still re-validates on POST as defense-in-depth.
+// dc_role gating (Brief 11a, REVERTED in Brief 18):
+//   Brief 11a originally filtered transitions by both current status AND
+//   caller's dcRole. Brief 18 dropped the dcRole filter while the
+//   dcRole-population bug surfaced in 11b is still being chased — when
+//   session.dcRole is null the filter eliminates every transition and
+//   the operator sees zero buttons (the bug surface reported in Brief 18).
+//   The worker re-validates dc_role on every POST, so removing the UI
+//   filter is a UX fix only, not an access-control change. Restore the
+//   filter once dcRole is reliably populated. A small debug line
+//   ("Session dcRole: <value>") renders below the page banner so the
+//   operator can see the resolved value without reading worker logs.
 //
 // canMutateDocument gating (Brief 5d): Edit/Delete buttons render only
 // when the UI mirror in _lib/permissions.ts returns true. Worker
@@ -255,13 +260,15 @@ export default async function DamageClaimDetailPage({ params, searchParams }: Pa
       ? await damageCheckRequestUrl(claim.claim_id, claim.approved_quote_id)
       : null;
 
-  // Filter by current status (UI table) AND by caller's dcRole (Brief 11a).
-  // null session / null dcRole -> empty list; the "No further transitions"
-  // copy already handles that branch in TransitionSection.
+  // Filter by current status only. Brief 11a additionally gated on dcRole,
+  // but Brief 18 dropped that filter while the dcRole-population bug is
+  // under investigation — when dcRole is null the 11a filter eliminates
+  // every transition and the operator sees zero buttons (the bug surface
+  // reported in Brief 18). Worker still re-validates dc_role on POST as
+  // defense-in-depth, so this is a UX fix only, not an access-control
+  // change. Re-introduce the filter once dcRole is reliably populated.
   const dcRole = session?.dcRole ?? null;
-  const validTransitions = transitionsFrom(claim.claim_status).filter(
-    (t) => dcRole !== null && t.allowedRoles.includes(dcRole)
-  );
+  const validTransitions = transitionsFrom(claim.claim_status);
 
   // Resolve the photo to delete (if a confirm_delete_id is present and
   // points at a live Quote/Receipt the user can mutate). Anything else
@@ -285,6 +292,7 @@ export default async function DamageClaimDetailPage({ params, searchParams }: Pa
       ) : null}
       <BackLink />
       <PageBanner customerName={claim.customer_name} claimId={claim.claim_id} />
+      <DcRoleDebugLine dcRole={dcRole} />
 
       <SummaryCard claim={claim} checkRequestHref={checkRequestHref} />
       <TransitionSection
@@ -368,6 +376,21 @@ function PageBanner({
         {customerName ?? "Damage claim"}
       </h1>
       <p className="mt-1 font-mono text-xs text-splash-navy/60">{claimId}</p>
+    </div>
+  );
+}
+
+/**
+ * Brief 18 diagnostic — surfaces the resolved dcRole on the detail page so
+ * the operator can confirm whether session.dcRole is populating from
+ * auth_unified. When this field is reliably non-null in production the
+ * Brief 11a filter can be re-introduced and this line removed (a small
+ * follow-up brief).
+ */
+function DcRoleDebugLine({ dcRole }: { dcRole: string | null }) {
+  return (
+    <div className="mb-4 rounded-splash-sm border border-sudsy-blue/30 bg-sudsy-blue-soft/40 px-3 py-1.5 font-mono text-[11px] text-splash-navy/70">
+      Session dcRole: {dcRole === null ? "null" : dcRole}
     </div>
   );
 }

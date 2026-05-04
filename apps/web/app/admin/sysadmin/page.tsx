@@ -1,4 +1,4 @@
-// Sysadmin UI (/admin/sysadmin). Brief 7.
+// Sysadmin UI (/admin/sysadmin). Brief 7. Extended in Brief 18.
 //
 // Server component. Top-of-page super_admin gate via getMe(); the page never
 // renders the operation cards for non-super_admins (worker re-validates on
@@ -17,15 +17,16 @@
 //
 // Each card is a plain server-rendered <form action={fn}> with the fields
 // the worker handler reads (apps/sysadmin-worker/src/index.ts handlers).
-// No client islands, no useState — server actions navigate after submit
-// via redirect(). Worker validates inputs and returns inline errors.
-//
-// The worker has no list-users / search-users endpoint today; v1 expects
-// user_id pasted from Supabase auth.users.id (or the auth_unified view).
+// Brief 18 added the UserPicker client island for the four user-targeted
+// forms (Set role / Grant tool / Revoke tool / Reset password) — replaces
+// the v1 paste-the-user-id-from-Supabase UX with an email-substring
+// typeahead backed by GET /sysadmin/api/users. Server actions still
+// receive the selected user_id via a hidden input the picker writes.
 
 import Link from "next/link";
 import { getMe } from "../../_lib/me";
 import { NoAccessCard } from "./_components/NoAccessCard";
+import { UserPicker } from "./_components/UserPicker";
 import {
   createUserAction,
   grantToolAction,
@@ -204,7 +205,8 @@ const inputClass =
 const submitClass =
   "inline-flex items-center gap-1.5 rounded-splash-sm bg-splash-blue px-5 py-2.5 text-sm font-bold text-white shadow-splash-btn transition-colors hover:bg-splash-blue-dark";
 
-const userIdHelper = "Paste from Supabase auth.users.id";
+// Brief 18: user_id text inputs (paste-from-Supabase) replaced with the
+// UserPicker email typeahead on the four user-targeted forms.
 
 /* ============================================================
  * 1. Create user
@@ -266,9 +268,25 @@ function CreateUserCard() {
             <option value="super_admin">super_admin</option>
             <option value="location_admin">location_admin</option>
           </select>
+        </div>
+
+        <div>
+          <FieldLabel
+            htmlFor="create-location-code"
+            helper="Required only for location_admin role"
+          >
+            Location code
+          </FieldLabel>
+          <input
+            id="create-location-code"
+            name="location_code"
+            type="text"
+            autoComplete="off"
+            className={`${inputClass} font-mono`}
+            placeholder="binghamton"
+          />
           <p className="mt-1 text-[0.6875rem] text-splash-navy/50">
-            location_admin row will be created with location_code = NULL.
-            Use Set role afterwards to attach a location.
+            Ignored for super_admin and no-role.
           </p>
         </div>
 
@@ -319,18 +337,10 @@ function SetRoleCard() {
     >
       <form action={setRoleAction} className="space-y-4">
         <div>
-          <FieldLabel htmlFor="set-role-user-id" helper={userIdHelper}>
-            User ID
+          <FieldLabel htmlFor="set-role-user-id" helper="Search by email">
+            User
           </FieldLabel>
-          <input
-            id="set-role-user-id"
-            name="user_id"
-            type="text"
-            required
-            autoComplete="off"
-            className={`${inputClass} font-mono`}
-            placeholder="00000000-0000-0000-0000-000000000000"
-          />
+          <UserPicker name="user_id" inputId="set-role-user-id" required />
         </div>
 
         <div>
@@ -350,7 +360,7 @@ function SetRoleCard() {
         <div>
           <FieldLabel
             htmlFor="set-role-location-code"
-            helper="Required only for location_admin role"
+            helper="Required for location_admin role"
           >
             Location code
           </FieldLabel>
@@ -364,6 +374,7 @@ function SetRoleCard() {
           />
           <p className="mt-1 text-[0.6875rem] text-splash-navy/50">
             Ignored for super_admin and clear-role operations.
+            Worker rejects location_admin role without a location_code.
           </p>
         </div>
 
@@ -389,18 +400,10 @@ function GrantToolCard() {
     >
       <form action={grantToolAction} className="space-y-4">
         <div>
-          <FieldLabel htmlFor="grant-user-id" helper={userIdHelper}>
-            User ID
+          <FieldLabel htmlFor="grant-user-id" helper="Search by email">
+            User
           </FieldLabel>
-          <input
-            id="grant-user-id"
-            name="user_id"
-            type="text"
-            required
-            autoComplete="off"
-            className={`${inputClass} font-mono`}
-            placeholder="00000000-0000-0000-0000-000000000000"
-          />
+          <UserPicker name="user_id" inputId="grant-user-id" required />
         </div>
 
         <div>
@@ -440,18 +443,10 @@ function RevokeToolCard() {
     >
       <form action={revokeToolAction} className="space-y-4">
         <div>
-          <FieldLabel htmlFor="revoke-user-id" helper={userIdHelper}>
-            User ID
+          <FieldLabel htmlFor="revoke-user-id" helper="Search by email">
+            User
           </FieldLabel>
-          <input
-            id="revoke-user-id"
-            name="user_id"
-            type="text"
-            required
-            autoComplete="off"
-            className={`${inputClass} font-mono`}
-            placeholder="00000000-0000-0000-0000-000000000000"
-          />
+          <UserPicker name="user_id" inputId="revoke-user-id" required />
         </div>
 
         <div>
@@ -513,18 +508,10 @@ function ResetPasswordCard() {
     >
       <form action={resetPasswordAction} className="space-y-4">
         <div>
-          <FieldLabel htmlFor="reset-user-id" helper={userIdHelper}>
-            User ID
+          <FieldLabel htmlFor="reset-user-id" helper="Search by email">
+            User
           </FieldLabel>
-          <input
-            id="reset-user-id"
-            name="user_id"
-            type="text"
-            required
-            autoComplete="off"
-            className={`${inputClass} font-mono`}
-            placeholder="00000000-0000-0000-0000-000000000000"
-          />
+          <UserPicker name="user_id" inputId="reset-user-id" required />
         </div>
 
         <div>

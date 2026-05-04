@@ -31,7 +31,7 @@
 
 import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
-import { damagePostForm, damagePostMultipart } from "../_lib/worker-fetch";
+import { damagePostForm, damagePostMultipart, type DamagePostResult } from "../_lib/worker-fetch";
 
 function detailPath(claimId: string): string {
   return `/admin/damage/${encodeURIComponent(claimId)}`;
@@ -39,6 +39,47 @@ function detailPath(claimId: string): string {
 
 function errorRedirect(claimId: string, message: string): never {
   redirect(`${detailPath(claimId)}?action_error=${encodeURIComponent(message)}`);
+}
+
+/**
+ * Brief 18 diagnostic — log action entry (sanitized field names + a few
+ * specific values; passwords/tokens are never read here so this is safe)
+ * and worker response status + first 200 chars of any non-2xx body. The
+ * goal is to make damage-action failures visible in the splash-web Worker
+ * logs so the operator can see what's happening on each click without
+ * hunting the damage-worker logs. Remove these in a follow-up brief once
+ * the action chain is verified working.
+ */
+function logActionEntry(action: string, claimId: string, formData: FormData): void {
+  const fields: Record<string, string> = {};
+  for (const [k, v] of formData.entries()) {
+    if (typeof v === "string") {
+      fields[k] = v.length > 80 ? `${v.slice(0, 80)}…(${v.length})` : v;
+    } else {
+      fields[k] = `<File ${v.name ?? "?"} ${v.size ?? 0}B>`;
+    }
+  }
+  console.log(
+    `[damage-action] ${action} claim=${claimId} fields=${JSON.stringify(fields)}`
+  );
+}
+
+function logActionResult(
+  action: string,
+  claimId: string,
+  result: DamagePostResult
+): void {
+  if (result.ok) {
+    const preview =
+      typeof result.body === "string"
+        ? result.body.slice(0, 200)
+        : JSON.stringify(result.body).slice(0, 200);
+    console.log(`[damage-action] ${action} claim=${claimId} OK body=${preview}`);
+  } else {
+    console.log(
+      `[damage-action] ${action} claim=${claimId} FAIL status=${result.status} error=${result.error.slice(0, 200)}`
+    );
+  }
 }
 
 export async function transitionAction(formData: FormData): Promise<void> {
@@ -51,10 +92,12 @@ export async function transitionAction(formData: FormData): Promise<void> {
     );
   }
 
+  logActionEntry("transition", claimId, formData);
   const result = await damagePostForm(
     `/manage/api/claim/${encodeURIComponent(claimId)}/transition`,
     formData
   );
+  logActionResult("transition", claimId, result);
 
   if (!result.ok) {
     errorRedirect(claimId, result.error);
@@ -74,10 +117,12 @@ export async function addNoteAction(formData: FormData): Promise<void> {
     );
   }
 
+  logActionEntry("note", claimId, formData);
   const result = await damagePostForm(
     `/manage/api/claim/${encodeURIComponent(claimId)}/note`,
     formData
   );
+  logActionResult("note", claimId, result);
 
   if (!result.ok) {
     errorRedirect(claimId, result.error);
@@ -112,10 +157,12 @@ export async function uploadDocumentAction(formData: FormData): Promise<void> {
     );
   }
 
+  logActionEntry("upload-document", claimId, formData);
   const result = await damagePostMultipart(
     `/manage/api/claim/${encodeURIComponent(claimId)}/document`,
     formData
   );
+  logActionResult("upload-document", claimId, result);
 
   if (!result.ok) {
     errorRedirect(claimId, result.error);
@@ -146,12 +193,14 @@ export async function editDocumentAction(formData: FormData): Promise<void> {
     errorRedirect(claimId, "Missing document id on edit submission.");
   }
 
+  logActionEntry("edit-document", claimId, formData);
   const result = await damagePostForm(
     `/manage/api/claim/${encodeURIComponent(claimId)}/document/${encodeURIComponent(
       docId
     )}/edit`,
     formData
   );
+  logActionResult("edit-document", claimId, result);
 
   if (!result.ok) {
     errorRedirect(claimId, result.error);
@@ -188,12 +237,14 @@ export async function deleteDocumentAction(formData: FormData): Promise<void> {
     errorRedirect(claimId, "Missing document id on delete submission.");
   }
 
+  logActionEntry("delete-document", claimId, formData);
   const result = await damagePostForm(
     `/manage/api/claim/${encodeURIComponent(claimId)}/document/${encodeURIComponent(
       docId
     )}/delete`,
     formData
   );
+  logActionResult("delete-document", claimId, result);
 
   if (!result.ok) {
     errorRedirect(claimId, result.error);

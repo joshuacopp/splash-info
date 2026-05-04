@@ -2,7 +2,8 @@
 //
 // Super_admin-only mutations for user management. Read-paths (admin shell,
 // user list, drawer detail) move to apps/web in Step 7 (server-fetched via
-// @splash/db-supabase). This worker keeps the 5 mutation endpoints.
+// @splash/db-supabase). This worker keeps the 5 mutation endpoints, plus a
+// thin email-search read added in Brief 18 to back the apps/web UserPicker.
 //
 // Owned routes (Step 7 — production):
 //   POST /sysadmin/api/grant-tool       — grant a tool to a user
@@ -17,6 +18,9 @@
 //                                         on the new user_permissions row —
 //                                         policy default in
 //                                         createUserPermissionsRow)
+//   GET  /sysadmin/api/users?q=...      — email-substring search backing
+//                                         the UserPicker typeahead (Brief 18).
+//                                         Empty q -> []. Limit 20.
 //
 // AUTH GATE POSITION:
 //   ALL endpoints — single authenticate() + super_admin check at the top
@@ -41,6 +45,7 @@ import {
   grantTool,
   logSysadminAudit,
   revokeTool,
+  searchUsersByEmail,
   setRole,
   type SupabaseEnv
 } from "@splash/db-supabase";
@@ -52,7 +57,7 @@ type Env = SupabaseEnv;
 const VALID_TOOLS: ReadonlySet<ToolName> = new Set(["pricing", "claims", "pertrack"]);
 const VALID_ROLES: ReadonlySet<UserRole> = new Set(["super_admin", "location_admin"]);
 
-const OWNED_API_PATHS = new Set([
+const OWNED_POST_PATHS = new Set([
   "/sysadmin/api/grant-tool",
   "/sysadmin/api/revoke-tool",
   "/sysadmin/api/set-role",
@@ -60,23 +65,33 @@ const OWNED_API_PATHS = new Set([
   "/sysadmin/api/create-user"
 ]);
 
+const OWNED_GET_PATHS = new Set(["/sysadmin/api/users"]);
+
 export default {
   async fetch(request: Request, env: Env, _ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
     const path = url.pathname.replace(/\/+$/, "") || "/";
+    const method = request.method;
 
-    if (!OWNED_API_PATHS.has(path)) {
+    const isOwnedPost = OWNED_POST_PATHS.has(path);
+    const isOwnedGet = OWNED_GET_PATHS.has(path);
+    if (!isOwnedPost && !isOwnedGet) {
       return new Response("Not found", { status: 404 });
     }
 
-    if (request.method !== "POST") {
+    if (isOwnedPost && method !== "POST") {
       return jsonError(405, "POST required");
     }
+    if (isOwnedGet && method !== "GET") {
+      return jsonError(405, "GET required");
+    }
 
-    // CSRF defense-in-depth — every endpoint here is a state-changing
-    // POST. Same-origin SameSite=Lax cookies are the primary mitigation;
-    // checkOrigin is the second layer. Chunk 5 retrofit.
-    if (!isOriginAllowed(request)) return jsonError(403, "bad origin");
+    // CSRF defense-in-depth — POST endpoints only. Per Brief 11b's sweep,
+    // GET endpoints don't carry the gate (browsers omit Origin on
+    // same-origin GETs and the read is not state-changing).
+    if (method === "POST" && !isOriginAllowed(request)) {
+      return jsonError(403, "bad origin");
+    }
 
     // Single auth gate before any handler logic.
     const auth = await authenticate(request, env);
@@ -84,14 +99,20 @@ export default {
     if (auth.session.role !== "super_admin") return jsonError(403, "forbidden");
     const actor = { id: auth.session.userId, email: auth.session.email };
 
-    let body: Record<string, unknown>;
     try {
-      body = (await request.json()) as Record<string, unknown>;
-    } catch {
-      return jsonError(400, "Invalid JSON");
-    }
+      if (isOwnedGet) {
+        if (path === "/sysadmin/api/users") {
+          return await handleSearchUsers(env, url);
+        }
+      }
 
-    try {
+      let body: Record<string, unknown>;
+      try {
+        body = (await request.json()) as Record<string, unknown>;
+      } catch {
+        return jsonError(400, "Invalid JSON");
+      }
+
       switch (path) {
         case "/sysadmin/api/grant-tool":
           return await handleGrantTool(env, body, actor);
@@ -186,6 +207,12 @@ async function handleSetRole(
   if (role && !VALID_ROLES.has(role as UserRole)) {
     return jsonError(400, `Invalid role: ${role}`);
   }
+  // Brief 18 guard — flagged in Brief 7 outcome. Without this check
+  // location_admin rows could be inserted with location_code = NULL,
+  // producing a functionally-misconfigured permissions row.
+  if (role === "location_admin" && !locationCode) {
+    return jsonError(400, "location_code is required when role is location_admin");
+  }
 
   const sb = createServiceClient(env);
 
@@ -261,6 +288,7 @@ async function handleCreateUser(
   const email = stringOrNull(body.email);
   const password = stringOrNull(body.password);
   const role = stringOrNull(body.role);
+  const locationCode = stringOrNull(body.location_code);
   const tools = Array.isArray(body.tools)
     ? body.tools.filter((t): t is ToolName => typeof t === "string" && VALID_TOOLS.has(t as ToolName))
     : [];
@@ -269,6 +297,11 @@ async function handleCreateUser(
   if (password.length < 8) return jsonError(400, "Password must be at least 8 characters");
   if (role && !VALID_ROLES.has(role as UserRole)) {
     return jsonError(400, `Invalid role: ${role}`);
+  }
+  // Brief 18 guard — symmetric with handleSetRole. A location_admin row
+  // without location_code is misconfigured; reject at the boundary.
+  if (role === "location_admin" && !locationCode) {
+    return jsonError(400, "location_code is required when role is location_admin");
   }
 
   // 1) Create auth user.
@@ -281,14 +314,15 @@ async function handleCreateUser(
   //    must_change_password defaults to TRUE in createUserPermissionsRow —
   //    closes the legacy bug where admin-known default passwords stayed
   //    valid until the user proactively changed them.
+  //    Brief 18: forward location_code when role = location_admin (was
+  //    hardcoded null until now, requiring a two-step Create + Set role
+  //    workflow to attach a location).
   if (role) {
     await createUserPermissionsRow(sb, {
       userId: newUserId,
       email: created.email,
       role: role as UserRole,
-      // Caller may eventually want a location_code on creation; legacy
-      // doesn't accept one here. Add when sysadmin UI ships in Step 7.
-      locationCode: null
+      locationCode: role === "location_admin" ? locationCode : null
     });
   }
 
@@ -313,6 +347,23 @@ async function handleCreateUser(
   });
 
   return json({ ok: true, user_id: newUserId, email: created.email });
+}
+
+/* ============================================================
+ * GET /sysadmin/api/users?q=<email-substring>  (Brief 18)
+ *
+ * Email substring typeahead backing apps/web's UserPicker. Empty q -> [].
+ * Default limit 20. Auth gate is super_admin (single gate at the top of
+ * fetch()).
+ * ============================================================ */
+
+async function handleSearchUsers(env: Env, url: URL): Promise<Response> {
+  const q = (url.searchParams.get("q") ?? "").trim();
+  if (q.length === 0) return json([]);
+
+  const sb = createServiceClient(env);
+  const rows = await searchUsersByEmail(sb, q, 20);
+  return json(rows);
 }
 
 /* ============================================================

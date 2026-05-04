@@ -60,6 +60,8 @@ interface CreateUserBody {
   email: string;
   password: string;
   role?: UserRole;
+  /** Brief 18 — forwarded only when role === "location_admin". */
+  location_code?: string;
   tools?: string[];
 }
 
@@ -67,6 +69,7 @@ export async function createUserAction(formData: FormData): Promise<void> {
   const email = fieldString(formData, "email");
   const password = fieldString(formData, "password");
   const roleRaw = fieldString(formData, "role");
+  const locationCode = fieldStringOrUndefined(formData, "location_code");
   // FormData.getAll returns FormDataEntryValue[]; coerce to string[].
   const tools = formData
     .getAll("tools")
@@ -76,6 +79,9 @@ export async function createUserAction(formData: FormData): Promise<void> {
   const body: CreateUserBody = { email, password };
   if (roleRaw.length > 0) {
     body.role = roleRaw as UserRole;
+  }
+  if (body.role === "location_admin" && locationCode !== undefined) {
+    body.location_code = locationCode;
   }
   if (tools.length > 0) {
     body.tools = tools;
