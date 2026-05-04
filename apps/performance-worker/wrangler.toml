@@ -1,0 +1,41 @@
+# Splash Performance Tracker Worker.
+#
+# DEPLOY STRATEGY (Step 6 — B2 cutover-only):
+# Production routes intentionally NOT bound. Worker is deployed to its
+# *.workers.dev fallback URL until apps/web ships in Step 7. No
+# dual-ownership window with the legacy worker — performance-worker
+# is one of the four non-production workers per Josh's production-state
+# inventory (only signup-worker has real customer traffic today).
+#
+# When ready to cut over (Step 7), uncomment the `routes` block.
+
+name = "splash-performance"
+main = "src/index.ts"
+compatibility_date = "2026-05-01"
+compatibility_flags = ["nodejs_compat"]
+
+workers_dev = true
+
+# Step 7 cutover routes (uncomment when apps/web is ready):
+# routes = [
+#   { pattern = "splashcarwashes.info/pertrack/*", zone_name = "splashcarwashes.info" }
+# ]
+
+# Staging routes (Brief 16) — bind performance-worker to
+# staging.splashcarwashes.info so apps/web (also bound to staging) can
+# call /pertrack/* same-origin. Production routes above stay commented;
+# staging is purely additive.
+routes = [
+  { pattern = "staging.splashcarwashes.info/pertrack/*", zone_name = "splashcarwashes.info" }
+]
+
+# Bindings:
+# SUPABASE_URL          — string
+# SUPABASE_ANON_KEY     — secret
+# SUPABASE_SERVICE_KEY  — secret
+#
+# RENAME during this port: legacy/performancetracker.js refers to
+# SUPABASE_SERVICE_ROLE_KEY. The migration plan standardizes on
+# SUPABASE_SERVICE_KEY across all 5 workers — this worker now matches.
+# Update the env var name in the Cloudflare dashboard before deploying
+# to workers.dev (the binding the worker reads is SUPABASE_SERVICE_KEY).

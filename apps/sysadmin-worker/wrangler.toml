@@ -1,0 +1,36 @@
+# Splash Sysadmin Worker.
+#
+# DEPLOY STRATEGY (Step 6 — B2 cutover-only):
+# Production routes intentionally NOT bound. Worker is deployed to its
+# *.workers.dev fallback URL until apps/web ships in Step 7.
+#
+# Post-cutover route layout: this worker only owns `/sysadmin/api/*` —
+# the admin UI pages (`/sysadmin`, `/sysadmin/users`, `/sysadmin/locations`)
+# move to apps/web (Next.js server-fetches user data via @splash/db-supabase
+# and POSTs mutations here).
+
+name = "splash-sysadmin"
+main = "src/index.ts"
+compatibility_date = "2026-05-01"
+compatibility_flags = ["nodejs_compat"]
+
+workers_dev = true
+
+# Step 7 cutover routes (uncomment when apps/web is ready):
+# routes = [
+#   { pattern = "splashcarwashes.info/sysadmin/api/*", zone_name = "splashcarwashes.info" }
+# ]
+
+# Staging routes (Brief 16) — bind sysadmin-worker to
+# staging.splashcarwashes.info so apps/web (also bound to staging) can
+# call /sysadmin/api/* same-origin. Production routes above stay
+# commented; staging is purely additive.
+routes = [
+  { pattern = "staging.splashcarwashes.info/sysadmin/api/*", zone_name = "splashcarwashes.info" }
+]
+
+# Bindings:
+# SUPABASE_URL          — string
+# SUPABASE_ANON_KEY     — secret
+# SUPABASE_SERVICE_KEY  — secret (admin API + writes to user_permissions /
+#                         user_tool_access / sysadmin_audit_log all use service key)

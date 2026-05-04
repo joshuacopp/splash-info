@@ -1,0 +1,353 @@
+// Damage claims list page (/admin/damage).
+//
+// Server component. Reads ?search / ?location / ?status / ?lifecycle from
+// the URL, calls damage-worker GET /manage/api/claims, and renders a filter
+// bar + claims table.
+//
+// Per Brief 5a: list page only. The detail page at /admin/damage/[id] lands
+// in Brief 5b — row links target it but a 404 there is acceptable until then.
+// Write actions (transitions / notes / docs) are 5c/5d.
+//
+// Auth posture: damage-worker handles auth + dc_role scoping. damageGetJson
+// returns null on 401/403 — both "no claims tool grant" and "no damage role
+// assigned" land in the same null branch. Distinguishing them needs a body
+// peek the helper currently throws away; flagged for 5b if it matters.
+
+import Link from "next/link";
+import { damageGetJson } from "./_lib/worker-fetch";
+import { LifecycleBadge } from "./_components/LifecycleBadge";
+import type { ClaimRow, ClaimStatus, LifecycleState } from "@splash/types/claims";
+
+// What the worker actually returns from GET /manage/api/claims — the D1
+// listClaims helper (packages/db-d1/src/claims.ts) selects a subset of
+// columns. Keep this aligned with CLAIMS_LIST_COLS there.
+type ClaimListRow = Pick<
+  ClaimRow,
+  | "claim_id"
+  | "location_code"
+  | "location_pretty"
+  | "customer_name"
+  | "vehicle_year"
+  | "vehicle_make"
+  | "vehicle_model"
+  | "submitted_at"
+  | "claim_status"
+  | "lifecycle_state"
+  | "contact_status"
+>;
+
+// Full ClaimStatus enum, ordered as in the type union for legibility (15 values).
+// Em-dashes are U+2014 — matches the DB CHECK constraint exactly. Do not
+// substitute hyphens.
+const CLAIM_STATUSES: ReadonlyArray<ClaimStatus> = [
+  "New — Pending Review",
+  "No Responsibility — Pending Review",
+  "Pending GM Review",
+  "Pending RM Review",
+  "Approved — Pending Quotes",
+  "Pending RM Quote Approval",
+  "Approved — In House — Parts Ordered",
+  "Approved — In House — Repaired",
+  "Approved — Check Request Submitted",
+  "Approved — Submitted for Payment",
+  "Approved — Pending CEO Approval",
+  "Approved — Check Issued",
+  "Closed — Paid",
+  "Closed — Denied",
+  "Closed — Approved/No Response"
+];
+
+const LIFECYCLE_OPTIONS: ReadonlyArray<LifecycleState | "All"> = ["Open", "Closed", "All"];
+
+interface PageProps {
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
+}
+
+function firstParam(value: string | string[] | undefined): string {
+  if (Array.isArray(value)) return value[0] ?? "";
+  return value ?? "";
+}
+
+function formatVehicle(row: ClaimListRow): string {
+  const parts = [row.vehicle_year, row.vehicle_make, row.vehicle_model]
+    .map((p) => (p === null || p === undefined || p === "" ? null : String(p)))
+    .filter((p): p is string => p !== null);
+  return parts.length === 0 ? "—" : parts.join(", ");
+}
+
+function formatSubmittedDate(iso: string): string {
+  // ISO timestamps from D1 start with YYYY-MM-DD; slice avoids timezone math.
+  return iso.length >= 10 ? iso.slice(0, 10) : iso;
+}
+
+export default async function DamageClaimsListPage({ searchParams }: PageProps) {
+  const sp = await searchParams;
+  const search = firstParam(sp.search).trim();
+  const locationParam = firstParam(sp.location) || "All";
+  const statusParam = firstParam(sp.status) || "All";
+  const lifecycleParam = (firstParam(sp.lifecycle) || "Open") as LifecycleState | "All";
+
+  // Build worker query string, omitting empty filters.
+  const qs = new URLSearchParams();
+  if (search) qs.set("search", search);
+  if (locationParam && locationParam !== "All") qs.set("location", locationParam);
+  if (statusParam && statusParam !== "All") qs.set("status", statusParam);
+  qs.set("lifecycle", lifecycleParam);
+  const workerPath = `/manage/api/claims${qs.toString() ? `?${qs.toString()}` : ""}`;
+
+  let claims: ClaimListRow[] | null = null;
+  let fetchError: string | null = null;
+  try {
+    claims = await damageGetJson<ClaimListRow[]>(workerPath);
+  } catch (err) {
+    fetchError = err instanceof Error ? err.message : "Unknown error fetching claims.";
+  }
+
+  // No-access branch (401/403). Encode the return path including its query
+  // string so filters survive a sign-in round-trip.
+  if (claims === null && !fetchError) {
+    const currentQs = new URLSearchParams();
+    if (search) currentQs.set("search", search);
+    if (locationParam && locationParam !== "All") currentQs.set("location", locationParam);
+    if (statusParam && statusParam !== "All") currentQs.set("status", statusParam);
+    if (lifecycleParam !== "Open") currentQs.set("lifecycle", lifecycleParam);
+    const returnPath = `/admin/damage${currentQs.toString() ? `?${currentQs.toString()}` : ""}`;
+    return (
+      <section className="mx-auto w-full max-w-[1100px] px-5 py-9">
+        <PageBanner />
+        <div className="rounded-splash-lg border border-gray-light bg-white p-6 shadow-splash-card">
+          <p className="mb-4 text-splash-deny">
+            You don&rsquo;t have access to Damage Claims. Contact your
+            administrator if this is unexpected.
+          </p>
+          <Link
+            href={`/login?return=${encodeURIComponent(returnPath)}`}
+            className="inline-flex items-center gap-1.5 rounded-splash-sm bg-splash-blue px-5 py-2.5 text-sm font-bold text-white shadow-splash-btn transition-colors hover:bg-splash-blue-dark"
+          >
+            Sign In
+          </Link>
+        </div>
+      </section>
+    );
+  }
+
+  // Error branch (5xx / network / malformed). Page reload retries.
+  if (fetchError) {
+    return (
+      <section className="mx-auto w-full max-w-[1100px] px-5 py-9">
+        <PageBanner />
+        <div className="rounded-splash-lg border border-gray-light bg-white p-6 shadow-splash-card">
+          <h2 className="mb-2 text-lg font-bold text-splash-deny">
+            Could not load claims
+          </h2>
+          <p className="text-sm text-splash-navy/80">{fetchError}</p>
+          <p className="mt-2 text-sm text-splash-navy/60">
+            Reload the page to retry.
+          </p>
+        </div>
+      </section>
+    );
+  }
+
+  const list = claims ?? [];
+
+  // Derive the location dropdown options from the result set. v1 compromise:
+  // locations with zero matching claims under the current filters won't
+  // appear — preserve the currently-selected value as a fallback so the
+  // dropdown doesn't visually drop a filter the user explicitly set.
+  const locationMap = new Map<string, string>();
+  for (const c of list) {
+    if (!locationMap.has(c.location_code)) {
+      locationMap.set(c.location_code, c.location_pretty);
+    }
+  }
+  if (locationParam !== "All" && !locationMap.has(locationParam)) {
+    locationMap.set(locationParam, locationParam);
+  }
+  const locationOptions = Array.from(locationMap.entries()).sort(
+    ([, a], [, b]) => a.localeCompare(b)
+  );
+
+  return (
+    <section className="mx-auto w-full max-w-[1100px] px-5 py-9">
+      <PageBanner />
+
+      {/* Filter bar — pure server-rendered GET form. */}
+      <form
+        method="GET"
+        action="/admin/damage"
+        className="mb-5 rounded-splash-lg border border-gray-light bg-white p-5 shadow-splash-card"
+      >
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+          <label className="flex flex-col gap-1">
+            <span className="text-xs font-semibold uppercase tracking-wider text-splash-navy/70">
+              Search
+            </span>
+            <input
+              type="text"
+              name="search"
+              defaultValue={search}
+              placeholder="Search customer name…"
+              className="rounded-splash-sm border border-gray-light bg-white px-3 py-2 text-sm text-splash-navy placeholder:text-splash-navy/40 focus:border-splash-blue focus:outline-none"
+            />
+          </label>
+
+          <label className="flex flex-col gap-1">
+            <span className="text-xs font-semibold uppercase tracking-wider text-splash-navy/70">
+              Location
+            </span>
+            <select
+              name="location"
+              defaultValue={locationParam}
+              className="rounded-splash-sm border border-gray-light bg-white px-3 py-2 text-sm text-splash-navy focus:border-splash-blue focus:outline-none"
+            >
+              <option value="All">All locations</option>
+              {locationOptions.map(([code, pretty]) => (
+                <option key={code} value={code}>
+                  {pretty}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <label className="flex flex-col gap-1">
+            <span className="text-xs font-semibold uppercase tracking-wider text-splash-navy/70">
+              Status
+            </span>
+            <select
+              name="status"
+              defaultValue={statusParam}
+              className="rounded-splash-sm border border-gray-light bg-white px-3 py-2 text-sm text-splash-navy focus:border-splash-blue focus:outline-none"
+            >
+              <option value="All">All</option>
+              {CLAIM_STATUSES.map((s) => (
+                <option key={s} value={s}>
+                  {s}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <label className="flex flex-col gap-1">
+            <span className="text-xs font-semibold uppercase tracking-wider text-splash-navy/70">
+              Lifecycle
+            </span>
+            <select
+              name="lifecycle"
+              defaultValue={lifecycleParam}
+              className="rounded-splash-sm border border-gray-light bg-white px-3 py-2 text-sm text-splash-navy focus:border-splash-blue focus:outline-none"
+            >
+              {LIFECYCLE_OPTIONS.map((l) => (
+                <option key={l} value={l}>
+                  {l}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
+
+        <div className="mt-4 flex items-center gap-3">
+          <button
+            type="submit"
+            className="inline-flex items-center gap-1.5 rounded-splash-sm bg-splash-blue px-5 py-2.5 text-sm font-bold text-white shadow-splash-btn transition-colors hover:bg-splash-blue-dark"
+          >
+            Apply filters
+          </button>
+          <Link
+            href="/admin/damage"
+            className="text-sm font-semibold text-splash-blue hover:text-splash-blue-dark"
+          >
+            Reset
+          </Link>
+        </div>
+      </form>
+
+      {/* Results card */}
+      {list.length === 0 ? (
+        <div className="rounded-splash-lg border border-gray-light bg-white p-6 shadow-splash-card">
+          <p className="mb-3 text-splash-navy/80">
+            No claims match these filters.
+          </p>
+          <Link
+            href="/admin/damage"
+            className="text-sm font-semibold text-splash-blue hover:text-splash-blue-dark"
+          >
+            Show all claims
+          </Link>
+        </div>
+      ) : (
+        <div className="overflow-hidden rounded-splash-lg border border-gray-light bg-white shadow-splash-card">
+          <div className="overflow-x-auto">
+            <table className="min-w-full divide-y divide-gray-light text-sm">
+              <thead className="bg-splash-navy/5 text-left text-xs font-semibold uppercase tracking-wider text-splash-navy/70">
+                <tr>
+                  <th className="px-4 py-3">Claim ID</th>
+                  <th className="px-4 py-3">Customer</th>
+                  <th className="px-4 py-3">Vehicle</th>
+                  <th className="px-4 py-3">Location</th>
+                  <th className="px-4 py-3">Status</th>
+                  <th className="px-4 py-3">Lifecycle</th>
+                  <th className="px-4 py-3">Submitted</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-light text-splash-navy">
+                {list.map((c) => (
+                  <tr
+                    key={c.claim_id}
+                    className="cursor-pointer transition-colors hover:bg-sudsy-blue-soft/40"
+                  >
+                    <td className="px-4 py-3 font-mono text-xs">
+                      <Link
+                        href={`/admin/damage/${encodeURIComponent(c.claim_id)}`}
+                        className="text-splash-blue hover:text-splash-blue-dark"
+                      >
+                        {c.claim_id}
+                      </Link>
+                    </td>
+                    <td className="px-4 py-3">
+                      <Link
+                        href={`/admin/damage/${encodeURIComponent(c.claim_id)}`}
+                        className="block font-semibold text-splash-navy"
+                      >
+                        {c.customer_name}
+                      </Link>
+                    </td>
+                    <td className="px-4 py-3 text-splash-navy/80">
+                      {formatVehicle(c)}
+                    </td>
+                    <td className="px-4 py-3">
+                      <div className="text-splash-navy">{c.location_pretty}</div>
+                      <div className="font-mono text-xs text-splash-navy/60">
+                        {c.location_code}
+                      </div>
+                    </td>
+                    <td className="px-4 py-3 text-splash-navy/80">
+                      {c.claim_status}
+                    </td>
+                    <td className="px-4 py-3">
+                      <LifecycleBadge state={c.lifecycle_state} />
+                    </td>
+                    <td className="px-4 py-3 font-mono text-xs text-splash-navy/80">
+                      {formatSubmittedDate(c.submitted_at)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
+function PageBanner() {
+  return (
+    <div className="mb-6">
+      <p className="mb-1 text-xs font-semibold uppercase tracking-[0.18em] text-sudsy-blue">
+        Internal Tools
+      </p>
+      <h1 className="text-2xl font-bold text-splash-navy">Damage Claims</h1>
+    </div>
+  );
+}

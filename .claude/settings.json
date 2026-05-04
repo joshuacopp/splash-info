@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pnpm --filter @splash/damage-worker typecheck)",
+      "Bash(pnpm --filter @splash/signup-worker typecheck)",
+      "Bash(pnpm --filter @splash/web build)"
+    ],
+    "additionalDirectories": [
+      "C:\\Users\\Coppsrv\\Documents\\splash-info\\packages\\*",
+      "c:\\Users\\Coppsrv\\Documents\\splash-info\\packages\\*"
+    ]
+  }
+}

@@ -1,0 +1,72 @@
+# Splash Signup Worker — port-in-progress.
+#
+# DEPLOY STRATEGY (Chunk 1 — B2 cutover-only):
+# This is a fresh worker that deploys to its own *.workers.dev URL. The
+# legacy production worker (deployed from the original Claude Project) keeps
+# its production routes — we are NOT taking traffic until the dedicated
+# cutover plan is greenlit.
+#
+# Worker name: "splash-signup-next" — distinct from the legacy production
+# worker name to avoid clobbering. Workers' production routes (preserved
+# below in COMMENTED form) are bound to the legacy worker; deploying this
+# worker name does not move them.
+#
+# CUTOVER (separate conversation when its turn comes):
+#   1. Final shape verified at workers.dev
+#   2. Parallel deployment / shadow testing decisions made
+#   3. Production routes flipped from legacy script → splash-signup-next
+#   4. Worker renamed to "splash-signup" OR routes pointed at the -next name
+#   5. Rollback path documented + practiced
+#
+# Until then: this worker only reaches the workers.dev fallback URL.
+
+name = "splash-signup-next"
+main = "src/index.ts"
+compatibility_date = "2026-05-01"
+compatibility_flags = ["nodejs_compat"]
+
+workers_dev = true
+
+# WARNING: /signup/{loc}, /q/{loc}, /join/{loc} URLs are load-bearing.
+# Saved on customer/admin device home screens. Do not rename.
+# (See BUILD_STATE.md → "Load-bearing constraints".)
+#
+# Production routes — preserved verbatim from the Step 4 scaffold for
+# reference at cutover time. NOT bound to this worker name. Do not
+# uncomment until cutover.
+#
+# routes = [
+#   { pattern = "splashcarwashes.info/signup/*", zone_name = "splashcarwashes.info" },
+#   { pattern = "splashcarwashes.info/q/*", zone_name = "splashcarwashes.info" },
+#   { pattern = "splashcarwashes.info/join/*", zone_name = "splashcarwashes.info" },
+#   { pattern = "splashcarwashes.info/api/submit-signup", zone_name = "splashcarwashes.info" }
+# ]
+
+# Staging routes (Brief 16) — bind signup-worker's admin pricing JSON API
+# AND the customer-facing surface (/signup, /q, /join, /api/submit-signup)
+# to staging.splashcarwashes.info so the full system can be exercised
+# end-to-end on a single origin. Customer routes are NOT load-bearing on
+# the staging subdomain (no customer bookmarks point there) — the
+# load-bearing-URL warning above applies to the production routes only.
+# Per decision 8, signup-worker owns customer-facing rendering.
+routes = [
+  { pattern = "staging.splashcarwashes.info/admin/api/*",        zone_name = "splashcarwashes.info" },
+  { pattern = "staging.splashcarwashes.info/api/submit-signup",  zone_name = "splashcarwashes.info" },
+  { pattern = "staging.splashcarwashes.info/signup/*",           zone_name = "splashcarwashes.info" },
+  { pattern = "staging.splashcarwashes.info/q/*",                zone_name = "splashcarwashes.info" },
+  { pattern = "staging.splashcarwashes.info/join/*",             zone_name = "splashcarwashes.info" }
+]
+
+# Vars (plain — set via dashboard or [vars] block):
+# SIGNATURE_MODE       — "inline" (default, production path) | "jotform" (dormant)
+#                        Switch flips signature collection between inline-form +
+#                        direct maxpass_signups insert and JotForm redirect with
+#                        prefill. See apps/signup-worker/src/signature/.
+[vars]
+SIGNATURE_MODE = "inline"
+
+# Bindings (set with `wrangler secret put` for the *_KEY values):
+# SUPABASE_URL          — string (env var via dashboard or [vars])
+# SUPABASE_ANON_KEY     — secret
+# SUPABASE_SERVICE_KEY  — secret (suspicious_phones / phone_usage_log writes
+#                         + maxpass_signups insert use service key per legacy)

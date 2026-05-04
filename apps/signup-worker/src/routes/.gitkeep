@@ -1,0 +1,4 @@
+# Placeholder. Routes populated in Chunks 2-4:
+#   Chunk 2: GET /signup/{loc} (picker), GET /signup/{loc}/{pkg} (form or jotform redirect)
+#   Chunk 3: POST /api/submit-signup (fraud detection + maxpass_signups insert)
+#   Chunk 4: pricing admin (if not already moved to apps/web by then)

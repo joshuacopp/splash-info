@@ -11,7 +11,9 @@
     "./signups": "./src/signups.ts",
     "./claims": "./src/claims.ts",
     "./auth": "./src/auth.ts",
-    "./locations": "./src/locations.ts"
+    "./locations": "./src/locations.ts",
+    "./performance": "./src/performance.ts",
+    "./session": "./src/session.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

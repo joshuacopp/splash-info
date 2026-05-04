@@ -1,13 +1,34 @@
-// Shared React components for the Splash MaxPass Next.js app.
+// Public surface of @splash/ui — shared React components for apps/web.
 //
-// Will house:
-//   - Brand layout (logo, header, animated bubble background)
-//   - Modal kit (Success / Deny / Warn / Monitor — the four signup flow modals)
-//   - Pricing components (mode selector, package card, quick-flip button)
-//   - Form primitives (phone input with formatting, terms display, signature field)
-//   - Damage claim widgets (photo uploader, status badge, role-gated action buttons)
-//   - Dashboard chart wrappers
+// Step 5 ports a subset:
+//   - Layout primitives (PageShell, BrandHeader, BrandFontLinks)
+//   - PhoneInput with auto-format `(XXX)XXX-XXXX`
+//   - The four signup-flow modals (Deny/Warn/Monitor/Success)
+//   - BubbleBackground for the public claim form / landing page
+//   - StatusBadge for the damage-claim manager UI
+//   - PricingCard for the package picker
+//   - Color tokens (TS mirror of tailwind.base.cjs)
 //
-// To be ported in Step 5 from the inline HTML/CSS in the existing worker files.
+// Step 7 will add the larger composites — full signup form, pricing admin
+// grid, photo uploader, manage UI — when their pages land in apps/web.
+//
+// Re-exports are extensionless: tsc with moduleResolution: "Bundler" accepts
+// both extensionless and ".js" forms, but Next.js's webpack pipeline (via
+// transpilePackages) does NOT resolve ".js" → ".tsx" for these files. The
+// extensionless form keeps both compilers happy.
 
-export {};
+export * from "./tokens";
+export * from "./BrandFontLinks";
+export * from "./PageShell";
+export * from "./BrandHeader";
+export * from "./PhoneInput";
+export * from "./BubbleBackground";
+export * from "./StatusBadge";
+export * from "./PricingCard";
+
+// Modals
+export * from "./modals/ModalShell";
+export * from "./modals/DenyModal";
+export * from "./modals/WarnModal";
+export * from "./modals/MonitorModal";
+export * from "./modals/SuccessModal";

@@ -1,0 +1,93 @@
+# Splash Damage Manager Worker.
+#
+# DEPLOY STRATEGY (Step 6 — B2 cutover-only):
+# Production routes intentionally NOT bound. Worker is deployed to its
+# *.workers.dev fallback URL until apps/web ships in Step 7. Largest port
+# of the four non-production workers; broken into chunks for review.
+#
+# Post-cutover route layout (uncomment when apps/web is ready):
+#
+#   PUBLIC APIs (no auth):
+#     splashcarwashes.info/claims-api/submit-claim   POST  customer claim form
+#     splashcarwashes.info/claims-api/photo/*        GET   serve R2 photo
+#
+#   AUTH-GATED APIs (checkToolAccess "claims"):
+#     splashcarwashes.info/manage/api/*              POST/GET — see route
+#                                                    table in src/index.ts
+#
+# HTML pages (/claims/{site}, /manage/, /manage/claim/{id}, /manage/login,
+# /manage/change-password) move to apps/web in Step 7. The /manage/login
+# and /manage/change-password handlers are RETIRED — the dashboard-worker's
+# /api/login and /api/forced-reset are the canonical SSO + reset flows.
+
+name = "splash-damage"
+main = "src/index.ts"
+compatibility_date = "2026-05-01"
+compatibility_flags = ["nodejs_compat"]
+
+workers_dev = true
+
+# Step 7 cutover routes (uncomment when apps/web is ready):
+# routes = [
+#   { pattern = "splashcarwashes.info/claims-api/submit-claim", zone_name = "splashcarwashes.info" },
+#   { pattern = "splashcarwashes.info/claims-api/photo/*",      zone_name = "splashcarwashes.info" },
+#   { pattern = "splashcarwashes.info/manage/api/*",            zone_name = "splashcarwashes.info" }
+# ]
+
+# Staging routes (Brief 16) — bind damage-worker to
+# staging.splashcarwashes.info so apps/web (also bound to staging) can
+# call /manage/api/* same-origin. Includes /claims-api/* (collapsed
+# wildcard covers both submit-claim and photo/* — simpler than the two
+# separate prod patterns; CF most-specific-match-wins semantics still
+# correctly route subpaths to this worker) AND /claims/* (per decision
+# 9: damage-worker owns the public customer claim form rendering).
+# Production routes above stay commented; staging is purely additive.
+routes = [
+  { pattern = "staging.splashcarwashes.info/manage/api/*", zone_name = "splashcarwashes.info" },
+  { pattern = "staging.splashcarwashes.info/claims-api/*", zone_name = "splashcarwashes.info" },
+  { pattern = "staging.splashcarwashes.info/claims/*",     zone_name = "splashcarwashes.info" }
+]
+
+# Bindings:
+# SUPABASE_URL          — string
+# SUPABASE_ANON_KEY     — secret
+# SUPABASE_SERVICE_KEY  — secret
+# DB                    — D1 database (claims, claim_photos, claim_activity, locations)
+# R2_BUCKET             — R2 bucket "splash-vehicle-claims"
+#                         (photos + submission JSON + failed-submission fallback)
+# IMAGES                — Cloudflare Images binding (HEIC→JPEG conversion;
+#                         optional — uploadClaimPhoto degrades to pass-through
+#                         when unbound)
+# POWER_AUTOMATE_URL    — secret (Power Automate webhook URL with embedded
+#                         signature; legacy/damagemanager.js:9 hardcoded
+#                         this — moved to a secret here. Set with
+#                         `wrangler secret put POWER_AUTOMATE_URL`. When
+#                         unbound, /claims-api/submit-claim still writes to
+#                         R2 + D1 but skips the SharePoint sync.)
+# INCIDENTS_WEBHOOK_URL — secret (fired after RM approves a quote — Incidents
+#                         desk receives the auto-generated Check Request PDF.
+#                         Set with `wrangler secret put INCIDENTS_WEBHOOK_URL`.
+#                         Fail-soft: when unbound, transition still succeeds;
+#                         the activity log notes the email-skipped outcome.)
+# AP_WEBHOOK_URL        — secret (fired after Incidents submits for payment —
+#                         AP desk receives the fully-signed Check Request PDF.
+#                         Set with `wrangler secret put AP_WEBHOOK_URL`.
+#                         Fail-soft: same semantics as INCIDENTS_WEBHOOK_URL.)
+#
+# OPERATOR PREREQUISITE: the Check Request AcroForm template MUST be uploaded
+# to R2 at key "templates/check-request.pdf" before any transition that
+# triggers PDF generation can succeed. The template's AcroForm field names
+# are referenced verbatim in apps/damage-worker/src/pdf.ts — do NOT rename
+# them in the template without coordinating a code change.
+
+[[d1_databases]]
+binding = "DB"
+database_name = "splash-damage-claims" 
+database_id   = "5cc2ad92-8069-4d0d-81f8-7d560822776a"   
+
+[[r2_buckets]]
+binding = "R2_BUCKET"
+bucket_name = "damagedocs"
+
+[images]
+binding = "IMAGES"

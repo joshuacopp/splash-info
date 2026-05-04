@@ -1,0 +1,48 @@
+# apps/web — Next.js app deployed to Cloudflare Workers via @opennextjs/cloudflare.
+#
+# Per migration plan Q1: NO route binding yet. Until Step 7 (page ports) is
+# done and we cut traffic over, the legacy workers continue to own /admin/*,
+# /signup/* (UI), /sysadmin/* (UI), etc. This worker is buildable + deployable
+# to its *.workers.dev URL only.
+
+name = "splash-web"
+main = ".open-next/worker.js"
+compatibility_date = "2026-05-01"
+compatibility_flags = ["nodejs_compat"]
+
+# Routes: intentionally unset for Step 4. Will be added in Step 7 when pages
+# are populated and we're ready to cut over from the legacy workers.
+# routes = [
+#   { pattern = "splashcarwashes.info/admin/*", zone_name = "splashcarwashes.info" },
+#   ...
+# ]
+
+# Staging routes (Brief 16) — apps/web is bound to a catch-all on
+# staging.splashcarwashes.info. CF's most-specific-match-wins routing
+# means the per-worker patterns (dashboard /api/*, signup /admin/api/*
+# /signup/* /q/* /join/*, performance /pertrack/*, sysadmin
+# /sysadmin/api/*, damage /manage/api/* /claims-api/* /claims/*) outrank
+# this catch-all automatically — apps/web only handles paths NOT bound
+# to a worker. The [assets] binding below keeps working unchanged on
+# the new domain (per-deploy, not per-route). NEXT_PUBLIC_*_WORKER_URL
+# env vars stay unset for staging deploys: server-side helpers fall
+# back to the request host (staging.splashcarwashes.info), and all
+# routes resolve through CF same-origin. Production routes stay
+# commented; staging is purely additive.
+#
+# NOTE: this `routes` key is at the top level — it MUST appear before
+# any `[table]` header (e.g. `[assets]`) or TOML will scope it into
+# that table.
+routes = [
+  { pattern = "staging.splashcarwashes.info/*", zone_name = "splashcarwashes.info" }
+]
+
+# OpenNext static asset binding (CSS/JS/public/).
+[assets]
+directory = ".open-next/assets"
+binding = "ASSETS"
+
+# Bindings (Supabase env). Apps/web reads pricing/locations server-side.
+# SUPABASE_URL          — string
+# SUPABASE_ANON_KEY     — secret
+# SUPABASE_SERVICE_KEY  — secret
