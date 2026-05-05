@@ -24,3 +24,6 @@
 - 2026-05-05 01:04:44 brief-022-recent-notes-card.md (success)
 - 2026-05-05 09:27:23 brief-023-customer-claim-form.md (success)
 - 2026-05-05 09:42:27 brief-024-sysadmin-add-location.md (success)
+- 2026-05-05 10:05:45 brief-025-claim-form-polish.md (success)
+- 2026-05-05 12:02:31 brief-026-sysadmin-update-package.md (success)
+- 2026-05-05 12:15:31 brief-027-sysadmin-update-location.md (success)

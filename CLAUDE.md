@@ -374,15 +374,38 @@ URL-based — service bindings don't apply to those.
 - **sysadmin** - Database user/table management. Separate worker
   (sysadmin-worker, `/sysadmin/api/*`). Used by super_admins. Per
   recent operator decision, sysadmin also houses direct
-  `pricing_simple` table editing (bypasses SQL for non-pricing-API
-  changes). Brief 24 landed Add Location — atomic bulk insert of N
-  `pricing_simple` rows for a brand-new location via Supabase REST
-  array POST; hardcodes `pricing = 'full'`. Briefs 25 (Update
-  Package) and 26 (Update Locations) are deferred but planned. A
-  manual cache-clear button is also planned (signup-worker caches
-  `pricing_simple_resolved` for 5 minutes; cross-worker invalidation
-  isn't wired yet, so newly added locations take up to 5 minutes to
-  surface on the customer signup form).
+  `pricing_simple` and `locations` table editing (bypasses SQL for
+  non-pricing-API changes). Brief 24 landed Add Location — atomic
+  bulk insert of N `pricing_simple` rows for a brand-new location via
+  Supabase REST array POST; hardcodes `pricing = 'full'`. Brief 26
+  landed Update Package — search-then-edit one `pricing_simple` row by
+  composite PK (`location_code`, `pkg`) via PATCH
+  `/sysadmin/api/pricing-simple/package`. Editable fields are
+  pricing-only: `pkg$`, `single`, `flash2`, `flash5`, `sort`, `pricing`
+  mode, `pkg` (rename), and `location_pretty`. The denormalized columns
+  (`am_email`, `rm_email`, `site_email`, `area_manager`,
+  `regional_manager`, `address`, `site`) are explicitly rejected with
+  400 because they're synced FROM `locations` INTO `pricing_simple` by
+  the `trg_sync_pricing_simple` trigger — direct edits here would be
+  silently reverted on the next locations-side update. Brief 27 landed
+  Update Location — search-then-edit one `locations` row (selected by
+  `id` or `site_number`) via PATCH `/sysadmin/api/locations`. This is
+  the ONLY supported way to change the denormalized
+  `area_manager`/`regional_manager`/`am_email`/`rm_email`/`site_email`
+  fields anywhere in the system, because the `trg_sync_pricing_simple`
+  trigger reverts direct pricing_simple edits and the
+  `trg_sync_user_permissions` trigger then propagates email-driven
+  permission grants/revocations into `user_permissions`. Editable
+  fields on the locations editor: `site`, `location` (postal address),
+  `area_manager`, `regional_manager`, `am_email`, `rm_email`,
+  `site_email`, `hrt_email` (no cascade), `rm_group` (no cascade);
+  read-only: `id`, `site_number`, `mla_location`, `created_at`,
+  `updated_at`. A manual cache-clear button is also planned
+  (signup-worker caches `pricing_simple_resolved` for 5 minutes;
+  cross-worker invalidation isn't wired yet, so newly added or edited
+  rows take up to 5 minutes to surface on the customer signup form —
+  this gap is now flagged in three brief outcomes; Brief 28 will close
+  it).
 - **inline mode** - signup-worker's default `SIGNATURE_MODE`. Renders
   the form HTML and POSTs straight to `maxpass_signups`.
 - **jotform mode** - signup-worker's alternative `SIGNATURE_MODE`. 302

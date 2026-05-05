@@ -7,27 +7,59 @@
 // and a pricing_simple bulk-insert added in Brief 24 (Add Location).
 //
 // Owned routes (Step 7 — production):
-//   POST /sysadmin/api/grant-tool       — grant a tool to a user
-//   POST /sysadmin/api/revoke-tool      — revoke a tool from a user
-//   POST /sysadmin/api/set-role         — set / clear role on user_permissions
-//   POST /sysadmin/api/reset-password   — admin-triggered password reset
-//                                         (FLIPS must_change_password = true
-//                                         per Josh's password-set policy —
-//                                         see @splash/auth/index.ts)
-//   POST /sysadmin/api/create-user      — invite + initial permissions row
-//                                         (must_change_password defaults TRUE
-//                                         on the new user_permissions row —
-//                                         policy default in
-//                                         createUserPermissionsRow)
-//   POST /sysadmin/api/pricing-simple/create-location
-//                                       — Brief 24. Insert N pricing_simple
-//                                         rows (one per package) for a brand-
-//                                         new location. Atomic via Supabase
-//                                         REST array POST (all rows or none).
-//                                         Hardcodes pricing = 'full'.
-//   GET  /sysadmin/api/users?q=...      — email-substring search backing
-//                                         the UserPicker typeahead (Brief 18).
-//                                         Empty q -> []. Limit 20.
+//   POST  /sysadmin/api/grant-tool       — grant a tool to a user
+//   POST  /sysadmin/api/revoke-tool      — revoke a tool from a user
+//   POST  /sysadmin/api/set-role         — set / clear role on user_permissions
+//   POST  /sysadmin/api/reset-password   — admin-triggered password reset
+//                                          (FLIPS must_change_password = true
+//                                          per Josh's password-set policy —
+//                                          see @splash/auth/index.ts)
+//   POST  /sysadmin/api/create-user      — invite + initial permissions row
+//                                          (must_change_password defaults TRUE
+//                                          on the new user_permissions row —
+//                                          policy default in
+//                                          createUserPermissionsRow)
+//   POST  /sysadmin/api/pricing-simple/create-location
+//                                        — Brief 24. Insert N pricing_simple
+//                                          rows (one per package) for a brand-
+//                                          new location. Atomic via Supabase
+//                                          REST array POST (all rows or none).
+//                                          Hardcodes pricing = 'full'.
+//   PATCH /sysadmin/api/pricing-simple/package
+//                                        — Brief 26. Update one pricing_simple
+//                                          row by composite PK
+//                                          (location_code, pkg). Editable
+//                                          fields only — denormalized columns
+//                                          (am_email/site/etc.) are rejected
+//                                          400 because the locations->
+//                                          pricing_simple sync trigger would
+//                                          revert any direct edit.
+//   PATCH /sysadmin/api/locations        — Brief 27. Update one locations row
+//                                          (selected by `id` or `site_number`).
+//                                          Editable fields are the denormalized
+//                                          ones (am_email/rm_email/site_email/
+//                                          area_manager/regional_manager/
+//                                          location/hrt_email/rm_group/site).
+//                                          Two DB triggers cascade outward:
+//                                          locations->pricing_simple sync, and
+//                                          pricing_simple->user_permissions.
+//                                          Editing locations is the ONLY
+//                                          supported way to change these
+//                                          fields anywhere in the system.
+//   GET   /sysadmin/api/users?q=...      — email-substring search backing
+//                                          the UserPicker typeahead (Brief 18).
+//                                          Empty q -> []. Limit 20.
+//   GET   /sysadmin/api/pricing-simple/search?q=...
+//                                        — Brief 26. ilike substring match
+//                                          across location_code,
+//                                          location_pretty, site. Returns up
+//                                          to 50 rows. Empty q -> [].
+//   GET   /sysadmin/api/locations/search?q=...
+//                                        — Brief 27. ilike substring match
+//                                          across site, location, area_manager,
+//                                          regional_manager (plus site_number
+//                                          .eq when q is numeric). Up to 50
+//                                          rows. Empty q -> [].
 //
 // AUTH GATE POSITION:
 //   ALL endpoints — single authenticate() + super_admin check at the top
@@ -73,7 +105,16 @@ const OWNED_POST_PATHS = new Set([
   "/sysadmin/api/pricing-simple/create-location"
 ]);
 
-const OWNED_GET_PATHS = new Set(["/sysadmin/api/users"]);
+const OWNED_PATCH_PATHS = new Set([
+  "/sysadmin/api/pricing-simple/package",
+  "/sysadmin/api/locations"
+]);
+
+const OWNED_GET_PATHS = new Set([
+  "/sysadmin/api/users",
+  "/sysadmin/api/pricing-simple/search",
+  "/sysadmin/api/locations/search"
+]);
 
 export default {
   async fetch(request: Request, env: Env, _ctx: ExecutionContext): Promise<Response> {
@@ -82,22 +123,26 @@ export default {
     const method = request.method;
 
     const isOwnedPost = OWNED_POST_PATHS.has(path);
+    const isOwnedPatch = OWNED_PATCH_PATHS.has(path);
     const isOwnedGet = OWNED_GET_PATHS.has(path);
-    if (!isOwnedPost && !isOwnedGet) {
+    if (!isOwnedPost && !isOwnedPatch && !isOwnedGet) {
       return new Response("Not found", { status: 404 });
     }
 
     if (isOwnedPost && method !== "POST") {
       return jsonError(405, "POST required");
     }
+    if (isOwnedPatch && method !== "PATCH") {
+      return jsonError(405, "PATCH required");
+    }
     if (isOwnedGet && method !== "GET") {
       return jsonError(405, "GET required");
     }
 
-    // CSRF defense-in-depth — POST endpoints only. Per Brief 11b's sweep,
-    // GET endpoints don't carry the gate (browsers omit Origin on
-    // same-origin GETs and the read is not state-changing).
-    if (method === "POST" && !isOriginAllowed(request)) {
+    // CSRF defense-in-depth — state-changing endpoints only (POST + PATCH).
+    // Per Brief 11b's sweep, GET endpoints don't carry the gate (browsers
+    // omit Origin on same-origin GETs and the read is not state-changing).
+    if ((method === "POST" || method === "PATCH") && !isOriginAllowed(request)) {
       return jsonError(403, "bad origin");
     }
 
@@ -111,6 +156,12 @@ export default {
       if (isOwnedGet) {
         if (path === "/sysadmin/api/users") {
           return await handleSearchUsers(env, url);
+        }
+        if (path === "/sysadmin/api/pricing-simple/search") {
+          return await handleSearchPricingSimple(env, url);
+        }
+        if (path === "/sysadmin/api/locations/search") {
+          return await handleSearchLocations(env, url);
         }
       }
 
@@ -134,6 +185,10 @@ export default {
           return await handleCreateUser(env, body, actor);
         case "/sysadmin/api/pricing-simple/create-location":
           return await handleCreateLocation(env, body, actor);
+        case "/sysadmin/api/pricing-simple/package":
+          return await handleUpdatePackage(env, body, actor);
+        case "/sysadmin/api/locations":
+          return await handleUpdateLocation(env, body, actor);
       }
     } catch (err) {
       console.error("sysadmin handler failed:", path, err);
@@ -634,6 +689,581 @@ async function handleSearchUsers(env: Env, url: URL): Promise<Response> {
   const sb = createServiceClient(env);
   const rows = await searchUsersByEmail(sb, q, 20);
   return json(rows);
+}
+
+/* ============================================================
+ * GET /sysadmin/api/pricing-simple/search?q=<substring>  (Brief 26)
+ *
+ * Substring typeahead backing apps/web's PackageSearchPicker on the
+ * "Update package" sysadmin card. ilike match against location_code,
+ * location_pretty, and site. Returns up to 50 rows (a single location
+ * has ~10 packages, so 50 covers ~5 locations of typeahead bandwidth).
+ *
+ * Empty / whitespace-only q returns [] (don't dump the full table).
+ * Sanitize against PostgREST or() separators — drop ',', '(', ')', '*',
+ * '%', '_' — same posture as searchUsersByEmail (Brief 18).
+ *
+ * Auth gate is super_admin (single gate at the top of fetch()). No
+ * isOriginAllowed gate per Brief 11b convention (browsers omit Origin
+ * on same-origin GETs and the read is not state-changing).
+ * ============================================================ */
+
+async function handleSearchPricingSimple(env: Env, url: URL): Promise<Response> {
+  const raw = (url.searchParams.get("q") ?? "").trim();
+  if (raw.length === 0) return json([]);
+  const escaped = raw.replace(/[%_,()*]/g, "");
+  if (escaped.length === 0) return json([]);
+  const needle = encodeURIComponent(`%${escaped}%`);
+
+  const restUrl =
+    `${env.SUPABASE_URL}/rest/v1/pricing_simple` +
+    `?or=(location_code.ilike.${needle},location_pretty.ilike.${needle},site.ilike.${needle})` +
+    `&order=location_code.asc,sort.asc,pkg.asc` +
+    `&limit=50`;
+
+  const resp = await fetch(restUrl, {
+    headers: {
+      apikey: env.SUPABASE_SERVICE_KEY,
+      Authorization: `Bearer ${env.SUPABASE_SERVICE_KEY}`
+    }
+  });
+  if (!resp.ok) {
+    const errText = await resp.text().catch(() => "");
+    return jsonError(500, `Search failed: ${resp.status} ${errText}`);
+  }
+  const rows = (await resp.json().catch(() => [])) as unknown[];
+  return json(rows);
+}
+
+/* ============================================================
+ * PATCH /sysadmin/api/pricing-simple/package  (Brief 26)
+ *
+ * Update one pricing_simple row identified by composite PK
+ * (location_code, pkg). Editable fields are limited to per-package
+ * pricing values (`pkg$`, `single`, `flash2`, `flash5`, `sort`),
+ * the pricing-mode column (`pricing`), the display name
+ * (`location_pretty`), and an optional `pkg_new` rename of the
+ * composite-PK pkg part.
+ *
+ * The denormalized columns (am_email, rm_email, site_email, area_manager,
+ * regional_manager, address, site) are REJECTED with 400 if present in
+ * the body — they're synced FROM locations INTO pricing_simple by the
+ * `trg_sync_pricing_simple` trigger, so any direct edit here would be
+ * silently reverted on the next locations-side update. Operators edit
+ * those via the Update Location editor (Brief 27).
+ *
+ * Why PATCH semantically: this is a partial update of one row; PATCH
+ * matches REST convention for partial updates and the Supabase REST
+ * call we issue downstream is also PATCH. The `OWNED_PATCH_PATHS`
+ * dispatch in the top-level fetch() routes the method.
+ * ============================================================ */
+
+const REJECTED_DENORM_FIELDS = [
+  "area_manager",
+  "regional_manager",
+  "am_email",
+  "rm_email",
+  "site_email",
+  "address"
+] as const;
+
+const VALID_PRICING_MODES: ReadonlySet<string> = new Set([
+  "full",
+  "same",
+  "flash5",
+  "flash2",
+  "special"
+]);
+
+interface PricingSimpleSearchRow {
+  location_code: string;
+  pkg: string;
+  [key: string]: unknown;
+}
+
+async function handleUpdatePackage(
+  env: Env,
+  body: Record<string, unknown>,
+  actor: { id: string; email: string }
+): Promise<Response> {
+  const locationCode = stringOrNull(body.location_code);
+  const pkg = stringOrNull(body.pkg);
+  if (!locationCode) return jsonError(400, "location_code is required");
+  if (!LOCATION_CODE_RE.test(locationCode)) {
+    return jsonError(
+      400,
+      "location_code must contain only lowercase letters, numbers, and underscores"
+    );
+  }
+  if (!pkg) return jsonError(400, "pkg is required");
+
+  // Reject any denormalized field. Edits to these get reverted by the
+  // locations-side sync trigger; surface the misuse loudly instead of
+  // silently dropping the field.
+  for (const field of REJECTED_DENORM_FIELDS) {
+    if (field in body) {
+      return jsonError(
+        400,
+        `${field} cannot be edited here — edit via Update Location (sync trigger reverts changes here).`
+      );
+    }
+  }
+
+  // Build the editable-fields PATCH payload. Only fields present in body
+  // are included; missing fields are left alone.
+  const patch: Record<string, unknown> = {};
+
+  if ("pkg$" in body) {
+    const v = nonNegativeNumber(body["pkg$"]);
+    if (v === null) return jsonError(400, "pkg$ must be a non-negative number");
+    patch["pkg$"] = v;
+  }
+  if ("single" in body) {
+    if (body.single === null || body.single === "") {
+      patch.single = null;
+    } else {
+      const v = nonNegativeNumber(body.single);
+      if (v === null) return jsonError(400, "single must be a non-negative number or null");
+      patch.single = v;
+    }
+  }
+  if ("flash2" in body) {
+    if (body.flash2 === null || body.flash2 === "") {
+      patch.flash2 = null;
+    } else {
+      const v = nonNegativeNumber(body.flash2);
+      if (v === null) return jsonError(400, "flash2 must be a non-negative number or null");
+      patch.flash2 = v;
+    }
+  }
+  if ("flash5" in body) {
+    if (body.flash5 === null || body.flash5 === "") {
+      patch.flash5 = null;
+    } else {
+      const v = nonNegativeNumber(body.flash5);
+      if (v === null) return jsonError(400, "flash5 must be a non-negative number or null");
+      patch.flash5 = v;
+    }
+  }
+  if ("sort" in body) {
+    if (body.sort === null || body.sort === "") {
+      patch.sort = null;
+    } else {
+      const sortNum = typeof body.sort === "number" ? body.sort : Number(body.sort);
+      if (!Number.isInteger(sortNum) || sortNum < 1) {
+        return jsonError(400, "sort must be a positive integer or null");
+      }
+      patch.sort = sortNum;
+    }
+  }
+  if ("pricing" in body) {
+    const mode = stringOrNull(body.pricing);
+    if (!mode || !VALID_PRICING_MODES.has(mode)) {
+      return jsonError(
+        400,
+        `pricing must be one of: ${[...VALID_PRICING_MODES].join(", ")}`
+      );
+    }
+    patch.pricing = mode;
+  }
+  if ("location_pretty" in body) {
+    const lp = stringOrNull(body.location_pretty);
+    if (!lp) return jsonError(400, "location_pretty cannot be empty");
+    patch.location_pretty = lp;
+  }
+
+  // Optional rename of the pkg composite-PK part. When provided and
+  // different from `pkg`, validate uniqueness of (location_code, pkg_new)
+  // before issuing the PATCH so the UI can render a friendly 409 instead
+  // of letting Supabase return its own constraint violation.
+  let pkgNew: string | null = null;
+  if ("pkg_new" in body) {
+    pkgNew = stringOrNull(body.pkg_new);
+    if (!pkgNew) return jsonError(400, "pkg_new cannot be empty");
+  }
+  const renaming = pkgNew !== null && pkgNew !== pkg;
+  if (renaming) {
+    patch.pkg = pkgNew;
+  }
+
+  if (Object.keys(patch).length === 0) {
+    return jsonError(400, "No editable fields supplied");
+  }
+
+  // Pre-check existence of the row identified by (location_code, pkg).
+  const existsResp = await fetch(
+    `${env.SUPABASE_URL}/rest/v1/pricing_simple` +
+      `?location_code=eq.${encodeURIComponent(locationCode)}` +
+      `&pkg=eq.${encodeURIComponent(pkg)}` +
+      `&select=*&limit=1`,
+    {
+      headers: {
+        apikey: env.SUPABASE_SERVICE_KEY,
+        Authorization: `Bearer ${env.SUPABASE_SERVICE_KEY}`
+      }
+    }
+  );
+  if (!existsResp.ok) {
+    const errText = await existsResp.text().catch(() => "");
+    return jsonError(500, `Pre-check failed: ${existsResp.status} ${errText}`);
+  }
+  const existingRows = (await existsResp.json().catch(() => [])) as PricingSimpleSearchRow[];
+  if (!Array.isArray(existingRows) || existingRows.length === 0) {
+    return jsonError(404, "Package not found");
+  }
+  const beforeRow = existingRows[0]!;
+
+  // If renaming the pkg, ensure the target name isn't already taken.
+  if (renaming) {
+    const collideResp = await fetch(
+      `${env.SUPABASE_URL}/rest/v1/pricing_simple` +
+        `?location_code=eq.${encodeURIComponent(locationCode)}` +
+        `&pkg=eq.${encodeURIComponent(pkgNew!)}` +
+        `&select=pkg&limit=1`,
+      {
+        headers: {
+          apikey: env.SUPABASE_SERVICE_KEY,
+          Authorization: `Bearer ${env.SUPABASE_SERVICE_KEY}`
+        }
+      }
+    );
+    if (!collideResp.ok) {
+      const errText = await collideResp.text().catch(() => "");
+      return jsonError(500, `Rename pre-check failed: ${collideResp.status} ${errText}`);
+    }
+    const collide = (await collideResp.json().catch(() => [])) as unknown[];
+    if (Array.isArray(collide) && collide.length > 0) {
+      return jsonError(409, "Target package name already exists");
+    }
+  }
+
+  // Issue the PATCH. Single atomic call covers any combination of
+  // editable-field changes plus the optional rename.
+  const patchResp = await fetch(
+    `${env.SUPABASE_URL}/rest/v1/pricing_simple` +
+      `?location_code=eq.${encodeURIComponent(locationCode)}` +
+      `&pkg=eq.${encodeURIComponent(pkg)}`,
+    {
+      method: "PATCH",
+      headers: {
+        apikey: env.SUPABASE_SERVICE_KEY,
+        Authorization: `Bearer ${env.SUPABASE_SERVICE_KEY}`,
+        "Content-Type": "application/json",
+        Prefer: "return=representation"
+      },
+      body: JSON.stringify(patch)
+    }
+  );
+  if (!patchResp.ok) {
+    const errText = await patchResp.text().catch(() => "");
+    return jsonError(500, `Supabase update failed: ${patchResp.status} ${errText}`);
+  }
+  const updatedRows = (await patchResp.json().catch(() => [])) as PricingSimpleSearchRow[];
+  const afterRow = Array.isArray(updatedRows) && updatedRows.length > 0 ? updatedRows[0]! : null;
+
+  // Audit log — capture before + after snapshots.
+  const sb = createServiceClient(env);
+  const finalPkg = renaming ? pkgNew! : pkg;
+  await logSysadminAudit(sb, {
+    actor,
+    action: "update_package",
+    target_type: "pricing_simple",
+    target_id: `${locationCode}/${finalPkg}`,
+    before: beforeRow,
+    after: afterRow
+  });
+
+  // TODO (cross-worker cache invalidation): see comment on
+  // handleCreateLocation. signup-worker caches pricing_simple_resolved
+  // for 5 minutes; package-edit changes won't surface on the customer
+  // signup form until that cache expires. Manual cache-clear button
+  // planned in a future brief.
+
+  return json({
+    ok: true,
+    location_code: locationCode,
+    pkg: finalPkg,
+    updated_at:
+      afterRow && typeof afterRow.updated_at === "string" ? afterRow.updated_at : null
+  });
+}
+
+/* ============================================================
+ * GET /sysadmin/api/locations/search?q=<substring>  (Brief 27)
+ *
+ * Substring typeahead backing apps/web's LocationsSearchPicker on the
+ * "Update location" sysadmin card. ilike match against site, location,
+ * area_manager, and regional_manager. When q is purely numeric, also
+ * adds a site_number.eq.{q} clause so operators can type a site number
+ * directly. Returns up to 50 rows.
+ *
+ * Empty / whitespace-only q returns [] (don't dump the full table).
+ * Sanitize against PostgREST or() separators — drop ',', '(', ')', '*',
+ * '%', '_' — same posture as handleSearchPricingSimple (Brief 26).
+ *
+ * Auth gate is super_admin (single gate at the top of fetch()). No
+ * isOriginAllowed gate per Brief 11b convention (browsers omit Origin
+ * on same-origin GETs and the read is not state-changing).
+ *
+ * The select uses select=* so the worker passes through the entire
+ * locations row to the picker — apps/web is the source of truth for
+ * which columns it actually consumes.
+ * ============================================================ */
+
+async function handleSearchLocations(env: Env, url: URL): Promise<Response> {
+  const raw = (url.searchParams.get("q") ?? "").trim();
+  if (raw.length === 0) return json([]);
+  const escaped = raw.replace(/[%_,()*]/g, "");
+  if (escaped.length === 0) return json([]);
+  const needle = encodeURIComponent(`%${escaped}%`);
+
+  const orClauses = [
+    `site.ilike.${needle}`,
+    `location.ilike.${needle}`,
+    `area_manager.ilike.${needle}`,
+    `regional_manager.ilike.${needle}`
+  ];
+  // If q is a plain integer, also match by exact site_number — ilike
+  // can't apply to integer columns so this needs its own arm.
+  if (/^\d+$/.test(escaped)) {
+    orClauses.push(`site_number.eq.${escaped}`);
+  }
+
+  const restUrl =
+    `${env.SUPABASE_URL}/rest/v1/locations` +
+    `?or=(${orClauses.join(",")})` +
+    `&order=site_number.asc` +
+    `&limit=50` +
+    `&select=*`;
+
+  const resp = await fetch(restUrl, {
+    headers: {
+      apikey: env.SUPABASE_SERVICE_KEY,
+      Authorization: `Bearer ${env.SUPABASE_SERVICE_KEY}`
+    }
+  });
+  if (!resp.ok) {
+    const errText = await resp.text().catch(() => "");
+    return jsonError(500, `Search failed: ${resp.status} ${errText}`);
+  }
+  const rows = (await resp.json().catch(() => [])) as unknown[];
+  return json(rows);
+}
+
+/* ============================================================
+ * PATCH /sysadmin/api/locations  (Brief 27)
+ *
+ * Update one row of the `locations` table identified by either `id` or
+ * `site_number` (exactly one). Editable fields are the denormalized
+ * columns the rest of the system consumes:
+ *   - site                (display name, e.g. "Binghamton")
+ *   - location            (postal address — cascades to
+ *                          pricing_simple.address via trigger)
+ *   - area_manager        (cascades to pricing_simple)
+ *   - regional_manager    (cascades to pricing_simple)
+ *   - am_email            (cascades to pricing_simple AND grants
+ *                          permission via trg_sync_user_permissions)
+ *   - rm_email            (cascades — same)
+ *   - site_email          (cascades — same)
+ *   - hrt_email           (locations-only; no cascade)
+ *   - rm_group            (locations-only; no cascade)
+ *
+ * Two DB triggers fire on a successful update:
+ *   1. trg_sync_pricing_simple ON locations AFTER UPDATE — copies the
+ *      denormalized fields into pricing_simple.
+ *   2. trg_sync_user_permissions ON pricing_simple AFTER UPDATE —
+ *      propagates email-based permissions into user_permissions.
+ *
+ * This editor is the ONLY supported way to change these denormalized
+ * fields. Brief 26's Update Package endpoint rejects them at the
+ * pricing_simple level for the same reason.
+ *
+ * Selector validation: exactly one of `id` or `site_number` must be
+ * present. Both/neither -> 400.
+ *
+ * Audit fields (`created_at`, `updated_at`) and PK fields not used as
+ * selector are rejected with 400 if present in the body.
+ * ============================================================ */
+
+const LOCATION_EDITABLE_FIELDS = [
+  "site",
+  "location",
+  "area_manager",
+  "regional_manager",
+  "am_email",
+  "rm_email",
+  "site_email",
+  "hrt_email",
+  "rm_group"
+] as const;
+
+const LOCATION_EMAIL_FIELDS: ReadonlySet<string> = new Set([
+  "am_email",
+  "rm_email",
+  "site_email",
+  "hrt_email"
+]);
+
+const LOCATION_REJECTED_FIELDS = ["created_at", "updated_at"] as const;
+
+interface LocationsRow {
+  id?: number | string;
+  site_number?: number | null;
+  [key: string]: unknown;
+}
+
+async function handleUpdateLocation(
+  env: Env,
+  body: Record<string, unknown>,
+  actor: { id: string; email: string }
+): Promise<Response> {
+  // Selector — exactly one of `id` or `site_number`.
+  const hasId = "id" in body && body.id !== null && body.id !== "";
+  const hasSiteNumber =
+    "site_number" in body && body.site_number !== null && body.site_number !== "";
+  if (hasId === hasSiteNumber) {
+    return jsonError(
+      400,
+      "Selector required: exactly one of `id` or `site_number` must be present"
+    );
+  }
+
+  let selectorKind: "id" | "site_number";
+  let selectorValue: string;
+  if (hasId) {
+    selectorKind = "id";
+    const idNum =
+      typeof body.id === "number" ? body.id : Number(String(body.id).trim());
+    if (!Number.isFinite(idNum)) {
+      return jsonError(400, "`id` must be a number");
+    }
+    selectorValue = String(idNum);
+  } else {
+    selectorKind = "site_number";
+    const snNum =
+      typeof body.site_number === "number"
+        ? body.site_number
+        : Number(String(body.site_number).trim());
+    if (!Number.isInteger(snNum)) {
+      return jsonError(400, "`site_number` must be an integer");
+    }
+    selectorValue = String(snNum);
+  }
+
+  // Reject auto-managed audit columns if present.
+  for (const field of LOCATION_REJECTED_FIELDS) {
+    if (field in body) {
+      return jsonError(400, `${field} cannot be edited (auto-managed by the database)`);
+    }
+  }
+
+  // Build the editable-fields PATCH payload. Only fields explicitly
+  // present in body are included; missing fields are left alone.
+  const patch: Record<string, unknown> = {};
+
+  for (const field of LOCATION_EDITABLE_FIELDS) {
+    if (!(field in body)) continue;
+    const raw = body[field];
+    // Trim text fields. Empty after trim coerces to null (clears the field).
+    let val: string | null;
+    if (raw === null) {
+      val = null;
+    } else if (typeof raw === "string") {
+      const t = raw.trim();
+      val = t.length > 0 ? t : null;
+    } else {
+      return jsonError(400, `${field} must be a string or null`);
+    }
+    if (val !== null && LOCATION_EMAIL_FIELDS.has(field) && !EMAIL_RE.test(val)) {
+      return jsonError(400, `${field} is not a valid email address`);
+    }
+    patch[field] = val;
+  }
+
+  if (Object.keys(patch).length === 0) {
+    return jsonError(400, "No editable fields supplied");
+  }
+
+  // Pre-check existence + capture the before snapshot for the audit log.
+  const selectorParam = `${selectorKind}=eq.${encodeURIComponent(selectorValue)}`;
+  const existsResp = await fetch(
+    `${env.SUPABASE_URL}/rest/v1/locations?${selectorParam}&select=*&limit=1`,
+    {
+      headers: {
+        apikey: env.SUPABASE_SERVICE_KEY,
+        Authorization: `Bearer ${env.SUPABASE_SERVICE_KEY}`
+      }
+    }
+  );
+  if (!existsResp.ok) {
+    const errText = await existsResp.text().catch(() => "");
+    return jsonError(500, `Pre-check failed: ${existsResp.status} ${errText}`);
+  }
+  const existingRows = (await existsResp.json().catch(() => [])) as LocationsRow[];
+  if (!Array.isArray(existingRows) || existingRows.length === 0) {
+    return jsonError(404, "Location not found");
+  }
+  const beforeRow = existingRows[0]!;
+
+  // Issue the PATCH.
+  const patchResp = await fetch(
+    `${env.SUPABASE_URL}/rest/v1/locations?${selectorParam}`,
+    {
+      method: "PATCH",
+      headers: {
+        apikey: env.SUPABASE_SERVICE_KEY,
+        Authorization: `Bearer ${env.SUPABASE_SERVICE_KEY}`,
+        "Content-Type": "application/json",
+        Prefer: "return=representation"
+      },
+      body: JSON.stringify(patch)
+    }
+  );
+  if (!patchResp.ok) {
+    const errText = await patchResp.text().catch(() => "");
+    return jsonError(500, `Supabase update failed: ${patchResp.status} ${errText}`);
+  }
+  const updatedRows = (await patchResp.json().catch(() => [])) as LocationsRow[];
+  const afterRow =
+    Array.isArray(updatedRows) && updatedRows.length > 0 ? updatedRows[0]! : null;
+
+  // Audit log — capture before + after snapshots. target_id favours the id
+  // column (the actual PK) when available, falling back to site_number.
+  const sb = createServiceClient(env);
+  const auditId =
+    beforeRow.id !== undefined && beforeRow.id !== null
+      ? String(beforeRow.id)
+      : selectorValue;
+  await logSysadminAudit(sb, {
+    actor,
+    action: "update_location",
+    target_type: "locations",
+    target_id: auditId,
+    before: beforeRow,
+    after: afterRow
+  });
+
+  // TODO (cross-worker cache invalidation): see comments on
+  // handleCreateLocation / handleUpdatePackage. signup-worker caches
+  // pricing_simple_resolved for 5 minutes; a locations-side email or
+  // manager edit cascades into pricing_simple via trg_sync_pricing_simple
+  // but the cache won't bust for up to 5 minutes. Cross-worker
+  // invalidation is still not wired — flagged in BRIEFS/INDEX.md as a
+  // future brief. (Third confirmation that this gap needs its own brief.)
+
+  const updatedAt =
+    afterRow && typeof afterRow.updated_at === "string"
+      ? (afterRow.updated_at as string)
+      : null;
+
+  return json({
+    ok: true,
+    id: beforeRow.id ?? null,
+    site_number: beforeRow.site_number ?? null,
+    updated_at: updatedAt,
+    cascade_note:
+      "pricing_simple + user_permissions updated by triggers"
+  });
 }
 
 /* ============================================================

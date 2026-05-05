@@ -1,4 +1,4 @@
-// Sysadmin UI (/admin/sysadmin). Briefs 7 + 18 + 19 + 24.
+// Sysadmin UI (/admin/sysadmin). Briefs 7 + 18 + 19 + 24 + 26 + 27.
 //
 // Server component. Top-of-page super_admin gate via getMe(); the page never
 // renders the operation cards for non-super_admins (worker re-validates on
@@ -6,13 +6,16 @@
 //
 // Layout (top → bottom):
 //   1. Page banner (eyebrow + title + helper text).
-//   2. Six collapsed <details> cards, one per worker endpoint:
+//   2. Eight collapsed <details> cards, one per worker endpoint:
 //        - Create user
 //        - Set role
 //        - Grant tool
 //        - Revoke tool
 //        - Reset password
 //        - Add location (Brief 24 — pricing_simple bulk insert)
+//        - Update package (Brief 26 — pricing_simple per-row edit)
+//        - Update location (Brief 27 — locations row edit; cascades via
+//                           triggers to pricing_simple + user_permissions)
 //
 // Brief 19 — pattern flip:
 //   The page-level ?action_error / ?action_success banners are gone. Each
@@ -33,6 +36,8 @@ import { getMe } from "../../_lib/me";
 import { ActionForm } from "../_components/ActionForm";
 import { AddLocationCard } from "./_components/AddLocationCard";
 import { NoAccessCard } from "./_components/NoAccessCard";
+import { UpdateLocationCard } from "./_components/UpdateLocationCard";
+import { UpdatePackageCard } from "./_components/UpdatePackageCard";
 import { UserPicker } from "./_components/UserPicker";
 import {
   createUserAction,
@@ -63,6 +68,8 @@ export default async function SysadminPage() {
         <RevokeToolCard />
         <ResetPasswordCard />
         <AddLocationOperationCard />
+        <UpdatePackageOperationCard />
+        <UpdateLocationOperationCard />
       </div>
     </section>
   );
@@ -79,6 +86,36 @@ function AddLocationOperationCard() {
       description="Insert pricing_simple rows for a brand-new location. Atomic — all rows or none. Defaults to pricing = 'full'."
     >
       <AddLocationCard />
+    </OperationCard>
+  );
+}
+
+/* ============================================================
+ * 7. Update package (Brief 26)
+ * ============================================================ */
+
+function UpdatePackageOperationCard() {
+  return (
+    <OperationCard
+      title="Update package"
+      description="Search a pricing_simple row by location/code/site, then edit per-package fields (pkg$, single, flash2/5, sort, pkg name, pricing mode)."
+    >
+      <UpdatePackageCard />
+    </OperationCard>
+  );
+}
+
+/* ============================================================
+ * 8. Update location (Brief 27)
+ * ============================================================ */
+
+function UpdateLocationOperationCard() {
+  return (
+    <OperationCard
+      title="Update location"
+      description="Search a locations row by site #, name, address, or manager, then edit denormalized fields (manager names + emails, address, hrt_email, rm_group, site). DB triggers cascade into pricing_simple + user_permissions."
+    >
+      <UpdateLocationCard />
     </OperationCard>
   );
 }

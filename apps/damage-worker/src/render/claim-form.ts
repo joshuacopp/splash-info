@@ -4,18 +4,14 @@
 //   GET /claims/{unknown-slug}  → renderClaimNotFound
 //
 // Source: ported (simplified) from legacy/damagemanager.js renderDamageForm
-// at line 567. The legacy form was a two-section progressive form with
-// a staff-password gate, animated bubbles, and a JS-driven multi-step
-// navigation. This port collapses to a single-page form to keep the
-// surface tractable; the visual language (splash-blue gradient header,
-// white card on light-blue background, splash-blue accents) is preserved.
+// at line 567. Brief 23 collapsed the legacy two-section form into a single
+// page; Brief 25 restores the two-step PIN-gated reveal, the multi-photo
+// "add another?" widget, and the JS-driven submit + outcome card.
 //
-// Field-name discipline: every <input name="..."> here MUST match what
-// handleClaimSubmission reads in src/index.ts (around line 1032). The
-// brief listed slightly different names (customerMailingAddress,
-// damageDescription, preexistingDamage, submittedBy) but the worker
-// reads the legacy names verbatim (mailingAddress, issueDescription,
-// preExistingDamage, employeeName); worker is source of truth.
+// Field-name discipline: every `<input name="..."/>` here MUST match what
+// handleClaimSubmission reads in src/index.ts. The worker reads the legacy
+// names verbatim (mailingAddress, issueDescription, preExistingDamage,
+// employeeName); worker is source of truth.
 
 import { ASSETS } from "@splash/storage-r2";
 
@@ -25,25 +21,34 @@ const EQUIPMENT_CHOICES = [
   "Conveyor",
   "Dryer",
   "Wheel Blaster",
-  "Other",
-  "N/A"
+  "Other"
 ] as const;
 
-const DETERMINATION_CHOICES = [
+interface DeterminationChoice {
+  value: string;
+  label: string;
+  hint: string;
+  managersOnly: boolean;
+}
+
+const DETERMINATION_CHOICES: readonly DeterminationChoice[] = [
   {
     value: "no_responsibility",
     label: "No Responsibility",
-    hint: "Damage is pre-existing or not caused by the wash"
+    hint: "Damage is pre-existing or not caused by the wash",
+    managersOnly: false
   },
   {
     value: "requires_gm_review",
     label: "Requires GM Review",
-    hint: "Needs General Manager evaluation"
+    hint: "Needs General Manager evaluation",
+    managersOnly: false
   },
   {
     value: "customer_get_quotes",
     label: "Requested Customer Get Quote(s)",
-    hint: "Customer will obtain repair estimates (managers only)"
+    hint: "Customer will obtain repair estimates",
+    managersOnly: true
   }
 ] as const;
 
@@ -84,6 +89,7 @@ const SHARED_STYLES = `
   .header p { margin: 0; font-size: 14px; opacity: 0.9; }
   .section { padding: 22px 22px; border-top: 1px solid #e2e8f0; }
   .section:first-of-type { border-top: none; }
+  .section[hidden] { display: none; }
   .section-title {
     font-size: 17px; font-weight: 700; color: #1e3a8a;
     margin: 0 0 4px;
@@ -95,7 +101,7 @@ const SHARED_STYLES = `
   label { display: block; font-weight: 600; color: #334155; margin-bottom: 6px; font-size: 14px; }
   .required { color: #dc2626; }
   .hint { font-weight: 400; color: #64748b; font-size: 12px; display: block; margin-top: 2px; }
-  input[type="text"], input[type="tel"], input[type="email"], input[type="number"], select, textarea {
+  input[type="text"], input[type="tel"], input[type="email"], input[type="number"], input[type="password"], select, textarea {
     width: 100%; padding: 12px 14px; font-size: 16px;
     border: 2px solid #e2e8f0; border-radius: 8px;
     transition: border-color 0.2s ease, box-shadow 0.2s ease;
@@ -106,7 +112,6 @@ const SHARED_STYLES = `
     box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.15);
   }
   textarea { min-height: 100px; resize: vertical; }
-  .file-input { display: block; width: 100%; font-size: 14px; }
   .radio-group { display: flex; flex-direction: column; gap: 10px; }
   .radio-option {
     display: flex; align-items: flex-start; gap: 10px;
@@ -117,16 +122,36 @@ const SHARED_STYLES = `
   .radio-option input { margin-top: 2px; width: 18px; height: 18px; cursor: pointer; flex-shrink: 0; }
   .radio-option .radio-label { font-size: 15px; color: #334155; font-weight: 600; }
   .radio-option .radio-hint { font-size: 12px; color: #64748b; margin-top: 2px; }
-  .toggle-row {
-    display: flex; align-items: center; gap: 10px; padding: 10px 14px;
-    background: #f8fafc; border: 2px solid #e2e8f0; border-radius: 8px;
+  .pill {
+    display: inline-block; border-radius: 9999px;
+    padding: 2px 10px; font-size: 0.7rem; font-weight: 700;
+    text-transform: uppercase; letter-spacing: 0.05em;
+    margin-left: 8px; vertical-align: middle;
   }
-  .toggle-row input { width: 18px; height: 18px; cursor: pointer; }
-  .toggle-row label { margin: 0; font-weight: 500; color: #334155; }
+  .pill-warn { background: #f59e0b; color: white; }
+
+  /* Equipment yes/no segmented toggle */
+  .seg-toggle { display: inline-flex; border: 2px solid #e2e8f0; border-radius: 999px; overflow: hidden; }
+  .seg-toggle label {
+    margin: 0; padding: 8px 18px; font-size: 14px; font-weight: 600;
+    color: #475569; cursor: pointer; background: white;
+  }
+  .seg-toggle input { display: none; }
+  .seg-toggle input:checked + label { background: #1e3a8a; color: white; }
+
+  /* Continue / submit / secondary buttons */
   .submit-row {
     padding: 22px; border-top: 1px solid #e2e8f0;
     background: #f8fafc;
   }
+  .btn-primary {
+    display: inline-block; background: linear-gradient(135deg, #1e3a8a 0%, #3b82f6 100%);
+    color: white; font-weight: 700; font-size: 15px;
+    padding: 12px 18px; border: none; border-radius: 10px;
+    cursor: pointer; text-transform: uppercase; letter-spacing: 0.4px;
+  }
+  .btn-primary:hover { filter: brightness(1.05); }
+  .btn-primary:disabled { opacity: 0.55; cursor: not-allowed; }
   .btn-submit {
     display: block; width: 100%;
     background: linear-gradient(135deg, #059669 0%, #10b981 100%);
@@ -135,11 +160,23 @@ const SHARED_STYLES = `
     cursor: pointer; text-transform: uppercase; letter-spacing: 0.4px;
   }
   .btn-submit:hover { filter: brightness(1.03); }
+  .btn-submit:disabled { opacity: 0.55; cursor: not-allowed; }
+  .btn-secondary {
+    display: inline-block; background: white;
+    color: #1e3a8a; font-weight: 700; font-size: 14px;
+    padding: 10px 16px; border: 2px solid #1e3a8a; border-radius: 10px;
+    cursor: pointer;
+  }
+  .continue-row {
+    margin-top: 18px; padding-top: 16px; border-top: 1px dashed #e2e8f0;
+    text-align: right;
+  }
   .banner-error {
-    margin: 0 0 18px; padding: 12px 14px;
+    margin: 0 18px 18px; padding: 12px 14px;
     background: #fef2f2; border: 1px solid #fecaca;
     border-radius: 8px; color: #991b1b; font-size: 14px;
   }
+  .banner-error[hidden] { display: none; }
   .staff-warning {
     margin: 0 0 14px; padding: 10px 14px;
     background: #fef3c7; border: 1px solid #fbbf24;
@@ -149,10 +186,79 @@ const SHARED_STYLES = `
     text-align: center; font-size: 12px; color: #475569;
     margin-top: 16px;
   }
-`;
 
-const PAGE_STYLES = `
-  ${SHARED_STYLES}
+  /* Photo widget */
+  .photo-section { margin-bottom: 18px; }
+  .photo-thumbs {
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+    gap: 10px; margin: 8px 0;
+  }
+  .photo-thumb {
+    position: relative; border: 2px solid #e2e8f0; border-radius: 8px;
+    overflow: hidden; background: #f8fafc;
+  }
+  .photo-thumb img {
+    display: block; width: 100%; height: 110px; object-fit: cover;
+  }
+  .photo-thumb .photo-remove {
+    display: block; text-align: center; padding: 6px 4px;
+    font-size: 12px; font-weight: 600; color: #991b1b;
+    background: #fef2f2; text-decoration: none; cursor: pointer;
+  }
+  .photo-thumb .photo-remove:hover { background: #fecaca; }
+  .btn-add-photo {
+    display: inline-block; background: white; color: #1e3a8a;
+    font-weight: 700; font-size: 14px; padding: 10px 16px;
+    border: 2px dashed #1e3a8a; border-radius: 8px; cursor: pointer;
+  }
+  .btn-add-photo:hover { background: #eff6ff; }
+
+  /* PIN modal */
+  .pin-overlay {
+    position: fixed; inset: 0; background: rgba(15, 23, 42, 0.55);
+    display: flex; align-items: center; justify-content: center;
+    z-index: 100; padding: 16px;
+  }
+  .pin-overlay[hidden] { display: none; }
+  .pin-card {
+    background: white; border-radius: 14px; max-width: 380px; width: 100%;
+    padding: 22px; box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+  }
+  .pin-card h3 { margin: 0 0 6px; color: #1e3a8a; font-size: 18px; }
+  .pin-card p { margin: 0 0 14px; color: #475569; font-size: 14px; }
+  .pin-card .pin-error {
+    margin: 0 0 10px; padding: 8px 10px; background: #fef2f2;
+    border: 1px solid #fecaca; border-radius: 6px; color: #991b1b;
+    font-size: 13px; font-weight: 600;
+  }
+  .pin-card .pin-error[hidden] { display: none; }
+  .pin-card .pin-actions {
+    display: flex; gap: 10px; justify-content: flex-end; margin-top: 14px;
+  }
+
+  /* Submit overlay (in-flight) */
+  .submitting-overlay {
+    position: fixed; inset: 0; background: rgba(255, 255, 255, 0.7);
+    display: flex; align-items: center; justify-content: center;
+    z-index: 90; font-weight: 700; color: #1e3a8a; font-size: 16px;
+  }
+  .submitting-overlay[hidden] { display: none; }
+
+  /* Outcome card */
+  .outcome-card { padding: 36px 28px; text-align: center; }
+  .outcome-card[hidden] { display: none; }
+  .outcome-card .check-mark { font-size: 64px; color: #059669; line-height: 1; margin-bottom: 12px; }
+  .outcome-card h1 { margin: 0 0 6px; color: #059669; font-size: 26px; font-weight: 700; }
+  .outcome-card p { margin: 0 0 8px; color: #475569; font-size: 15px; }
+  .outcome-card .claim-id-line {
+    margin: 14px 0; color: #1e3a8a; font-size: 16px;
+  }
+  .outcome-card .claim-id-line strong {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 18px; letter-spacing: 0.05em;
+    background: #eff6ff; padding: 4px 10px; border-radius: 6px;
+    display: inline-block; margin-left: 6px;
+  }
 `;
 
 interface RenderClaimFormArgs {
@@ -167,18 +273,20 @@ export function renderClaimForm(args: RenderClaimFormArgs): string {
     (eq) => `<option value="${escHtml(eq)}">${escHtml(eq)}</option>`
   ).join("");
   const determinationOpts = DETERMINATION_CHOICES.map(
-    (d, i) => `
+    (d) => `
       <label class="radio-option">
-        <input type="radio" name="determination" value="${escHtml(d.value)}" required ${i === 0 ? "" : ""}>
+        <input type="radio" name="determination" value="${escHtml(d.value)}" required>
         <div>
-          <div class="radio-label">${escHtml(d.label)}</div>
+          <div class="radio-label">${escHtml(d.label)}${
+            d.managersOnly ? ' <span class="pill pill-warn">Managers only</span>' : ""
+          }</div>
           <div class="radio-hint">${escHtml(d.hint)}</div>
         </div>
       </label>`
   ).join("");
 
   const errorBanner = errorMessage
-    ? `<div class="banner-error" role="alert">${escHtml(errorMessage)}</div>`
+    ? `<div class="banner-error" role="alert" id="initialErrorBanner">${escHtml(errorMessage)}</div>`
     : "";
 
   return `<!DOCTYPE html>
@@ -188,10 +296,10 @@ export function renderClaimForm(args: RenderClaimFormArgs): string {
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <link rel="icon" type="image/png" href="${escHtml(ASSETS.favicon)}">
   <title>Vehicle Issue Report — ${escHtml(locationPretty)}</title>
-  <style>${PAGE_STYLES}</style>
+  <style>${SHARED_STYLES}</style>
 </head>
 <body>
-  <div class="page">
+  <div class="page" id="formPage">
     <div class="card">
       <div class="header">
         <img src="${escHtml(ASSETS.logoWhite)}" alt="Splash Car Wash">
@@ -199,13 +307,15 @@ export function renderClaimForm(args: RenderClaimFormArgs): string {
         <p>Vehicle Issue Report</p>
       </div>
 
-      <form action="/claims-api/submit-claim" method="POST" enctype="multipart/form-data">
+      <form id="claimForm" action="/claims-api/submit-claim" method="POST" enctype="multipart/form-data" novalidate>
         ${errorBanner}
+        <div class="banner-error" role="alert" id="submitError" hidden></div>
+
         <input type="hidden" name="location" value="${escHtml(locationCode)}">
         <input type="hidden" name="locationPretty" value="${escHtml(locationPretty)}">
         <input type="hidden" name="equipmentMalfunction" id="equipmentMalfunctionHidden" value="false">
 
-        <div class="section">
+        <div class="section" id="customerSection">
           <h2 class="section-title">1. Customer Information</h2>
           <p class="section-sub">Please provide your contact and vehicle details.</p>
 
@@ -239,8 +349,8 @@ export function renderClaimForm(args: RenderClaimFormArgs): string {
               <input type="text" id="licensePlate" name="licensePlate" style="text-transform: uppercase;">
             </div>
             <div class="form-group">
-              <label for="vehicleYear">Vehicle Year</label>
-              <input type="number" id="vehicleYear" name="vehicleYear" min="1900" max="2030">
+              <label for="vehicleYear">Vehicle Year <span class="required">*</span></label>
+              <input type="number" id="vehicleYear" name="vehicleYear" required min="1900" max="2030">
             </div>
           </div>
 
@@ -266,9 +376,13 @@ export function renderClaimForm(args: RenderClaimFormArgs): string {
             </label>
             <textarea id="issueDescription" name="issueDescription" required placeholder="Please describe the issue you experienced..."></textarea>
           </div>
+
+          <div class="continue-row">
+            <button type="button" class="btn-primary" id="btnContinue">Continue to staff assessment →</button>
+          </div>
         </div>
 
-        <div class="section">
+        <div class="section" id="employeeSection" hidden>
           <h2 class="section-title">2. Staff Assessment</h2>
           <p class="section-sub">For Splash employees only.</p>
           <div class="staff-warning">⚠️ This section must be completed by a Splash employee.</div>
@@ -276,7 +390,7 @@ export function renderClaimForm(args: RenderClaimFormArgs): string {
           <div class="form-row">
             <div class="form-group">
               <label for="employeeName">Employee Name <span class="required">*</span></label>
-              <input type="text" id="employeeName" name="employeeName" required>
+              <input type="text" id="employeeName" name="employeeName">
             </div>
             <div class="form-group">
               <label for="membershipNumber">Membership / Barcode
@@ -286,34 +400,42 @@ export function renderClaimForm(args: RenderClaimFormArgs): string {
             </div>
           </div>
 
-          <div class="form-group">
-            <label for="fourCornersPhotos">Four-Corner / Full-Vehicle Photos <span class="required">*</span>
+          <!-- Photo widget: four corners (multi) -->
+          <div class="photo-section" data-photo-section data-field="fourCornersPhotos" data-multi="true" data-required="true">
+            <label>Four-Corner / Full-Vehicle Photos <span class="required">*</span>
               <span class="hint">Photos of all four corners showing overall vehicle condition</span>
             </label>
-            <input class="file-input" type="file" id="fourCornersPhotos" name="fourCornersPhotos"
-              accept="image/*,image/heic,image/heif" multiple capture="environment" required>
+            <div class="photo-thumbs" data-photo-thumbs></div>
+            <input type="file" accept="image/*" hidden data-photo-input>
+            <button type="button" class="btn-add-photo" data-add-photo>+ Add photo</button>
           </div>
 
-          <div class="form-group">
-            <label for="vinPhoto">VIN Photo <span class="required">*</span>
+          <!-- Photo widget: VIN (single) -->
+          <div class="photo-section" data-photo-section data-field="vinPhoto" data-multi="false" data-required="true">
+            <label>VIN Photo <span class="required">*</span>
               <span class="hint">Usually on driver's side dashboard or door jamb</span>
             </label>
-            <input class="file-input" type="file" id="vinPhoto" name="vinPhoto"
-              accept="image/*,image/heic,image/heif" capture="environment" required>
+            <div class="photo-thumbs" data-photo-thumbs></div>
+            <input type="file" accept="image/*" hidden data-photo-input>
+            <button type="button" class="btn-add-photo" data-add-photo>+ Add photo</button>
           </div>
 
-          <div class="form-group">
-            <label for="damagePhotos">Damage Photos <span class="required">*</span>
+          <!-- Photo widget: damage (multi) -->
+          <div class="photo-section" data-photo-section data-field="damagePhotos" data-multi="true" data-required="true">
+            <label>Damage Photos <span class="required">*</span>
               <span class="hint">Close-up photos of all damage areas (one or more)</span>
             </label>
-            <input class="file-input" type="file" id="damagePhotos" name="damagePhotos"
-              accept="image/*,image/heic,image/heif" multiple capture="environment" required>
+            <div class="photo-thumbs" data-photo-thumbs></div>
+            <input type="file" accept="image/*" hidden data-photo-input>
+            <button type="button" class="btn-add-photo" data-add-photo>+ Add photo</button>
           </div>
 
-          <div class="form-group">
-            <label for="platePhoto">License Plate Photo <span class="required">*</span></label>
-            <input class="file-input" type="file" id="platePhoto" name="platePhoto"
-              accept="image/*,image/heic,image/heif" capture="environment" required>
+          <!-- Photo widget: license plate (single) -->
+          <div class="photo-section" data-photo-section data-field="platePhoto" data-multi="false" data-required="true">
+            <label>License Plate Photo <span class="required">*</span></label>
+            <div class="photo-thumbs" data-photo-thumbs></div>
+            <input type="file" accept="image/*" hidden data-photo-input>
+            <button type="button" class="btn-add-photo" data-add-photo>+ Add photo</button>
           </div>
 
           <div class="form-group">
@@ -323,18 +445,27 @@ export function renderClaimForm(args: RenderClaimFormArgs): string {
             <textarea id="preExistingDamage" name="preExistingDamage" placeholder="e.g., Scratch on rear bumper, dent on driver door..."></textarea>
           </div>
 
+          <!-- Equipment toggle (Brief 25): defaults to No; flipping to Yes
+               reveals the dropdown. equipmentInvolved submits as empty string
+               when No, so the worker derives equipment_related = 0. -->
           <div class="form-group">
-            <label for="equipmentInvolved">Equipment Involved <span class="required">*</span></label>
-            <select id="equipmentInvolved" name="equipmentInvolved" required>
-              <option value="">Select equipment...</option>
-              ${equipmentOpts}
-            </select>
-          </div>
-
-          <div class="form-group">
-            <div class="toggle-row">
-              <input type="checkbox" id="equipmentMalfunctionToggle">
-              <label for="equipmentMalfunctionToggle">Was there an equipment malfunction?</label>
+            <label>Was the damage equipment related?</label>
+            <div class="seg-toggle" id="equipmentToggle">
+              <input type="radio" name="__equipmentRelated" value="no" id="eqNo" checked>
+              <label for="eqNo">No</label>
+              <input type="radio" name="__equipmentRelated" value="yes" id="eqYes">
+              <label for="eqYes">Yes</label>
+            </div>
+            <div id="equipmentDetails" hidden style="margin-top: 12px;">
+              <label for="equipmentInvolved">Equipment Involved <span class="required">*</span></label>
+              <select id="equipmentInvolved" name="equipmentInvolved">
+                <option value="">Select equipment...</option>
+                ${equipmentOpts}
+              </select>
+              <div style="margin-top: 10px; display: flex; align-items: center; gap: 10px;">
+                <input type="checkbox" id="equipmentMalfunctionToggle" style="width: 18px; height: 18px; cursor: pointer;">
+                <label for="equipmentMalfunctionToggle" style="margin: 0; font-weight: 500; color: #334155; cursor: pointer;">Was there an equipment malfunction?</label>
+              </div>
             </div>
           </div>
 
@@ -360,30 +491,335 @@ export function renderClaimForm(args: RenderClaimFormArgs): string {
           </div>
         </div>
 
-        <div class="submit-row">
-          <button type="submit" class="btn-submit">Submit claim</button>
+        <div class="submit-row" id="submitRow" hidden>
+          <button type="submit" class="btn-submit" id="submitBtn">Submit claim</button>
         </div>
       </form>
     </div>
     <p class="footer-note">© Splash Car Wash</p>
   </div>
 
-  <script>
-    // Mirror the equipmentMalfunction checkbox state into the hidden input
-    // that the worker reads ("true"/"false" strings — see
-    // handleClaimSubmission's claimData.equipmentMalfunction parse).
-    (function () {
-      var box = document.getElementById('equipmentMalfunctionToggle');
-      var hid = document.getElementById('equipmentMalfunctionHidden');
-      if (!box || !hid) return;
-      box.addEventListener('change', function () {
-        hid.value = box.checked ? 'true' : 'false';
-      });
-    })();
-  </script>
+  <!-- Outcome card (shown post-submit) -->
+  <div class="page" id="outcomePage" hidden>
+    <div class="card outcome-card">
+      <div class="check-mark">✓</div>
+      <h1>Claim submitted</h1>
+      <p>Your claim for <strong>${escHtml(locationPretty)}</strong> has been recorded.</p>
+      <div class="claim-id-line">Claim ID: <strong id="outcomeClaimId"></strong></div>
+      <p>Please give the customer a copy or photo of the claim ID for their records. A manager will review and may follow up.</p>
+      <button type="button" class="btn-primary" onclick="window.location.reload()">Submit another claim</button>
+    </div>
+  </div>
+
+  <!-- PIN modal -->
+  <div class="pin-overlay" id="pinOverlay" hidden>
+    <div class="pin-card">
+      <h3>Staff PIN required</h3>
+      <p>Enter the staff PIN to continue with the assessment portion of this claim.</p>
+      <div class="pin-error" id="pinError" hidden>Incorrect PIN. Please try again.</div>
+      <input type="password" inputmode="numeric" pattern="[0-9]*" id="pinInput" autocomplete="off" placeholder="••••" maxlength="8">
+      <div class="pin-actions">
+        <button type="button" class="btn-secondary" id="btnPinCancel">Cancel</button>
+        <button type="button" class="btn-primary" id="btnPinSubmit">Continue</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Submitting overlay -->
+  <div class="submitting-overlay" id="submittingOverlay" hidden>
+    Submitting claim, please wait...
+  </div>
+
+  <script>${FORM_SCRIPT}</script>
 </body>
 </html>`;
 }
+
+// All client-side logic for the claim form. Defined as a plain string so
+// the outer TS template literal does not interpolate any `${...}` patterns
+// (the JS uses string concatenation throughout instead of JS template
+// literals to keep this safe). PIN=1981 is hardcoded obfuscation, NOT a
+// secret — it's customer-visible source. If the operator wants real auth
+// on the staff section that's a separate brief (Supabase-backed
+// short-lived token or similar).
+const FORM_SCRIPT = `(function () {
+  var STAFF_PIN = '1981';
+  var photos = {
+    fourCornersPhotos: [],
+    vinPhoto: [],
+    damagePhotos: [],
+    platePhoto: []
+  };
+  var thumbUrls = []; // for revokeObjectURL on cleanup
+
+  var form = document.getElementById('claimForm');
+  if (!form) return;
+
+  var btnContinue = document.getElementById('btnContinue');
+  var customerSection = document.getElementById('customerSection');
+  var employeeSection = document.getElementById('employeeSection');
+  var submitRow = document.getElementById('submitRow');
+  var pinOverlay = document.getElementById('pinOverlay');
+  var pinInput = document.getElementById('pinInput');
+  var pinError = document.getElementById('pinError');
+  var btnPinSubmit = document.getElementById('btnPinSubmit');
+  var btnPinCancel = document.getElementById('btnPinCancel');
+  var submitError = document.getElementById('submitError');
+  var submittingOverlay = document.getElementById('submittingOverlay');
+  var formPage = document.getElementById('formPage');
+  var outcomePage = document.getElementById('outcomePage');
+  var outcomeClaimId = document.getElementById('outcomeClaimId');
+  var submitBtn = document.getElementById('submitBtn');
+  var employeeNameInput = document.getElementById('employeeName');
+
+  // ---- PIN gate ----------------------------------------------------------
+  function openPinModal() {
+    pinError.hidden = true;
+    pinInput.value = '';
+    pinOverlay.hidden = false;
+    setTimeout(function () { pinInput.focus(); }, 50);
+  }
+  function closePinModal() {
+    pinOverlay.hidden = true;
+  }
+  function unlockEmployeeSection() {
+    employeeSection.hidden = false;
+    submitRow.hidden = false;
+    btnContinue.parentElement.style.display = 'none';
+    // employeeName becomes required only after the gate opens — keeping it
+    // required while hidden would let the form's required-field check fire
+    // before the operator could see the field.
+    if (employeeNameInput) employeeNameInput.required = true;
+    employeeSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+  if (btnContinue) {
+    btnContinue.addEventListener('click', function () { openPinModal(); });
+  }
+  if (btnPinCancel) {
+    btnPinCancel.addEventListener('click', function () { closePinModal(); });
+  }
+  function trySubmitPin() {
+    var v = (pinInput.value || '').trim();
+    if (v === STAFF_PIN) {
+      closePinModal();
+      unlockEmployeeSection();
+    } else {
+      pinError.hidden = false;
+      pinInput.value = '';
+      pinInput.focus();
+    }
+  }
+  if (btnPinSubmit) {
+    btnPinSubmit.addEventListener('click', trySubmitPin);
+  }
+  if (pinInput) {
+    pinInput.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        trySubmitPin();
+      }
+    });
+  }
+
+  // ---- Equipment toggle --------------------------------------------------
+  var eqDetails = document.getElementById('equipmentDetails');
+  var eqSelect = document.getElementById('equipmentInvolved');
+  var eqMalToggle = document.getElementById('equipmentMalfunctionToggle');
+  var eqMalHidden = document.getElementById('equipmentMalfunctionHidden');
+  function syncEquipment() {
+    var checked = document.querySelector('input[name="__equipmentRelated"]:checked');
+    var isYes = checked && checked.value === 'yes';
+    if (eqDetails) eqDetails.hidden = !isYes;
+    if (eqSelect) {
+      eqSelect.required = !!isYes;
+      if (!isYes) {
+        eqSelect.value = '';
+        if (eqMalToggle) eqMalToggle.checked = false;
+        if (eqMalHidden) eqMalHidden.value = 'false';
+      }
+    }
+  }
+  Array.prototype.forEach.call(
+    document.querySelectorAll('input[name="__equipmentRelated"]'),
+    function (r) { r.addEventListener('change', syncEquipment); }
+  );
+  syncEquipment();
+  if (eqMalToggle && eqMalHidden) {
+    eqMalToggle.addEventListener('change', function () {
+      eqMalHidden.value = eqMalToggle.checked ? 'true' : 'false';
+    });
+  }
+
+  // ---- Photo widgets -----------------------------------------------------
+  function setupPhotoSection(section) {
+    var field = section.getAttribute('data-field');
+    var multi = section.getAttribute('data-multi') === 'true';
+    var thumbsEl = section.querySelector('[data-photo-thumbs]');
+    var input = section.querySelector('[data-photo-input]');
+    var btn = section.querySelector('[data-add-photo]');
+
+    function renderThumbs() {
+      // Revoke previously-rendered URLs scoped to this section
+      Array.prototype.forEach.call(
+        thumbsEl.querySelectorAll('img'),
+        function (img) {
+          var u = img.getAttribute('data-blob-url');
+          if (u) {
+            try { URL.revokeObjectURL(u); } catch (_) {}
+          }
+        }
+      );
+      thumbsEl.innerHTML = '';
+      photos[field].forEach(function (file, idx) {
+        var url = URL.createObjectURL(file);
+        thumbUrls.push(url);
+        var tile = document.createElement('div');
+        tile.className = 'photo-thumb';
+        var img = document.createElement('img');
+        img.src = url;
+        img.alt = '';
+        img.setAttribute('data-blob-url', url);
+        var rm = document.createElement('a');
+        rm.className = 'photo-remove';
+        rm.href = '#';
+        rm.textContent = 'Remove';
+        rm.addEventListener('click', function (e) {
+          e.preventDefault();
+          photos[field].splice(idx, 1);
+          renderThumbs();
+          updateBtnLabel();
+        });
+        tile.appendChild(img);
+        tile.appendChild(rm);
+        thumbsEl.appendChild(tile);
+      });
+    }
+    function updateBtnLabel() {
+      if (photos[field].length === 0) {
+        btn.textContent = '+ Add photo';
+      } else if (multi) {
+        btn.textContent = '+ Add another photo';
+      } else {
+        btn.textContent = 'Replace photo';
+      }
+    }
+
+    btn.addEventListener('click', function () {
+      input.click();
+    });
+    input.addEventListener('change', function (e) {
+      var f = e.target.files && e.target.files[0];
+      if (!f) return;
+      if (multi) {
+        photos[field].push(f);
+      } else {
+        photos[field] = [f];
+      }
+      e.target.value = '';
+      renderThumbs();
+      updateBtnLabel();
+    });
+    updateBtnLabel();
+  }
+  Array.prototype.forEach.call(
+    document.querySelectorAll('[data-photo-section]'),
+    setupPhotoSection
+  );
+
+  // ---- Submit ------------------------------------------------------------
+  function showError(msg) {
+    submitError.textContent = msg || 'Submission failed. Please retry.';
+    submitError.hidden = false;
+    submitError.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }
+  function clearError() {
+    submitError.hidden = true;
+    submitError.textContent = '';
+  }
+  function setSubmitting(on) {
+    submittingOverlay.hidden = !on;
+    submitBtn.disabled = !!on;
+    if (on) submitBtn.textContent = 'Submitting...';
+    else submitBtn.textContent = 'Submit claim';
+  }
+  function showOutcome(claimId) {
+    formPage.hidden = true;
+    outcomePage.hidden = false;
+    outcomeClaimId.textContent = claimId || '(unknown)';
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }
+
+  function validateBeforeSubmit() {
+    clearError();
+    syncEquipment();
+    // HTML5 validation across the whole form (now that employee fields are
+    // visible). reportValidity() shows the browser's bubble on the first
+    // invalid input.
+    if (!form.checkValidity()) {
+      form.reportValidity();
+      return false;
+    }
+    var missing = [];
+    if (photos.fourCornersPhotos.length === 0) missing.push('four-corner photos');
+    if (photos.vinPhoto.length === 0) missing.push('VIN photo');
+    if (photos.damagePhotos.length === 0) missing.push('damage photos');
+    if (photos.platePhoto.length === 0) missing.push('license-plate photo');
+    if (missing.length > 0) {
+      showError('Please add: ' + missing.join(', ') + '.');
+      return false;
+    }
+    return true;
+  }
+
+  form.addEventListener('submit', function (e) {
+    e.preventDefault();
+    if (!validateBeforeSubmit()) return;
+
+    var fd = new FormData(form);
+    fd.delete('__equipmentRelated');
+    // When the equipment toggle is No, equipmentInvolved is hidden and the
+    // form serializes it as empty (or the field is absent); ensure the
+    // worker sees an empty string so equipment_related derives to 0.
+    var checked = document.querySelector('input[name="__equipmentRelated"]:checked');
+    if (!checked || checked.value === 'no') {
+      fd.set('equipmentInvolved', '');
+    }
+    // Append photos under the canonical worker field names. The worker uses
+    // formData.getAll(field) so multiple appends per key land cleanly.
+    ['fourCornersPhotos', 'vinPhoto', 'damagePhotos', 'platePhoto'].forEach(function (field) {
+      photos[field].forEach(function (file) {
+        fd.append(field, file, file.name);
+      });
+    });
+
+    setSubmitting(true);
+    fetch('/claims-api/submit-claim', {
+      method: 'POST',
+      body: fd,
+      headers: { 'Accept': 'application/json' }
+    }).then(function (r) {
+      return r.text().then(function (text) {
+        var body = null;
+        try { body = JSON.parse(text); } catch (_) { body = null; }
+        return { status: r.status, ok: r.ok, body: body, raw: text };
+      });
+    }).then(function (out) {
+      if (out.ok && out.body && out.body.ok) {
+        showOutcome(out.body.claim_id || out.body.claimId || '');
+      } else {
+        var errMsg = (out.body && out.body.error)
+          || (out.body && out.body.message)
+          || ('Submission failed (status ' + out.status + ').');
+        showError(errMsg + ' Please retry.');
+        setSubmitting(false);
+      }
+    }).catch(function (err) {
+      var msg = (err && err.message) ? err.message : 'unknown';
+      showError('Network error: ' + msg + '. Please check your connection and retry.');
+      setSubmitting(false);
+    });
+  });
+})();`;
 
 interface RenderThanksArgs {
   locationPretty: string;

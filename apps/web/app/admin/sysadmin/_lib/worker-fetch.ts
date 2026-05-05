@@ -22,6 +22,11 @@
 // calls request.json()), NOT form-encoded bodies. So sysadminPostJson sets
 // Content-Type: application/json and stringifies an object — different from
 // damagePostForm's URL-encoded body.
+//
+// Brief 26 — sysadminPatchJson added for the PATCH /sysadmin/api/pricing-
+// simple/package endpoint (semantically PATCH because it's a partial-row
+// update keyed by composite PK). Identical service-binding-with-URL-fallback
+// shape; the only difference is the HTTP method on both transport paths.
 
 import { cookies, headers } from "next/headers";
 import { getCloudflareContext } from "@opennextjs/cloudflare";
@@ -117,6 +122,26 @@ export async function sysadminPostJson<T>(
   path: string,
   body: T
 ): Promise<SysadminPostResult> {
+  return sysadminWriteJson("POST", path, body);
+}
+
+/**
+ * Brief 26 — PATCH variant of sysadminPostJson. Same dual-mode transport
+ * (service binding in production, URL fallback in dev). Used by
+ * updatePackageAction to call PATCH /sysadmin/api/pricing-simple/package.
+ */
+export async function sysadminPatchJson<T>(
+  path: string,
+  body: T
+): Promise<SysadminPostResult> {
+  return sysadminWriteJson("PATCH", path, body);
+}
+
+async function sysadminWriteJson<T>(
+  method: "POST" | "PATCH",
+  path: string,
+  body: T
+): Promise<SysadminPostResult> {
   const cookieStore = await cookies();
   const cookieHeader = cookieStore.toString();
   const stringified = JSON.stringify(body);
@@ -128,7 +153,7 @@ export async function sysadminPostJson<T>(
       const trimmed = path.startsWith("/") ? path : `/${path}`;
       const url = `https://internal${trimmed}`;
       const req = new Request(url, {
-        method: "POST",
+        method,
         headers: {
           Cookie: cookieHeader,
           "Content-Type": "application/json",
@@ -140,7 +165,7 @@ export async function sysadminPostJson<T>(
     } else {
       const url = await workerUrl(path);
       resp = await fetch(url, {
-        method: "POST",
+        method,
         headers: {
           Cookie: cookieHeader,
           "Content-Type": "application/json",
@@ -153,7 +178,7 @@ export async function sysadminPostJson<T>(
   } catch {
     const url = await workerUrl(path);
     resp = await fetch(url, {
-      method: "POST",
+      method,
       headers: {
         Cookie: cookieHeader,
         "Content-Type": "application/json",
@@ -188,7 +213,7 @@ export async function sysadminPostJson<T>(
   } else if (rawText) {
     error = rawText;
   } else {
-    error = `Worker POST failed: ${resp.status}`;
+    error = `Worker ${method} failed: ${resp.status}`;
   }
   return { ok: false, status: resp.status, error };
 }

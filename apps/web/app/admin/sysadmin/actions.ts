@@ -1,13 +1,17 @@
-// Server actions for /admin/sysadmin. Briefs 7 + 18 + 19 + 24.
+// Server actions for /admin/sysadmin. Briefs 7 + 18 + 19 + 24 + 26 + 27.
 //
 // Mutation surfaces, one per sysadmin-worker endpoint:
-//   - createUserAction      → POST /sysadmin/api/create-user
-//   - setRoleAction         → POST /sysadmin/api/set-role
-//   - grantToolAction       → POST /sysadmin/api/grant-tool
-//   - revokeToolAction      → POST /sysadmin/api/revoke-tool
-//   - resetPasswordAction   → POST /sysadmin/api/reset-password
-//   - createLocationAction  → POST /sysadmin/api/pricing-simple/create-location
+//   - createUserAction      → POST  /sysadmin/api/create-user
+//   - setRoleAction         → POST  /sysadmin/api/set-role
+//   - grantToolAction       → POST  /sysadmin/api/grant-tool
+//   - revokeToolAction      → POST  /sysadmin/api/revoke-tool
+//   - resetPasswordAction   → POST  /sysadmin/api/reset-password
+//   - createLocationAction  → POST  /sysadmin/api/pricing-simple/create-location
 //                             (Brief 24)
+//   - updatePackageAction   → PATCH /sysadmin/api/pricing-simple/package
+//                             (Brief 26)
+//   - updateLocationAction  → PATCH /sysadmin/api/locations
+//                             (Brief 27)
 //
 // Brief 19 — pattern flip:
 //   Each action's signature is now (prevState, formData) => Promise<ActionResult>
@@ -31,7 +35,7 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import { sysadminPostJson } from "./_lib/worker-fetch";
+import { sysadminPatchJson, sysadminPostJson } from "./_lib/worker-fetch";
 import type { ToolName, UserRole } from "@splash/types/auth";
 import type { ActionResult } from "../_components/ActionForm";
 
@@ -408,5 +412,238 @@ export async function createLocationAction(
   return {
     ok: true,
     message: `Location created: ${respLocationCode} (${respPackageCount} packages)`
+  };
+}
+
+/* ============================================================
+ * Update package (Brief 26)
+ *
+ * Reads form fields submitted by UpdatePackageCard and posts a partial
+ * PATCH body to /sysadmin/api/pricing-simple/package. Composite-PK
+ * lookup uses pkg_original (the pkg name at selection time); the form's
+ * editable `pkg` input maps to `pkg_new` so the worker can rename the
+ * row when the operator changes it.
+ *
+ * Numeric fields:
+ *   - pkg_dollar (required) -> "pkg$" (literal column name, see CLAUDE.md
+ *     critical constraint #2). Always included.
+ *   - single / flash2 / flash5 / sort -> only included when the form
+ *     field is non-empty; an empty string maps to null in the JSON body.
+ *
+ * Denormalized fields (am_email, etc.) are NEVER included — the worker
+ * also rejects them with 400 as defense-in-depth, but the action skips
+ * them at the form level too. The UI doesn't render inputs for them.
+ * ============================================================ */
+
+interface UpdatePackageBody {
+  location_code: string;
+  pkg: string;
+  pkg_new?: string;
+  "pkg$"?: number;
+  single?: number | null;
+  flash2?: number | null;
+  flash5?: number | null;
+  sort?: number | null;
+  pricing?: string;
+  location_pretty?: string;
+}
+
+function fieldNumberOrNull(formData: FormData, name: string): number | null {
+  const raw = String(formData.get(name) ?? "").trim();
+  if (raw.length === 0) return null;
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : null;
+}
+
+export async function updatePackageAction(
+  _prevState: ActionResult | null,
+  formData: FormData
+): Promise<ActionResult> {
+  const locationCode = fieldString(formData, "location_code");
+  const pkgOriginal = fieldString(formData, "pkg_original");
+  const pkgEditable = fieldString(formData, "pkg");
+  const locationPretty = fieldString(formData, "location_pretty");
+  const pricing = fieldString(formData, "pricing");
+  const pkgDollarRaw = String(formData.get("pkg_dollar") ?? "").trim();
+
+  if (locationCode.length === 0) {
+    return { ok: false, error: "Missing location_code (no row selected)." };
+  }
+  if (pkgOriginal.length === 0) {
+    return { ok: false, error: "Missing pkg_original (no row selected)." };
+  }
+  if (pkgEditable.length === 0) {
+    return { ok: false, error: "Package name cannot be empty." };
+  }
+  if (pkgDollarRaw.length === 0) {
+    return { ok: false, error: "pkg$ is required." };
+  }
+
+  const pkgDollar = Number(pkgDollarRaw);
+  if (!Number.isFinite(pkgDollar)) {
+    return { ok: false, error: "pkg$ must be a number." };
+  }
+
+  const body: UpdatePackageBody = {
+    location_code: locationCode,
+    pkg: pkgOriginal,
+    "pkg$": pkgDollar
+  };
+
+  if (pkgEditable !== pkgOriginal) {
+    body.pkg_new = pkgEditable;
+  }
+
+  // single / flash2 / flash5 / sort: empty -> null in payload (worker
+  // accepts null for nullable columns).
+  body.single = fieldNumberOrNull(formData, "single");
+  body.flash2 = fieldNumberOrNull(formData, "flash2");
+  body.flash5 = fieldNumberOrNull(formData, "flash5");
+
+  const sortRaw = String(formData.get("sort") ?? "").trim();
+  if (sortRaw.length === 0) {
+    body.sort = null;
+  } else {
+    const sortNum = Number(sortRaw);
+    if (!Number.isInteger(sortNum) || sortNum < 1) {
+      return { ok: false, error: "sort must be a positive integer." };
+    }
+    body.sort = sortNum;
+  }
+
+  if (pricing.length > 0) body.pricing = pricing;
+  if (locationPretty.length > 0) body.location_pretty = locationPretty;
+
+  const result = await sysadminPatchJson(
+    "/sysadmin/api/pricing-simple/package",
+    body
+  );
+  if (!result.ok) {
+    return { ok: false, error: result.error };
+  }
+
+  // Worker returns { ok, location_code, pkg, updated_at }.
+  let respLocationCode = locationCode;
+  let respPkg = body.pkg_new ?? pkgOriginal;
+  if (result.body && typeof result.body === "object") {
+    const r = result.body as { location_code?: unknown; pkg?: unknown };
+    if (typeof r.location_code === "string" && r.location_code.length > 0) {
+      respLocationCode = r.location_code;
+    }
+    if (typeof r.pkg === "string" && r.pkg.length > 0) {
+      respPkg = r.pkg;
+    }
+  }
+
+  revalidatePath(PAGE_PATH);
+  return {
+    ok: true,
+    message: `Updated ${respLocationCode}/${respPkg}`
+  };
+}
+
+/* ============================================================
+ * Update location (Brief 27)
+ *
+ * Reads form fields submitted by UpdateLocationCard and posts a partial
+ * PATCH body to /sysadmin/api/locations. The selector arrives in two
+ * hidden inputs:
+ *   - selector_kind  ("id" or "site_number")
+ *   - selector_value (the actual id or site_number from the picker)
+ *
+ * Editable fields: site, location, area_manager, regional_manager,
+ *   am_email, rm_email, site_email, hrt_email, rm_group.
+ *
+ * Empty form values map to null (clearing the column). The worker
+ * email-validates the email fields and rejects auto-managed columns
+ * (created_at / updated_at) as defense in depth — the action only
+ * forwards the editable set and the chosen selector.
+ *
+ * Two DB triggers cascade outward from a successful PATCH:
+ *   - locations -> pricing_simple (denormalized field sync)
+ *   - pricing_simple -> user_permissions (email-driven permissions)
+ * The action surfaces this in the success message so the operator
+ * doesn't wonder why "just" editing locations granted permissions.
+ * ============================================================ */
+
+interface UpdateLocationBody {
+  id?: number;
+  site_number?: number;
+  site?: string | null;
+  location?: string | null;
+  area_manager?: string | null;
+  regional_manager?: string | null;
+  am_email?: string | null;
+  rm_email?: string | null;
+  site_email?: string | null;
+  hrt_email?: string | null;
+  rm_group?: string | null;
+}
+
+const LOCATION_EDITABLE_FORM_FIELDS = [
+  "site",
+  "location",
+  "area_manager",
+  "regional_manager",
+  "am_email",
+  "rm_email",
+  "site_email",
+  "hrt_email",
+  "rm_group"
+] as const;
+
+function fieldStringOrNull(formData: FormData, name: string): string | null {
+  const raw = String(formData.get(name) ?? "").trim();
+  return raw.length > 0 ? raw : null;
+}
+
+export async function updateLocationAction(
+  _prevState: ActionResult | null,
+  formData: FormData
+): Promise<ActionResult> {
+  const selectorKind = fieldString(formData, "selector_kind");
+  const selectorValue = fieldString(formData, "selector_value");
+
+  if (selectorKind !== "id" && selectorKind !== "site_number") {
+    return {
+      ok: false,
+      error: "Missing selector — pick a location above."
+    };
+  }
+  if (selectorValue.length === 0) {
+    return { ok: false, error: "Missing selector value (no row selected)." };
+  }
+
+  const selectorNum = Number(selectorValue);
+  if (!Number.isFinite(selectorNum)) {
+    return { ok: false, error: `${selectorKind} must be a number.` };
+  }
+
+  const body: UpdateLocationBody = {};
+  if (selectorKind === "id") {
+    body.id = selectorNum;
+  } else {
+    if (!Number.isInteger(selectorNum)) {
+      return { ok: false, error: "site_number must be an integer." };
+    }
+    body.site_number = selectorNum;
+  }
+
+  // Forward only the editable fields the form rendered. Empty form
+  // values map to null (clear the column).
+  for (const field of LOCATION_EDITABLE_FORM_FIELDS) {
+    const v = fieldStringOrNull(formData, field);
+    (body as Record<string, unknown>)[field] = v;
+  }
+
+  const result = await sysadminPatchJson("/sysadmin/api/locations", body);
+  if (!result.ok) {
+    return { ok: false, error: result.error };
+  }
+
+  revalidatePath(PAGE_PATH);
+  return {
+    ok: true,
+    message: `Updated location #${selectorValue}. Triggers cascaded to pricing_simple + user_permissions.`
   };
 }

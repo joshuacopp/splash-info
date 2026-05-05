@@ -1313,7 +1313,12 @@ async function handleClaimSubmission(request: Request, env: Env): Promise<Respon
       return Response.redirect(target.toString(), 303);
     }
 
+    // Brief 25: form's fetch reads `{ ok, claim_id }`. The legacy
+    // `success` / `claimId` keys are mirrored alongside for any
+    // programmatic caller that may still consume the older shape.
     return json({
+      ok: true,
+      claim_id: claimData.claimId,
       success: true,
       claimId: claimData.claimId,
       powerAutomateSuccess,
@@ -1346,10 +1351,12 @@ async function handleClaimSubmission(request: Request, env: Env): Promise<Respon
       return Response.redirect(target.toString(), 303);
     }
 
+    // Brief 25: JSON failure shape includes `ok: false` for the form's JS.
     return json(
       {
-        success: false,
-        error: message
+        ok: false,
+        error: message,
+        success: false
       },
       500
     );

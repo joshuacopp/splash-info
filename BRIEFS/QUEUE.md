@@ -9,3 +9,5 @@
 # until its file exists in BRIEFS/ and Status is "Ready for Claude Code".
 
 # brief-024-sysadmin-add-location.md  (completed 2026-05-05)
+# brief-025-claim-form-polish.md  (completed 2026-05-05)
+
