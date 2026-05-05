@@ -243,6 +243,56 @@ When given a new task:
   (Dashboard + Change Password + Sign Out) on `/admin/*` and
   `/sysadmin/*`.
 
+### Server actions: useActionState + router.refresh() pattern (Brief 19)
+
+Server actions invoked from a server-rendered `<form action={fn}>` MUST
+return a serializable `ActionResult` and let a client wrapper drive the
+post-action UX. Do NOT use `redirect()` from server actions for success
+or error feedback.
+
+Why: Next 15 server actions running in the OpenNext-on-Cloudflare-Workers
+runtime don't reliably propagate `redirect()` responses as a visible
+client-side navigation. Brief 18 surfaced this in staging — actions ran
+to completion and the DB updated, but the browser sat on the pre-action
+URL until manual reload. Pricing admin works because it uses direct
+client `fetch()` + `setState`; damage and sysadmin (server-action
+redirect-based) didn't.
+
+The pattern:
+
+1. **Action signature**: `(prevState: ActionResult | null, formData: FormData) => Promise<ActionResult>`
+   where `ActionResult = { ok: true; message?: string } | { ok: false; error: string }`.
+   The `prevState` parameter satisfies React 19's `useActionState` contract
+   and can be ignored by the action body.
+
+2. **Action body**: do the work, then `return { ok: true, message: "..." }`
+   or `return { ok: false, error: "..." }`. Keep the `revalidatePath` call
+   on success (it invalidates Next's route cache so the subsequent
+   `router.refresh()` sees the post-mutation state).
+
+3. **Form wrapper**: use the shared `<ActionForm>` at
+   `apps/web/app/admin/_components/ActionForm.tsx` (a `"use client"`
+   island). It dispatches the action via `useActionState`, renders the
+   result inline (`role="status"` for success, `role="alert"` for errors)
+   under the form, and calls `router.refresh()` on a fresh ok result.
+   Pass `resetOnSuccess={false}` to preserve uncontrolled inputs after a
+   successful submission (default: clear them by remounting via the React
+   `key` trick).
+
+4. **Don't read `?action_error=` / `?action_success=` searchParams in the
+   page** — `<ActionForm>` handles result display now. Drop those branches.
+
+The damage detail page (`apps/web/app/admin/damage/[id]/page.tsx`) and
+sysadmin page (`apps/web/app/admin/sysadmin/page.tsx`) are reference
+implementations. Future write-action briefs should follow this pattern,
+not the redirect+searchParam pattern.
+
+If a form contains an inline `<script>` that wires DOM event listeners
+on the form's inputs (e.g., the password-match script on
+`/admin/sysadmin`), use event delegation on `document` instead of
+binding to element references at parse time — the references go stale
+after `<ActionForm>` remounts the form on success.
+
 ### Service bindings (Brief 17)
 
 When apps/web SSR-fetches another worker, prefer the service binding

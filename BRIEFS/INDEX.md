@@ -25,6 +25,7 @@ navigation aid.
 | 16 | Staging subdomain end-to-end testing (`staging.splashcarwashes.info`) | Completed (2026-05-04) | End-to-end UI verification | [brief-016-staging-subdomain.md](brief-016-staging-subdomain.md) |
 | 17 | Service bindings for apps/web -> worker subrequests (workaround CF same-zone 522 gotcha) | Completed (2026-05-04) | End-to-end UI testing on staging + production cutover | [brief-017-service-bindings.md](brief-017-service-bindings.md) |
 | 18 | Damage actions debug + sysadmin email-based UserPicker (drop dcRole filter while Brief 11b mystery is being chased; new `/sysadmin/api/users` GET endpoint + UserPicker; `location_admin` location_code guards) | Completed (2026-05-04) | Day-to-day usability of damage manager + sysadmin UI | [brief-018-damage-and-sysadmin-fixes.md](brief-018-damage-and-sysadmin-fixes.md) |
+| 19 | Server-action ActionResult + router.refresh() pattern (replace redirect-based UX on damage detail + sysadmin; shared `<ActionForm>` client wrapper; CLAUDE.md doc of the pattern) | Completed (2026-05-04) | Day-to-day usability of damage manager + sysadmin write surfaces (visible refresh after action) | [brief-019-action-result-refresh.md](brief-019-action-result-refresh.md) |
 
 **Folded items** (work absorbed into earlier briefs):
 - Item 3 (URL drift /admin/{loc} <-> /admin/pricing/{loc}) - folded into Brief 2.

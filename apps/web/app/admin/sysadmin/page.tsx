@@ -1,30 +1,35 @@
-// Sysadmin UI (/admin/sysadmin). Brief 7. Extended in Brief 18.
+// Sysadmin UI (/admin/sysadmin). Briefs 7 + 18 + 19.
 //
 // Server component. Top-of-page super_admin gate via getMe(); the page never
 // renders the operation cards for non-super_admins (worker re-validates on
 // POST as defense in depth).
 //
 // Layout (top → bottom):
-//   1. Action-error / action-success banners (driven by ?action_error /
-//      ?action_success search params).
-//   2. Page banner (eyebrow + title + helper text).
-//   3. Five collapsed <details> cards, one per worker endpoint:
+//   1. Page banner (eyebrow + title + helper text).
+//   2. Five collapsed <details> cards, one per worker endpoint:
 //        - Create user
 //        - Set role
 //        - Grant tool
 //        - Revoke tool
 //        - Reset password
 //
-// Each card is a plain server-rendered <form action={fn}> with the fields
-// the worker handler reads (apps/sysadmin-worker/src/index.ts handlers).
+// Brief 19 — pattern flip:
+//   The page-level ?action_error / ?action_success banners are gone. Each
+//   card is now wrapped in the shared <ActionForm> client component
+//   (apps/web/app/admin/_components/ActionForm.tsx) which dispatches the
+//   server action via useActionState and renders the per-form result inline
+//   (success toast or error banner) directly under the form. On a fresh ok
+//   result, ActionForm calls router.refresh() so the page's server-rendered
+//   data re-loads (paired with revalidatePath() inside the action).
+//
 // Brief 18 added the UserPicker client island for the four user-targeted
 // forms (Set role / Grant tool / Revoke tool / Reset password) — replaces
 // the v1 paste-the-user-id-from-Supabase UX with an email-substring
 // typeahead backed by GET /sysadmin/api/users. Server actions still
 // receive the selected user_id via a hidden input the picker writes.
 
-import Link from "next/link";
 import { getMe } from "../../_lib/me";
+import { ActionForm } from "../_components/ActionForm";
 import { NoAccessCard } from "./_components/NoAccessCard";
 import { UserPicker } from "./_components/UserPicker";
 import {
@@ -35,16 +40,7 @@ import {
   setRoleAction
 } from "./actions";
 
-interface PageProps {
-  searchParams: Promise<Record<string, string | string[] | undefined>>;
-}
-
-function firstParam(value: string | string[] | undefined): string | null {
-  if (Array.isArray(value)) return value[0] ?? null;
-  return value ?? null;
-}
-
-export default async function SysadminPage({ searchParams }: PageProps) {
+export default async function SysadminPage() {
   const session = await getMe().catch(() => null);
 
   if (!session) {
@@ -54,16 +50,9 @@ export default async function SysadminPage({ searchParams }: PageProps) {
     return <NoAccessCard reason="forbidden" />;
   }
 
-  const params = await searchParams;
-  const actionError = firstParam(params.action_error);
-  const actionSuccess = firstParam(params.action_success);
-
   return (
     <section className="mx-auto w-full max-w-[820px] px-5 py-9">
       <PageBanner />
-
-      <ActionAlert message={actionError} variant="error" />
-      <ActionAlert message={actionSuccess} variant="success" />
 
       <div className="flex flex-col gap-4">
         <CreateUserCard />
@@ -95,44 +84,6 @@ function PageBanner() {
         </code>
         .
       </p>
-    </div>
-  );
-}
-
-function ActionAlert({
-  message,
-  variant
-}: {
-  message: string | null;
-  variant: "error" | "success";
-}) {
-  if (!message) return null;
-  const isError = variant === "error";
-  return (
-    <div
-      role={isError ? "alert" : "status"}
-      className={
-        isError
-          ? "mb-4 flex flex-col gap-2 rounded-splash-md border border-splash-deny/40 bg-splash-deny/10 p-4 text-sm text-splash-deny sm:flex-row sm:items-center sm:justify-between"
-          : "mb-4 flex flex-col gap-2 rounded-splash-md border border-splash-success/40 bg-splash-success/10 p-4 text-sm text-splash-success sm:flex-row sm:items-center sm:justify-between"
-      }
-    >
-      <div className="flex-1 whitespace-pre-line">
-        <span className="font-bold">
-          {isError ? "Action failed: " : "Success: "}
-        </span>
-        {message}
-      </div>
-      <Link
-        href="/admin/sysadmin"
-        className={
-          isError
-            ? "text-xs font-semibold underline underline-offset-2 hover:text-splash-deny/80"
-            : "text-xs font-semibold underline underline-offset-2 hover:text-splash-success/80"
-        }
-      >
-        Dismiss
-      </Link>
     </div>
   );
 }
@@ -218,7 +169,7 @@ function CreateUserCard() {
       title="Create user"
       description="Provision a new auth.users row plus optional role + tool grants."
     >
-      <form action={createUserAction} className="space-y-4">
+      <ActionForm action={createUserAction} className="space-y-4">
         <div>
           <FieldLabel htmlFor="create-email">Email</FieldLabel>
           <input
@@ -320,7 +271,7 @@ function CreateUserCard() {
             Create user
           </button>
         </div>
-      </form>
+      </ActionForm>
     </OperationCard>
   );
 }
@@ -335,7 +286,7 @@ function SetRoleCard() {
       title="Set role"
       description="Set or clear a user's role on user_permissions."
     >
-      <form action={setRoleAction} className="space-y-4">
+      <ActionForm action={setRoleAction} className="space-y-4">
         <div>
           <FieldLabel htmlFor="set-role-user-id" helper="Search by email">
             User
@@ -383,7 +334,7 @@ function SetRoleCard() {
             Set role
           </button>
         </div>
-      </form>
+      </ActionForm>
     </OperationCard>
   );
 }
@@ -398,7 +349,7 @@ function GrantToolCard() {
       title="Grant tool"
       description="Add a row to user_tool_access. Idempotent — re-grants are no-ops."
     >
-      <form action={grantToolAction} className="space-y-4">
+      <ActionForm action={grantToolAction} className="space-y-4">
         <div>
           <FieldLabel htmlFor="grant-user-id" helper="Search by email">
             User
@@ -426,7 +377,7 @@ function GrantToolCard() {
             Grant tool
           </button>
         </div>
-      </form>
+      </ActionForm>
     </OperationCard>
   );
 }
@@ -441,7 +392,7 @@ function RevokeToolCard() {
       title="Revoke tool"
       description="Delete a row from user_tool_access. Idempotent — missing rows are no-ops."
     >
-      <form action={revokeToolAction} className="space-y-4">
+      <ActionForm action={revokeToolAction} className="space-y-4">
         <div>
           <FieldLabel htmlFor="revoke-user-id" helper="Search by email">
             User
@@ -469,7 +420,7 @@ function RevokeToolCard() {
             Revoke tool
           </button>
         </div>
-      </form>
+      </ActionForm>
     </OperationCard>
   );
 }
@@ -479,24 +430,35 @@ function RevokeToolCard() {
  * ============================================================ */
 
 // Inline browser-side script that wires the new + confirm password inputs
-// for cross-field validation via setCustomValidity. Runs as soon as the
-// browser parses the script tag (the inputs precede this script in DOM
-// order). Avoids spinning up a client component / React state for a single
-// mismatch check. The worker doesn't enforce confirm; UI hygiene only.
+// for cross-field validation via setCustomValidity. Avoids spinning up a
+// client component / React state for a single mismatch check. The worker
+// doesn't enforce confirm; UI hygiene only.
+//
+// Brief 19 — uses event delegation on document. The original (Brief 7)
+// version captured element references at parse-time; after Brief 19's
+// <ActionForm> remounts the form on success (clearing fields), those
+// references pointed at removed nodes and the new inputs had no listeners.
+// Delegating to document survives remounts because the listener resolves
+// the elements at event time.
 const PASSWORD_MATCH_SCRIPT = `
 (function () {
-  var newEl = document.getElementById('reset-new-password');
-  var cnfEl = document.getElementById('reset-confirm-password');
-  if (!newEl || !cnfEl) return;
   function check() {
+    var newEl = document.getElementById('reset-new-password');
+    var cnfEl = document.getElementById('reset-confirm-password');
+    if (!newEl || !cnfEl) return;
     if (cnfEl.value && cnfEl.value !== newEl.value) {
       cnfEl.setCustomValidity('Passwords do not match');
     } else {
       cnfEl.setCustomValidity('');
     }
   }
-  newEl.addEventListener('input', check);
-  cnfEl.addEventListener('input', check);
+  document.addEventListener('input', function (e) {
+    var t = e.target;
+    if (!t || !t.id) return;
+    if (t.id === 'reset-new-password' || t.id === 'reset-confirm-password') {
+      check();
+    }
+  });
 })();
 `;
 
@@ -506,7 +468,7 @@ function ResetPasswordCard() {
       title="Reset password"
       description="Admin-set new password. Forces must_change_password = true."
     >
-      <form action={resetPasswordAction} className="space-y-4">
+      <ActionForm action={resetPasswordAction} className="space-y-4">
         <div>
           <FieldLabel htmlFor="reset-user-id" helper="Search by email">
             User
@@ -550,7 +512,7 @@ function ResetPasswordCard() {
             Reset password
           </button>
         </div>
-      </form>
+      </ActionForm>
       <script dangerouslySetInnerHTML={{ __html: PASSWORD_MATCH_SCRIPT }} />
     </OperationCard>
   );

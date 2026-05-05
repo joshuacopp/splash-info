@@ -1,4 +1,4 @@
-// Server actions for /admin/sysadmin. Brief 7.
+// Server actions for /admin/sysadmin. Briefs 7 + 18 + 19.
 //
 // Five mutation surfaces, one per sysadmin-worker endpoint:
 //   - createUserAction    → POST /sysadmin/api/create-user
@@ -7,38 +7,33 @@
 //   - revokeToolAction    → POST /sysadmin/api/revoke-tool
 //   - resetPasswordAction → POST /sysadmin/api/reset-password
 //
-// Shared shape:
-//   1. Read fields off FormData. Build a typed JSON body matching the worker
-//      handler's expected shape (apps/sysadmin-worker/src/index.ts).
-//   2. Call sysadminPostJson(...).
-//   3. On worker error: redirect back with ?action_error=<encoded>.
-//   4. On success: revalidatePath + redirect with ?action_success=<encoded>.
+// Brief 19 — pattern flip:
+//   Each action's signature is now (prevState, formData) => Promise<ActionResult>
+//   to match React 19's useActionState contract. The actions return a typed
+//   result instead of redirecting; the shared <ActionForm> wrapper at
+//   apps/web/app/admin/_components/ActionForm.tsx dispatches via
+//   useActionState, surfaces the result inline (success toast / error
+//   banner), and calls router.refresh() on a fresh ok result so the page's
+//   server-component data re-fetches. revalidatePath() invalidates Next's
+//   route cache so the refresh sees the post-mutation state.
+//
+//   Why we don't redirect: see the same comment block in
+//   apps/web/app/admin/damage/[id]/actions.ts. Redirects from server
+//   actions don't reliably propagate as visible navigations on
+//   OpenNext-Cloudflare-Workers, so we surface success/failure inline.
 //
 // Validation policy: don't pre-validate inputs in the action. The worker
 // validates and returns 400 with a useful error message; surfacing that
 // error inline is the right UX (single source of validation truth).
-//
-// Server actions in Next 15 surface the redirect via a thrown NEXT_REDIRECT;
-// the framework catches and returns a navigation response to the form
-// submitter. All five branches end in redirect() so the browser URL is
-// always under our control after the action runs.
 
 "use server";
 
-import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import { sysadminPostJson } from "./_lib/worker-fetch";
 import type { ToolName, UserRole } from "@splash/types/auth";
+import type { ActionResult } from "../_components/ActionForm";
 
 const PAGE_PATH = "/admin/sysadmin";
-
-function errorRedirect(message: string): never {
-  redirect(`${PAGE_PATH}?action_error=${encodeURIComponent(message)}`);
-}
-
-function successRedirect(message: string): never {
-  redirect(`${PAGE_PATH}?action_success=${encodeURIComponent(message)}`);
-}
 
 function fieldString(formData: FormData, name: string): string {
   return String(formData.get(name) ?? "").trim();
@@ -65,7 +60,10 @@ interface CreateUserBody {
   tools?: string[];
 }
 
-export async function createUserAction(formData: FormData): Promise<void> {
+export async function createUserAction(
+  _prevState: ActionResult | null,
+  formData: FormData
+): Promise<ActionResult> {
   const email = fieldString(formData, "email");
   const password = fieldString(formData, "password");
   const roleRaw = fieldString(formData, "role");
@@ -89,7 +87,7 @@ export async function createUserAction(formData: FormData): Promise<void> {
 
   const result = await sysadminPostJson("/sysadmin/api/create-user", body);
   if (!result.ok) {
-    errorRedirect(result.error);
+    return { ok: false, error: result.error };
   }
 
   // Worker returns { ok: true, user_id, email }. Surface the email so the
@@ -103,7 +101,7 @@ export async function createUserAction(formData: FormData): Promise<void> {
       : email;
 
   revalidatePath(PAGE_PATH);
-  successRedirect(`User created: ${respEmail}`);
+  return { ok: true, message: `User created: ${respEmail}` };
 }
 
 /* ============================================================
@@ -118,7 +116,10 @@ interface SetRoleBody {
   location_code?: string;
 }
 
-export async function setRoleAction(formData: FormData): Promise<void> {
+export async function setRoleAction(
+  _prevState: ActionResult | null,
+  formData: FormData
+): Promise<ActionResult> {
   const userId = fieldString(formData, "user_id");
   const roleRaw = fieldString(formData, "role");
   const locationCode = fieldStringOrUndefined(formData, "location_code");
@@ -132,14 +133,11 @@ export async function setRoleAction(formData: FormData): Promise<void> {
 
   const result = await sysadminPostJson("/sysadmin/api/set-role", body);
   if (!result.ok) {
-    errorRedirect(result.error);
+    return { ok: false, error: result.error };
   }
 
   revalidatePath(PAGE_PATH);
-  if (role === null) {
-    successRedirect(`Cleared role for ${userId}`);
-  }
-  successRedirect(`Set role '${role}' on ${userId}`);
+  return { ok: true, message: "Role updated" };
 }
 
 /* ============================================================
@@ -151,7 +149,10 @@ interface GrantToolBody {
   tool: ToolName;
 }
 
-export async function grantToolAction(formData: FormData): Promise<void> {
+export async function grantToolAction(
+  _prevState: ActionResult | null,
+  formData: FormData
+): Promise<ActionResult> {
   const userId = fieldString(formData, "user_id");
   const tool = fieldString(formData, "tool");
 
@@ -162,18 +163,21 @@ export async function grantToolAction(formData: FormData): Promise<void> {
 
   const result = await sysadminPostJson("/sysadmin/api/grant-tool", body);
   if (!result.ok) {
-    errorRedirect(result.error);
+    return { ok: false, error: result.error };
   }
 
   revalidatePath(PAGE_PATH);
-  successRedirect(`Granted '${tool}' to ${userId}`);
+  return { ok: true, message: `Granted ${tool}` };
 }
 
 /* ============================================================
  * Revoke tool
  * ============================================================ */
 
-export async function revokeToolAction(formData: FormData): Promise<void> {
+export async function revokeToolAction(
+  _prevState: ActionResult | null,
+  formData: FormData
+): Promise<ActionResult> {
   const userId = fieldString(formData, "user_id");
   const tool = fieldString(formData, "tool");
 
@@ -184,11 +188,11 @@ export async function revokeToolAction(formData: FormData): Promise<void> {
 
   const result = await sysadminPostJson("/sysadmin/api/revoke-tool", body);
   if (!result.ok) {
-    errorRedirect(result.error);
+    return { ok: false, error: result.error };
   }
 
   revalidatePath(PAGE_PATH);
-  successRedirect(`Revoked '${tool}' from ${userId}`);
+  return { ok: true, message: `Revoked ${tool}` };
 }
 
 /* ============================================================
@@ -200,7 +204,10 @@ interface ResetPasswordBody {
   new_password: string;
 }
 
-export async function resetPasswordAction(formData: FormData): Promise<void> {
+export async function resetPasswordAction(
+  _prevState: ActionResult | null,
+  formData: FormData
+): Promise<ActionResult> {
   const userId = fieldString(formData, "user_id");
   const newPassword = fieldString(formData, "new_password");
 
@@ -211,11 +218,9 @@ export async function resetPasswordAction(formData: FormData): Promise<void> {
 
   const result = await sysadminPostJson("/sysadmin/api/reset-password", body);
   if (!result.ok) {
-    errorRedirect(result.error);
+    return { ok: false, error: result.error };
   }
 
   revalidatePath(PAGE_PATH);
-  successRedirect(
-    `Password reset for ${userId} (must_change_password set to true)`
-  );
+  return { ok: true, message: "Password reset" };
 }

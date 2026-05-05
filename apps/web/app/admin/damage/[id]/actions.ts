@@ -1,4 +1,4 @@
-// Server actions for /admin/damage/[id]. Briefs 5c + 5d.
+// Server actions for /admin/damage/[id]. Briefs 5c + 5d + 18 + 19.
 //
 // Five write surfaces:
 //   - transitionAction:     POST /manage/api/claim/{id}/transition         (5c)
@@ -7,38 +7,37 @@
 //   - editDocumentAction:   POST /manage/api/claim/{id}/document/{docId}/edit   (5d)
 //   - deleteDocumentAction: POST /manage/api/claim/{id}/document/{docId}/delete (5d)
 //
-// All five follow the same shape:
-//   1. Pull `claim_id` (hidden field) from the FormData; bail to the list
-//      page on a missing id (defensive — every <form> on the detail page
-//      includes the hidden field).
-//   2. Forward the FormData (filtered/verbatim per action) to damagePostForm
-//      or damagePostMultipart depending on whether the body carries a file.
-//      The worker reads named fields (to_status, note, doc_type, vendor,
-//      amount, etc.) directly off the body, so we don't rename.
-//   3. On worker error: redirect back to the detail page with
-//      `?action_error=...` so the page renders an inline alert.
-//   4. On success: revalidatePath the detail page (so the new status,
-//      activity row, photos, and any new approval-detail fields show on
-//      next render), then redirect to the bare detail URL — strips any
-//      prior ?action_error from the browser URL.
+// Brief 19 — pattern flip:
+//   Each action's signature is now (prevState, formData) => Promise<ActionResult>
+//   to match React 19's useActionState contract. The actions return a typed
+//   result instead of calling redirect(). The <ActionForm> client wrapper at
+//   apps/web/app/admin/_components/ActionForm.tsx dispatches via
+//   useActionState, surfaces the result inline (success toast / error
+//   banner), and calls router.refresh() on a fresh ok result so the page's
+//   server-component data re-fetches. revalidatePath() inside each action
+//   invalidates Next's route cache so the refresh sees the post-mutation
+//   state.
 //
-// Server actions in Next 15 surface the redirect via a thrown
-// NEXT_REDIRECT; the framework catches and returns a navigation response
-// to the form submitter. All five branches end in redirect() so the
-// browser URL is always under our control after the action runs.
+//   Why we don't redirect: Next 15 server actions invoked through the
+//   OpenNext-on-Cloudflare-Workers runtime don't reliably propagate
+//   redirect() responses as a visible client navigation in staging — the
+//   action runs to completion, the DB updates, but the browser sits on the
+//   pre-action URL until manual reload. The useActionState +
+//   router.refresh() pattern sidesteps the issue and matches the docs'
+//   recommendation for inline post-action feedback.
+//
+// Brief 18 diagnostic logging is retained — every click writes one entry
+// log + one outcome log to splash-web Worker logs (prefixed [damage-action])
+// so the dcRole-population mystery is observable. Remove in a follow-up.
 
 "use server";
 
-import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import { damagePostForm, damagePostMultipart, type DamagePostResult } from "../_lib/worker-fetch";
+import type { ActionResult } from "../../_components/ActionForm";
 
 function detailPath(claimId: string): string {
   return `/admin/damage/${encodeURIComponent(claimId)}`;
-}
-
-function errorRedirect(claimId: string, message: string): never {
-  redirect(`${detailPath(claimId)}?action_error=${encodeURIComponent(message)}`);
 }
 
 /**
@@ -82,14 +81,13 @@ function logActionResult(
   }
 }
 
-export async function transitionAction(formData: FormData): Promise<void> {
+export async function transitionAction(
+  _prevState: ActionResult | null,
+  formData: FormData
+): Promise<ActionResult> {
   const claimId = String(formData.get("claim_id") ?? "").trim();
   if (!claimId) {
-    redirect(
-      `/admin/damage?action_error=${encodeURIComponent(
-        "Missing claim id on transition submission."
-      )}`
-    );
+    return { ok: false, error: "Missing claim id on transition submission." };
   }
 
   logActionEntry("transition", claimId, formData);
@@ -100,21 +98,24 @@ export async function transitionAction(formData: FormData): Promise<void> {
   logActionResult("transition", claimId, result);
 
   if (!result.ok) {
-    errorRedirect(claimId, result.error);
+    return { ok: false, error: result.error };
   }
 
   revalidatePath(detailPath(claimId));
-  redirect(detailPath(claimId));
+  const toStatus = String(formData.get("to_status") ?? "").trim();
+  return {
+    ok: true,
+    message: toStatus ? `Status updated to ${toStatus}` : "Status updated"
+  };
 }
 
-export async function addNoteAction(formData: FormData): Promise<void> {
+export async function addNoteAction(
+  _prevState: ActionResult | null,
+  formData: FormData
+): Promise<ActionResult> {
   const claimId = String(formData.get("claim_id") ?? "").trim();
   if (!claimId) {
-    redirect(
-      `/admin/damage?action_error=${encodeURIComponent(
-        "Missing claim id on note submission."
-      )}`
-    );
+    return { ok: false, error: "Missing claim id on note submission." };
   }
 
   logActionEntry("note", claimId, formData);
@@ -125,11 +126,11 @@ export async function addNoteAction(formData: FormData): Promise<void> {
   logActionResult("note", claimId, result);
 
   if (!result.ok) {
-    errorRedirect(claimId, result.error);
+    return { ok: false, error: result.error };
   }
 
   revalidatePath(detailPath(claimId));
-  redirect(detailPath(claimId));
+  return { ok: true, message: "Note added" };
 }
 
 /* ============================================================
@@ -147,14 +148,13 @@ export async function addNoteAction(formData: FormData): Promise<void> {
  * "doc_type" (not "document_type"). The damage-worker reads exactly those
  * names — see apps/damage-worker/src/index.ts:773.
  */
-export async function uploadDocumentAction(formData: FormData): Promise<void> {
+export async function uploadDocumentAction(
+  _prevState: ActionResult | null,
+  formData: FormData
+): Promise<ActionResult> {
   const claimId = String(formData.get("claim_id") ?? "").trim();
   if (!claimId) {
-    redirect(
-      `/admin/damage?action_error=${encodeURIComponent(
-        "Missing claim id on document upload."
-      )}`
-    );
+    return { ok: false, error: "Missing claim id on document upload." };
   }
 
   logActionEntry("upload-document", claimId, formData);
@@ -165,11 +165,15 @@ export async function uploadDocumentAction(formData: FormData): Promise<void> {
   logActionResult("upload-document", claimId, result);
 
   if (!result.ok) {
-    errorRedirect(claimId, result.error);
+    return { ok: false, error: result.error };
   }
 
   revalidatePath(detailPath(claimId));
-  redirect(detailPath(claimId));
+  const docType = String(formData.get("doc_type") ?? "").trim();
+  return {
+    ok: true,
+    message: docType ? `${docType} uploaded` : "Document uploaded"
+  };
 }
 
 /**
@@ -179,18 +183,17 @@ export async function uploadDocumentAction(formData: FormData): Promise<void> {
  * amount, notes, pay_to_type, vendor_address. doc_id is read from the
  * hidden form field and folded into the URL path.
  */
-export async function editDocumentAction(formData: FormData): Promise<void> {
+export async function editDocumentAction(
+  _prevState: ActionResult | null,
+  formData: FormData
+): Promise<ActionResult> {
   const claimId = String(formData.get("claim_id") ?? "").trim();
   const docId = String(formData.get("doc_id") ?? "").trim();
   if (!claimId) {
-    redirect(
-      `/admin/damage?action_error=${encodeURIComponent(
-        "Missing claim id on document edit."
-      )}`
-    );
+    return { ok: false, error: "Missing claim id on document edit." };
   }
   if (!docId) {
-    errorRedirect(claimId, "Missing document id on edit submission.");
+    return { ok: false, error: "Missing document id on edit submission." };
   }
 
   logActionEntry("edit-document", claimId, formData);
@@ -203,11 +206,11 @@ export async function editDocumentAction(formData: FormData): Promise<void> {
   logActionResult("edit-document", claimId, result);
 
   if (!result.ok) {
-    errorRedirect(claimId, result.error);
+    return { ok: false, error: result.error };
   }
 
   revalidatePath(detailPath(claimId));
-  redirect(detailPath(claimId));
+  return { ok: true, message: "Document updated" };
 }
 
 /**
@@ -223,18 +226,17 @@ export async function editDocumentAction(formData: FormData): Promise<void> {
  * the delete only if "Yes" is clicked again, which is still user-initiated.
  * Stricter (one-shot token) version is a follow-up if needed.
  */
-export async function deleteDocumentAction(formData: FormData): Promise<void> {
+export async function deleteDocumentAction(
+  _prevState: ActionResult | null,
+  formData: FormData
+): Promise<ActionResult> {
   const claimId = String(formData.get("claim_id") ?? "").trim();
   const docId = String(formData.get("doc_id") ?? "").trim();
   if (!claimId) {
-    redirect(
-      `/admin/damage?action_error=${encodeURIComponent(
-        "Missing claim id on document delete."
-      )}`
-    );
+    return { ok: false, error: "Missing claim id on document delete." };
   }
   if (!docId) {
-    errorRedirect(claimId, "Missing document id on delete submission.");
+    return { ok: false, error: "Missing document id on delete submission." };
   }
 
   logActionEntry("delete-document", claimId, formData);
@@ -247,9 +249,9 @@ export async function deleteDocumentAction(formData: FormData): Promise<void> {
   logActionResult("delete-document", claimId, result);
 
   if (!result.ok) {
-    errorRedirect(claimId, result.error);
+    return { ok: false, error: result.error };
   }
 
   revalidatePath(detailPath(claimId));
-  redirect(detailPath(claimId));
+  return { ok: true, message: "Document deleted" };
 }

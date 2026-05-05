@@ -1,28 +1,31 @@
 // Damage claim detail page (/admin/damage/[id]).
 //
-// Server component (with one client island for the photo lightbox). Brief
+// Server component (with two client islands: the photo lightbox and the
+// shared <ActionForm> wrapper around every server-action <form>). Brief
 // 5b laid out the read view. Brief 5c added transitions, notes, and the
 // check-request PDF preview link in the approval box. Brief 11a retrofit:
 // transition buttons are now gated by the caller's dcRole. Brief 5d adds
 // document upload, per-Quote/Receipt edit + delete, photo lightbox on
 // image-typed tiles, per-Quote-tile check-request preview, and a
-// confirm-delete banner driven by ?confirm_delete_id=N.
+// confirm-delete banner driven by ?confirm_delete_id=N. Brief 19 flips
+// every server action from redirect()-based feedback to ActionResult +
+// router.refresh() via <ActionForm>; the page-level ?action_error banner
+// is gone (per-form inline result rendering replaces it).
 //
 // Sections (top → bottom):
-//   1. Action-error banner (when ?action_error=... is set).
-//   2. Confirm-delete banner (when ?confirm_delete_id=... is set, 5d).
-//   3. Back link + page banner.
-//   4. Summary card (Brief 5b) — approval-details box now includes the
+//   1. Confirm-delete banner (when ?confirm_delete_id=... is set, 5d).
+//   2. Back link + page banner.
+//   3. Summary card (Brief 5b) — approval-details box now includes the
 //      check-request preview link when claim.approved_quote_id is set.
-//   5. Move-forward section (Brief 5c, retrofit 11a) — one form per
-//      transition that is valid-from-current-status AND allowed for the
-//      caller's dcRole, submits to transitionAction.
-//   6. Photo gallery (Brief 5b, extended in 5d) — image tiles open a
+//   4. Move-forward section (Brief 5c, retrofit 11a) — one ActionForm per
+//      transition that is valid-from-current-status, submits to
+//      transitionAction.
+//   5. Photo gallery (Brief 5b, extended in 5d) — image tiles open a
 //      lightbox; Quote/Receipt tiles get Edit/Delete affordances and a
 //      per-Quote check-request preview link.
-//   7. Upload-document card (Brief 5d) — between gallery and timeline.
-//   8. Activity timeline (Brief 5b).
-//   9. Add-note form (Brief 5c) — submits to addNoteAction.
+//   6. Upload-document card (Brief 5d) — between gallery and timeline.
+//   7. Activity timeline (Brief 5b).
+//   8. Add-note form (Brief 5c) — submits to addNoteAction.
 //
 // Four fetch branches:
 //   - 401/403 -> no-access card with Sign In (return path = this URL)
@@ -63,6 +66,7 @@ import {
   transitionAction,
   uploadDocumentAction
 } from "./actions";
+import { ActionForm } from "../../_components/ActionForm";
 import { getMe } from "../../../_lib/me";
 import type { Session } from "@splash/types/session";
 import type {
@@ -164,7 +168,8 @@ export default async function DamageClaimDetailPage({ params, searchParams }: Pa
   const { id: rawId } = await params;
   const id = decodeURIComponent(rawId);
   const sp = await searchParams;
-  const actionError = firstParam(sp.action_error).trim() || null;
+  // Brief 19: ?action_error reading is removed — <ActionForm> renders the
+  // result inline under each server-action form now.
   const confirmDeleteIdRaw = firstParam(sp.confirm_delete_id).trim();
   const confirmDeleteId =
     confirmDeleteIdRaw && /^\d+$/.test(confirmDeleteIdRaw)
@@ -286,7 +291,6 @@ export default async function DamageClaimDetailPage({ params, searchParams }: Pa
 
   return (
     <section className="mx-auto w-full max-w-[1100px] px-5 py-9">
-      <ActionAlert message={actionError} claimId={claim.claim_id} />
       {pendingDelete ? (
         <ConfirmDeleteBanner claimId={claim.claim_id} photo={pendingDelete} />
       ) : null}
@@ -309,37 +313,6 @@ export default async function DamageClaimDetailPage({ params, searchParams }: Pa
       <ActivityTimelineCard activity={activity} />
       <AddNoteCard claimId={claim.claim_id} />
     </section>
-  );
-}
-
-/* ============================================================
- * Action-error banner (Brief 5c)
- * ============================================================ */
-
-function ActionAlert({
-  message,
-  claimId
-}: {
-  message: string | null;
-  claimId: string;
-}) {
-  if (!message) return null;
-  return (
-    <div
-      role="alert"
-      className="mb-5 flex flex-col gap-2 rounded-splash-md border border-splash-deny/40 bg-splash-deny/10 p-4 text-sm text-splash-deny sm:flex-row sm:items-center sm:justify-between"
-    >
-      <div className="flex-1 whitespace-pre-line">
-        <span className="font-bold">Action failed: </span>
-        {message}
-      </div>
-      <Link
-        href={`/admin/damage/${encodeURIComponent(claimId)}`}
-        className="text-xs font-semibold underline underline-offset-2 hover:text-splash-deny/80"
-      >
-        Dismiss
-      </Link>
-    </div>
   );
 }
 
@@ -683,7 +656,7 @@ function TransitionForm({
     "text-xs font-semibold uppercase tracking-wider text-splash-navy/70";
 
   return (
-    <form
+    <ActionForm
       action={transitionAction}
       className="flex flex-col gap-3 rounded-splash-md border border-gray-light bg-sudsy-blue-soft/20 p-4 sm:flex-row sm:flex-wrap sm:items-end"
     >
@@ -788,7 +761,7 @@ function TransitionForm({
           {label}
         </button>
       </div>
-    </form>
+    </ActionForm>
   );
 }
 
@@ -800,7 +773,7 @@ function AddNoteCard({ claimId }: { claimId: string }) {
   return (
     <div className="mb-6 rounded-splash-lg border border-gray-light bg-white p-6 shadow-splash-card">
       <h2 className="mb-4 text-lg font-bold text-splash-navy">Add a note</h2>
-      <form action={addNoteAction} className="flex flex-col gap-3">
+      <ActionForm action={addNoteAction} className="flex flex-col gap-3">
         <input type="hidden" name="claim_id" value={claimId} />
         <textarea
           name="note"
@@ -818,7 +791,7 @@ function AddNoteCard({ claimId }: { claimId: string }) {
             Add note
           </button>
         </div>
-      </form>
+      </ActionForm>
     </div>
   );
 }
@@ -1068,7 +1041,7 @@ function DocumentEditForm({
   const isQuote = photo.photo_type === "Quote";
 
   return (
-    <form action={editDocumentAction} className="flex flex-col gap-2">
+    <ActionForm action={editDocumentAction} className="flex flex-col gap-2">
       <input type="hidden" name="claim_id" value={claimId} />
       <input type="hidden" name="doc_id" value={String(photo.id)} />
 
@@ -1152,7 +1125,7 @@ function DocumentEditForm({
           Cancel
         </Link>
       </div>
-    </form>
+    </ActionForm>
   );
 }
 
@@ -1182,7 +1155,7 @@ function ConfirmDeleteBanner({
         </div>
       </div>
       <div className="flex items-center gap-2">
-        <form action={deleteDocumentAction}>
+        <ActionForm action={deleteDocumentAction}>
           <input type="hidden" name="claim_id" value={claimId} />
           <input type="hidden" name="doc_id" value={String(photo.id)} />
           <button
@@ -1191,7 +1164,7 @@ function ConfirmDeleteBanner({
           >
             Yes, delete
           </button>
-        </form>
+        </ActionForm>
         <Link
           href={`/admin/damage/${encodeURIComponent(claimId)}`}
           className="rounded-splash-sm border border-gray-light bg-white px-4 py-2 text-xs font-semibold text-splash-navy hover:bg-sudsy-blue-soft"
@@ -1227,7 +1200,7 @@ function UploadDocumentCard({ claimId }: { claimId: string }) {
         Vendor / amount / pay-to fields are optional but speed up downstream
         approvals.
       </p>
-      <form
+      <ActionForm
         action={uploadDocumentAction}
         encType="multipart/form-data"
         className="grid grid-cols-1 gap-3 md:grid-cols-2"
@@ -1317,7 +1290,7 @@ function UploadDocumentCard({ claimId }: { claimId: string }) {
             Upload document
           </button>
         </div>
-      </form>
+      </ActionForm>
     </div>
   );
 }
