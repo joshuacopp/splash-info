@@ -25,6 +25,16 @@
 //                                          new location. Atomic via Supabase
 //                                          REST array POST (all rows or none).
 //                                          Hardcodes pricing = 'full'.
+//                                          Brief 29: also INSERTs a single
+//                                          row into `locations` first (so the
+//                                          locations editor / triggers can
+//                                          find the new location) and accepts
+//                                          a new `address` field that lands
+//                                          in locations.location +
+//                                          pricing_simple.address. Best-
+//                                          effort rollback DELETE of the
+//                                          locations row on pricing_simple
+//                                          insert failure.
 //   PATCH /sysadmin/api/pricing-simple/package
 //                                        — Brief 26. Update one pricing_simple
 //                                          row by composite PK
@@ -489,6 +499,18 @@ interface PricingSimpleInsertRow {
   site_email: string | null;
   am_email: string | null;
   rm_email: string | null;
+  address: string | null;
+}
+
+interface LocationsInsertRow {
+  site_number: number;
+  site: string;
+  location: string | null;
+  area_manager: string | null;
+  regional_manager: string | null;
+  am_email: string | null;
+  rm_email: string | null;
+  site_email: string | null;
 }
 
 const LOCATION_CODE_RE = /^[a-z0-9_]+$/;
@@ -516,6 +538,17 @@ async function handleCreateLocation(
   const siteEmail = stringOrNull(body.site_email);
   const amEmail = stringOrNull(body.am_email);
   const rmEmail = stringOrNull(body.rm_email);
+  const address = stringOrNull(body.address);
+
+  // Brief 29 — `site` is now required because we derive locations.site_number
+  // from it and the locations row is inserted unconditionally.
+  if (!site) {
+    return jsonError(400, "Site number required (used as locations.site_number)");
+  }
+  const siteNumber = Number(site);
+  if (!Number.isInteger(siteNumber) || siteNumber <= 0) {
+    return jsonError(400, "Site number must be a positive integer");
+  }
 
   for (const [field, value] of [
     ["site_email", siteEmail],
@@ -611,7 +644,70 @@ async function handleCreateLocation(
     return jsonError(409, "Location code already in use");
   }
 
-  // Build the row array and POST atomically.
+  // Brief 29 — pre-check uniqueness on locations.site_number. The locations
+  // table doesn't carry a location_code column (only site_number is the
+  // unique business key), so site_number is the only collision key here.
+  const locExistsResp = await fetch(
+    `${env.SUPABASE_URL}/rest/v1/locations?site_number=eq.${siteNumber}&select=id&limit=1`,
+    {
+      headers: {
+        apikey: env.SUPABASE_SERVICE_KEY,
+        Authorization: `Bearer ${env.SUPABASE_SERVICE_KEY}`
+      }
+    }
+  );
+  if (!locExistsResp.ok) {
+    const errText = await locExistsResp.text().catch(() => "");
+    return jsonError(500, `Locations pre-check failed: ${locExistsResp.status} ${errText}`);
+  }
+  const locExisting = (await locExistsResp.json().catch(() => [])) as unknown[];
+  if (Array.isArray(locExisting) && locExisting.length > 0) {
+    return jsonError(409, "Location already exists in locations table");
+  }
+
+  // Brief 29 — INSERT locations row FIRST. The trg_sync_pricing_simple
+  // trigger fires `ON locations AFTER UPDATE` (not INSERT), so we don't
+  // rely on the trigger to populate pricing_simple's denormalized columns
+  // here — the pricing_simple INSERT below carries them directly.
+  const locInsertRow: LocationsInsertRow = {
+    site_number: siteNumber,
+    site: locationPretty,
+    location: address,
+    area_manager: areaManager,
+    regional_manager: regionalManager,
+    am_email: amEmail,
+    rm_email: rmEmail,
+    site_email: siteEmail
+  };
+  const locInsertResp = await fetch(
+    `${env.SUPABASE_URL}/rest/v1/locations`,
+    {
+      method: "POST",
+      headers: {
+        apikey: env.SUPABASE_SERVICE_KEY,
+        Authorization: `Bearer ${env.SUPABASE_SERVICE_KEY}`,
+        "Content-Type": "application/json",
+        Prefer: "return=representation"
+      },
+      body: JSON.stringify(locInsertRow)
+    }
+  );
+  if (!locInsertResp.ok) {
+    const errText = await locInsertResp.text().catch(() => "");
+    return jsonError(
+      500,
+      `Locations insert failed: ${locInsertResp.status} ${errText}`
+    );
+  }
+  const locInsertedRows = (await locInsertResp.json().catch(() => [])) as Array<{
+    id?: number | string;
+  }>;
+  const insertedLocationId =
+    Array.isArray(locInsertedRows) && locInsertedRows.length > 0
+      ? locInsertedRows[0]!.id ?? null
+      : null;
+
+  // Build the pricing_simple row array and POST atomically.
   const rows: PricingSimpleInsertRow[] = packages.map((p) => ({
     location_code: locationCode,
     location_pretty: locationPretty,
@@ -627,7 +723,8 @@ async function handleCreateLocation(
     regional_manager: regionalManager,
     site_email: siteEmail,
     am_email: amEmail,
-    rm_email: rmEmail
+    rm_email: rmEmail,
+    address
   }));
 
   const insertResp = await fetch(
@@ -646,9 +743,63 @@ async function handleCreateLocation(
 
   if (!insertResp.ok) {
     const errText = await insertResp.text().catch(() => "");
+
+    // Brief 29 — best-effort rollback of the just-inserted locations row.
+    // If the DELETE fails, surface BOTH errors and flag the audit log so
+    // the operator knows manual cleanup is required.
+    let cleanupNote = "";
+    let needsManualCleanup = false;
+    if (insertedLocationId !== null) {
+      const cleanupResp = await fetch(
+        `${env.SUPABASE_URL}/rest/v1/locations?id=eq.${encodeURIComponent(
+          String(insertedLocationId)
+        )}`,
+        {
+          method: "DELETE",
+          headers: {
+            apikey: env.SUPABASE_SERVICE_KEY,
+            Authorization: `Bearer ${env.SUPABASE_SERVICE_KEY}`
+          }
+        }
+      ).catch((err) => {
+        cleanupNote = ` Cleanup DELETE threw: ${err instanceof Error ? err.message : String(err)}.`;
+        return null;
+      });
+      if (cleanupResp && !cleanupResp.ok) {
+        const cleanupText = await cleanupResp.text().catch(() => "");
+        cleanupNote = ` Cleanup DELETE failed: ${cleanupResp.status} ${cleanupText}.`;
+        needsManualCleanup = true;
+      } else if (!cleanupResp) {
+        needsManualCleanup = true;
+      }
+    }
+
+    if (needsManualCleanup) {
+      // Best-effort audit entry flagging the orphan.
+      try {
+        const sb = createServiceClient(env);
+        await logSysadminAudit(sb, {
+          actor,
+          action: "create_location_failed",
+          target_type: "locations",
+          target_id: String(insertedLocationId ?? "unknown"),
+          before: null,
+          after: {
+            location_code: locationCode,
+            site_number: siteNumber,
+            needs_manual_cleanup: true,
+            orphan_location_id: insertedLocationId
+          },
+          notes: "pricing_simple insert failed AND rollback DELETE on locations failed; manual cleanup required"
+        });
+      } catch {
+        // swallow; audit best-effort
+      }
+    }
+
     return jsonError(
       500,
-      `Supabase insert failed: ${insertResp.status} ${errText}`
+      `Supabase insert failed: ${insertResp.status} ${errText}.${cleanupNote}`
     );
   }
 
@@ -663,6 +814,9 @@ async function handleCreateLocation(
     after: {
       location_code: locationCode,
       location_pretty: locationPretty,
+      location_id: insertedLocationId,
+      site_number: siteNumber,
+      address,
       package_count: packages.length
     }
   });
@@ -670,6 +824,8 @@ async function handleCreateLocation(
   return json({
     ok: true,
     location_code: locationCode,
+    location_id: insertedLocationId,
+    site_number: siteNumber,
     package_count: packages.length
   });
 }

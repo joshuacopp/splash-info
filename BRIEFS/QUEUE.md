@@ -10,4 +10,7 @@
 
 # brief-024-sysadmin-add-location.md  (completed 2026-05-05)
 # brief-025-claim-form-polish.md  (completed 2026-05-05)
+# brief-026-sysadmin-update-package.md  (completed 2026-05-05)
+# brief-027-sysadmin-update-location.md  (completed 2026-05-05)
+
 

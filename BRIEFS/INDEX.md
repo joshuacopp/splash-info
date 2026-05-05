@@ -35,6 +35,7 @@ navigation aid.
 | 26 | Sysadmin Update Package (pricing_simple — search-by-location_code + per-row edit, primarily pkg$/single, also pkg/sort/other; `ilike` search, no SQL UI) | Completed (2026-05-05) | Direct pricing_simple management from sysadmin UI (second of 3) | [brief-026-sysadmin-update-package.md](brief-026-sysadmin-update-package.md) |
 | 27 | Sysadmin Update Locations (locations table fields — triggers propagate am_email / area_manager / rm_email / regional_manager / site_email into pricing_simple and auth) | Completed (2026-05-05) | Direct pricing_simple management from sysadmin UI (third of 3) | [brief-027-sysadmin-update-location.md](brief-027-sysadmin-update-location.md) |
 | 28 | Cross-worker pricing cache invalidation (signup-worker `pricing_simple_resolved` cache buster) — flagged TODO three times now (Briefs 24, 26, 27); sysadmin-side cache-clear button + signup-worker invalidation hook | Not started | Eliminate the up-to-5-minute lag between sysadmin pricing edits and customer signup form | items 24, 26, 27 |
+| 29 | Tab title "Splash Tools" + Add Location writes `locations` row + accept `address` field + claim form `Submitting...` overlay clears on success | Completed (2026-05-05) | Three post-test polish items (cosmetic + Update Location dependency + customer-facing UX) | [brief-029-tab-title-add-location-row-claim-overlay.md](brief-029-tab-title-add-location-row-claim-overlay.md) |
 
 **Folded items** (work absorbed into earlier briefs):
 - Item 3 (URL drift /admin/{loc} <-> /admin/pricing/{loc}) - folded into Brief 2.

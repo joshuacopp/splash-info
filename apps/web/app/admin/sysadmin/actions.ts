@@ -298,6 +298,7 @@ interface CreateLocationBody {
   location_pretty: string;
   location_code: string;
   site?: string | null;
+  address?: string | null;
   area_manager?: string | null;
   regional_manager?: string | null;
   site_email?: string | null;
@@ -371,6 +372,7 @@ export async function createLocationAction(
   };
 
   const site = fieldOptionalNullable(formData, "site");
+  const address = fieldOptionalNullable(formData, "address");
   const areaManager = fieldOptionalNullable(formData, "area_manager");
   const regionalManager = fieldOptionalNullable(formData, "regional_manager");
   const siteEmail = fieldOptionalNullable(formData, "site_email");
@@ -378,6 +380,7 @@ export async function createLocationAction(
   const rmEmail = fieldOptionalNullable(formData, "rm_email");
 
   if (site !== null) body.site = site;
+  if (address !== null) body.address = address;
   if (areaManager !== null) body.area_manager = areaManager;
   if (regionalManager !== null) body.regional_manager = regionalManager;
   if (siteEmail !== null) body.site_email = siteEmail;
@@ -392,13 +395,15 @@ export async function createLocationAction(
     return { ok: false, error: result.error };
   }
 
-  // Worker returns { ok, location_code, package_count }.
+  // Worker returns { ok, location_code, location_id, site_number, package_count }.
   let respLocationCode = locationCode;
   let respPackageCount = packages.length;
+  let respSiteNumber: number | null = null;
   if (result.body && typeof result.body === "object") {
     const r = result.body as {
       location_code?: unknown;
       package_count?: unknown;
+      site_number?: unknown;
     };
     if (typeof r.location_code === "string" && r.location_code.length > 0) {
       respLocationCode = r.location_code;
@@ -406,12 +411,16 @@ export async function createLocationAction(
     if (typeof r.package_count === "number") {
       respPackageCount = r.package_count;
     }
+    if (typeof r.site_number === "number") {
+      respSiteNumber = r.site_number;
+    }
   }
 
   revalidatePath(PAGE_PATH);
+  const sitePart = respSiteNumber !== null ? `#${respSiteNumber}, ` : "";
   return {
     ok: true,
-    message: `Location created: ${respLocationCode} (${respPackageCount} packages)`
+    message: `Location created: ${respLocationCode} (${sitePart}${respPackageCount} packages)`
   };
 }
 

@@ -25,7 +25,7 @@ import { getMe, roleLabelFor } from "./_lib/me";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Splash MaxPass",
+  title: "Splash Tools",
   description: "Splash Car Washes - internal tools",
   icons: {
     icon: ASSETS.favicon

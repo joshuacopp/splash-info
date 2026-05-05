@@ -377,7 +377,16 @@ URL-based — service bindings don't apply to those.
   `pricing_simple` and `locations` table editing (bypasses SQL for
   non-pricing-API changes). Brief 24 landed Add Location — atomic
   bulk insert of N `pricing_simple` rows for a brand-new location via
-  Supabase REST array POST; hardcodes `pricing = 'full'`. Brief 26
+  Supabase REST array POST; hardcodes `pricing = 'full'`. Brief 29
+  extended Add Location to ALSO insert the corresponding `locations`
+  row (so Brief 27's Update Location editor can find newly-created
+  locations and the `trg_sync_pricing_simple` trigger has a row to
+  fire on), accept a new `address` field that lands in both
+  `locations.location` and `pricing_simple.address`, and made `site`
+  required (parsed to `locations.site_number`). The locations row is
+  inserted FIRST; on pricing_simple insert failure the worker issues
+  a best-effort DELETE rollback of the locations row and flags the
+  audit log for manual cleanup if the rollback also fails. Brief 26
   landed Update Package — search-then-edit one `pricing_simple` row by
   composite PK (`location_code`, `pkg`) via PATCH
   `/sysadmin/api/pricing-simple/package`. Editable fields are

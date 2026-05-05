@@ -743,6 +743,7 @@ const FORM_SCRIPT = `(function () {
     else submitBtn.textContent = 'Submit claim';
   }
   function showOutcome(claimId) {
+    setSubmitting(false);
     formPage.hidden = true;
     outcomePage.hidden = false;
     outcomeClaimId.textContent = claimId || '(unknown)';

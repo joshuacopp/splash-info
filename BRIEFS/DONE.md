@@ -27,3 +27,5 @@
 - 2026-05-05 10:05:45 brief-025-claim-form-polish.md (success)
 - 2026-05-05 12:02:31 brief-026-sysadmin-update-package.md (success)
 - 2026-05-05 12:15:31 brief-027-sysadmin-update-location.md (success)
+- 2026-05-05 14:41:21 brief-028-tab-title-add-location-row-claim-overlay.md (success)
+- 2026-05-05 14:44:41 brief-029-tab-title-add-location-row-claim-overlay.md (success)

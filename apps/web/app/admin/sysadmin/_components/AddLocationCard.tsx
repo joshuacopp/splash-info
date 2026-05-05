@@ -96,15 +96,38 @@ export function AddLocationCard() {
         <div>
           <label htmlFor="add-loc-site" className={labelCls}>
             Site number
-            <span className={helperCls}>Optional</span>
+            <span className={helperCls}>
+              Positive integer. Used as locations.site_number.
+            </span>
           </label>
           <input
             id="add-loc-site"
             name="site"
             type="text"
+            required
+            inputMode="numeric"
+            pattern="[0-9]+"
             autoComplete="off"
             className={inputCls}
             placeholder="34"
+          />
+        </div>
+
+        <div>
+          <label htmlFor="add-loc-address" className={labelCls}>
+            Address
+            <span className={helperCls}>
+              Street address. Stored on locations row + propagated to
+              pricing_simple.address.
+            </span>
+          </label>
+          <input
+            id="add-loc-address"
+            name="address"
+            type="text"
+            autoComplete="off"
+            className={inputCls}
+            placeholder="100 Main St, Binghamton NY"
           />
         </div>
 
