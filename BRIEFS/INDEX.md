@@ -29,6 +29,7 @@ navigation aid.
 | 20 | Staging-test bug batch — sysadmin idempotency (changed flag + no-op audit), damage transition clearApprovalDetails, ApprovalDetails null gate, no-quotes hint with #upload-document anchor, Quote-row required field validation (worker + UI), edit `<details>` close-on-save, defensive try/catch on editDocumentAction | Completed (2026-05-05) | Day-to-day usability of damage manager + sysadmin (8 bugs surfaced by first end-to-end staging smoke test) | [brief-020-staging-bug-batch.md](brief-020-staging-bug-batch.md) |
 | 21 | dcRole gating restored (show-disabled pattern with per-role hint copy) + Brief 18 diagnostic cleanup (DcRoleDebugLine + log helpers removed) + contact_status "Not Started" pill suppressed | Completed (2026-05-05) | Damage detail UX correctness + production-ready polish | [brief-021-dcrole-gating-cleanup.md](brief-021-dcrole-gating-cleanup.md) |
 | 22 | Recent notes sub-box on damage detail + jump-to-add-note anchor button + smooth scroll | Completed (2026-05-05) | Damage detail UX polish | [brief-022-recent-notes-card.md](brief-022-recent-notes-card.md) |
+| 23 | Public customer claim form ported to damage-worker (`GET /claims/{slug}` + `GET /claims/{slug}/thanks` + dual-mode `POST /claims-api/submit-claim`) | Completed (2026-05-05) | Customer-facing cutover (decision 9) | [brief-023-customer-claim-form.md](brief-023-customer-claim-form.md) |
 
 **Folded items** (work absorbed into earlier briefs):
 - Item 3 (URL drift /admin/{loc} <-> /admin/pricing/{loc}) - folded into Brief 2.

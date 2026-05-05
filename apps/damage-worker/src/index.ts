@@ -17,7 +17,14 @@
 // =============================================================================
 //
 // PUBLIC (no auth gate):
+//   GET  /claims/{location-slug}                            — render claim form HTML (Brief 23)
+//   GET  /claims/{location-slug}/thanks                     — render success confirmation HTML (Brief 23)
 //   POST /claims-api/submit-claim                           — customer form submission
+//                                                            (Brief 23: detects browser submit via
+//                                                            Accept: text/html and 302s to
+//                                                            /claims/{slug}/thanks?id=... or
+//                                                            /claims/{slug}?error=...; programmatic
+//                                                            JSON callers continue to receive JSON.)
 //   GET  /claims-api/photo/{r2-key-suffix...}               — serve R2 photo
 //
 // AUTH-GATED (checkToolAccess "claims" — super-admin bypasses):
@@ -107,6 +114,12 @@ import {
   generateCheckRequestPdf,
   runCheckRequestPdfStep
 } from "./pdf.js";
+import {
+  htmlResponse,
+  renderClaimForm,
+  renderClaimNotFound,
+  renderThanksPage
+} from "./render/claim-form.js";
 
 interface Env extends SupabaseEnv {
   DB: D1Database;
@@ -173,6 +186,23 @@ export default {
         // provides obscurity but not real access control. If this becomes
         // a concern, add auth-gating in a follow-up.
         return serveClaimPhoto(env.R2_BUCKET, photoKey);
+      }
+
+      // GET /claims/{slug} — render the public customer claim form.
+      // GET /claims/{slug}/thanks — render the post-submit confirmation.
+      // Both public; no auth gate. Source: legacy/damagemanager.js:55-60
+      // (rendering) ported in Brief 23.
+      if (parts[0] === "claims" && parts.length === 2 && parts[1] && method === "GET") {
+        return handleRenderClaimForm(env, decodeURIComponent(parts[1]), url);
+      }
+      if (
+        parts[0] === "claims" &&
+        parts.length === 3 &&
+        parts[1] &&
+        parts[2] === "thanks" &&
+        method === "GET"
+      ) {
+        return handleRenderThanks(env, decodeURIComponent(parts[1]), url);
       }
 
       /* ============================================================
@@ -263,6 +293,63 @@ async function dispatchManageApi(
   }
 
   return new Response("Not found", { status: 404 });
+}
+
+/* ============================================================
+ * Public render handlers — Brief 23
+ *
+ * GET /claims/{slug}             → renderClaimForm
+ * GET /claims/{slug}/thanks      → renderThanksPage
+ *
+ * Slug resolves via getActiveLocationByCode(env.DB, slug). On miss the
+ * worker returns 404 with friendly HTML rather than the bare "Not found"
+ * fallback.
+ *
+ * Bookmarks (per CLAUDE.md): /claims/{location} is load-bearing — saved
+ * on hundreds of customer/admin device home screens. Path shape MUST
+ * stay /claims/{slug}.
+ * ============================================================ */
+
+async function handleRenderClaimForm(
+  env: Env,
+  slug: string,
+  url: URL
+): Promise<Response> {
+  const location = await getActiveLocationByCode(env.DB, slug);
+  if (!location) {
+    return htmlResponse(renderClaimNotFound(slug), 404);
+  }
+  // Optional ?error=... query carries an error message bounced from a
+  // failed POST submission (browser path — see handleClaimSubmission's
+  // browserMode redirect logic). Cap length so a malicious bounce can't
+  // inject a giant banner.
+  const errorParam = url.searchParams.get("error");
+  const errorMessage = errorParam ? errorParam.slice(0, 240) : null;
+  return htmlResponse(
+    renderClaimForm({
+      locationCode: location.location_code,
+      locationPretty: location.location_pretty,
+      errorMessage
+    })
+  );
+}
+
+async function handleRenderThanks(
+  env: Env,
+  slug: string,
+  url: URL
+): Promise<Response> {
+  const location = await getActiveLocationByCode(env.DB, slug);
+  if (!location) {
+    return htmlResponse(renderClaimNotFound(slug), 404);
+  }
+  const claimId = url.searchParams.get("id");
+  return htmlResponse(
+    renderThanksPage({
+      locationPretty: location.location_pretty,
+      claimId: claimId ? claimId.slice(0, 64) : null
+    })
+  );
 }
 
 /* ============================================================
@@ -1022,6 +1109,19 @@ interface ClaimSubmissionPayload {
 }
 
 async function handleClaimSubmission(request: Request, env: Env): Promise<Response> {
+  // Brief 23: dual-mode response shape.
+  //   - Browser submit (Accept: text/html...): 302 to /claims/{slug}/thanks?id=...
+  //     on success or /claims/{slug}?error=... on failure.
+  //   - Programmatic / JSON caller: existing JSON shape.
+  // Detection is the Accept request header — browsers default to
+  // "text/html,application/xhtml+xml,...", JSON callers either send
+  // "application/json" or omit Accept. We treat any text/html prefix in
+  // Accept as browser mode.
+  const acceptHeader = request.headers.get("Accept") ?? "";
+  const browserMode = acceptHeader.includes("text/html");
+  const requestUrl = new URL(request.url);
+  const baseOrigin = `${requestUrl.protocol}//${requestUrl.host}`;
+
   try {
     const formData = await request.formData();
 
@@ -1204,6 +1304,15 @@ async function handleClaimSubmission(request: Request, env: Env): Promise<Respon
       );
     }
 
+    if (browserMode) {
+      const slug =
+        encodeURIComponent(claimData.location || "") || "unknown";
+      const target = new URL(
+        `${baseOrigin}/claims/${slug}/thanks?id=${encodeURIComponent(claimData.claimId)}`
+      );
+      return Response.redirect(target.toString(), 303);
+    }
+
     return json({
       success: true,
       claimId: claimData.claimId,
@@ -1213,10 +1322,34 @@ async function handleClaimSubmission(request: Request, env: Env): Promise<Respon
     });
   } catch (error) {
     console.error("Claim submission error:", error);
+    const message = error instanceof Error ? error.message : "submission failed";
+
+    if (browserMode) {
+      // Best-effort: bounce the customer back to the form with an error
+      // banner. We may not have the parsed slug if formData() itself threw,
+      // so fall back to extracting it from the Referer header — the form
+      // page posts from /claims/{slug}, so the Referer carries the slug.
+      let slug = "unknown";
+      const referer = request.headers.get("Referer");
+      if (referer) {
+        try {
+          const refPath = new URL(referer).pathname;
+          const match = refPath.match(/^\/claims\/([^/]+)/);
+          if (match?.[1]) slug = match[1];
+        } catch {
+          // bad Referer — keep "unknown"
+        }
+      }
+      const target = new URL(
+        `${baseOrigin}/claims/${slug}?error=${encodeURIComponent(message)}`
+      );
+      return Response.redirect(target.toString(), 303);
+    }
+
     return json(
       {
         success: false,
-        error: error instanceof Error ? error.message : "submission failed"
+        error: message
       },
       500
     );
