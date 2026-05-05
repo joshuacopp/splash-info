@@ -26,7 +26,7 @@
 
 "use client";
 
-import { useActionState, useEffect } from "react";
+import { useActionState, useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
 
 export type ActionResult =
@@ -49,6 +49,14 @@ interface ActionFormProps {
   resetOnSuccess?: boolean;
   /** Optional encType passthrough (e.g., multipart/form-data for uploads). */
   encType?: string;
+  /**
+   * Brief 20 — optional callback invoked whenever the action's result
+   * transitions to a fresh value. Lets a parent react to success/failure
+   * without owning the action state. The callback is stored in a ref so
+   * its identity doesn't have to be stable (no need to memoize it). Used
+   * by the document-edit details to close itself on save.
+   */
+  onResult?: (result: ActionResult) => void;
 }
 
 export function ActionForm({
@@ -56,10 +64,16 @@ export function ActionForm({
   children,
   className,
   resetOnSuccess = true,
-  encType
+  encType,
+  onResult
 }: ActionFormProps) {
   const [result, formAction, isPending] = useActionState(action, null);
   const router = useRouter();
+
+  // Stash the latest onResult in a ref so the callback effect doesn't have
+  // to re-fire when the parent re-renders with a new function identity.
+  const onResultRef = useRef(onResult);
+  onResultRef.current = onResult;
 
   // Refresh server-component data on every fresh ok result. Pairs with the
   // action's revalidatePath() call: revalidate invalidates the cache,
@@ -69,6 +83,13 @@ export function ActionForm({
       router.refresh();
     }
   }, [result, router]);
+
+  // Fire the optional onResult callback on any fresh result (ok or not).
+  useEffect(() => {
+    if (result) {
+      onResultRef.current?.(result);
+    }
+  }, [result]);
 
   // Remount the form on success so uncontrolled inputs (the common case
   // for these forms — name + textarea + select with defaultValue) clear.

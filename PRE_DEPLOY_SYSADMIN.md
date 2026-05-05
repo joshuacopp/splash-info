@@ -49,14 +49,17 @@ curl -i -X POST "$WORKER/sysadmin/api/grant-tool" \
   -H "Cookie: sb-access-token=<location_admin token>" \
   --data '{"user_id":"abc","tool":"pricing"}'
 
-# 4. super_admin grant-tool happy path → 200 { ok, was_new }.
+# 4. super_admin grant-tool happy path → 200 { ok, changed: true }.
 #    Audit row should land in sysadmin_audit_log with action="grant_tool".
 curl -i -X POST "$WORKER/sysadmin/api/grant-tool" \
   -H "Origin: $WORKER" -H "Content-Type: application/json" \
   -H "Cookie: sb-access-token=<super_admin token>" \
   --data '{"user_id":"<test user_id>","tool":"pricing"}'
 
-# 5. Idempotent re-grant → 200 { ok, was_new: false }, no second audit row.
+# 5. Idempotent re-grant → 200 { ok, changed: false }. Audit row lands
+#    with action="grant_tool_noop" (Brief 20) so super_admins can see
+#    attempted grants that hit an existing row. revoke-tool is symmetric
+#    (action="revoke_tool_noop" when nothing was deleted).
 #    (Repeat step 4 immediately.)
 
 # 6. apiCreateUser writes user_permissions with must_change_password=TRUE

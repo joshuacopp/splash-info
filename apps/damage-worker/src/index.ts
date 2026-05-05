@@ -594,6 +594,29 @@ async function handleStatusTransition(
   ];
   const params: unknown[] = [finalTo, lifecycleForStatus(finalTo), session.email];
 
+  // Brief 20 — clearApprovalDetails reverts the approval columns + audit
+  // stamps as part of this UPDATE. Pushed before applyStamps so a rare
+  // "revert + stamp" combo (none today) would still produce a clean
+  // SET clause: clear-then-stamp ordering, last write wins. The activity
+  // row's notes are augmented with a "[reset approval details]" suffix
+  // so the timeline records the side-effect.
+  let approvalReset = false;
+  if (transition.clearApprovalDetails) {
+    setParts.push(
+      "approved_amount = NULL",
+      "approved_quote_id = NULL",
+      "parts_ordered = NULL",
+      "vendor_name = NULL",
+      "gm_approved_at = NULL",
+      "gm_approved_by = NULL",
+      "rm_approved_at = NULL",
+      "rm_approved_by = NULL",
+      "ceo_approved_at = NULL",
+      "ceo_approved_by = NULL"
+    );
+    approvalReset = true;
+  }
+
   applyStamps(transition, setParts, params, session.email);
 
   if (approvedAmount !== null) {
@@ -616,12 +639,21 @@ async function handleStatusTransition(
   const updateSql = `UPDATE claims SET ${setParts.join(", ")} WHERE claim_id = ?`;
   params.push(claimId);
 
+  // Compose the activity-log notes. When the transition resets approval
+  // details, append a sentinel suffix so reviewers can see the side-effect
+  // without diffing claim columns.
+  const activityNote = approvalReset
+    ? noteText
+      ? `${noteText}\n\n[Reset approval details on revert]`
+      : "[Reset approval details on revert]"
+    : noteText || null;
+
   const updateStmt = env.DB.prepare(updateSql).bind(...params);
   const activityStmt = env.DB.prepare(
     `INSERT INTO claim_activity (
       claim_id, activity_type, status_from, status_to, notes, actor_email, actor_name
     ) VALUES (?, 'status_change', ?, ?, ?, ?, ?)`
-  ).bind(claimId, claim.claim_status, finalTo, noteText || null, session.email, session.email);
+  ).bind(claimId, claim.claim_status, finalTo, activityNote, session.email, session.email);
 
   try {
     await env.DB.batch([updateStmt, activityStmt]);
@@ -780,6 +812,16 @@ async function handleDocumentUpload(
     return jsonError(400, "Unsupported file type. Allowed: PDF, JPG, PNG, HEIC.");
   }
 
+  // Brief 20 — Quote rows now require amount + pay_to_type up front so the
+  // claim can't be advanced through Approve-Quote with an unfillable check
+  // request. Receipts stay loose (they only inform the audit timeline).
+  if (docType === "Quote" && !amountStr) {
+    return jsonError(400, "Amount is required for Quote documents.");
+  }
+  if (docType === "Quote" && !payToTypeRaw) {
+    return jsonError(400, "Pay to (customer or vendor) is required for Quote documents.");
+  }
+
   let amount: number | null = null;
   if (amountStr) {
     const parsed = Number.parseFloat(amountStr);
@@ -796,11 +838,20 @@ async function handleDocumentUpload(
   let payToType: PayToType | null = null;
   let payToVendorAddress: string | null = null;
   if (docType === "Quote") {
-    if (payToTypeRaw && payToTypeRaw !== "customer" && payToTypeRaw !== "vendor") {
+    if (payToTypeRaw !== "customer" && payToTypeRaw !== "vendor") {
       return jsonError(400, "Pay to must be 'customer' or 'vendor'.");
     }
-    payToType = (payToTypeRaw || null) as PayToType | null;
+    payToType = payToTypeRaw as PayToType;
     if (payToType === "vendor") {
+      // Brief 20 — vendor pay_to_type now also requires vendor (display
+      // name) and vendor_address up front so the check-request PDF can
+      // resolve a payee.
+      if (!vendor) {
+        return jsonError(
+          400,
+          "Vendor name is required when paying the vendor directly."
+        );
+      }
       if (!vendorAddress) {
         return jsonError(
           400,
@@ -1213,6 +1264,21 @@ async function handleDocumentEdit(
   const payToTypeRaw = (form.get("pay_to_type") ?? "").trim().toLowerCase();
   const vendorAddressInput = (form.get("vendor_address") ?? "").trim() || null;
 
+  // Brief 20 — Quote rows must keep amount + pay_to_type set after every
+  // edit. Apps/web's edit form pre-fills both with the existing values so
+  // operators don't have to re-type them; clearing them in the form is
+  // treated as an explicit invalid edit and rejected here. Receipt rows
+  // stay loose (their fields are advisory, not load-bearing for the
+  // check-request PDF).
+  if (doc.photo_type === "Quote") {
+    if (!amountStr) {
+      return jsonError(400, "Amount is required for Quote documents.");
+    }
+    if (!payToTypeRaw) {
+      return jsonError(400, "Pay to (customer or vendor) is required for Quote documents.");
+    }
+  }
+
   let amount: number | null = null;
   if (amountStr) {
     const parsed = Number.parseFloat(amountStr);
@@ -1236,7 +1302,15 @@ async function handleDocumentEdit(
       payToType = payToTypeRaw as PayToType;
     }
     if (payToType === "vendor") {
-      // Switching to vendor (or staying on vendor) requires an address.
+      // Brief 20 — vendor pay_to_type requires both vendor (display name)
+      // and vendor_address. Form pre-fills both so an unmodified edit
+      // re-submits the existing values; explicit clears are rejected.
+      if (!vendor) {
+        return jsonError(
+          400,
+          "Vendor name is required when paying the vendor directly."
+        );
+      }
       if (!vendorAddressInput && !payToVendorAddress) {
         return jsonError(
           400,

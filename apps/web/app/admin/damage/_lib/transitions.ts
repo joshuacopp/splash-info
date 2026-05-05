@@ -61,6 +61,16 @@ export interface UITransition {
   requiresInputs: readonly string[];
   /** Optional text-input form field names. */
   optionalInputs: readonly string[];
+  /**
+   * Brief 20 — when true, the worker will NULL approved_amount /
+   * approved_quote_id / parts_ordered / vendor_name and reset audit stamps
+   * as part of the transition's UPDATE. Mirrored from the worker table to
+   * keep the shapes in sync. UI doesn't currently render anything based on
+   * this flag, but having it on the UITransition shape makes it visible
+   * during reviews and lets the UI surface a "this will reset approval
+   * details" hint in a future polish pass.
+   */
+  clearApprovalDetails: boolean;
 }
 
 /** Damage role hierarchy — must match transitions.ts in the worker. */
@@ -88,6 +98,8 @@ interface UITransitionShorthand {
   requiresReceiptOnFile?: boolean;
   requiresInputs?: readonly string[];
   optionalInputs?: readonly string[];
+  /** Brief 20 — see UITransition.clearApprovalDetails. */
+  clearApprovalDetails?: boolean;
 }
 
 function tx(t: UITransitionShorthand): UITransition {
@@ -101,7 +113,8 @@ function tx(t: UITransitionShorthand): UITransition {
     requiresQuoteSelection: !!t.requiresQuoteSelection,
     requiresReceiptOnFile: !!t.requiresReceiptOnFile,
     requiresInputs: t.requiresInputs ?? [],
-    optionalInputs: t.optionalInputs ?? []
+    optionalInputs: t.optionalInputs ?? [],
+    clearApprovalDetails: !!t.clearApprovalDetails
   };
 }
 
@@ -142,7 +155,8 @@ export const CLAIM_TRANSITIONS_UI: readonly UITransition[] = [
     to: "Pending GM Review",
     label: "Reopen for GM Review",
     role: "rm",
-    requiresNote: true
+    requiresNote: true,
+    clearApprovalDetails: true
   }),
 
   // ===== From "Pending GM Review" =====
@@ -197,7 +211,8 @@ export const CLAIM_TRANSITIONS_UI: readonly UITransition[] = [
     to: "Pending GM Review",
     label: "Send back to GM",
     role: "rm",
-    requiresNote: true
+    requiresNote: true,
+    clearApprovalDetails: true
   }),
 
   // ===== From "Approved — Pending Quotes" =====
@@ -285,41 +300,48 @@ export const CLAIM_TRANSITIONS_UI: readonly UITransition[] = [
   }),
 
   // ===== Admin escape hatches =====
+  // Brief 20 — clearApprovalDetails parity with worker table.
   tx({
     from: "Approved — Pending Quotes",
     to: "Pending GM Review",
     label: "Send back to GM Review (admin)",
     role: "admin",
-    requiresNote: true
+    requiresNote: true,
+    clearApprovalDetails: true
   }),
   tx({
     from: "Approved — Pending Quotes",
     to: "Pending RM Review",
     label: "Send back to RM Review (admin)",
     role: "admin",
-    requiresNote: true
+    requiresNote: true,
+    clearApprovalDetails: true
   }),
   tx({
     from: "Pending RM Quote Approval",
     to: "Pending GM Review",
     label: "Send back to GM Review (admin)",
     role: "admin",
-    requiresNote: true
+    requiresNote: true,
+    clearApprovalDetails: true
   }),
   tx({
     from: "Pending RM Quote Approval",
     to: "Approved — Pending Quotes",
     label: "Send back to Pending Quotes (admin)",
     role: "admin",
-    requiresNote: true
+    requiresNote: true,
+    clearApprovalDetails: true
   }),
   tx({
     from: "Approved — In House — Parts Ordered",
     to: "Pending GM Review",
     label: "Send back to GM Review (admin)",
     role: "admin",
-    requiresNote: true
+    requiresNote: true,
+    clearApprovalDetails: true
   }),
+  // Intra-in-house — approval still valid.
   tx({
     from: "Approved — In House — Repaired",
     to: "Approved — In House — Parts Ordered",
@@ -332,8 +354,10 @@ export const CLAIM_TRANSITIONS_UI: readonly UITransition[] = [
     to: "Pending RM Quote Approval",
     label: "Revert to RM Quote Approval (admin)",
     role: "admin",
-    requiresNote: true
+    requiresNote: true,
+    clearApprovalDetails: true
   }),
+  // One-step backward in payment chain — approval still valid.
   tx({
     from: "Approved — Submitted for Payment",
     to: "Approved — Check Request Submitted",
@@ -346,8 +370,10 @@ export const CLAIM_TRANSITIONS_UI: readonly UITransition[] = [
     to: "Pending RM Quote Approval",
     label: "Revert to RM Quote Approval (admin)",
     role: "admin",
-    requiresNote: true
+    requiresNote: true,
+    clearApprovalDetails: true
   }),
+  // One-step backward — approval still valid.
   tx({
     from: "Approved — Check Issued",
     to: "Approved — Check Request Submitted",
@@ -357,41 +383,48 @@ export const CLAIM_TRANSITIONS_UI: readonly UITransition[] = [
   }),
 
   // ===== Reopen transitions (admin/super_admin only) =====
+  // Brief 20 — every reopen is a multi-step revert; clear approval columns.
   tx({
     from: "Closed — Paid",
     to: "Pending GM Review",
     label: "Reopen to GM Review (admin)",
     role: "admin",
-    requiresNote: true
+    requiresNote: true,
+    clearApprovalDetails: true
   }),
   tx({
     from: "Closed — Paid",
     to: "Pending RM Review",
     label: "Reopen to RM Review (admin)",
     role: "admin",
-    requiresNote: true
+    requiresNote: true,
+    clearApprovalDetails: true
   }),
   tx({
     from: "Closed — Denied",
     to: "Pending GM Review",
     label: "Reopen to GM Review (admin)",
     role: "admin",
-    requiresNote: true
+    requiresNote: true,
+    clearApprovalDetails: true
   }),
   tx({
     from: "Closed — Denied",
     to: "Pending RM Review",
     label: "Reopen to RM Review (admin)",
     role: "admin",
-    requiresNote: true
+    requiresNote: true,
+    clearApprovalDetails: true
   }),
   tx({
     from: "Closed — Approved/No Response",
     to: "Pending RM Quote Approval",
     label: "Reopen to RM Quote Approval (admin)",
     role: "admin",
-    requiresNote: true
+    requiresNote: true,
+    clearApprovalDetails: true
   }),
+  // Reopen back into the post-approval chain — approval intact.
   tx({
     from: "Closed — Approved/No Response",
     to: "Approved — Check Request Submitted",

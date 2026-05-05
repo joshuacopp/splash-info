@@ -76,6 +76,16 @@ export interface ClaimTransitionDef {
   ceoEligible: boolean;
   /** Audit-stamp column families to bump on the claim row. */
   stamps: readonly AuditStamp[];
+  /**
+   * Brief 20: when true, NULL out approval-detail columns
+   * (approved_amount, approved_quote_id, parts_ordered, vendor_name) and
+   * reset all gm/rm/ceo audit stamps as part of the UPDATE. Set on
+   * transitions that revert from a later (post-approval) state to an
+   * earlier one — admin escape hatches and reopens — where leaving the
+   * approval columns populated would render a stale "Approval details"
+   * box on the detail page.
+   */
+  clearApprovalDetails: boolean;
 }
 
 interface TransitionShorthand {
@@ -91,6 +101,8 @@ interface TransitionShorthand {
   optionalInputs?: readonly string[];
   ceoEligible?: boolean;
   stamps?: readonly AuditStamp[];
+  /** Brief 20 — see ClaimTransitionDef.clearApprovalDetails. */
+  clearApprovalDetails?: boolean;
 }
 
 function tx(t: TransitionShorthand): ClaimTransitionDef {
@@ -105,7 +117,8 @@ function tx(t: TransitionShorthand): ClaimTransitionDef {
     requiresInputs: t.requiresInputs ?? [],
     optionalInputs: t.optionalInputs ?? [],
     ceoEligible: !!t.ceoEligible,
-    stamps: t.stamps ?? []
+    stamps: t.stamps ?? [],
+    clearApprovalDetails: !!t.clearApprovalDetails
   };
 }
 
@@ -125,7 +138,11 @@ export const CLAIM_TRANSITIONS: readonly ClaimTransitionDef[] = [
     from: "No Responsibility — Pending Review",
     to: "Pending GM Review",
     role: "rm",
-    requiresNote: true
+    requiresNote: true,
+    // Brief 20: "send back" path — clear approval columns defensively (no
+    // approval should be present at this stage, but clearing is a no-op
+    // when columns are already null and a safety net otherwise).
+    clearApprovalDetails: true
   }),
 
   // ===== From "Pending GM Review" =====
@@ -148,7 +165,14 @@ export const CLAIM_TRANSITIONS: readonly ClaimTransitionDef[] = [
     optionalInputs: ["parts", "vendor"]
   }),
   tx({ from: "Pending RM Review", to: "Closed — Denied", role: "rm" }),
-  tx({ from: "Pending RM Review", to: "Pending GM Review", role: "rm", requiresNote: true }),
+  tx({
+    from: "Pending RM Review",
+    to: "Pending GM Review",
+    role: "rm",
+    requiresNote: true,
+    // Brief 20: "send back" path. Defensive clear.
+    clearApprovalDetails: true
+  }),
 
   // ===== From "Approved — Pending Quotes" =====
   tx({ from: "Approved — Pending Quotes", to: "Pending RM Quote Approval", role: "gm" }),
@@ -205,36 +229,53 @@ export const CLAIM_TRANSITIONS: readonly ClaimTransitionDef[] = [
   tx({ from: "Approved — Check Issued", to: "Closed — Paid", role: "rm" }),
 
   // ===== Admin escape hatches: kick mid-workflow states back =====
+  //
+  // Brief 20 — clearApprovalDetails: every "send back to a pre-approval
+  // state" transition flips clearApprovalDetails so the worker NULLs out
+  // approved_amount / approved_quote_id / parts_ordered / vendor_name and
+  // resets all gm/rm/ceo audit stamps as part of the UPDATE. Without this
+  // a claim reverted from Approved — In House — Parts Ordered back to
+  // Pending GM Review (or similar) keeps the stale vendor + parts on the
+  // row, which the detail page renders in the Approval Details box and
+  // confuses reviewers. Intra-workflow steps that don't undo approval
+  // (e.g. Submitted for Payment → Check Request Submitted) keep the
+  // approval intact.
   tx({
     from: "Approved — Pending Quotes",
     to: "Pending GM Review",
     role: "admin",
-    requiresNote: true
+    requiresNote: true,
+    clearApprovalDetails: true
   }),
   tx({
     from: "Approved — Pending Quotes",
     to: "Pending RM Review",
     role: "admin",
-    requiresNote: true
+    requiresNote: true,
+    clearApprovalDetails: true
   }),
   tx({
     from: "Pending RM Quote Approval",
     to: "Pending GM Review",
     role: "admin",
-    requiresNote: true
+    requiresNote: true,
+    clearApprovalDetails: true
   }),
   tx({
     from: "Pending RM Quote Approval",
     to: "Approved — Pending Quotes",
     role: "admin",
-    requiresNote: true
+    requiresNote: true,
+    clearApprovalDetails: true
   }),
   tx({
     from: "Approved — In House — Parts Ordered",
     to: "Pending GM Review",
     role: "admin",
-    requiresNote: true
+    requiresNote: true,
+    clearApprovalDetails: true
   }),
+  // In-house parts-ordered ↔ repaired is intra-workflow, not a revert.
   tx({
     from: "Approved — In House — Repaired",
     to: "Approved — In House — Parts Ordered",
@@ -245,8 +286,11 @@ export const CLAIM_TRANSITIONS: readonly ClaimTransitionDef[] = [
     from: "Approved — Check Request Submitted",
     to: "Pending RM Quote Approval",
     role: "admin",
-    requiresNote: true
+    requiresNote: true,
+    clearApprovalDetails: true
   }),
+  // One-step backward in the post-approval payment chain — approval is
+  // still valid, don't clear.
   tx({
     from: "Approved — Submitted for Payment",
     to: "Approved — Check Request Submitted",
@@ -257,8 +301,11 @@ export const CLAIM_TRANSITIONS: readonly ClaimTransitionDef[] = [
     from: "Approved — Submitted for Payment",
     to: "Pending RM Quote Approval",
     role: "admin",
-    requiresNote: true
+    requiresNote: true,
+    clearApprovalDetails: true
   }),
+  // Same rationale as the Submitted-for-Payment → Check-Request-Submitted
+  // pair above — single step back, approval still valid.
   tx({
     from: "Approved — Check Issued",
     to: "Approved — Check Request Submitted",
@@ -267,16 +314,43 @@ export const CLAIM_TRANSITIONS: readonly ClaimTransitionDef[] = [
   }),
 
   // ===== Reopen transitions (admin/super_admin only — closed → open) =====
-  tx({ from: "Closed — Paid", to: "Pending GM Review", role: "admin", requiresNote: true }),
-  tx({ from: "Closed — Paid", to: "Pending RM Review", role: "admin", requiresNote: true }),
-  tx({ from: "Closed — Denied", to: "Pending GM Review", role: "admin", requiresNote: true }),
-  tx({ from: "Closed — Denied", to: "Pending RM Review", role: "admin", requiresNote: true }),
+  // Brief 20: every reopen is a multi-step revert; clear approval columns.
+  tx({
+    from: "Closed — Paid",
+    to: "Pending GM Review",
+    role: "admin",
+    requiresNote: true,
+    clearApprovalDetails: true
+  }),
+  tx({
+    from: "Closed — Paid",
+    to: "Pending RM Review",
+    role: "admin",
+    requiresNote: true,
+    clearApprovalDetails: true
+  }),
+  tx({
+    from: "Closed — Denied",
+    to: "Pending GM Review",
+    role: "admin",
+    requiresNote: true,
+    clearApprovalDetails: true
+  }),
+  tx({
+    from: "Closed — Denied",
+    to: "Pending RM Review",
+    role: "admin",
+    requiresNote: true,
+    clearApprovalDetails: true
+  }),
   tx({
     from: "Closed — Approved/No Response",
     to: "Pending RM Quote Approval",
     role: "admin",
-    requiresNote: true
+    requiresNote: true,
+    clearApprovalDetails: true
   }),
+  // Reopen back into the post-approval chain — approval intact.
   tx({
     from: "Closed — Approved/No Response",
     to: "Approved — Check Request Submitted",

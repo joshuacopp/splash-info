@@ -55,16 +55,16 @@ import {
   damageGetJsonOrStatus,
   damagePhotoUrl
 } from "../_lib/worker-fetch";
+import { DocumentEditDetails } from "../_components/DocumentEditDetails";
 import { LifecycleBadge } from "../_components/LifecycleBadge";
 import { PhotoLightbox } from "../_components/PhotoLightbox";
+import { UploadDocumentCard } from "../_components/UploadDocumentCard";
 import { canMutateDocument } from "../_lib/permissions";
 import { transitionsFrom, type UITransition } from "../_lib/transitions";
 import {
   addNoteAction,
   deleteDocumentAction,
-  editDocumentAction,
-  transitionAction,
-  uploadDocumentAction
+  transitionAction
 } from "./actions";
 import { ActionForm } from "../../_components/ActionForm";
 import { getMe } from "../../../_lib/me";
@@ -566,6 +566,13 @@ function ApprovalDetails({
     { label: "Parts ordered", value: claim.parts_ordered }
   ];
   const populated = fields.filter((f) => f.value !== null && f.value !== "");
+  // Brief 20 — defensive null gate: hide the entire box when none of the
+  // four approval columns are populated. The worker now NULLs these on
+  // revert/reopen transitions (clearApprovalDetails), so this is mostly a
+  // safety net for legacy claims that were reverted before the worker fix
+  // landed. checkRequestHref is derived from approved_quote_id, so an
+  // empty `populated` implies a null checkRequestHref — kept as belt-and-
+  // suspenders for clarity.
   if (populated.length === 0 && !checkRequestHref) return null;
 
   return (
@@ -655,6 +662,33 @@ function TransitionForm({
   const labelCls =
     "text-xs font-semibold uppercase tracking-wider text-splash-navy/70";
 
+  // Brief 20 — Bug 4 fix: when a transition needs a Quote selection but
+  // the claim has no Quote-typed photos yet, render a hint card with an
+  // anchor to the upload section instead of a disabled <select> + button.
+  // Eliminates the "no quotes on file → button is greyed out, no guidance"
+  // dead end.
+  if (noQuotesAvailable) {
+    return (
+      <div className="flex flex-col gap-2 rounded-splash-md border border-sudsy-blue/40 bg-sudsy-blue-soft/40 p-4 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex flex-1 flex-col gap-1">
+          <span className={labelCls}>Action</span>
+          <span className="text-sm font-semibold text-splash-navy">{label}</span>
+          <span className="font-mono text-[11px] text-splash-navy/60">{to}</span>
+        </div>
+        <p className="text-sm text-splash-navy/80 sm:max-w-[420px]">
+          No quotes uploaded yet.{" "}
+          <a
+            href="#upload-document"
+            className="font-semibold text-splash-blue hover:text-splash-blue-dark"
+          >
+            Upload a quote first
+          </a>{" "}
+          to enable this action.
+        </p>
+      </div>
+    );
+  }
+
   return (
     <ActionForm
       action={transitionAction}
@@ -690,12 +724,11 @@ function TransitionForm({
           <select
             name="quote_id"
             required
-            disabled={noQuotesAvailable}
             className={inputCls}
             defaultValue=""
           >
             <option value="" disabled>
-              {noQuotesAvailable ? "No quotes on file" : "Select a quote…"}
+              Select a quote…
             </option>
             {quotes.map((q) => {
               const labelParts: string[] = [`#${q.id}`];
@@ -754,9 +787,7 @@ function TransitionForm({
       <div className="flex sm:items-end">
         <button
           type="submit"
-          disabled={noQuotesAvailable}
-          title={noQuotesAvailable ? "Add a Quote document first" : undefined}
-          className="inline-flex items-center gap-1.5 rounded-splash-sm bg-splash-blue px-5 py-2.5 text-sm font-bold text-white shadow-splash-btn transition-colors hover:bg-splash-blue-dark disabled:cursor-not-allowed disabled:bg-splash-navy/30"
+          className="inline-flex items-center gap-1.5 rounded-splash-sm bg-splash-blue px-5 py-2.5 text-sm font-bold text-white shadow-splash-btn transition-colors hover:bg-splash-blue-dark"
         >
           {label}
         </button>
@@ -1004,15 +1035,11 @@ function DocumentMutateRow({
   return (
     <div className="flex flex-col gap-1">
       <div className="flex flex-wrap gap-2">
-        {/* Edit toggles a native <details> reveal — server-only, no JS. */}
-        <details className="flex-1">
-          <summary className="cursor-pointer list-none rounded-splash-sm border border-gray-light bg-sudsy-blue-soft/40 px-2 py-1 text-center text-xs font-semibold text-splash-navy hover:bg-sudsy-blue-soft">
-            Edit
-          </summary>
-          <div className="mt-2 rounded-splash-sm border border-gray-light bg-white p-3">
-            <DocumentEditForm claimId={claimId} photo={photo} />
-          </div>
-        </details>
+        {/* Brief 20 — DocumentEditDetails is now a client island that owns
+         *  the <details> open state so it can close on a successful save
+         *  (Bug 8) and that drives Quote-row conditional `required` attrs
+         *  on amount / pay_to_type / vendor / vendor_address (Bugs 5+6). */}
+        <DocumentEditDetails claimId={claimId} photo={photo} />
         <Link
           href={`/admin/damage/${encodeURIComponent(
             claimId
@@ -1023,109 +1050,6 @@ function DocumentMutateRow({
         </Link>
       </div>
     </div>
-  );
-}
-
-function DocumentEditForm({
-  claimId,
-  photo
-}: {
-  claimId: string;
-  photo: ClaimPhotoRow;
-}) {
-  const labelCls =
-    "text-[10px] font-semibold uppercase tracking-wider text-splash-navy/70";
-  const inputCls =
-    "w-full rounded-splash-sm border border-gray-light bg-white px-2 py-1 text-xs text-splash-navy placeholder:text-splash-navy/40 focus:border-splash-blue focus:outline-none";
-
-  const isQuote = photo.photo_type === "Quote";
-
-  return (
-    <ActionForm action={editDocumentAction} className="flex flex-col gap-2">
-      <input type="hidden" name="claim_id" value={claimId} />
-      <input type="hidden" name="doc_id" value={String(photo.id)} />
-
-      <label className="flex flex-col gap-0.5">
-        <span className={labelCls}>Vendor</span>
-        <input
-          type="text"
-          name="vendor"
-          maxLength={1000}
-          defaultValue={photo.vendor ?? ""}
-          className={inputCls}
-        />
-      </label>
-
-      <label className="flex flex-col gap-0.5">
-        <span className={labelCls}>Amount ($)</span>
-        <input
-          type="number"
-          name="amount"
-          step="0.01"
-          min="0"
-          defaultValue={
-            photo.amount !== null && photo.amount !== undefined
-              ? String(photo.amount)
-              : ""
-          }
-          className={inputCls}
-        />
-      </label>
-
-      {isQuote ? (
-        <>
-          <label className="flex flex-col gap-0.5">
-            <span className={labelCls}>Pay to</span>
-            <select
-              name="pay_to_type"
-              defaultValue={photo.pay_to_type ?? ""}
-              className={inputCls}
-            >
-              <option value="">(unset)</option>
-              <option value="customer">Customer</option>
-              <option value="vendor">Vendor</option>
-            </select>
-          </label>
-          <label className="flex flex-col gap-0.5">
-            <span className={labelCls}>Vendor address</span>
-            <input
-              type="text"
-              name="vendor_address"
-              maxLength={1000}
-              defaultValue={photo.vendor_address ?? ""}
-              className={inputCls}
-            />
-          </label>
-        </>
-      ) : null}
-
-      <label className="flex flex-col gap-0.5">
-        <span className={labelCls}>Notes</span>
-        <textarea
-          name="notes"
-          maxLength={5000}
-          rows={2}
-          defaultValue={photo.notes ?? ""}
-          className={inputCls}
-        />
-      </label>
-
-      <div className="flex items-center gap-2">
-        <button
-          type="submit"
-          className="rounded-splash-sm bg-splash-blue px-3 py-1 text-xs font-bold text-white shadow-splash-btn transition-colors hover:bg-splash-blue-dark"
-        >
-          Save changes
-        </button>
-        {/* Cancel = navigate to bare URL (closes <details> via reload). */}
-        <Link
-          href={`/admin/damage/${encodeURIComponent(claimId)}`}
-          className="text-xs font-semibold text-splash-navy/70 hover:text-splash-navy"
-        >
-          Cancel
-        </Link>
-      </div>
-    </ActionForm>
   );
 }
 
@@ -1177,123 +1101,12 @@ function ConfirmDeleteBanner({
 }
 
 /* ============================================================
- * Upload-document card (Brief 5d)
- *
- * Field names MUST match what apps/damage-worker/src/index.ts:773 reads:
- *   doc_type, file, vendor, amount, notes, pay_to_type, vendor_address.
- * (The brief's spec used "document_type" — but the worker's
- * canonical field is "doc_type". Renamed here so the upload actually
- * lands; the brief field name would silently 400 on every submit.)
+ * Upload-document card moved to ../_components/UploadDocumentCard (Brief
+ * 20 — converted to a client island so doc_type / pay_to_type can drive
+ * conditional `required` attrs). The card root carries id="upload-document"
+ * which is the anchor target for the no-quotes hint card on the
+ * transition section above.
  * ============================================================ */
-
-function UploadDocumentCard({ claimId }: { claimId: string }) {
-  const labelCls =
-    "text-xs font-semibold uppercase tracking-wider text-splash-navy/70";
-  const inputCls =
-    "w-full rounded-splash-sm border border-gray-light bg-white px-3 py-2 text-sm text-splash-navy placeholder:text-splash-navy/40 focus:border-splash-blue focus:outline-none";
-
-  return (
-    <div className="mb-6 rounded-splash-lg border border-gray-light bg-white p-6 shadow-splash-card">
-      <h2 className="mb-4 text-lg font-bold text-splash-navy">Upload document</h2>
-      <p className="mb-3 text-xs text-splash-navy/60">
-        Attach a Quote or Receipt (PDF, JPG, PNG, or HEIC; up to 10 MB).
-        Vendor / amount / pay-to fields are optional but speed up downstream
-        approvals.
-      </p>
-      <ActionForm
-        action={uploadDocumentAction}
-        encType="multipart/form-data"
-        className="grid grid-cols-1 gap-3 md:grid-cols-2"
-      >
-        <input type="hidden" name="claim_id" value={claimId} />
-
-        <label className="flex flex-col gap-1">
-          <span className={labelCls}>Document type</span>
-          <select name="doc_type" required defaultValue="" className={inputCls}>
-            <option value="" disabled>
-              Select type…
-            </option>
-            <option value="Quote">Quote</option>
-            <option value="Receipt">Receipt</option>
-          </select>
-        </label>
-
-        <label className="flex flex-col gap-1">
-          <span className={labelCls}>File</span>
-          <input
-            type="file"
-            name="file"
-            required
-            accept="image/*,application/pdf"
-            className={inputCls}
-          />
-        </label>
-
-        <label className="flex flex-col gap-1">
-          <span className={labelCls}>Vendor (optional)</span>
-          <input
-            type="text"
-            name="vendor"
-            maxLength={1000}
-            placeholder="Name of the shop, supplier, etc."
-            className={inputCls}
-          />
-        </label>
-
-        <label className="flex flex-col gap-1">
-          <span className={labelCls}>Amount ($, optional)</span>
-          <input
-            type="number"
-            name="amount"
-            step="0.01"
-            min="0"
-            placeholder="0.00"
-            className={inputCls}
-          />
-        </label>
-
-        <label className="flex flex-col gap-1">
-          <span className={labelCls}>Pay to (optional)</span>
-          <select name="pay_to_type" defaultValue="" className={inputCls}>
-            <option value="">(unset)</option>
-            <option value="customer">Customer</option>
-            <option value="vendor">Vendor</option>
-          </select>
-        </label>
-
-        <label className="flex flex-col gap-1">
-          <span className={labelCls}>Vendor address (optional)</span>
-          <input
-            type="text"
-            name="vendor_address"
-            maxLength={1000}
-            placeholder="Required only when paying the vendor directly"
-            className={inputCls}
-          />
-        </label>
-
-        <label className="flex flex-col gap-1 md:col-span-2">
-          <span className={labelCls}>Notes (optional)</span>
-          <textarea
-            name="notes"
-            maxLength={5000}
-            rows={2}
-            className={inputCls}
-          />
-        </label>
-
-        <div className="md:col-span-2">
-          <button
-            type="submit"
-            className="inline-flex items-center gap-1.5 rounded-splash-sm bg-splash-blue px-5 py-2.5 text-sm font-bold text-white shadow-splash-btn transition-colors hover:bg-splash-blue-dark"
-          >
-            Upload document
-          </button>
-        </div>
-      </ActionForm>
-    </div>
-  );
-}
 
 /* ============================================================
  * Activity timeline

@@ -196,21 +196,34 @@ export async function editDocumentAction(
     return { ok: false, error: "Missing document id on edit submission." };
   }
 
-  logActionEntry("edit-document", claimId, formData);
-  const result = await damagePostForm(
-    `/manage/api/claim/${encodeURIComponent(claimId)}/document/${encodeURIComponent(
-      docId
-    )}/edit`,
-    formData
-  );
-  logActionResult("edit-document", claimId, result);
+  // Brief 20 Bug 7 — defensive try/catch ensures the action always returns
+  // a plain serializable ActionResult. An uncaught exception inside a Next
+  // server action surfaces as a generic E394 client error ("An unexpected
+  // response was received from the server"); wrapping the worker call lets
+  // the operator see the actual cause inline via <ActionForm>'s error
+  // banner. damagePostForm is meant not to throw, but the catch covers
+  // future regressions in the helper.
+  try {
+    logActionEntry("edit-document", claimId, formData);
+    const result = await damagePostForm(
+      `/manage/api/claim/${encodeURIComponent(claimId)}/document/${encodeURIComponent(
+        docId
+      )}/edit`,
+      formData
+    );
+    logActionResult("edit-document", claimId, result);
 
-  if (!result.ok) {
-    return { ok: false, error: result.error };
+    if (!result.ok) {
+      return { ok: false, error: result.error };
+    }
+
+    revalidatePath(detailPath(claimId));
+    return { ok: true, message: "Document updated" };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`[damage-action] edit-document claim=${claimId} threw: ${msg}`);
+    return { ok: false, error: `Document edit failed: ${msg}` };
   }
-
-  revalidatePath(detailPath(claimId));
-  return { ok: true, message: "Document updated" };
 }
 
 /**

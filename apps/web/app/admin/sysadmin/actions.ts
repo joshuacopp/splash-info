@@ -47,6 +47,23 @@ function fieldStringOrUndefined(
   return raw.length > 0 ? raw : undefined;
 }
 
+/**
+ * Brief 20 — read the worker's `changed: boolean` discriminator on
+ * grant/revoke responses. Returns `false` (treat as no-op) if the worker
+ * didn't include it, so callers fall back to the safer "no change" copy.
+ */
+function readChanged(body: unknown): boolean {
+  if (
+    body &&
+    typeof body === "object" &&
+    "changed" in body &&
+    typeof (body as { changed?: unknown }).changed === "boolean"
+  ) {
+    return (body as { changed: boolean }).changed;
+  }
+  return false;
+}
+
 /* ============================================================
  * Create user
  * ============================================================ */
@@ -166,8 +183,18 @@ export async function grantToolAction(
     return { ok: false, error: result.error };
   }
 
+  // Brief 20 — sysadmin worker now returns { ok, changed }. Surface the
+  // distinction in the message so the operator can tell a real grant from
+  // a no-op (the user already had the tool). Visual treatment stays green
+  // either way per brief — the inline message text carries the nuance.
+  const changed = readChanged(result.body);
   revalidatePath(PAGE_PATH);
-  return { ok: true, message: `Granted ${tool}` };
+  return {
+    ok: true,
+    message: changed
+      ? `Granted ${tool}`
+      : `${tool} was already granted (no change)`
+  };
 }
 
 /* ============================================================
@@ -191,8 +218,15 @@ export async function revokeToolAction(
     return { ok: false, error: result.error };
   }
 
+  // Brief 20 — see comment on grantToolAction.
+  const changed = readChanged(result.body);
   revalidatePath(PAGE_PATH);
-  return { ok: true, message: `Revoked ${tool}` };
+  return {
+    ok: true,
+    message: changed
+      ? `Revoked ${tool}`
+      : `${tool} wasn't granted (no change)`
+  };
 }
 
 /* ============================================================

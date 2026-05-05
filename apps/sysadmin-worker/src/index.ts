@@ -156,6 +156,9 @@ async function handleGrantTool(
     notes: "Granted via Splash Admin"
   });
 
+  // Brief 20: distinguish state-change from no-op so the UI can render a
+  // distinct message ("Granted X" vs. "Already had X (no change)") and the
+  // audit log shows attempted-but-no-op cases for super_admin review.
   if (result.was_new) {
     await logSysadminAudit(sb, {
       actor,
@@ -165,8 +168,18 @@ async function handleGrantTool(
       before: null,
       after: { user_id: userId, tool, granted_by: actor.id }
     });
+  } else {
+    await logSysadminAudit(sb, {
+      actor,
+      action: "grant_tool_noop",
+      target_type: "user_tool_access",
+      target_id: `${userId}|${tool}`,
+      before: { user_id: userId, tool },
+      after: { user_id: userId, tool },
+      notes: "Grant attempted; tool was already granted (no change)"
+    });
   }
-  return json({ ok: true, was_new: result.was_new });
+  return json({ ok: true, changed: result.was_new });
 }
 
 async function handleRevokeTool(
@@ -182,6 +195,7 @@ async function handleRevokeTool(
   const sb = createServiceClient(env);
   const result = await revokeTool(sb, { userId, tool: tool as ToolName });
 
+  // Brief 20: see comment on handleGrantTool. Symmetric no-op handling.
   if (result.was_present) {
     await logSysadminAudit(sb, {
       actor,
@@ -191,8 +205,18 @@ async function handleRevokeTool(
       before: result.before,
       after: null
     });
+  } else {
+    await logSysadminAudit(sb, {
+      actor,
+      action: "revoke_tool_noop",
+      target_type: "user_tool_access",
+      target_id: `${userId}|${tool}`,
+      before: null,
+      after: null,
+      notes: "Revoke attempted; tool was not granted (no change)"
+    });
   }
-  return json({ ok: true, was_present: result.was_present });
+  return json({ ok: true, changed: result.was_present });
 }
 
 async function handleSetRole(
