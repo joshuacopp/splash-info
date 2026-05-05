@@ -1,4 +1,4 @@
-// Sysadmin UI (/admin/sysadmin). Briefs 7 + 18 + 19.
+// Sysadmin UI (/admin/sysadmin). Briefs 7 + 18 + 19 + 24.
 //
 // Server component. Top-of-page super_admin gate via getMe(); the page never
 // renders the operation cards for non-super_admins (worker re-validates on
@@ -6,12 +6,13 @@
 //
 // Layout (top → bottom):
 //   1. Page banner (eyebrow + title + helper text).
-//   2. Five collapsed <details> cards, one per worker endpoint:
+//   2. Six collapsed <details> cards, one per worker endpoint:
 //        - Create user
 //        - Set role
 //        - Grant tool
 //        - Revoke tool
 //        - Reset password
+//        - Add location (Brief 24 — pricing_simple bulk insert)
 //
 // Brief 19 — pattern flip:
 //   The page-level ?action_error / ?action_success banners are gone. Each
@@ -30,6 +31,7 @@
 
 import { getMe } from "../../_lib/me";
 import { ActionForm } from "../_components/ActionForm";
+import { AddLocationCard } from "./_components/AddLocationCard";
 import { NoAccessCard } from "./_components/NoAccessCard";
 import { UserPicker } from "./_components/UserPicker";
 import {
@@ -60,8 +62,24 @@ export default async function SysadminPage() {
         <GrantToolCard />
         <RevokeToolCard />
         <ResetPasswordCard />
+        <AddLocationOperationCard />
       </div>
     </section>
+  );
+}
+
+/* ============================================================
+ * 6. Add location (Brief 24)
+ * ============================================================ */
+
+function AddLocationOperationCard() {
+  return (
+    <OperationCard
+      title="Add location"
+      description="Insert pricing_simple rows for a brand-new location. Atomic — all rows or none. Defaults to pricing = 'full'."
+    >
+      <AddLocationCard />
+    </OperationCard>
   );
 }
 

@@ -30,6 +30,9 @@ navigation aid.
 | 21 | dcRole gating restored (show-disabled pattern with per-role hint copy) + Brief 18 diagnostic cleanup (DcRoleDebugLine + log helpers removed) + contact_status "Not Started" pill suppressed | Completed (2026-05-05) | Damage detail UX correctness + production-ready polish | [brief-021-dcrole-gating-cleanup.md](brief-021-dcrole-gating-cleanup.md) |
 | 22 | Recent notes sub-box on damage detail + jump-to-add-note anchor button + smooth scroll | Completed (2026-05-05) | Damage detail UX polish | [brief-022-recent-notes-card.md](brief-022-recent-notes-card.md) |
 | 23 | Public customer claim form ported to damage-worker (`GET /claims/{slug}` + `GET /claims/{slug}/thanks` + dual-mode `POST /claims-api/submit-claim`) | Completed (2026-05-05) | Customer-facing cutover (decision 9) | [brief-023-customer-claim-form.md](brief-023-customer-claim-form.md) |
+| 24 | Sysadmin Add Location (pricing_simple bulk insert) — atomic Supabase REST array POST, 7-row standard package picker, audit log + cache-invalidation TODO | Completed (2026-05-05) | Direct pricing_simple management from sysadmin UI (first of 3) | [brief-024-sysadmin-add-location.md](brief-024-sysadmin-add-location.md) |
+| 25 | Sysadmin Update Package (pricing_simple — search-by-location_code + per-row edit, primarily pkg$/single, also pkg/sort/other; `ilike` search, no SQL UI) | Not started | Direct pricing_simple management from sysadmin UI (second of 3) | (not drafted) |
+| 26 | Sysadmin Update Locations (locations table fields — triggers propagate am_email / area_manager / rm_email / regional_manager / site_email into pricing_simple and auth) | Not started | Direct pricing_simple management from sysadmin UI (third of 3) | (not drafted) |
 
 **Folded items** (work absorbed into earlier briefs):
 - Item 3 (URL drift /admin/{loc} <-> /admin/pricing/{loc}) - folded into Brief 2.

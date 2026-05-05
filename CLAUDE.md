@@ -373,9 +373,16 @@ URL-based — service bindings don't apply to those.
   managers and location admins to set per-location pricing modes.
 - **sysadmin** - Database user/table management. Separate worker
   (sysadmin-worker, `/sysadmin/api/*`). Used by super_admins. Per
-  recent operator decision, sysadmin will also house direct
+  recent operator decision, sysadmin also houses direct
   `pricing_simple` table editing (bypasses SQL for non-pricing-API
-  changes) and a manual cache-clear button.
+  changes). Brief 24 landed Add Location — atomic bulk insert of N
+  `pricing_simple` rows for a brand-new location via Supabase REST
+  array POST; hardcodes `pricing = 'full'`. Briefs 25 (Update
+  Package) and 26 (Update Locations) are deferred but planned. A
+  manual cache-clear button is also planned (signup-worker caches
+  `pricing_simple_resolved` for 5 minutes; cross-worker invalidation
+  isn't wired yet, so newly added locations take up to 5 minutes to
+  surface on the customer signup form).
 - **inline mode** - signup-worker's default `SIGNATURE_MODE`. Renders
   the form HTML and POSTs straight to `maxpass_signups`.
 - **jotform mode** - signup-worker's alternative `SIGNATURE_MODE`. 302
