@@ -242,6 +242,13 @@ When given a new task:
   splash-navy bar. Uses `usePathname()` to gate admin controls
   (Dashboard + Change Password + Sign Out) on `/admin/*` and
   `/sysadmin/*`.
+- Damage detail (`/admin/damage/[id]`) renders every valid-from-status
+  transition; rows whose `allowedRoles` don't include the caller's
+  `session.dcRole` show with a disabled (greyed) button + an inline
+  hint ("Requires admin or higher", or "Pending final approval" for the
+  "Submit for Payment" transition specifically). Worker re-validates
+  dc_role on POST as defense in depth — UI gating is a UX hint, not
+  access control.
 
 ### Server actions: useActionState + router.refresh() pattern (Brief 19)
 

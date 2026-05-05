@@ -1,3 +1,11 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+/* Brief 22 — smooth scroll for in-page anchor jumps (e.g. damage detail's
+   "Add note" / "View all activity" links). Affects every anchor target
+   site-wide; acceptable because the app uses very few anchor jumps and
+   the smoother UX is harmless on routes that don't use them. */
+html {
+  scroll-behavior: smooth;
+}

@@ -20,3 +20,5 @@
 - 2026-05-04 18:52:06 brief-018-damage-and-sysadmin-fixes.md (success)
 - 2026-05-04 23:21:26 brief-019-action-result-refresh.md (success)
 - 2026-05-05 00:30:16 brief-020-staging-bug-batch.md (success)
+- 2026-05-05 00:58:26 brief-021-dcrole-gating-cleanup.md (success)
+- 2026-05-05 01:04:44 brief-022-recent-notes-card.md (success)

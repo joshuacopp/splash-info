@@ -17,15 +17,23 @@
 //   2. Back link + page banner.
 //   3. Summary card (Brief 5b) — approval-details box now includes the
 //      check-request preview link when claim.approved_quote_id is set.
-//   4. Move-forward section (Brief 5c, retrofit 11a) — one ActionForm per
-//      transition that is valid-from-current-status, submits to
-//      transitionAction.
+//      Brief 22 appends a "Recent notes" sub-box (latest 3 notes from
+//      the activity timeline plus an "Add note" anchor button that
+//      jumps to #add-note).
+//   4. Move-forward section (Brief 5c, retrofit 11a, restored in 21) —
+//      one ActionForm per transition that is valid-from-current-status,
+//      submits to transitionAction. Transitions whose allowedRoles
+//      don't include the caller's dcRole render with a disabled button
+//      and an inline hint (show-disabled pattern, see below).
 //   5. Photo gallery (Brief 5b, extended in 5d) — image tiles open a
 //      lightbox; Quote/Receipt tiles get Edit/Delete affordances and a
 //      per-Quote check-request preview link.
 //   6. Upload-document card (Brief 5d) — between gallery and timeline.
-//   7. Activity timeline (Brief 5b).
-//   8. Add-note form (Brief 5c) — submits to addNoteAction.
+//   7. Activity timeline (Brief 5b) — wrapper carries id="activity"
+//      so the Recent-notes box can deep-link "View all activity ↓".
+//   8. Add-note form (Brief 5c) — submits to addNoteAction. Wrapper
+//      carries id="add-note" so the Recent-notes "Add note" button
+//      anchor-jumps here.
 //
 // Four fetch branches:
 //   - 401/403 -> no-access card with Sign In (return path = this URL)
@@ -33,17 +41,15 @@
 //   - other 5xx-class / network -> generic error card
 //   - success -> the nine sections above.
 //
-// dc_role gating (Brief 11a, REVERTED in Brief 18):
-//   Brief 11a originally filtered transitions by both current status AND
-//   caller's dcRole. Brief 18 dropped the dcRole filter while the
-//   dcRole-population bug surfaced in 11b is still being chased — when
-//   session.dcRole is null the filter eliminates every transition and
-//   the operator sees zero buttons (the bug surface reported in Brief 18).
-//   The worker re-validates dc_role on every POST, so removing the UI
-//   filter is a UX fix only, not an access-control change. Restore the
-//   filter once dcRole is reliably populated. A small debug line
-//   ("Session dcRole: <value>") renders below the page banner so the
-//   operator can see the resolved value without reading worker logs.
+// dc_role gating (Brief 11a, dropped in Brief 18, restored in Brief 21):
+//   Every valid-from-current-status transition renders. When the caller's
+//   dcRole isn't in the transition's allowedRoles the button is disabled
+//   and a small hint below the action label names the minimum required
+//   role ("Requires admin or higher"), with a special case for "Submit
+//   for Payment" ("Pending final approval"). Show-disabled instead of
+//   hide so users learn what's possible at this status even when they
+//   personally can't act on it. Worker re-validates dc_role on POST as
+//   defense in depth.
 //
 // canMutateDocument gating (Brief 5d): Edit/Delete buttons render only
 // when the UI mirror in _lib/permissions.ts returns true. Worker
@@ -75,7 +81,8 @@ import type {
   ClaimDetermination,
   ClaimPhotoRow,
   ClaimPhotoType,
-  ClaimRow
+  ClaimRow,
+  DamageRole
 } from "@splash/types/claims";
 
 interface DetailResponse {
@@ -265,15 +272,18 @@ export default async function DamageClaimDetailPage({ params, searchParams }: Pa
       ? await damageCheckRequestUrl(claim.claim_id, claim.approved_quote_id)
       : null;
 
-  // Filter by current status only. Brief 11a additionally gated on dcRole,
-  // but Brief 18 dropped that filter while the dcRole-population bug is
-  // under investigation — when dcRole is null the 11a filter eliminates
-  // every transition and the operator sees zero buttons (the bug surface
-  // reported in Brief 18). Worker still re-validates dc_role on POST as
-  // defense-in-depth, so this is a UX fix only, not an access-control
-  // change. Re-introduce the filter once dcRole is reliably populated.
-  const dcRole = session?.dcRole ?? null;
-  const validTransitions = transitionsFrom(claim.claim_status);
+  // Brief 21 — show-disabled pattern. Render every valid-from-current-
+  // status transition; mark each one enabled iff dcRole ∈ allowedRoles
+  // (super_admin always passes because rolesAtLeast() includes it for
+  // every transition). Disabled rows render with a greyed button + a
+  // hint text explaining the minimum required role. Worker re-validates
+  // dc_role on POST as defense in depth.
+  const dcRole: DamageRole | null = session?.dcRole ?? null;
+  const transitions = transitionsFrom(claim.claim_status).map((t) => ({
+    transition: t,
+    enabled: dcRole !== null && t.allowedRoles.includes(dcRole),
+    disabledHint: transitionDisabledHint(t, dcRole)
+  }));
 
   // Resolve the photo to delete (if a confirm_delete_id is present and
   // points at a live Quote/Receipt the user can mutate). Anything else
@@ -296,12 +306,15 @@ export default async function DamageClaimDetailPage({ params, searchParams }: Pa
       ) : null}
       <BackLink />
       <PageBanner customerName={claim.customer_name} claimId={claim.claim_id} />
-      <DcRoleDebugLine dcRole={dcRole} />
 
-      <SummaryCard claim={claim} checkRequestHref={checkRequestHref} />
+      <SummaryCard
+        claim={claim}
+        checkRequestHref={checkRequestHref}
+        activity={activity}
+      />
       <TransitionSection
         claimId={claim.claim_id}
-        transitions={validTransitions}
+        transitions={transitions}
         quotes={activeQuotes}
       />
       <PhotoGalleryCard
@@ -353,31 +366,18 @@ function PageBanner({
   );
 }
 
-/**
- * Brief 18 diagnostic — surfaces the resolved dcRole on the detail page so
- * the operator can confirm whether session.dcRole is populating from
- * auth_unified. When this field is reliably non-null in production the
- * Brief 11a filter can be re-introduced and this line removed (a small
- * follow-up brief).
- */
-function DcRoleDebugLine({ dcRole }: { dcRole: string | null }) {
-  return (
-    <div className="mb-4 rounded-splash-sm border border-sudsy-blue/30 bg-sudsy-blue-soft/40 px-3 py-1.5 font-mono text-[11px] text-splash-navy/70">
-      Session dcRole: {dcRole === null ? "null" : dcRole}
-    </div>
-  );
-}
-
 /* ============================================================
  * Summary card
  * ============================================================ */
 
 function SummaryCard({
   claim,
-  checkRequestHref
+  checkRequestHref,
+  activity
 }: {
   claim: ClaimRow;
   checkRequestHref: string | null;
+  activity: ClaimActivityRow[];
 }) {
   return (
     <div className="mb-6 rounded-splash-lg border border-gray-light bg-white p-6 shadow-splash-card">
@@ -390,7 +390,16 @@ function SummaryCard({
             <span className="inline-flex items-center rounded-full bg-sudsy-blue-soft px-2.5 py-0.5 text-xs font-semibold text-splash-navy">
               {claim.claim_status}
             </span>
-            {claim.contact_status ? (
+            {/*
+             * Brief 21 — contact_status was originally meant to track
+             * customer-contact lifecycle (call left voicemail, scheduled
+             * appointment, etc.) but the new worker never writes it, so
+             * the only value ever observed is the legacy default
+             * "Not Started", which adds visual noise without
+             * information. Suppress null / empty / "Not Started" until a
+             * future brief builds a real contact-tracking feature.
+             */}
+            {claim.contact_status && claim.contact_status !== "Not Started" ? (
               <span className="text-xs text-splash-navy/60">
                 {claim.contact_status}
               </span>
@@ -490,6 +499,7 @@ function SummaryCard({
 
       <AuditStamps claim={claim} />
       <ApprovalDetails claim={claim} checkRequestHref={checkRequestHref} />
+      <RecentNotesBox activity={activity} />
     </div>
   );
 }
@@ -609,8 +619,111 @@ function ApprovalDetails({
 }
 
 /* ============================================================
- * Transition section (Brief 5c) — buttons gated by current status
+ * Recent notes box (Brief 22) — top-card subset of the activity
+ * timeline. Lives inside SummaryCard; jump-button anchors to
+ * #add-note (the AddNoteCard wrapper) so operators don't have to
+ * scroll to add an update. The full timeline below remains the
+ * source of truth; this is a curated snapshot of the latest 3
+ * notes only.
  * ============================================================ */
+
+function RecentNotesBox({ activity }: { activity: ClaimActivityRow[] }) {
+  // Sort defensively: worker SELECTs ORDER BY created_at DESC, id DESC,
+  // but ActivityTimelineCard re-sorts too — match that posture so a
+  // future refetch ordering change doesn't silently scramble this.
+  const notes = [...activity]
+    .filter((entry) => entry.activity_type === "note")
+    .sort((a, b) => {
+      if (a.created_at === b.created_at) return b.id - a.id;
+      return a.created_at < b.created_at ? 1 : -1;
+    })
+    .slice(0, 3);
+
+  return (
+    <div className="mt-4 rounded-splash-md border border-gray-light bg-sudsy-blue-soft/30 p-4">
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+        <p className="text-xs font-semibold uppercase tracking-wider text-splash-navy/70">
+          Recent notes
+        </p>
+        <a
+          href="#add-note"
+          className="rounded-splash-sm border border-splash-blue bg-white px-3 py-1 text-xs font-semibold text-splash-blue transition-colors hover:bg-sudsy-blue-soft"
+        >
+          Add note
+        </a>
+      </div>
+      {notes.length === 0 ? (
+        <p className="text-sm italic text-splash-navy/60">No notes yet.</p>
+      ) : (
+        <>
+          <ul className="space-y-3">
+            {notes.map((entry) => (
+              <li
+                key={entry.id}
+                className="border-b border-gray-light/60 pb-2 last:border-b-0 last:pb-0"
+              >
+                <div className="font-mono text-xs text-splash-navy/60">
+                  {formatDateTime(entry.created_at)}
+                </div>
+                <div className="font-semibold text-splash-navy">
+                  {entry.actor_name}
+                </div>
+                <div className="mt-0.5 whitespace-pre-line text-sm text-splash-navy/80">
+                  {entry.notes ?? ""}
+                </div>
+              </li>
+            ))}
+          </ul>
+          <div className="mt-3 text-right">
+            <a
+              href="#activity"
+              className="text-xs font-semibold text-splash-blue hover:text-splash-blue-dark"
+            >
+              View all activity ↓
+            </a>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+/* ============================================================
+ * Transition section (Brief 5c, dcRole gating restored in Brief 21)
+ * ============================================================ */
+
+interface TransitionRow {
+  transition: UITransition;
+  enabled: boolean;
+  disabledHint: string;
+}
+
+/**
+ * Brief 21 — hint copy for show-disabled transition rows. The "Submit
+ * for Payment" branch is intentionally name-based: if the label string
+ * in transitions.ts changes, this branch silently won't fire and the
+ * row falls back to the generic "Requires <role> or higher" hint. Keep
+ * this function in sync with the label in transitions.ts.
+ */
+function transitionDisabledHint(
+  t: UITransition,
+  dcRole: DamageRole | null
+): string {
+  if (!dcRole) return "Requires a damage role assignment";
+  if (t.label === "Submit for Payment") return "Pending final approval";
+  // Generic fallback — name the lowest-required role from the transition's
+  // allowedRoles. allowedRoles is always a hierarchy slice (rolesAtLeast),
+  // so the first hierarchy member that's present is the minimum.
+  const roleHierarchy: readonly DamageRole[] = [
+    "gm",
+    "rm",
+    "admin",
+    "super_admin"
+  ];
+  const minRole = roleHierarchy.find((r) => t.allowedRoles.includes(r));
+  if (!minRole) return "Not available";
+  return `Requires ${minRole} or higher`;
+}
 
 function TransitionSection({
   claimId,
@@ -618,7 +731,7 @@ function TransitionSection({
   quotes
 }: {
   claimId: string;
-  transitions: UITransition[];
+  transitions: TransitionRow[];
   quotes: ClaimPhotoRow[];
 }) {
   return (
@@ -630,12 +743,14 @@ function TransitionSection({
         </p>
       ) : (
         <div className="space-y-3">
-          {transitions.map((t) => (
+          {transitions.map((row) => (
             <TransitionForm
-              key={`${t.from}->${t.to}-${t.label}`}
+              key={`${row.transition.from}->${row.transition.to}-${row.transition.label}`}
               claimId={claimId}
-              transition={t}
+              transition={row.transition}
               quotes={quotes}
+              enabled={row.enabled}
+              disabledHint={row.disabledHint}
             />
           ))}
         </div>
@@ -647,11 +762,15 @@ function TransitionSection({
 function TransitionForm({
   claimId,
   transition,
-  quotes
+  quotes,
+  enabled,
+  disabledHint
 }: {
   claimId: string;
   transition: UITransition;
   quotes: ClaimPhotoRow[];
+  enabled: boolean;
+  disabledHint: string;
 }) {
   const { label, to, requiresAmount, requiresQuoteSelection, requiresNote } =
     transition;
@@ -701,6 +820,9 @@ function TransitionForm({
         <span className={labelCls}>Action</span>
         <span className="text-sm font-semibold text-splash-navy">{label}</span>
         <span className="font-mono text-[11px] text-splash-navy/60">{to}</span>
+        {!enabled ? (
+          <span className="text-xs italic text-splash-navy/60">{disabledHint}</span>
+        ) : null}
       </div>
 
       {requiresAmount ? (
@@ -787,7 +909,12 @@ function TransitionForm({
       <div className="flex sm:items-end">
         <button
           type="submit"
-          className="inline-flex items-center gap-1.5 rounded-splash-sm bg-splash-blue px-5 py-2.5 text-sm font-bold text-white shadow-splash-btn transition-colors hover:bg-splash-blue-dark"
+          disabled={!enabled}
+          className={
+            enabled
+              ? "inline-flex items-center gap-1.5 rounded-splash-sm bg-splash-blue px-5 py-2.5 text-sm font-bold text-white shadow-splash-btn transition-colors hover:bg-splash-blue-dark"
+              : "inline-flex cursor-not-allowed items-center gap-1.5 rounded-splash-sm bg-splash-navy/20 px-5 py-2.5 text-sm font-bold text-splash-navy/50"
+          }
         >
           {label}
         </button>
@@ -802,7 +929,10 @@ function TransitionForm({
 
 function AddNoteCard({ claimId }: { claimId: string }) {
   return (
-    <div className="mb-6 rounded-splash-lg border border-gray-light bg-white p-6 shadow-splash-card">
+    <div
+      id="add-note"
+      className="mb-6 rounded-splash-lg border border-gray-light bg-white p-6 shadow-splash-card"
+    >
       <h2 className="mb-4 text-lg font-bold text-splash-navy">Add a note</h2>
       <ActionForm action={addNoteAction} className="flex flex-col gap-3">
         <input type="hidden" name="claim_id" value={claimId} />
@@ -1119,7 +1249,10 @@ function ActivityTimelineCard({ activity }: { activity: ClaimActivityRow[] }) {
   });
 
   return (
-    <div className="mb-6 rounded-splash-lg border border-gray-light bg-white p-6 shadow-splash-card">
+    <div
+      id="activity"
+      className="mb-6 rounded-splash-lg border border-gray-light bg-white p-6 shadow-splash-card"
+    >
       <h2 className="mb-4 text-lg font-bold text-splash-navy">Activity</h2>
       {sorted.length === 0 ? (
         <p className="text-sm text-splash-navy/70">
