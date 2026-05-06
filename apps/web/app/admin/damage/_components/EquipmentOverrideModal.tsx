@@ -16,6 +16,21 @@
 // the disabled/enabled treatment used by the original TransitionForm so the
 // two paths render identically.
 //
+// Brief 45 — the modal's `<div role="dialog">…</div>` is rendered through
+// `createPortal(…, document.body)` instead of inline. The submit button
+// stays in place inside the parent transition `<form>` (so
+// `submitButton.form` keeps resolving to the right form on requestSubmit),
+// but the modal's own `<form onSubmit={handleConfirm}>` would otherwise
+// nest inside the parent transition `<form>` in the live DOM. Nested
+// forms are invalid HTML and the browser's recovery is non-deterministic;
+// in practice the inner submit handler interfered with React 19's
+// `useActionState` dispatch ~4/5 of the time, causing the transition POST
+// to silently no-op. Portaling the dialog to `document.body` puts the
+// modal's form outside the parent form, so the requestSubmit() path runs
+// cleanly every time. Future modals rendered inside parent forms should
+// portal-by-default to avoid recreating this gotcha. Do not "simplify"
+// this back into the inline conditional — it will reintroduce the bug.
+//
 // Equipment-piece options are hard-forked from the public claim form's
 // EQUIPMENT_CHOICES at apps/damage-worker/src/render/claim-form.ts:18.
 // Worker is the canonical source — keep this list in sync. The list is
@@ -26,6 +41,7 @@
 "use client";
 
 import { useState, useRef, useEffect, type FormEvent } from "react";
+import { createPortal } from "react-dom";
 
 /** SOURCE OF TRUTH: apps/damage-worker/src/render/claim-form.ts:18
  *  EQUIPMENT_CHOICES. Adding/removing options requires a coordinated edit
@@ -129,14 +145,15 @@ export function EquipmentOverrideSubmit({
       >
         {label}
       </button>
-      {open ? (
-        <div
-          role="dialog"
-          aria-modal="true"
-          aria-label="Equipment-related override"
-          className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/70 p-4"
-          onClick={() => setOpen(false)}
-        >
+      {open && typeof document !== "undefined"
+        ? createPortal(
+            <div
+              role="dialog"
+              aria-modal="true"
+              aria-label="Equipment-related override"
+              className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/70 p-4"
+              onClick={() => setOpen(false)}
+            >
           <form
             onSubmit={handleConfirm}
             onClick={(e) => e.stopPropagation()}
@@ -233,8 +250,10 @@ export function EquipmentOverrideSubmit({
               </button>
             </div>
           </form>
-        </div>
-      ) : null}
+            </div>,
+            document.body
+          )
+        : null}
     </>
   );
 }

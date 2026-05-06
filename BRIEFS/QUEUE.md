@@ -27,6 +27,7 @@
 # brief-042-maintainx-workorder-on-equipment-related.md  (completed 2026-05-06)
 # brief-043-gm-equipment-related-modal-on-approve.md  (completed 2026-05-06)
 
-# brief-044-apps-web-sysadmin-api-proxy-route.md  (PULLED 2026-05-06 — diagnosis was wrong; routing infra is fine, real fix is deploying sysadmin-worker which has Brief 39's endpoint in source but not yet deployed)
+# brief-044-apps-web-sysadmin-api-proxy-route.md  (PULLED 2026-05-06 — diagnosis was wrong; real fix was sysadmin-worker watch path)
+
 
 

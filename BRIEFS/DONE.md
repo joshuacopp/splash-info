@@ -43,3 +43,4 @@
 - 2026-05-06 08:39:29 brief-041-claim-form-damage-type-selector.md (success)
 - 2026-05-06 09:01:03 brief-042-maintainx-workorder-on-equipment-related.md (success)
 - 2026-05-06 09:31:55 brief-043-gm-equipment-related-modal-on-approve.md (success)
+- 2026-05-06 09:58:35 brief-045-equipment-modal-portal-fix.md (success)
