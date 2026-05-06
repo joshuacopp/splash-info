@@ -229,7 +229,9 @@ When given a new task:
   josh.copp@splashcarwashes.com). The `claims.maintainx_workorder_id`
   D1 column doubles as the dedupe key for Brief 43's GM-side modal —
   `updateMaintainXWorkOrderId` UPDATEs only when the column is NULL,
-  so a re-trigger lands at most one WO per claim.
+  so a re-trigger lands at most one WO per claim. MaintainX assignee
+  objects require `type: "USER"` alongside the user ID. Omitting it
+  returns 400 with `assignees.0.type` fieldPath (Brief 46).
 
 ---
 

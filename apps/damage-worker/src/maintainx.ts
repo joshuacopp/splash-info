@@ -20,13 +20,22 @@
 
 import type { ClaimRow } from "@splash/types/claims";
 
-/** Production assignees — paged on real customer-claim submissions. */
-const ASSIGNEES_PRODUCTION = [{ id: 409112 }, { id: 426577 }] as const;
+/** Production assignees — paged on real customer-claim submissions.
+ *  Every object MUST include `type: "USER"`; MaintainX 400s otherwise
+ *  with `assignees.0.type` fieldPath (confirmed 2026-05-06, Brief 46). */
+const ASSIGNEES_PRODUCTION = [
+  { type: "USER", id: 409112 }, // Brett Sullivan (bsullivan@splashcarwashes.com)
+  { type: "USER", id: 426577 }  // Scott Butler   (scott.butler@splashcarwashes.com)
+] as const;
 
 /** Test assignee — Josh only. Used for dev/staging probes. */
-const ASSIGNEES_TEST = [{ id: 443948 }] as const;
+const ASSIGNEES_TEST = [
+  { type: "USER", id: 443948 }  // Josh Copp (josh.copp@splashcarwashes.com)
+] as const;
 
-function assigneesByMode(mode: "production" | "test"): ReadonlyArray<{ id: number }> {
+function assigneesByMode(
+  mode: "production" | "test"
+): ReadonlyArray<{ type: "USER"; id: number }> {
   return mode === "production" ? ASSIGNEES_PRODUCTION : ASSIGNEES_TEST;
 }
 

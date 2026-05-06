@@ -29,5 +29,7 @@
 
 # brief-044-apps-web-sysadmin-api-proxy-route.md  (PULLED 2026-05-06 — diagnosis was wrong; real fix was sysadmin-worker watch path)
 
+# brief-046-maintainx-assignee-type-field.md  (completed 2026-05-06)
+
 
 

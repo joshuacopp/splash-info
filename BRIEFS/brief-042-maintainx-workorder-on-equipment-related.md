@@ -60,9 +60,16 @@ Reference request body the operator provided:
   "priority": "HIGH",
   "categories": ["Vehicle Damage"],
   "locationId": 3774771,
-  "assignees": [{ "id": 409112 }, { "id": 426577 }]
+  "assignees": [
+    { "type": "USER", "id": 409112 },
+    { "type": "USER", "id": 426577 }
+  ]
 }
 ```
+
+> Note: every assignee object MUST include `type: "USER"`.
+> Confirmed via MaintainX 400 on 2026-05-06; Brief 46 fixed
+> the helper.
 
 Production assignees: Brett Sullivan (409112,
 bsullivan@splashcarwashes.com) + Scott Butler (426577,
@@ -177,10 +184,13 @@ export async function createMaintainXWorkOrder(
 3.2 Inside the helper:
 
   - **Assignee selection by mode:**
-    - `production`: `[{ id: 409112 }, { id: 426577 }]`
-    - `test`: `[{ id: 443948 }]`
+    - `production`: `[{ type: "USER", id: 409112 }, { type: "USER", id: 426577 }]`
+    - `test`: `[{ type: "USER", id: 443948 }]`
     - Encode these as module-level `const` arrays so they're
       grep-able when an assignee leaves the company.
+    - Note: every assignee object MUST include `type: "USER"`.
+      Confirmed via MaintainX 400 on 2026-05-06; Brief 46 fixed
+      the helper.
 
   - **Title:** `Damage Claim - {locationPretty} - {damageTypeOrFallback}`
     where `damageTypeOrFallback = claim.damage_type ?? "Unspecified"`.
