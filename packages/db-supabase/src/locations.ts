@@ -145,28 +145,34 @@ export async function getMaintainXLocationId(
 }
 
 /**
- * Brief 48 — resolve `locations.site_email` (string or null) for a customer
- * URL slug. Used by damage-worker to populate the `site_email` field on the
+ * Brief 48 / 49 — resolve `site_email` (string or null) for a customer URL
+ * slug. Used by damage-worker to populate the `site_email` field on the
  * `CUSTOMER_CLAIM_WEBHOOK_URL` payload so Power Automate can wire customer
  * confirmation-email replies to the per-location inbox via a Reply-To header.
  *
- * Two-step lookup mirrors `getMaintainXLocationId`: the `locations` table
- * doesn't carry `location_code`; we resolve slug → `site` via `pricing_simple`,
- * then fetch `locations.site_email` by `site`. The pricing_simple row also
- * carries a denormalized `site_email`, but the `locations` row is the
- * authoritative source (the `trg_sync_pricing_simple` trigger writes one
- * direction only — locations → pricing_simple), so the helper goes to the
- * source.
+ * Single-query lookup against `pricing_simple.site_email`. The value is
+ * trigger-synced from `locations.site_email` by `trg_sync_pricing_simple`
+ * (one-direction: locations → pricing_simple), so the read is eventually
+ * consistent with the locations row. Brief 26's package update endpoint
+ * REJECTS direct PATCHes to `pricing_simple.site_email` with HTTP 400
+ * specifically because of this trigger — direct edits would be silently
+ * reverted on the next locations-side update, so pricing_simple's value
+ * is always the locations-sourced value.
  *
  * Fail-soft: returns null on bad-shape slug, missing pricing_simple row,
- * missing locations row, missing/null `site_email`, or any non-2xx response.
- * Caller (damage-worker) emits `site_email: null` in the webhook payload on
- * null; PA gracefully no-ops the Reply-To header for those locations.
+ * missing/null `site_email`, fetch throw, or any non-2xx response. Caller
+ * (damage-worker) emits `site_email: null` in the webhook payload on null;
+ * PA gracefully no-ops the Reply-To header for those locations.
  */
 export async function getLocationContactInfo(
   env: { SUPABASE_URL: string; SUPABASE_SERVICE_KEY: string },
   locationCode: string
 ): Promise<{ site_email: string | null }> {
+  // Brief 49 — single-query against pricing_simple.site_email; the prior
+  // two-step join through locations.site was broken (pricing_simple.site
+  // didn't match locations.site for at least the Oswego location). The
+  // trg_sync_pricing_simple trigger keeps pricing_simple.site_email
+  // eventually consistent with the locations row, so this is equivalent.
   const sanitized = locationCode.trim().toLowerCase();
   if (!sanitized || !/^[a-z0-9_]+$/.test(sanitized)) {
     return { site_email: null };
@@ -177,54 +183,30 @@ export async function getLocationContactInfo(
     Authorization: `Bearer ${env.SUPABASE_SERVICE_KEY}`
   };
 
-  // Step 1 — pricing_simple.location_code → site (text).
-  const psUrl = new URL("/rest/v1/pricing_simple", env.SUPABASE_URL);
-  psUrl.searchParams.set("location_code", `eq.${sanitized}`);
-  psUrl.searchParams.set("select", "site");
-  psUrl.searchParams.set("limit", "1");
-  let psResponse: Response;
+  const url = new URL("/rest/v1/pricing_simple", env.SUPABASE_URL);
+  url.searchParams.set("location_code", `eq.${sanitized}`);
+  url.searchParams.set("select", "site_email");
+  url.searchParams.set("limit", "1");
+
+  let response: Response;
   try {
-    psResponse = await fetch(psUrl.toString(), { headers });
+    response = await fetch(url.toString(), { headers });
   } catch (err) {
     console.error("getLocationContactInfo: pricing_simple fetch threw", err);
     return { site_email: null };
   }
-  if (!psResponse.ok) {
+  if (!response.ok) {
     console.error(
       "getLocationContactInfo: pricing_simple returned",
-      psResponse.status
+      response.status
     );
     return { site_email: null };
   }
-  const psRows = (await psResponse.json().catch(() => [])) as Array<{
-    site: string | null;
-  }>;
-  const site = psRows[0]?.site;
-  if (!site) return { site_email: null };
 
-  // Step 2 — locations.site → site_email (text or null).
-  const locUrl = new URL("/rest/v1/locations", env.SUPABASE_URL);
-  locUrl.searchParams.set("site", `eq.${site}`);
-  locUrl.searchParams.set("select", "site_email");
-  locUrl.searchParams.set("limit", "1");
-  let locResponse: Response;
-  try {
-    locResponse = await fetch(locUrl.toString(), { headers });
-  } catch (err) {
-    console.error("getLocationContactInfo: locations fetch threw", err);
-    return { site_email: null };
-  }
-  if (!locResponse.ok) {
-    console.error(
-      "getLocationContactInfo: locations returned",
-      locResponse.status
-    );
-    return { site_email: null };
-  }
-  const locRows = (await locResponse.json().catch(() => [])) as Array<{
+  const rows = (await response.json().catch(() => [])) as Array<{
     site_email: string | null;
   }>;
-  const raw = locRows[0]?.site_email;
+  const raw = rows[0]?.site_email;
   const trimmed = typeof raw === "string" ? raw.trim() : "";
   return { site_email: trimmed ? trimmed : null };
 }
