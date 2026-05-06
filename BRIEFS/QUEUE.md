@@ -35,6 +35,8 @@
 
 # brief-054-update-packages-bulk-before-snapshot.md  (completed 2026-05-06)
 
+# brief-055-hide-equipment-malfunction-checkbox.md  (completed 2026-05-06)
+
 
 
 

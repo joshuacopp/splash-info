@@ -490,10 +490,21 @@ export function renderClaimForm(args: RenderClaimFormArgs): string {
                 <option value="">Select equipment...</option>
                 ${equipmentOpts}
               </select>
+              <!-- Brief 55 (2026-05-06): equipment-malfunction checkbox hidden
+                pending decision on whether to promote it to a real field (D1
+                column + admin display) or remove entirely. The hidden input
+                named "equipmentMalfunction" above stays wired so the
+                claimData.equipmentMalfunction field continues to round-trip
+                through the worker -> Power Automate -> SharePoint path with the
+                legacy default of "false". To re-enable the visible toggle:
+                un-comment this block and the eqMalToggle/eqMalHidden handler
+                in the inline script below. -->
+              <!--
               <div style="margin-top: 10px; display: flex; align-items: center; gap: 10px;">
                 <input type="checkbox" id="equipmentMalfunctionToggle" style="width: 18px; height: 18px; cursor: pointer;">
                 <label for="equipmentMalfunctionToggle" style="margin: 0; font-weight: 500; color: #334155; cursor: pointer;">Was there an equipment malfunction?</label>
               </div>
+              -->
             </div>
           </div>
 
@@ -676,6 +687,12 @@ const FORM_SCRIPT = `(function () {
   // ---- Equipment toggle --------------------------------------------------
   var eqDetails = document.getElementById('equipmentDetails');
   var eqSelect = document.getElementById('equipmentInvolved');
+  // Brief 55 (2026-05-06): equipment-malfunction toggle hidden in
+  // the form HTML above. The lookups below resolve to null at
+  // runtime; the existing null-guards make this safe. Restoring
+  // the visible toggle is a two-step revert -- un-comment the
+  // markup block above and these handler bindings will pick it up
+  // automatically.
   var eqMalToggle = document.getElementById('equipmentMalfunctionToggle');
   var eqMalHidden = document.getElementById('equipmentMalfunctionHidden');
   function syncEquipment() {
