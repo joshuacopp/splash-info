@@ -1,6 +1,9 @@
 // Server-side fetch helper for the damage-worker (claims data + write
-// actions + document upload). apps/web's pages call these helpers from
-// server components and server actions.
+// actions). apps/web's pages call these helpers from server components
+// and server actions. Brief 37 retired `damagePostMultipart` along with
+// `uploadDocumentAction` — the document upload form now POSTs directly
+// to the damage-worker bypass apps/web entirely (see
+// `_components/UploadDocumentCard.tsx`).
 //
 // DUAL-MODE TRANSPORT (Brief 17):
 //
@@ -205,40 +208,6 @@ export async function damagePostForm(
   const resp = await damagePost(path, body, {
     "Content-Type": "application/x-www-form-urlencoded",
     Cookie: cookieHeader
-  });
-  return parseDamagePostResponse(resp);
-}
-
-/**
- * POST a multipart/form-data body to a damage-worker mutation endpoint.
- * Server-only. Companion to `damagePostForm` — same return shape, same
- * Cookie/Origin forwarding, but designed for endpoints that accept file
- * uploads (currently only POST /manage/api/claim/{id}/document).
- *
- * Critical: we deliberately DO NOT set the Content-Type header. fetch
- * (undici) populates `multipart/form-data; boundary=...` automatically when
- * the body is a FormData instance — manually setting Content-Type here
- * strips the boundary and the worker's request.formData() call returns an
- * empty FormData, dropping the file field silently. Same applies to
- * env.DAMAGE_WORKER.fetch under the service binding.
- *
- * The damage-worker's upload handler reads the multipart body via
- * `request.formData()` directly (NOT via @splash/http readForm — readForm
- * stringifies file values to ""). Field names on the body are forwarded
- * verbatim; the calling form is responsible for matching the worker's
- * expected names (doc_type, file, vendor, amount, notes, pay_to_type,
- * vendor_address).
- */
-export async function damagePostMultipart(
-  path: string,
-  formData: FormData
-): Promise<DamagePostResult> {
-  const cookieStore = await cookies();
-  const cookieHeader = cookieStore.toString();
-
-  const resp = await damagePost(path, formData, {
-    Cookie: cookieHeader
-    // NO Content-Type — fetch sets multipart boundary itself.
   });
   return parseDamagePostResponse(resp);
 }

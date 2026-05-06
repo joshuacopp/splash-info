@@ -20,6 +20,8 @@
 # brief-034-audit-log-occurred-at-column-fix.md  (completed 2026-05-05)
 # brief-035-claim-pdf-drop-photos-and-code.md  (completed 2026-05-05)
 # brief-036-test-batch-pdf-humanize-mobile-upload-multi-pkg.md  (completed 2026-05-05)
+# brief-037-mobile-upload-legacy-port-plus-add-doc-anchor.md  (completed 2026-05-06)
+# brief-038-mobile-upload-redo-with-correct-legacy-paths.md  (completed 2026-05-06)
 
 
 

@@ -177,11 +177,17 @@ export default async function DamageClaimDetailPage({ params, searchParams }: Pa
   const sp = await searchParams;
   // Brief 19: ?action_error reading is removed — <ActionForm> renders the
   // result inline under each server-action form now.
+  // Brief 37: ?upload_error is read here because the document upload form
+  // bypasses Next server actions entirely (UploadDocumentCard POSTs
+  // directly to the damage-worker). The worker 303-redirects back here
+  // with `?upload_error=<msg>` on validation/storage failure; the banner
+  // below renders the message above the upload card.
   const confirmDeleteIdRaw = firstParam(sp.confirm_delete_id).trim();
   const confirmDeleteId =
     confirmDeleteIdRaw && /^\d+$/.test(confirmDeleteIdRaw)
       ? Number.parseInt(confirmDeleteIdRaw, 10)
       : null;
+  const uploadError = firstParam(sp.upload_error).trim().slice(0, 240) || null;
   const returnPath = `/admin/damage/${encodeURIComponent(id)}`;
 
   // Fetch claim + session in parallel. getMe() is React-cached so the root
@@ -322,6 +328,7 @@ export default async function DamageClaimDetailPage({ params, searchParams }: Pa
         photos={livePhotos}
         session={session}
       />
+      {uploadError ? <UploadErrorBanner message={uploadError} /> : null}
       <UploadDocumentCard claimId={claim.claim_id} />
       <ActivityTimelineCard activity={activity} />
       <AddNoteCard claimId={claim.claim_id} />
@@ -625,6 +632,12 @@ function ApprovalDetails({
  * scroll to add an update. The full timeline below remains the
  * source of truth; this is a curated snapshot of the latest 3
  * notes only.
+ *
+ * Brief 37 added a sibling "Add Document" anchor button next to
+ * "Add note" — same anchor-button pattern, jumps to
+ * #upload-document (the UploadDocumentCard root). The smooth-scroll
+ * CSS rule (html { scroll-behavior: smooth; }) is already in place
+ * from Brief 22.
  * ============================================================ */
 
 function RecentNotesBox({ activity }: { activity: ClaimActivityRow[] }) {
@@ -645,12 +658,20 @@ function RecentNotesBox({ activity }: { activity: ClaimActivityRow[] }) {
         <p className="text-xs font-semibold uppercase tracking-wider text-splash-navy/70">
           Recent notes
         </p>
-        <a
-          href="#add-note"
-          className="rounded-splash-sm border border-splash-blue bg-white px-3 py-1 text-xs font-semibold text-splash-blue transition-colors hover:bg-sudsy-blue-soft"
-        >
-          Add note
-        </a>
+        <div className="flex flex-wrap items-center gap-2">
+          <a
+            href="#add-note"
+            className="rounded-splash-sm border border-splash-blue bg-white px-3 py-1 text-xs font-semibold text-splash-blue transition-colors hover:bg-sudsy-blue-soft"
+          >
+            Add note
+          </a>
+          <a
+            href="#upload-document"
+            className="rounded-splash-sm border border-splash-blue bg-white px-3 py-1 text-xs font-semibold text-splash-blue transition-colors hover:bg-sudsy-blue-soft"
+          >
+            Add document
+          </a>
+        </div>
       </div>
       {notes.length === 0 ? (
         <p className="text-sm italic text-splash-navy/60">No notes yet.</p>
@@ -1233,10 +1254,29 @@ function ConfirmDeleteBanner({
 /* ============================================================
  * Upload-document card moved to ../_components/UploadDocumentCard (Brief
  * 20 — converted to a client island so doc_type / pay_to_type can drive
- * conditional `required` attrs). The card root carries id="upload-document"
- * which is the anchor target for the no-quotes hint card on the
- * transition section above.
+ * conditional `required` attrs; Brief 37 — form now POSTs directly to
+ * the damage-worker, bypassing Next 15 server actions). The card root
+ * carries id="upload-document" which is the anchor target for both the
+ * no-quotes hint card on the transition section above and the
+ * "Add document" anchor button in the Recent notes box.
  * ============================================================ */
+
+/* ============================================================
+ * Upload error banner (Brief 37) — rendered above UploadDocumentCard
+ * when ?upload_error=<msg> is present (worker-side validation /
+ * storage failure 303-redirected back here).
+ * ============================================================ */
+
+function UploadErrorBanner({ message }: { message: string }) {
+  return (
+    <div
+      role="alert"
+      className="mb-3 rounded-splash-md border border-splash-deny/40 bg-splash-deny/10 px-4 py-3 text-sm font-medium text-splash-deny"
+    >
+      <span className="font-bold">Upload failed:</span> {message}
+    </div>
+  );
+}
 
 /* ============================================================
  * Activity timeline

@@ -1,11 +1,18 @@
-// Server actions for /admin/damage/[id]. Briefs 5c + 5d + 19 + 20 + 21.
+// Server actions for /admin/damage/[id]. Briefs 5c + 5d + 19 + 20 + 21 + 37.
 //
-// Five write surfaces:
+// Four write surfaces (post-Brief-37):
 //   - transitionAction:     POST /manage/api/claim/{id}/transition         (5c)
 //   - addNoteAction:        POST /manage/api/claim/{id}/note               (5c)
-//   - uploadDocumentAction: POST /manage/api/claim/{id}/document           (5d)
 //   - editDocumentAction:   POST /manage/api/claim/{id}/document/{docId}/edit   (5d)
 //   - deleteDocumentAction: POST /manage/api/claim/{id}/document/{docId}/delete (5d)
+//
+// Brief 37 retired the prior `uploadDocumentAction` — the document
+// upload form now POSTs multipart directly to the damage-worker
+// (UploadDocumentCard sets `action="/manage/api/claim/{id}/document"`)
+// and the worker 303-redirects back to the detail page on completion.
+// Bypassing Next 15 server actions for the multipart path was the fix
+// for the iPhone-Safari upload digest 924441341@e394 (Brief 36 Part B);
+// the legacy info-signup-worker upload path used the same shape.
 //
 // Brief 19 — pattern flip:
 //   Each action's signature is now (prevState, formData) => Promise<ActionResult>
@@ -29,7 +36,7 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import { damagePostForm, damagePostMultipart } from "../_lib/worker-fetch";
+import { damagePostForm } from "../_lib/worker-fetch";
 import type { ActionResult } from "../../_components/ActionForm";
 
 function detailPath(claimId: string): string {
@@ -85,61 +92,10 @@ export async function addNoteAction(
 }
 
 /* ============================================================
- * Brief 5d — document actions
+ * Brief 5d — document edit/delete actions
+ * (uploadDocumentAction retired in Brief 37 — the upload form now
+ *  POSTs directly to the damage-worker; see UploadDocumentCard.)
  * ============================================================ */
-
-/**
- * POST /manage/api/claim/{id}/document — multipart upload.
- *
- * Forwards the entire FormData (including the File field) verbatim via
- * damagePostMultipart. The worker reads the body with request.formData()
- * directly (not via @splash/http readForm) so the file passes through.
- *
- * Field name on the file input MUST be "file"; doc selector MUST be named
- * "doc_type" (not "document_type"). The damage-worker reads exactly those
- * names — see apps/damage-worker/src/index.ts:773.
- */
-export async function uploadDocumentAction(
-  _prevState: ActionResult | null,
-  formData: FormData
-): Promise<ActionResult> {
-  const claimId = String(formData.get("claim_id") ?? "").trim();
-  if (!claimId) {
-    return { ok: false, error: "Missing claim id on document upload." };
-  }
-
-  // Brief 36 Part B — defensive try/catch. Two mobile testers hit the
-  // generic "An error occurred in the server components render" page
-  // (digest 924441341@e394) on quote upload. Any uncaught throw inside a
-  // Next 15 server action escapes the action and fails the surrounding
-  // server-component render boundary, white-paging the page. Wrapping
-  // here forces every failure mode (multipart parse hiccups, oversized
-  // files, HEIC/Content-Type quirks, transient worker fetch failures)
-  // into an inline ActionResult error that <ActionForm> renders as a
-  // banner instead of a top-level 500. Mirrors Brief 20 Bug 7's
-  // defensive try/catch on editDocumentAction.
-  try {
-    const result = await damagePostMultipart(
-      `/manage/api/claim/${encodeURIComponent(claimId)}/document`,
-      formData
-    );
-
-    if (!result.ok) {
-      return { ok: false, error: result.error };
-    }
-
-    revalidatePath(detailPath(claimId));
-    const docType = String(formData.get("doc_type") ?? "").trim();
-    return {
-      ok: true,
-      message: docType ? `${docType} uploaded` : "Document uploaded"
-    };
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    console.error(`[damage-action] upload-document claim=${claimId} threw: ${msg}`);
-    return { ok: false, error: `Document upload failed: ${msg}` };
-  }
-}
 
 /**
  * POST /manage/api/claim/{id}/document/{docId}/edit — metadata-only.

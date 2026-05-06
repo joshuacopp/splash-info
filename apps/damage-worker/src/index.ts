@@ -890,7 +890,44 @@ function applyStamps(
 
 /* ============================================================
  * POST /manage/api/claim/{id}/document
+ *
+ * Brief 37: this endpoint is invoked by a browser form whose `action`
+ * targets us directly (apps/web's UploadDocumentCard posts here without
+ * going through a Next 15 server action). The legacy worker
+ * (`info-signup-worker`) used the same shape — POST multipart, then 303
+ * back to the claim detail page — and that path "just worked" on iPhone
+ * mobile while the server-action path threw the digest 924441341@e394
+ * white-page (Brief 36 Part B). Bypassing Next removes the multipart
+ * round-trip through the server-action runtime, which is what the legacy
+ * test demonstrated. Source: legacy/damagemanager.js:2446 handleDocumentUpload.
+ *
+ * Response shape: 303 redirect on every branch.
+ *   - success → ${appsWebOrigin}/admin/damage/{claimId}
+ *   - validation/storage failure → same path with ?upload_error=<msg>
+ *
+ * The apps/web origin is read from the request's Origin header (set by
+ * the browser on every cross-/same-origin form POST). Falls back to the
+ * worker's own URL origin for the same-zone production case where the
+ * two share `splashcarwashes.info`.
  * ============================================================ */
+
+const UPLOAD_ERROR_MAX_LEN = 240;
+
+function buildUploadRedirect(
+  request: Request,
+  claimId: string,
+  errorMessage?: string
+): Response {
+  const originHeader = request.headers.get("Origin");
+  const origin = originHeader && /^https?:\/\//.test(originHeader)
+    ? originHeader
+    : new URL(request.url).origin;
+  const path = `/admin/damage/${encodeURIComponent(claimId)}`;
+  const query = errorMessage
+    ? `?upload_error=${encodeURIComponent(errorMessage.slice(0, UPLOAD_ERROR_MAX_LEN))}`
+    : "";
+  return Response.redirect(`${origin}${path}${query}`, 303);
+}
 
 async function handleDocumentUpload(
   request: Request,
@@ -905,11 +942,11 @@ async function handleDocumentUpload(
 
   const ctype = request.headers.get("content-type") ?? "";
   if (!ctype.includes("multipart/form-data")) {
-    return jsonError(400, "Document upload must be multipart/form-data.");
+    return buildUploadRedirect(request, claimId, "Document upload must be multipart/form-data.");
   }
 
   // Multipart with files — call request.formData() directly (readForm
-  // strips file values).
+  // strips file values). Same shape as legacy/damagemanager.js:2467.
   const form = await request.formData();
   const file = form.get("file");
   const docType = String(form.get("doc_type") ?? "").trim();
@@ -920,51 +957,63 @@ async function handleDocumentUpload(
   const vendorAddress = String(form.get("vendor_address") ?? "").trim() || null;
 
   if (!DOCUMENT_TYPES.has(docType)) {
-    return jsonError(400, "Invalid document type. Must be Quote or Receipt.");
+    return buildUploadRedirect(request, claimId, "Invalid document type. Must be Quote or Receipt.");
   }
   if (!file || typeof file === "string" || !(file instanceof File) || !file.name) {
-    return jsonError(400, "No file selected.");
+    return buildUploadRedirect(request, claimId, "No file selected.");
   }
   if (file.size > DOCUMENT_MAX_BYTES) {
-    return jsonError(400, `File too large (max ${DOCUMENT_MAX_BYTES / (1024 * 1024)} MB).`);
+    return buildUploadRedirect(
+      request,
+      claimId,
+      `File too large (max ${DOCUMENT_MAX_BYTES / (1024 * 1024)} MB).`
+    );
   }
   if (file.size === 0) {
-    return jsonError(400, "File is empty.");
+    return buildUploadRedirect(request, claimId, "File is empty.");
   }
   const mime = (file.type || "").toLowerCase();
   const ext = (file.name.split(".").pop() ?? "").toLowerCase();
   if (!DOCUMENT_ALLOWED_EXT.has(ext) && !DOCUMENT_ALLOWED_MIME.has(mime)) {
-    return jsonError(400, "Unsupported file type. Allowed: PDF, JPG, PNG, HEIC.");
+    return buildUploadRedirect(
+      request,
+      claimId,
+      "Unsupported file type. Allowed: PDF, JPG, PNG, HEIC."
+    );
   }
 
   // Brief 20 — Quote rows now require amount + pay_to_type up front so the
   // claim can't be advanced through Approve-Quote with an unfillable check
   // request. Receipts stay loose (they only inform the audit timeline).
   if (docType === "Quote" && !amountStr) {
-    return jsonError(400, "Amount is required for Quote documents.");
+    return buildUploadRedirect(request, claimId, "Amount is required for Quote documents.");
   }
   if (docType === "Quote" && !payToTypeRaw) {
-    return jsonError(400, "Pay to (customer or vendor) is required for Quote documents.");
+    return buildUploadRedirect(
+      request,
+      claimId,
+      "Pay to (customer or vendor) is required for Quote documents."
+    );
   }
 
   let amount: number | null = null;
   if (amountStr) {
     const parsed = Number.parseFloat(amountStr);
     if (Number.isNaN(parsed) || parsed < 0) {
-      return jsonError(400, "Amount must be a non-negative number.");
+      return buildUploadRedirect(request, claimId, "Amount must be a non-negative number.");
     }
     amount = parsed;
   }
 
   if (notesText && notesText.length > 5000) {
-    return jsonError(400, "Notes are too long (max 5000 characters).");
+    return buildUploadRedirect(request, claimId, "Notes are too long (max 5000 characters).");
   }
 
   let payToType: PayToType | null = null;
   let payToVendorAddress: string | null = null;
   if (docType === "Quote") {
     if (payToTypeRaw !== "customer" && payToTypeRaw !== "vendor") {
-      return jsonError(400, "Pay to must be 'customer' or 'vendor'.");
+      return buildUploadRedirect(request, claimId, "Pay to must be 'customer' or 'vendor'.");
     }
     payToType = payToTypeRaw as PayToType;
     if (payToType === "vendor") {
@@ -972,19 +1021,25 @@ async function handleDocumentUpload(
       // name) and vendor_address up front so the check-request PDF can
       // resolve a payee.
       if (!vendor) {
-        return jsonError(
-          400,
+        return buildUploadRedirect(
+          request,
+          claimId,
           "Vendor name is required when paying the vendor directly."
         );
       }
       if (!vendorAddress) {
-        return jsonError(
-          400,
+        return buildUploadRedirect(
+          request,
+          claimId,
           "Vendor address is required when paying the vendor directly."
         );
       }
       if (vendorAddress.length > 1000) {
-        return jsonError(400, "Vendor address is too long (max 1000 characters).");
+        return buildUploadRedirect(
+          request,
+          claimId,
+          "Vendor address is too long (max 1000 characters)."
+        );
       }
       payToVendorAddress = vendorAddress;
     }
@@ -1001,7 +1056,9 @@ async function handleDocumentUpload(
     index: seqCount,
     images: env.IMAGES
   });
-  if (!r2) return jsonError(500, "Upload to storage failed. Please try again.");
+  if (!r2) {
+    return buildUploadRedirect(request, claimId, "Upload to storage failed. Please try again.");
+  }
 
   try {
     await insertDocPhoto(env.DB, {
@@ -1030,10 +1087,10 @@ async function handleDocumentUpload(
     await touchClaim(env.DB, claimId);
   } catch (err) {
     console.error("handleDocumentUpload failed:", err);
-    return jsonError(500, "Failed to record upload.");
+    return buildUploadRedirect(request, claimId, "Failed to record upload.");
   }
 
-  return json({ ok: true, r2Key: r2.key });
+  return buildUploadRedirect(request, claimId);
 }
 
 /* ============================================================
