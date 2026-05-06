@@ -32,3 +32,4 @@
 - 2026-05-05 15:30:37 brief-030-sysadmin-mode-hub-and-audit-log.md (success)
 - 2026-05-05 15:38:09 brief-031-server-action-id-stability.md (success)
 - 2026-05-05 15:59:07 brief-032-claim-summary-pdf-and-customer-email.md (success)
+- 2026-05-05 21:16:20 brief-033-drop-d1-locations-supabase-authoritative.md (success)

@@ -198,8 +198,12 @@ When given a new task:
 - All five workers are deployed to `*.workers.dev` only. Production
   routes are commented in every wrangler.toml. Don't uncomment without
   explicit instruction.
-- Secrets are bound via `wrangler secret put`, scoped per worker. Verify
-  with `wrangler secret list` (filter by worker via `pnpm --filter`).
+- Secrets are bound via `wrangler secret put`, scoped per worker. The
+  command must be invoked inside the worker's directory or via
+  `pnpm --filter @splash/<worker> exec wrangler secret put NAME`.
+  `wrangler --filter` does NOT exist — that's a pnpm flag, not a
+  wrangler flag. Verify with `pnpm --filter @splash/<worker> exec
+  wrangler secret list`.
 - Bundle size: workers compress well; current sizes are 700-1600 KiB
   uncompressed / 130-360 KiB compressed. Cloudflare's compressed limit
   is 3 MiB free / 10 MiB paid. Plenty of headroom.
@@ -378,8 +382,11 @@ URL-based — service bindings don't apply to those.
   needed.
 - `packages/db-supabase` - service-role-key Supabase client factory
   (`createServiceClient`), helpers for `user_permissions`,
-  `suspicious_phones` immutability, etc.
-- `packages/db-d1` - D1 helpers for damage-worker.
+  `suspicious_phones` immutability, customer-URL slug resolution
+  (`getActiveLocationByCode` against pricing_simple — Brief 33), etc.
+- `packages/db-d1` - D1 helpers for damage-worker. Brief 33 retired the
+  D1 `locations` table; this package now scopes to claim-related tables
+  only (claims, claim_photos, claim_activity_log).
 - `packages/http` - `jsonError`, `isOriginAllowed` (CSRF retrofit
   helper).
 - `packages/storage-r2` - R2 helpers for damage-worker. Also exports
@@ -464,7 +471,12 @@ URL-based — service bindings don't apply to those.
   Family Plan form IDs are placeholders.
 - **location_pretty** - Display name of a location (e.g., "Binghamton"
   vs. location_code "binghamton"). Resolved before Power Automate
-  POSTs in the new damage-worker.
+  POSTs in the new damage-worker. Post-Brief-33 the resolution path is
+  Supabase `pricing_simple` (single source of truth for valid customer
+  URLs) via `@splash/db-supabase` `getActiveLocationByCode`. The legacy
+  D1 `locations` table was retired with that brief — the dual-store
+  drift gotcha that bit the operator on 2026-05-05 (batavia_veterans
+  underscore-vs-hyphen split) is no longer reachable.
 - **dc_role** - User's effective role for damage claims access scoping.
   super_admin sees all claims; gm/rm sees only their dcLocations.
 - **claim summary PDF** - Customer-facing PDF auto-generated on every

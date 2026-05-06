@@ -386,7 +386,7 @@ renders correctly and contains all the expected sections.
 - Validation results
 - Operator-side action item recorded: "Upload Splash logo PNG to
   R2 at <key> if not already there. Run
-  `wrangler --filter @splash/damage-worker secret put
+  `pnpm --filter @splash/damage-worker exec wrangler secret put
   CUSTOMER_CLAIM_WEBHOOK_URL` once the PA flow is built."
 
 ## Outcome

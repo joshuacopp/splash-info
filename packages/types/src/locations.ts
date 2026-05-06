@@ -1,5 +1,6 @@
-// Location row types — Supabase and D1 schemas DIFFER.
-// Both are real tables; the migration plan §1 (Data layer split) is explicit.
+// Supabase `locations` row type. Brief 33 retired the parallel D1 `locations`
+// table; slug-to-location_pretty resolution now hits Supabase pricing_simple
+// (see `@splash/db-supabase` `getActiveLocationByCode`).
 
 /**
  * Row shape of the Supabase `locations` table.
@@ -29,25 +30,4 @@ export interface SupabaseLocationRow {
   hrt1: string | null;
   hrt2: string | null;
   fivestar: string | null;
-}
-
-/**
- * Row shape of the D1 `locations` table.
- *
- * Source:
- *   - legacy/damagemanager.js:358 SELECT location_pretty FROM locations WHERE location_code = ? AND is_active = 1
- *   - legacy/damagemanager.js:3071 SELECT location_code, location_pretty, site_number FROM locations WHERE is_active = 1
- *
- * D1 stores booleans as integer 0/1 — `is_active` is 1 for active, 0 for inactive.
- *
- * The plan calls out (Data layer split table): locations columns are
- * `is_active`, `site_number`, `location_pretty`, `location_code` — matches
- * the legacy queries exactly.
- */
-export interface D1LocationRow {
-  location_code: string;
-  location_pretty: string;
-  /** Stringified or numeric — D1 SQLite is dynamically typed; legacy treats as scalar. */
-  site_number: string | number;
-  is_active: 0 | 1;
 }

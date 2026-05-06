@@ -49,10 +49,18 @@ routes = [
 ]
 
 # Bindings:
-# SUPABASE_URL          — string
+# SUPABASE_URL          — string (set via CF dashboard or [vars]; required
+#                         by Brief 33's Supabase-backed customer-URL slug
+#                         resolution `getActiveLocationByCode`)
 # SUPABASE_ANON_KEY     — secret
-# SUPABASE_SERVICE_KEY  — secret
-# DB                    — D1 database (claims, claim_photos, claim_activity, locations)
+# SUPABASE_SERVICE_KEY  — secret (Brief 33 — required at runtime; the
+#                         Supabase pricing_simple lookup uses service-role
+#                         to bypass RLS, mirroring sysadmin-worker. Set via
+#                         `wrangler secret put SUPABASE_SERVICE_KEY` using
+#                         the same value already configured on
+#                         splash-sysadmin.)
+# DB                    — D1 database (claims, claim_photos, claim_activity_log;
+#                         the `locations` table was retired in Brief 33)
 # R2_BUCKET             — R2 bucket "splash-vehicle-claims"
 #                         (photos + submission JSON + failed-submission fallback)
 # IMAGES                — Cloudflare Images binding (HEIC→JPEG conversion;

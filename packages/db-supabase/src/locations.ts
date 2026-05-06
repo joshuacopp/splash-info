@@ -1,8 +1,66 @@
-// Supabase locations queries. Used by performance-worker (search) and
-// damage-worker (auth scope: which site_numbers does this user manage).
+// Supabase locations queries. Used by performance-worker (search),
+// damage-worker (auth scope: which site_numbers does this user manage,
+// plus customer-claim-form slug resolution per Brief 33), and the
+// sysadmin-worker locations editor.
 
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { SupabaseLocationRow } from "@splash/types/locations";
+
+/**
+ * Customer-URL slug resolution result. Returned by `getActiveLocationByCode`.
+ *
+ * Brief 33 replaced the legacy D1-backed helper of the same name. The Supabase
+ * source-of-truth for "which location_codes are valid customer URLs" is the
+ * `pricing_simple` table — a row exists iff the location has been provisioned
+ * with at least one package, which is the equivalent of the old D1 `is_active`
+ * gate. `pricing_simple.location_code` matches the URL shape exactly.
+ */
+export interface ResolvedLocation {
+  location_code: string;
+  location_pretty: string;
+}
+
+/**
+ * Resolve `(location_code, location_pretty)` for a customer URL slug, querying
+ * Supabase `pricing_simple` directly via REST + service-role key. Returns null
+ * when the slug doesn't match any provisioned location, when the slug fails
+ * the `[a-z0-9_]+` regex, or when Supabase returns a non-2xx.
+ *
+ * Same env shape as the rest of `@splash/db-supabase`: callers pass the
+ * worker `env` (which extends SupabaseEnv) and we read `SUPABASE_URL` +
+ * `SUPABASE_SERVICE_KEY` off it.
+ *
+ * Brief 33: this helper replaces the legacy D1 `getActiveLocationByCode`
+ * (deleted from `@splash/db-d1`).
+ */
+export async function getActiveLocationByCode(
+  env: { SUPABASE_URL: string; SUPABASE_SERVICE_KEY: string },
+  locationCode: string
+): Promise<ResolvedLocation | null> {
+  const sanitized = locationCode.trim().toLowerCase();
+  if (!sanitized || !/^[a-z0-9_]+$/.test(sanitized)) return null;
+
+  const url = new URL("/rest/v1/pricing_simple", env.SUPABASE_URL);
+  url.searchParams.set("location_code", `eq.${sanitized}`);
+  url.searchParams.set("select", "location_code,location_pretty");
+  url.searchParams.set("limit", "1");
+
+  const response = await fetch(url.toString(), {
+    headers: {
+      apikey: env.SUPABASE_SERVICE_KEY,
+      Authorization: `Bearer ${env.SUPABASE_SERVICE_KEY}`
+    }
+  });
+  if (!response.ok) {
+    console.error(
+      "getActiveLocationByCode: Supabase returned",
+      response.status
+    );
+    return null;
+  }
+  const rows = (await response.json()) as ResolvedLocation[];
+  return rows[0] ?? null;
+}
 
 const LOCATION_COLS =
   "id,site_number,site,location,mla_location,area_manager,regional_manager,rm_group,rm_email,am_email,hrt_email,site_email,hrt1,hrt2,fivestar";

@@ -71,7 +71,6 @@ import {
   type ClaimsListFilters,
   countPhotosOfType,
   determinationToClaimStatus,
-  getActiveLocationByCode,
   getClaimById,
   insertDocPhoto,
   lifecycleForStatus,
@@ -86,7 +85,7 @@ import {
   writeClaimBatch,
   type ClaimInsert
 } from "@splash/db-d1";
-import type { SupabaseEnv } from "@splash/db-supabase";
+import { getActiveLocationByCode, type SupabaseEnv } from "@splash/db-supabase";
 import { isOriginAllowed, json, jsonError, readForm } from "@splash/http";
 import {
   generateClaimId,
@@ -340,9 +339,9 @@ async function dispatchManageApi(
  * GET /claims/{slug}             → renderClaimForm
  * GET /claims/{slug}/thanks      → renderThanksPage
  *
- * Slug resolves via getActiveLocationByCode(env.DB, slug). On miss the
- * worker returns 404 with friendly HTML rather than the bare "Not found"
- * fallback.
+ * Slug resolves via getActiveLocationByCode(env, slug) — Supabase
+ * pricing_simple, post-Brief-33. On miss the worker returns 404 with
+ * friendly HTML rather than the bare "Not found" fallback.
  *
  * Bookmarks (per CLAUDE.md): /claims/{location} is load-bearing — saved
  * on hundreds of customer/admin device home screens. Path shape MUST
@@ -354,7 +353,7 @@ async function handleRenderClaimForm(
   slug: string,
   url: URL
 ): Promise<Response> {
-  const location = await getActiveLocationByCode(env.DB, slug);
+  const location = await getActiveLocationByCode(env, slug);
   if (!location) {
     return htmlResponse(renderClaimNotFound(slug), 404);
   }
@@ -378,7 +377,7 @@ async function handleRenderThanks(
   slug: string,
   url: URL
 ): Promise<Response> {
-  const location = await getActiveLocationByCode(env.DB, slug);
+  const location = await getActiveLocationByCode(env, slug);
   if (!location) {
     return htmlResponse(renderClaimNotFound(slug), 404);
   }
@@ -1306,26 +1305,27 @@ async function handleClaimSubmission(request: Request, env: Env): Promise<Respon
       await writeClaimBatch(env.DB, insert);
       d1Success = true;
 
-      // location_pretty D1-canonical resolution. Source: legacy/damagemanager.js:
+      // location_pretty canonical resolution. Source: legacy/damagemanager.js:
       // 357-371 — the legacy worker does this lookup INSIDE writeClaimToD1 and
       // mutates claimData.locationPretty in place so the subsequent PA POST
       // sees the canonical value. We do it here (in the worker, post-batch)
       // instead so @splash/db-d1 stays free of side effects on its inputs.
       //
-      // Best-effort: if the D1 lookup fails or returns null, claimData keeps
-      // the form-supplied value. The D1 row was already inserted with the
-      // (possibly non-canonical) form value; rerunning that overwrite would
-      // require a separate UPDATE — left for a follow-up if it matters in
-      // practice. The PA-bound copy of the value is what Power Automate
-      // consumes for SharePoint, so this resolution closes the legacy parity
-      // gap for downstream displays.
+      // Brief 33: lookup now hits Supabase pricing_simple instead of D1
+      // locations. Best-effort: if the Supabase lookup fails or returns null,
+      // claimData keeps the form-supplied value. The D1 row was already
+      // inserted with the (possibly non-canonical) form value; rerunning that
+      // overwrite would require a separate UPDATE — left for a follow-up if
+      // it matters in practice. The PA-bound copy of the value is what Power
+      // Automate consumes for SharePoint, so this resolution closes the legacy
+      // parity gap for downstream displays.
       try {
-        const canonical = await getActiveLocationByCode(env.DB, claimData.location);
+        const canonical = await getActiveLocationByCode(env, claimData.location);
         if (canonical?.location_pretty) {
           claimData.locationPretty = canonical.location_pretty;
         }
       } catch (locErr) {
-        console.warn("location_pretty D1 resolution failed (using form value):", locErr);
+        console.warn("location_pretty Supabase resolution failed (using form value):", locErr);
       }
     } catch (d1Error) {
       console.error("D1 write failed:", d1Error);

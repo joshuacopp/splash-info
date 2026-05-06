@@ -14,6 +14,9 @@
 # brief-027-sysadmin-update-location.md  (completed 2026-05-05)
 # brief-029-tab-title-add-location-row-claim-overlay.md  (completed 2026-05-05)
 # brief-030-sysadmin-mode-hub-and-audit-log.md  (completed 2026-05-05)
+# brief-031-server-action-id-stability.md  (completed 2026-05-05)
+# brief-032-claim-summary-pdf-and-customer-email.md  (completed 2026-05-05)
+# brief-033-drop-d1-locations-supabase-authoritative.md  (completed 2026-05-05)
 
 
 
