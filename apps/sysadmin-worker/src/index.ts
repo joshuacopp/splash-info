@@ -1296,9 +1296,15 @@ async function handleUpdatePackage(
  * 500 only when validation/auth/network fails before the loop starts.
  *
  * Audit log: ONE entry per bulk request (action = "update_packages_bulk")
- * with target_id = location_code and after = { updates: [...] }.
- * Per-row entries would spam the log; the bulk entry preserves
- * provenance.
+ * with target_id = location_code. before = { location_code, rows: [...] }
+ * captures the pre-edit state of the fields the bulk endpoint can touch
+ * (pkg, pkg$, single, sort) via a single pkg=in.(...) GET issued before
+ * the patch loop. after = { location_code, updates: [...], updated,
+ * failed } captures the patch intent + per-row outcome counts. The
+ * before-snapshot fetch is fail-soft (catch + before:null fallback) so
+ * audit-log degradation never blocks the bulk update itself. Per-row
+ * audit entries would spam the log; the bulk entry preserves provenance
+ * without flooding.
  * ============================================================ */
 
 const BULK_MAX_UPDATES = 20;
@@ -1328,6 +1334,13 @@ interface BulkRowResult {
   pkg: string;
   ok: boolean;
   error?: string;
+}
+
+interface BulkBeforeRow {
+  pkg: string;
+  "pkg$": number | null;
+  single: number | null;
+  sort: number | null;
 }
 
 async function handleUpdatePackagesBulk(
@@ -1438,6 +1451,34 @@ async function handleUpdatePackagesBulk(
     entries.push({ pkg, patch });
   }
 
+  // Before-snapshot: one GET against pricing_simple covering every pkg
+  // about to be patched. Used by the audit-log entry below so the diff
+  // panel can render BEFORE/AFTER (Brief 54). Fail-soft — on any error
+  // the audit entry falls back to before:null and the bulk update still
+  // proceeds normally.
+  let beforeSnapshots: BulkBeforeRow[] | null = null;
+  try {
+    const beforeUrl =
+      `${env.SUPABASE_URL}/rest/v1/pricing_simple` +
+      `?location_code=eq.${encodeURIComponent(locationCode)}` +
+      `&pkg=in.(${entries.map((e) => encodeURIComponent(e.pkg)).join(",")})` +
+      `&select=pkg,%22pkg%24%22,single,sort`;
+    const beforeResp = await fetch(beforeUrl, {
+      headers: {
+        apikey: env.SUPABASE_SERVICE_KEY,
+        Authorization: `Bearer ${env.SUPABASE_SERVICE_KEY}`
+      }
+    });
+    if (beforeResp.ok) {
+      const rows = (await beforeResp.json()) as unknown;
+      if (Array.isArray(rows)) beforeSnapshots = rows as BulkBeforeRow[];
+    }
+  } catch {
+    // Fail-soft: leave beforeSnapshots as null. The audit-log entry
+    // will record before:null in this rare path; the bulk update
+    // itself proceeds normally.
+  }
+
   // Per-row PATCH loop. Failures don't abort the rest — the operator
   // sees per-row results in the response. Audit log captures the whole
   // request as one entry regardless of partial failure.
@@ -1499,7 +1540,13 @@ async function handleUpdatePackagesBulk(
     action: "update_packages_bulk",
     target_type: "pricing_simple",
     target_id: locationCode,
-    before: null,
+    before:
+      beforeSnapshots !== null
+        ? {
+            location_code: locationCode,
+            rows: beforeSnapshots
+          }
+        : null,
     after: {
       location_code: locationCode,
       updates: entries.map((e) => ({ pkg: e.pkg, ...e.patch })),
