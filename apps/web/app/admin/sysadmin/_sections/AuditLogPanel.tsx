@@ -19,6 +19,7 @@
 import Link from "next/link";
 import { sysadminGetJson } from "../_lib/worker-fetch";
 import { UserPicker } from "../_components/UserPicker";
+import { AuditRowExpandable } from "../_components/AuditRowExpandable";
 
 interface AuditLogRow {
   id: string | number;
@@ -429,32 +430,30 @@ function AuditRow({ row }: { row: AuditLogRow }) {
   const after = row.after ?? null;
 
   return (
-    <tr className="border-b border-gray-light/60 align-top">
-      <td className="py-2 pr-3 text-xs text-splash-navy/80">
+    <AuditRowExpandable
+      whenCell={
         <span title={row.occurred_at}>{relativeTime(row.occurred_at)}</span>
-      </td>
-      <td className="py-2 pr-3 text-xs">
-        {isSystem ? (
+      }
+      actorCell={
+        isSystem ? (
           <span className="italic text-splash-navy/70">system</span>
         ) : (
           <span className="text-splash-navy">{row.actor_email}</span>
-        )}
-      </td>
-      <td className="py-2 pr-3 text-xs">
-        <span className="font-mono text-splash-navy">{row.action}</span>
-        {isNoop ? (
-          <span className="ml-1 rounded-sm bg-gray-light/60 px-1 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-splash-navy/60">
-            no-op
-          </span>
-        ) : null}
-      </td>
-      <td className="py-2 pr-3 text-xs">
-        <TargetCell row={row} />
-      </td>
-      <td className="py-2 pr-1">
-        <DiffCell before={before} after={after} notes={row.notes} />
-      </td>
-    </tr>
+        )
+      }
+      actionCell={
+        <>
+          <span className="font-mono text-splash-navy">{row.action}</span>
+          {isNoop ? (
+            <span className="ml-1 rounded-sm bg-gray-light/60 px-1 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-splash-navy/60">
+              no-op
+            </span>
+          ) : null}
+        </>
+      }
+      targetCell={<TargetCell row={row} />}
+      diffContent={<DiffBlock before={before} after={after} notes={row.notes} />}
+    />
   );
 }
 
@@ -481,7 +480,13 @@ function TargetCell({ row }: { row: AuditLogRow }) {
   );
 }
 
-function DiffCell({
+// Brief 53. Renders the row's diff payload inside the full-width
+// expansion <td colSpan={5}>. Both before and after fall back to a single
+// full-width pre block when only one side has data; with both sides set
+// they render side-by-side on md+ viewports. max-h-96 caps each pre so a
+// huge diff doesn't push the rest of the table off-screen — the operator
+// scrolls within the pre to see overflow.
+function DiffBlock({
   before,
   after,
   notes
@@ -490,41 +495,49 @@ function DiffCell({
   after: unknown;
   notes: string | null;
 }) {
-  const onlyAfter = before === null && after !== null;
-  const onlyBefore = after === null && before !== null;
+  const hasBefore = before !== null && before !== undefined;
+  const hasAfter = after !== null && after !== undefined;
+  const both = hasBefore && hasAfter;
   return (
-    <details className="group">
-      <summary className="cursor-pointer text-xs font-semibold text-splash-blue hover:text-splash-blue-dark">
-        View
-      </summary>
-      <div className="mt-2 grid grid-cols-1 gap-2 md:grid-cols-2">
-        {!onlyAfter ? (
-          <div>
-            <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-splash-navy/60">
-              Before
-            </div>
-            <pre className="overflow-x-auto rounded-sm bg-gray-light/40 p-2 text-[11px] leading-snug text-splash-navy">
-              {jsonOrDash(before)}
-            </pre>
-          </div>
-        ) : null}
-        {!onlyBefore ? (
-          <div>
-            <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-splash-navy/60">
-              After
-            </div>
-            <pre className="overflow-x-auto rounded-sm bg-gray-light/40 p-2 text-[11px] leading-snug text-splash-navy">
-              {jsonOrDash(after)}
-            </pre>
-          </div>
-        ) : null}
-      </div>
-      {notes ? (
-        <p className="mt-2 text-[11px] italic text-splash-navy/70">
-          {notes}
+    <>
+      {hasBefore || hasAfter ? (
+        <div
+          className={
+            both
+              ? "grid grid-cols-1 gap-4 md:grid-cols-2"
+              : "grid grid-cols-1 gap-4"
+          }
+        >
+          {hasBefore ? (
+            <section>
+              <h4 className="mb-1 text-xs font-semibold uppercase tracking-wider text-splash-navy/60">
+                Before
+              </h4>
+              <pre className="max-h-96 overflow-auto rounded-splash-sm border border-gray-light bg-white p-3 text-xs leading-relaxed text-splash-navy">
+                {jsonOrDash(before)}
+              </pre>
+            </section>
+          ) : null}
+          {hasAfter ? (
+            <section>
+              <h4 className="mb-1 text-xs font-semibold uppercase tracking-wider text-splash-navy/60">
+                After
+              </h4>
+              <pre className="max-h-96 overflow-auto rounded-splash-sm border border-gray-light bg-white p-3 text-xs leading-relaxed text-splash-navy">
+                {jsonOrDash(after)}
+              </pre>
+            </section>
+          ) : null}
+        </div>
+      ) : (
+        <p className="text-xs italic text-splash-navy/60">
+          No diff payload recorded for this entry.
         </p>
+      )}
+      {notes ? (
+        <p className="mt-2 text-xs italic text-splash-navy/70">{notes}</p>
       ) : null}
-    </details>
+    </>
   );
 }
 
