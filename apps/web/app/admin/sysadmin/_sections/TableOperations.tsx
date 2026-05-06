@@ -35,8 +35,8 @@ function AddLocationOperationCard() {
 function UpdatePackageOperationCard() {
   return (
     <OperationCard
-      title="Update package"
-      description="Search a pricing_simple row by location/code/site, then edit per-package fields (pkg$, single, flash2/5, sort, pkg name, pricing mode)."
+      title="Update package pricing"
+      description="Pick a location, then multi-select packages and edit pkg$/single/sort across the selection. For rename, pricing-mode, flash2/5, or location_pretty edits, use the deprecated single-row endpoint."
     >
       <UpdatePackageCard />
     </OperationCard>

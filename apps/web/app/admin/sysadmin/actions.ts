@@ -552,6 +552,190 @@ export async function updatePackageAction(
 }
 
 /* ============================================================
+ * Update packages bulk (Brief 36)
+ *
+ * Multi-select pricing-only edit at one location. Reads form fields
+ * shaped as bulk_pkg_<index>_(pkg|selected|pkg_dollar|single|sort)
+ * plus a single hidden `location_code`. Builds the worker's
+ * UpdatePackagesBulkBody and PATCHes
+ * /sysadmin/api/pricing-simple/packages-bulk.
+ *
+ * Encoding rules:
+ *   - bulk_pkg_<i>_selected presence indicates the row is in scope.
+ *   - For selected rows, pkg_dollar is REQUIRED in the payload because
+ *     the column is NOT NULL on pricing_simple. Empty -> validation
+ *     error returned to the operator.
+ *   - single / sort: empty -> null in the payload (clears the column).
+ *   - Cap of 20 selected rows enforced before round-tripping (matches
+ *     worker's BULK_MAX_UPDATES). Friendlier UX than letting the worker
+ *     bounce a 21-row request.
+ * ============================================================ */
+
+interface UpdatePackagesBulkEntry {
+  pkg: string;
+  "pkg$"?: number;
+  single?: number | null;
+  sort?: number | null;
+}
+
+interface UpdatePackagesBulkBody {
+  location_code: string;
+  updates: UpdatePackagesBulkEntry[];
+}
+
+const BULK_PACKAGES_MAX_SELECTED = 20;
+
+export async function updatePackagesBulkAction(
+  _prevState: ActionResult | null,
+  formData: FormData
+): Promise<ActionResult> {
+  const locationCode = fieldString(formData, "location_code");
+  if (locationCode.length === 0) {
+    return { ok: false, error: "Pick a location first." };
+  }
+
+  // The card encodes one "row" per package at the location, indexed by
+  // its position in the fetched list. We don't know the count up front
+  // server-side; iterate every selected key and parse its index.
+  const selectedIndices: number[] = [];
+  for (const [key] of formData.entries()) {
+    const m = /^bulk_pkg_(\d+)_selected$/.exec(key);
+    if (m && m[1]) {
+      const idx = Number(m[1]);
+      if (Number.isInteger(idx) && idx >= 0) {
+        selectedIndices.push(idx);
+      }
+    }
+  }
+
+  if (selectedIndices.length === 0) {
+    return { ok: false, error: "Select at least one package to update." };
+  }
+  if (selectedIndices.length > BULK_PACKAGES_MAX_SELECTED) {
+    return {
+      ok: false,
+      error: `Select at most ${BULK_PACKAGES_MAX_SELECTED} packages per save.`
+    };
+  }
+  selectedIndices.sort((a, b) => a - b);
+
+  const updates: UpdatePackagesBulkEntry[] = [];
+  for (const idx of selectedIndices) {
+    const pkg = fieldString(formData, `bulk_pkg_${idx}_pkg`);
+    if (pkg.length === 0) {
+      return {
+        ok: false,
+        error: `Row ${idx} is missing its package name (form encoding bug).`
+      };
+    }
+
+    const pkgDollarRaw = String(formData.get(`bulk_pkg_${idx}_pkg_dollar`) ?? "").trim();
+    if (pkgDollarRaw.length === 0) {
+      return {
+        ok: false,
+        error: `pkg$ is required for ${pkg}.`
+      };
+    }
+    const pkgDollar = Number(pkgDollarRaw);
+    if (!Number.isFinite(pkgDollar) || pkgDollar < 0) {
+      return {
+        ok: false,
+        error: `pkg$ for ${pkg} must be a non-negative number.`
+      };
+    }
+
+    const entry: UpdatePackagesBulkEntry = {
+      pkg,
+      "pkg$": pkgDollar
+    };
+
+    const singleRaw = String(formData.get(`bulk_pkg_${idx}_single`) ?? "").trim();
+    if (singleRaw.length === 0) {
+      entry.single = null;
+    } else {
+      const n = Number(singleRaw);
+      if (!Number.isFinite(n) || n < 0) {
+        return {
+          ok: false,
+          error: `single for ${pkg} must be a non-negative number or blank.`
+        };
+      }
+      entry.single = n;
+    }
+
+    const sortRaw = String(formData.get(`bulk_pkg_${idx}_sort`) ?? "").trim();
+    if (sortRaw.length === 0) {
+      entry.sort = null;
+    } else {
+      const n = Number(sortRaw);
+      if (!Number.isInteger(n) || n < 1) {
+        return {
+          ok: false,
+          error: `sort for ${pkg} must be a positive integer or blank.`
+        };
+      }
+      entry.sort = n;
+    }
+
+    updates.push(entry);
+  }
+
+  const body: UpdatePackagesBulkBody = {
+    location_code: locationCode,
+    updates
+  };
+
+  const result = await sysadminPatchJson(
+    "/sysadmin/api/pricing-simple/packages-bulk",
+    body
+  );
+  if (!result.ok) {
+    return { ok: false, error: result.error };
+  }
+
+  // Worker shape: { ok, location_code, results: [{pkg, ok, error?}], updated, failed }
+  let updated = updates.length;
+  let failed = 0;
+  const failedPkgs: string[] = [];
+  if (result.body && typeof result.body === "object") {
+    const r = result.body as {
+      updated?: unknown;
+      failed?: unknown;
+      results?: unknown;
+    };
+    if (typeof r.updated === "number") updated = r.updated;
+    if (typeof r.failed === "number") failed = r.failed;
+    if (Array.isArray(r.results)) {
+      for (const row of r.results) {
+        if (
+          row &&
+          typeof row === "object" &&
+          "ok" in row &&
+          (row as { ok?: unknown }).ok === false
+        ) {
+          const pkg = (row as { pkg?: unknown }).pkg;
+          if (typeof pkg === "string") failedPkgs.push(pkg);
+        }
+      }
+    }
+  }
+
+  revalidatePath(PAGE_PATH);
+
+  if (failed > 0) {
+    const list = failedPkgs.length > 0 ? `: ${failedPkgs.join(", ")}` : "";
+    return {
+      ok: true,
+      message: `${updated} package${updated === 1 ? "" : "s"} updated, ${failed} failed${list}.`
+    };
+  }
+  return {
+    ok: true,
+    message: `${updated} package${updated === 1 ? "" : "s"} updated at ${locationCode}.`
+  };
+}
+
+/* ============================================================
  * Update location (Brief 27)
  *
  * Reads form fields submitted by UpdateLocationCard and posts a partial

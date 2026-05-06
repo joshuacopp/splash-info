@@ -18,6 +18,9 @@
 # brief-032-claim-summary-pdf-and-customer-email.md  (completed 2026-05-05)
 # brief-033-drop-d1-locations-supabase-authoritative.md  (completed 2026-05-05)
 # brief-034-audit-log-occurred-at-column-fix.md  (completed 2026-05-05)
+# brief-035-claim-pdf-drop-photos-and-code.md  (completed 2026-05-05)
+# brief-036-test-batch-pdf-humanize-mobile-upload-multi-pkg.md  (completed 2026-05-05)
+
 
 
 

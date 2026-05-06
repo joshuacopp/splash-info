@@ -67,6 +67,23 @@ function dash(v: string | null | undefined): string {
   return s ? s : "—";
 }
 
+// Brief 36 — turn enum-shaped values like `no_responsibility` /
+// `partial-responsibility` / `yes` into human-readable Title Case
+// ("No Responsibility", "Partial Responsibility", "Yes"). Scoped to the
+// PDF's two enum-shaped fields (determination + equipmentRelated).
+// Returns "—" for null/empty so the PDF renders the same dash treatment
+// as `dash()` rather than a blank cell.
+function humanizeLabel(v: string | null | undefined): string {
+  if (!v) return "—";
+  const s = String(v).trim();
+  if (!s) return "—";
+  return s
+    .split(/[_-]/g)
+    .filter((part) => part.length > 0)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1).toLowerCase())
+    .join(" ");
+}
+
 function formatTimestamp(iso: string): string {
   try {
     const d = new Date(iso);
@@ -385,20 +402,14 @@ export async function generateClaimSummaryPdf(input: ClaimSummaryPdfInput): Prom
   // 5. Staff Assessment.
   // ============================================================
   layout.drawSectionHeading("Staff Assessment");
-  const equipmentLabel =
-    input.assessment.equipmentRelated === "yes"
-      ? "Yes"
-      : input.assessment.equipmentRelated === "no"
-        ? "No"
-        : "—";
   layout.drawKeyValueGrid([
     ["Staff Name", dash(input.assessment.staffName)],
-    ["Equipment-Related", equipmentLabel]
+    ["Equipment-Related", humanizeLabel(input.assessment.equipmentRelated)]
   ]);
 
   layout.drawSpacer(2);
   layout.drawFullWidthLabel("Determination");
-  layout.drawTextBlock(input.assessment.determination || "—", 11);
+  layout.drawTextBlock(humanizeLabel(input.assessment.determination), 11);
 
   layout.drawFullWidthLabel("What the Customer Was Told");
   layout.drawTextBlock(input.assessment.whatCustomerWasTold || "—", 11);

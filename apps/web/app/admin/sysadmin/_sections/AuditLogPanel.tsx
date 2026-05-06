@@ -51,6 +51,7 @@ const ALLOWED_ACTIONS = [
   "reset_password",
   "create_location",
   "update_package",
+  "update_packages_bulk",
   "update_location"
 ] as const;
 

@@ -1,21 +1,26 @@
 "use client";
 
-// Substring typeahead used by the "Update package" card on /admin/sysadmin
-// (Brief 26). Hits /sysadmin/api/pricing-simple/search?q=... — the
-// sysadmin-worker returns up to 50 rows matching across location_code,
-// location_pretty, and site.
+// Location typeahead for the "Update package pricing" card on
+// /admin/sysadmin (Brief 36 — replaces the per-row picker introduced in
+// Brief 26). Hits the existing
+//   GET /sysadmin/api/pricing-simple/search?q=...
+// endpoint and dedupes the row stream into distinct (location_code,
+// location_pretty) pairs — one entry per location regardless of how
+// many packages match. Avoids needing a thinner `/locations` endpoint;
+// the multi-select editor fetches the full package list for the chosen
+// location separately (also via /pricing-simple/search?q=<location_code>).
 //
-// Mirrors the UserPicker pattern from Brief 18:
+// Mirrors the pattern from LocationsSearchPicker / UserPicker:
 //   - debounced fetch (250ms)
-//   - hidden field carries selection state via the parent's onSelect callback
+//   - selection state held by the parent via `selected` + `onSelect`
 //   - empty query closes the dropdown without firing a request
 //   - failure surfaces a small error note below the input
 //   - combobox + listbox aria roles + arrow key nav + Esc + outside-click dismiss
 //
-// URL is relative ("/sysadmin/api/pricing-simple/search?q=..."): same
-// posture as UserPicker — production is same-origin, dev relies on
-// next.config.mjs rewrites proxying /sysadmin/api/:path* to
-// NEXT_PUBLIC_SYSADMIN_WORKER_URL when set.
+// `PricingSimpleSearchRow` is exported as the broad row type so callers
+// (e.g., the multi-select package list) can reuse it for the per-package
+// rows the same endpoint returns. The `BulkLocationOption` type captures
+// the deduped (location_code, location_pretty) shape used by this picker.
 
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 
@@ -30,7 +35,6 @@ export interface PricingSimpleSearchRow {
   flash5: number | null;
   sort: number | null;
   pricing: string | null;
-  // Read-only context fields (denormalized — synced from locations).
   area_manager: string | null;
   regional_manager: string | null;
   am_email: string | null;
@@ -40,27 +44,40 @@ export interface PricingSimpleSearchRow {
   updated_at: string | null;
 }
 
+export interface BulkLocationOption {
+  location_code: string;
+  location_pretty: string | null;
+  site: string | null;
+  packageCount: number;
+}
+
 interface PackageSearchPickerProps {
-  /** Currently selected row. Pass null to render an empty picker. */
-  selected: PricingSimpleSearchRow | null;
-  /** Fired on row pick (row) and on Clear (null). */
-  onSelect: (row: PricingSimpleSearchRow | null) => void;
-  /** Visible input placeholder. */
+  selected: BulkLocationOption | null;
+  onSelect: (row: BulkLocationOption | null) => void;
   placeholder?: string;
-  /** Optional id forwarded to the visible input — pairs with FieldLabel htmlFor. */
   inputId?: string;
 }
 
-function formatUpdated(iso: string | null): string {
-  if (!iso) return "";
-  // Slice "YYYY-MM-DD" prefix from either D1's "YYYY-MM-DD HH:mm:ss" or
-  // Postgres' "YYYY-MM-DDTHH:mm:ss(.sss)Z" — both have it at offsets 0-10.
-  return iso.slice(0, 10);
-}
-
-function formatMoney(v: number | null): string {
-  if (v === null || v === undefined) return "—";
-  return `$${v.toFixed(2)}`;
+function dedupeByLocation(rows: PricingSimpleSearchRow[]): BulkLocationOption[] {
+  const map = new Map<string, BulkLocationOption>();
+  for (const row of rows) {
+    const code = row.location_code;
+    if (!code) continue;
+    const existing = map.get(code);
+    if (existing) {
+      existing.packageCount += 1;
+    } else {
+      map.set(code, {
+        location_code: code,
+        location_pretty: row.location_pretty,
+        site: row.site,
+        packageCount: 1
+      });
+    }
+  }
+  return [...map.values()].sort((a, b) =>
+    a.location_code.localeCompare(b.location_code)
+  );
 }
 
 export function PackageSearchPicker({
@@ -73,7 +90,7 @@ export function PackageSearchPicker({
   const optionIdPrefix = useId();
 
   const [query, setQuery] = useState("");
-  const [results, setResults] = useState<PricingSimpleSearchRow[]>([]);
+  const [results, setResults] = useState<BulkLocationOption[]>([]);
   const [open, setOpen] = useState(false);
   const [activeIndex, setActiveIndex] = useState(-1);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -120,9 +137,10 @@ export function PackageSearchPicker({
 
         const rows = (await resp.json()) as PricingSimpleSearchRow[];
         if (seq !== fetchSeqRef.current) return;
-        setResults(rows);
-        setOpen(rows.length > 0);
-        setActiveIndex(rows.length > 0 ? 0 : -1);
+        const deduped = dedupeByLocation(rows);
+        setResults(deduped);
+        setOpen(deduped.length > 0);
+        setActiveIndex(deduped.length > 0 ? 0 : -1);
         setErrorMessage(null);
       } catch (err) {
         if (seq !== fetchSeqRef.current) return;
@@ -141,7 +159,6 @@ export function PackageSearchPicker({
     };
   }, [query]);
 
-  // Close on outside click.
   useEffect(() => {
     if (!open) return;
     function onDocClick(e: MouseEvent) {
@@ -157,7 +174,7 @@ export function PackageSearchPicker({
     return () => document.removeEventListener("mousedown", onDocClick);
   }, [open]);
 
-  function pick(row: PricingSimpleSearchRow) {
+  function pick(row: BulkLocationOption) {
     onSelect(row);
     setQuery("");
     setResults([]);
@@ -234,12 +251,10 @@ export function PackageSearchPicker({
       {selected ? (
         <div className="mt-1.5 flex flex-wrap items-center gap-2 rounded-splash-sm border border-sudsy-blue/30 bg-sudsy-blue-soft/40 px-2.5 py-1.5 text-xs text-splash-navy">
           <span className="font-semibold">Selected:</span>
-          <span className="font-mono">
-            {selected.location_code}/{selected.pkg}
-          </span>
+          <span className="font-mono">{selected.location_code}</span>
           {selected.location_pretty ? <span>· {selected.location_pretty}</span> : null}
           <span className="text-splash-navy/60">
-            ({formatMoney(selected["pkg$"])} · single {formatMoney(selected.single)})
+            ({selected.packageCount} package{selected.packageCount === 1 ? "" : "s"})
           </span>
           <button
             type="button"
@@ -263,10 +278,9 @@ export function PackageSearchPicker({
         >
           {results.map((row, idx) => {
             const isActive = idx === activeIndex;
-            const updated = formatUpdated(row.updated_at);
             return (
               <li
-                key={`${row.location_code}/${row.pkg}`}
+                key={row.location_code}
                 id={`${optionIdPrefix}-opt-${idx}`}
                 role="option"
                 aria-selected={isActive}
@@ -282,18 +296,14 @@ export function PackageSearchPicker({
                 onMouseEnter={() => setActiveIndex(idx)}
               >
                 <div className="flex items-baseline justify-between gap-3">
-                  <div className="font-mono font-semibold">
-                    {row.location_code}/{row.pkg}
+                  <div className="font-mono font-semibold">{row.location_code}</div>
+                  <div className="shrink-0 text-[10px] uppercase tracking-wider text-splash-navy/50">
+                    {row.packageCount} pkg{row.packageCount === 1 ? "" : "s"}
                   </div>
-                  {updated ? (
-                    <div className="shrink-0 text-[10px] uppercase tracking-wider text-splash-navy/50">
-                      Updated {updated}
-                    </div>
-                  ) : null}
                 </div>
                 <div className="text-xs text-splash-navy/60">
-                  {row.location_pretty ?? "(no pretty name)"} · {formatMoney(row["pkg$"])}/single{" "}
-                  {formatMoney(row.single)}
+                  {row.location_pretty ?? "(no pretty name)"}
+                  {row.site ? <span> · {row.site}</span> : null}
                 </div>
               </li>
             );

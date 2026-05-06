@@ -108,21 +108,37 @@ export async function uploadDocumentAction(
     return { ok: false, error: "Missing claim id on document upload." };
   }
 
-  const result = await damagePostMultipart(
-    `/manage/api/claim/${encodeURIComponent(claimId)}/document`,
-    formData
-  );
+  // Brief 36 Part B — defensive try/catch. Two mobile testers hit the
+  // generic "An error occurred in the server components render" page
+  // (digest 924441341@e394) on quote upload. Any uncaught throw inside a
+  // Next 15 server action escapes the action and fails the surrounding
+  // server-component render boundary, white-paging the page. Wrapping
+  // here forces every failure mode (multipart parse hiccups, oversized
+  // files, HEIC/Content-Type quirks, transient worker fetch failures)
+  // into an inline ActionResult error that <ActionForm> renders as a
+  // banner instead of a top-level 500. Mirrors Brief 20 Bug 7's
+  // defensive try/catch on editDocumentAction.
+  try {
+    const result = await damagePostMultipart(
+      `/manage/api/claim/${encodeURIComponent(claimId)}/document`,
+      formData
+    );
 
-  if (!result.ok) {
-    return { ok: false, error: result.error };
+    if (!result.ok) {
+      return { ok: false, error: result.error };
+    }
+
+    revalidatePath(detailPath(claimId));
+    const docType = String(formData.get("doc_type") ?? "").trim();
+    return {
+      ok: true,
+      message: docType ? `${docType} uploaded` : "Document uploaded"
+    };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`[damage-action] upload-document claim=${claimId} threw: ${msg}`);
+    return { ok: false, error: `Document upload failed: ${msg}` };
   }
-
-  revalidatePath(detailPath(claimId));
-  const docType = String(formData.get("doc_type") ?? "").trim();
-  return {
-    ok: true,
-    message: docType ? `${docType} uploaded` : "Document uploaded"
-  };
 }
 
 /**

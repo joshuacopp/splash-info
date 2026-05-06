@@ -131,6 +131,7 @@ const OWNED_POST_PATHS = new Set([
 
 const OWNED_PATCH_PATHS = new Set([
   "/sysadmin/api/pricing-simple/package",
+  "/sysadmin/api/pricing-simple/packages-bulk",
   "/sysadmin/api/locations"
 ]);
 
@@ -215,6 +216,8 @@ export default {
           return await handleCreateLocation(env, body, actor);
         case "/sysadmin/api/pricing-simple/package":
           return await handleUpdatePackage(env, body, actor);
+        case "/sysadmin/api/pricing-simple/packages-bulk":
+          return await handleUpdatePackagesBulk(env, body, actor);
         case "/sysadmin/api/locations":
           return await handleUpdateLocation(env, body, actor);
       }
@@ -930,6 +933,12 @@ async function handleSearchPricingSimple(env: Env, url: URL): Promise<Response> 
  * matches REST convention for partial updates and the Supabase REST
  * call we issue downstream is also PATCH. The `OWNED_PATCH_PATHS`
  * dispatch in the top-level fetch() routes the method.
+ *
+ * Brief 36 — DEPRECATED in favor of `/pricing-simple/packages-bulk`
+ * (multi-row pricing-only edit). Kept as a one-row fallback for
+ * rename/pricing-mode/flash2/flash5/location_pretty edits that the
+ * bulk endpoint intentionally drops. No consumer in apps/web today;
+ * remove once the operator confirms the bulk flow covers all needs.
  * ============================================================ */
 
 const REJECTED_DENORM_FIELDS = [
@@ -1159,6 +1168,263 @@ async function handleUpdatePackage(
     pkg: finalPkg,
     updated_at:
       afterRow && typeof afterRow.updated_at === "string" ? afterRow.updated_at : null
+  });
+}
+
+/* ============================================================
+ * PATCH /sysadmin/api/pricing-simple/packages-bulk  (Brief 36)
+ *
+ * Bulk pricing-only edit: one location, multiple packages, atomic-ish
+ * iteration. Replaces the per-row Brief 26 endpoint as the operator's
+ * primary editor — the common workflow is "raise every package at this
+ * location by $X", which previously required N round-trips.
+ *
+ * Body shape (worker rejects everything else):
+ *   {
+ *     location_code: string,        // /^[a-z0-9_]+$/, single location
+ *     updates: Array<{              // 1..20 entries
+ *       pkg: string,                // composite-PK pkg part
+ *       "pkg$"?: number | null,
+ *       single?: number | null,
+ *       sort?: number | null
+ *     }>
+ *   }
+ *
+ * Editable fields are intentionally limited to pkg$/single/sort. Rename
+ * (pkg_new), pricing-mode, flash2/flash5, and location_pretty stay on
+ * the deprecated single-row endpoint — the multi-select UI doesn't
+ * surface them. The denormalized columns from Brief 26 are still
+ * rejected here for the same reason (sync trigger reverts them).
+ *
+ * Per-row partial-success: each pkg is patched independently; failures
+ * don't roll back successful peers. The response has per-row results
+ * plus updated/failed counts for the UI's success message. Worker-level
+ * 500 only when validation/auth/network fails before the loop starts.
+ *
+ * Audit log: ONE entry per bulk request (action = "update_packages_bulk")
+ * with target_id = location_code and after = { updates: [...] }.
+ * Per-row entries would spam the log; the bulk entry preserves
+ * provenance.
+ * ============================================================ */
+
+const BULK_MAX_UPDATES = 20;
+
+const BULK_REJECTED_FIELDS = [
+  // Sync-trigger-reverted denormalized columns (same as Brief 26 list).
+  "area_manager",
+  "regional_manager",
+  "am_email",
+  "rm_email",
+  "site_email",
+  "address",
+  // Brief 36 scope decision: single-row endpoint owns these.
+  "pkg_new",
+  "flash2",
+  "flash5",
+  "pricing",
+  "location_pretty"
+] as const;
+
+interface BulkUpdateEntry {
+  pkg: string;
+  patch: Record<string, unknown>;
+}
+
+interface BulkRowResult {
+  pkg: string;
+  ok: boolean;
+  error?: string;
+}
+
+async function handleUpdatePackagesBulk(
+  env: Env,
+  body: Record<string, unknown>,
+  actor: { id: string; email: string }
+): Promise<Response> {
+  const locationCode = stringOrNull(body.location_code);
+  if (!locationCode) return jsonError(400, "location_code is required");
+  if (!LOCATION_CODE_RE.test(locationCode)) {
+    return jsonError(
+      400,
+      "location_code must contain only lowercase letters, numbers, and underscores"
+    );
+  }
+
+  const rawUpdates = body.updates;
+  if (!Array.isArray(rawUpdates)) {
+    return jsonError(400, "updates must be an array");
+  }
+  if (rawUpdates.length === 0) {
+    return jsonError(400, "updates must contain at least one entry");
+  }
+  if (rawUpdates.length > BULK_MAX_UPDATES) {
+    return jsonError(
+      400,
+      `updates may not exceed ${BULK_MAX_UPDATES} entries per request`
+    );
+  }
+
+  // Validate every entry up front; reject the whole request on the first
+  // bad entry so the client can correct it before any PATCH issues.
+  const entries: BulkUpdateEntry[] = [];
+  const seenPkgs = new Set<string>();
+  for (let i = 0; i < rawUpdates.length; i++) {
+    const item = rawUpdates[i];
+    if (!item || typeof item !== "object") {
+      return jsonError(400, `updates[${i}] must be an object`);
+    }
+    const entry = item as Record<string, unknown>;
+
+    for (const field of BULK_REJECTED_FIELDS) {
+      if (field in entry) {
+        return jsonError(
+          400,
+          `This endpoint only edits pkg$, single, sort. Use Update Package single-row endpoint for other fields, or Update Location for cascading fields. (offending field: ${field})`
+        );
+      }
+    }
+
+    const pkg = stringOrNull(entry.pkg);
+    if (!pkg) {
+      return jsonError(400, `updates[${i}].pkg is required`);
+    }
+    if (seenPkgs.has(pkg)) {
+      return jsonError(400, `updates[${i}].pkg duplicates a prior entry: ${pkg}`);
+    }
+    seenPkgs.add(pkg);
+
+    const patch: Record<string, unknown> = {};
+
+    if ("pkg$" in entry) {
+      if (entry["pkg$"] === null || entry["pkg$"] === "") {
+        return jsonError(400, `updates[${i}]["pkg$"] cannot be null`);
+      }
+      const v = nonNegativeNumber(entry["pkg$"]);
+      if (v === null) {
+        return jsonError(400, `updates[${i}]["pkg$"] must be a non-negative number`);
+      }
+      patch["pkg$"] = v;
+    }
+
+    if ("single" in entry) {
+      if (entry.single === null || entry.single === "") {
+        patch.single = null;
+      } else {
+        const v = nonNegativeNumber(entry.single);
+        if (v === null) {
+          return jsonError(
+            400,
+            `updates[${i}].single must be a non-negative number or null`
+          );
+        }
+        patch.single = v;
+      }
+    }
+
+    if ("sort" in entry) {
+      if (entry.sort === null || entry.sort === "") {
+        patch.sort = null;
+      } else {
+        const sortNum =
+          typeof entry.sort === "number" ? entry.sort : Number(entry.sort);
+        if (!Number.isInteger(sortNum) || sortNum < 1) {
+          return jsonError(400, `updates[${i}].sort must be a positive integer or null`);
+        }
+        patch.sort = sortNum;
+      }
+    }
+
+    if (Object.keys(patch).length === 0) {
+      return jsonError(
+        400,
+        `updates[${i}] must include at least one of pkg$, single, sort`
+      );
+    }
+
+    entries.push({ pkg, patch });
+  }
+
+  // Per-row PATCH loop. Failures don't abort the rest — the operator
+  // sees per-row results in the response. Audit log captures the whole
+  // request as one entry regardless of partial failure.
+  const results: BulkRowResult[] = [];
+  let updated = 0;
+  let failed = 0;
+
+  for (const entry of entries) {
+    const url =
+      `${env.SUPABASE_URL}/rest/v1/pricing_simple` +
+      `?location_code=eq.${encodeURIComponent(locationCode)}` +
+      `&pkg=eq.${encodeURIComponent(entry.pkg)}`;
+
+    let rowOk = false;
+    let rowError: string | undefined;
+
+    try {
+      const patchResp = await fetch(url, {
+        method: "PATCH",
+        headers: {
+          apikey: env.SUPABASE_SERVICE_KEY,
+          Authorization: `Bearer ${env.SUPABASE_SERVICE_KEY}`,
+          "Content-Type": "application/json",
+          Prefer: "return=representation"
+        },
+        body: JSON.stringify(entry.patch)
+      });
+      if (!patchResp.ok) {
+        const errText = await patchResp.text().catch(() => "");
+        rowError = `Supabase ${patchResp.status}${errText ? `: ${errText}` : ""}`;
+      } else {
+        const updatedRows = (await patchResp.json().catch(() => [])) as unknown[];
+        if (Array.isArray(updatedRows) && updatedRows.length > 0) {
+          rowOk = true;
+        } else {
+          rowError = "Package not found";
+        }
+      }
+    } catch (err) {
+      rowError = err instanceof Error ? err.message : String(err);
+    }
+
+    if (rowOk) {
+      updated++;
+      results.push({ pkg: entry.pkg, ok: true });
+    } else {
+      failed++;
+      results.push({ pkg: entry.pkg, ok: false, error: rowError ?? "Unknown error" });
+    }
+  }
+
+  // Audit log — one entry covering the whole request. Captures the
+  // submitted updates verbatim (including any that failed downstream) so
+  // the operator can reconstruct intent from the log even if Supabase
+  // partially rejected.
+  const sb = createServiceClient(env);
+  await logSysadminAudit(sb, {
+    actor,
+    action: "update_packages_bulk",
+    target_type: "pricing_simple",
+    target_id: locationCode,
+    before: null,
+    after: {
+      location_code: locationCode,
+      updates: entries.map((e) => ({ pkg: e.pkg, ...e.patch })),
+      updated,
+      failed
+    }
+  });
+
+  // TODO (cross-worker cache invalidation): see comments on
+  // handleCreateLocation / handleUpdatePackage. signup-worker caches
+  // pricing_simple_resolved for 5 minutes; bulk-edit changes won't
+  // surface on the customer signup form until that cache expires.
+
+  return json({
+    ok: true,
+    location_code: locationCode,
+    results,
+    updated,
+    failed
   });
 }
 
@@ -1481,6 +1747,7 @@ const ALLOWED_AUDIT_ACTIONS: ReadonlySet<string> = new Set([
   "reset_password",
   "create_location",
   "update_package",
+  "update_packages_bulk",
   "update_location"
 ]);
 
