@@ -1750,33 +1750,6 @@ async function loadSummaryLogoBytes(env: Env): Promise<Uint8Array> {
 }
 
 /**
- * Pull up to 4 photo thumbnails from R2 (originals; no resize). The
- * IMAGES binding's minimal interface (`@splash/storage-r2` ImagesBinding)
- * supports format-conversion only, not resize, so we embed originals and
- * accept oversized PDFs as the brief's documented degraded fallback.
- */
-async function loadPhotoThumbnails(
-  env: Env,
-  photos: Array<{ r2Key: string; fileName: string }>
-): Promise<Array<{ filename: string; bytes: Uint8Array }>> {
-  const out: Array<{ filename: string; bytes: Uint8Array }> = [];
-  for (const p of photos.slice(0, 4)) {
-    try {
-      const obj = await env.R2_BUCKET.get(p.r2Key);
-      if (!obj) continue;
-      const bytes = new Uint8Array(await obj.arrayBuffer());
-      out.push({ filename: p.fileName, bytes });
-    } catch (err) {
-      console.warn(
-        `loadPhotoThumbnails: failed to read ${p.r2Key}`,
-        err
-      );
-    }
-  }
-  return out;
-}
-
-/**
  * Generate the claim summary PDF for a fresh submission and write it to
  * R2 at `claims/<claimId>/summary.pdf`. Returns the PDF bytes on success
  * (so the caller can also hand them to the customer-email webhook), or
@@ -1790,10 +1763,7 @@ async function buildAndStoreClaimSummaryPdf(
   claimData: ClaimSubmissionPayload,
   _baseOrigin: string
 ): Promise<Uint8Array | null> {
-  const [logoPng, thumbs] = await Promise.all([
-    loadSummaryLogoBytes(env),
-    loadPhotoThumbnails(env, claimData.photos)
-  ]);
+  const logoPng = await loadSummaryLogoBytes(env);
 
   const input: ClaimSummaryPdfInput = {
     claimId: claimData.claimId,
@@ -1814,7 +1784,6 @@ async function buildAndStoreClaimSummaryPdf(
       licenseState: null,
       whatHappened: claimData.issueDescription
     },
-    photos: thumbs,
     assessment: {
       staffName: claimData.employeeName || null,
       equipmentRelated:

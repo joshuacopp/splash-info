@@ -17,6 +17,9 @@
 # brief-031-server-action-id-stability.md  (completed 2026-05-05)
 # brief-032-claim-summary-pdf-and-customer-email.md  (completed 2026-05-05)
 # brief-033-drop-d1-locations-supabase-authoritative.md  (completed 2026-05-05)
+# brief-034-audit-log-occurred-at-column-fix.md  (completed 2026-05-05)
+
+
 
 
 

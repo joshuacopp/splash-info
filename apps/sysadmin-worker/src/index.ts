@@ -1444,7 +1444,7 @@ async function handleUpdateLocation(
  * GET /sysadmin/api/audit-log  (Brief 30)
  *
  * Filtered read of sysadmin_audit_log. All filters AND-combined; missing
- * filters apply no constraint. Ordered created_at.desc. Default limit 50,
+ * filters apply no constraint. Ordered occurred_at.desc. Default limit 50,
  * max 200. Offset pagination (no smart cursor; this is observation
  * tooling, not a feed).
  *
@@ -1586,17 +1586,17 @@ async function handleSearchAuditLog(env: Env, url: URL): Promise<Response> {
     if (!Number.isFinite(Date.parse(sinceRaw))) {
       return jsonError(400, "since must be a valid ISO-8601 timestamp");
     }
-    params.push(`created_at=gte.${encodeURIComponent(sinceRaw)}`);
+    params.push(`occurred_at=gte.${encodeURIComponent(sinceRaw)}`);
   }
   const untilRaw = (url.searchParams.get("until") ?? "").trim();
   if (untilRaw.length > 0) {
     if (!Number.isFinite(Date.parse(untilRaw))) {
       return jsonError(400, "until must be a valid ISO-8601 timestamp");
     }
-    params.push(`created_at=lte.${encodeURIComponent(untilRaw)}`);
+    params.push(`occurred_at=lte.${encodeURIComponent(untilRaw)}`);
   }
 
-  params.push("order=created_at.desc");
+  params.push("order=occurred_at.desc");
   params.push(`limit=${limit}`);
   if (offset > 0) {
     params.push(`offset=${offset}`);

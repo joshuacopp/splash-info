@@ -22,7 +22,7 @@ import { UserPicker } from "../_components/UserPicker";
 
 interface AuditLogRow {
   id: string | number;
-  created_at: string;
+  occurred_at: string;
   actor_id: string | null;
   actor_email: string;
   action: string;
@@ -430,7 +430,7 @@ function AuditRow({ row }: { row: AuditLogRow }) {
   return (
     <tr className="border-b border-gray-light/60 align-top">
       <td className="py-2 pr-3 text-xs text-splash-navy/80">
-        <span title={row.created_at}>{relativeTime(row.created_at)}</span>
+        <span title={row.occurred_at}>{relativeTime(row.occurred_at)}</span>
       </td>
       <td className="py-2 pr-3 text-xs">
         {isSystem ? (

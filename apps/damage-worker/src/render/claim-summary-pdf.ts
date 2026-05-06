@@ -10,8 +10,8 @@
 // Layout: US Letter (612x792 pt) with 54 pt margins. Header band is a
 // splash-navy stripe with the logo on the left and the title + claim ID +
 // timestamp on the right. Body sections are key/value grids + wrapped
-// text blocks for the free-form fields. Photos render as up to 4 inline
-// thumbnails. Footer repeats the claim ID and a contact note.
+// text blocks for the free-form fields. Footer repeats the claim ID and
+// a contact note.
 
 import { PDFDocument, type PDFFont, type PDFImage, type PDFPage, StandardFonts, rgb } from "pdf-lib";
 
@@ -19,6 +19,11 @@ export interface ClaimSummaryPdfInput {
   claimId: string;
   submittedAt: string; // ISO-8601 UTC
   locationPretty: string;
+  /**
+   * Internal slug. Retained on the input shape (call sites already have
+   * it; future cosmetic tweaks may want it back) but no longer rendered
+   * in the PDF — Brief 35 dropped it from the location header.
+   */
   locationCode: string;
   customer: {
     name: string;
@@ -32,8 +37,6 @@ export interface ClaimSummaryPdfInput {
     licenseState: string | null;
     whatHappened: string;
   };
-  /** Up to 4 thumbnails embedded inline. JPEG/PNG bytes — sniffed by header. */
-  photos: Array<{ filename: string; bytes: Uint8Array }>;
   assessment: {
     staffName: string | null;
     equipmentRelated: "yes" | "no" | null;
@@ -126,28 +129,6 @@ function wrapText(text: string, font: PDFFont, size: number, maxWidth: number): 
     if (line) out.push(line);
   }
   return out;
-}
-
-// Sniff JPEG/PNG by the first two bytes; fall back to attempting jpg then png.
-async function embedImageBytes(
-  doc: PDFDocument,
-  bytes: Uint8Array
-): Promise<PDFImage | null> {
-  try {
-    if (bytes.length >= 2 && bytes[0] === 0xff && bytes[1] === 0xd8) {
-      return await doc.embedJpg(bytes);
-    }
-    if (bytes.length >= 2 && bytes[0] === 0x89 && bytes[1] === 0x50) {
-      return await doc.embedPng(bytes);
-    }
-    try {
-      return await doc.embedJpg(bytes);
-    } catch {
-      return await doc.embedPng(bytes);
-    }
-  } catch {
-    return null;
-  }
 }
 
 // Page-state helper. y is tracked from the bottom of the page (pdf-lib's
@@ -308,14 +289,6 @@ export async function generateClaimSummaryPdf(input: ClaimSummaryPdfInput): Prom
     logo = null;
   }
 
-  const embeddedPhotos: Array<{ image: PDFImage; filename: string } | null> = [];
-  const photoSlice = input.photos.slice(0, 4);
-  for (const p of photoSlice) {
-    const img = await embedImageBytes(doc, p.bytes);
-    embeddedPhotos.push(img ? { image: img, filename: p.filename } : null);
-  }
-  const overflowCount = Math.max(0, input.photos.length - 4);
-
   const page = doc.addPage([PAGE_WIDTH, PAGE_HEIGHT]);
 
   // ============================================================
@@ -365,7 +338,7 @@ export async function generateClaimSummaryPdf(input: ClaimSummaryPdfInput): Prom
   });
 
   // ============================================================
-  // 2. Location line — small "LOCATION" label + pretty + (#code).
+  // 2. Location line — small "LOCATION" label + pretty name only.
   // ============================================================
   const layout = new Layout(doc, page, font, fontBold, PAGE_HEIGHT - HEADER_HEIGHT - 26);
 
@@ -377,8 +350,7 @@ export async function generateClaimSummaryPdf(input: ClaimSummaryPdfInput): Prom
     color: MUTED
   });
   layout.y -= 14;
-  const locText = `${input.locationPretty} (#${input.locationCode})`;
-  layout.page.drawText(locText, {
+  layout.page.drawText(input.locationPretty, {
     x: MARGIN,
     y: layout.y,
     size: 14,
@@ -407,52 +379,10 @@ export async function generateClaimSummaryPdf(input: ClaimSummaryPdfInput): Prom
   layout.drawFullWidthLabel("What Happened");
   layout.drawTextBlock(input.customer.whatHappened || "—", 11);
 
-  // ============================================================
-  // 5. Photos (if any) — up to 4 thumbnails in a row.
-  // ============================================================
-  const validPhotos = embeddedPhotos.filter((p): p is { image: PDFImage; filename: string } => p !== null);
-  if (validPhotos.length > 0) {
-    layout.drawSpacer(6);
-    layout.drawFullWidthLabel("Photos");
-    const THUMB_MAX_W = 120;
-    const THUMB_H = 90;
-    const GAP = 8;
-    layout.ensureSpace(THUMB_H + 18);
-    let x = MARGIN;
-    for (const p of validPhotos) {
-      const ratio = p.image.width / p.image.height;
-      // Fit within THUMB_MAX_W x THUMB_H box, preserve aspect ratio.
-      let w = THUMB_MAX_W;
-      let h = w / ratio;
-      if (h > THUMB_H) {
-        h = THUMB_H;
-        w = h * ratio;
-      }
-      layout.page.drawImage(p.image, {
-        x,
-        y: layout.y - THUMB_H + (THUMB_H - h) / 2,
-        width: w,
-        height: h
-      });
-      x += THUMB_MAX_W + GAP;
-    }
-    layout.y -= THUMB_H + 6;
-    if (overflowCount > 0) {
-      layout.page.drawText(`+${overflowCount} more`, {
-        x: MARGIN,
-        y: layout.y,
-        size: 9,
-        font,
-        color: MUTED
-      });
-      layout.y -= 14;
-    }
-  }
-
   layout.drawSpacer(8);
 
   // ============================================================
-  // 6 + 7. Staff Assessment.
+  // 5. Staff Assessment.
   // ============================================================
   layout.drawSectionHeading("Staff Assessment");
   const equipmentLabel =
@@ -474,7 +404,7 @@ export async function generateClaimSummaryPdf(input: ClaimSummaryPdfInput): Prom
   layout.drawTextBlock(input.assessment.whatCustomerWasTold || "—", 11);
 
   // ============================================================
-  // 8. Footer — claim ID + contact note. Drawn at the bottom of the
+  // 6. Footer — claim ID + contact note. Drawn at the bottom of the
   //    LAST page (which may not be page 1 if the body overflowed).
   // ============================================================
   const footerText1 = `Claim ID: ${input.claimId}`;
