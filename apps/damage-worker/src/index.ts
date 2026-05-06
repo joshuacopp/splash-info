@@ -2360,14 +2360,6 @@ async function buildAndStoreClaimSummaryPdf(
     },
     assessment: {
       staffName: claimData.employeeName || null,
-      equipmentRelated:
-        claimData.equipmentInvolved && claimData.equipmentInvolved !== "N/A"
-          ? "yes"
-          : claimData.equipmentInvolved === ""
-            ? "no"
-            : claimData.equipmentInvolved
-              ? "yes"
-              : "no",
       determination: claimData.determination || "",
       whatCustomerWasTold: claimData.customerTold || ""
     },

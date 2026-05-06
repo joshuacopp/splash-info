@@ -39,7 +39,6 @@ export interface ClaimSummaryPdfInput {
   };
   assessment: {
     staffName: string | null;
-    equipmentRelated: "yes" | "no" | null;
     determination: string;
     whatCustomerWasTold: string;
   };
@@ -399,19 +398,24 @@ export async function generateClaimSummaryPdf(input: ClaimSummaryPdfInput): Prom
   layout.drawSpacer(8);
 
   // ============================================================
-  // 5. Staff Assessment.
+  // 5. Staff Assessment — three rows only (Brief 47): Submitted By,
+  //    Determination, Splash Response. Internal-only fields
+  //    (equipment_related, equipment_piece, damage_type, damage_other,
+  //    preexisting_damage, customer_demeanor) are intentionally NOT
+  //    rendered on the customer-facing PDF; managers see the full
+  //    picture on /admin/damage/[id]. The "Splash Response" label
+  //    replaces the prior "What the Customer Was Told" wording on
+  //    the customer copy only — admin UI label is unchanged.
   // ============================================================
   layout.drawSectionHeading("Staff Assessment");
-  layout.drawKeyValueGrid([
-    ["Staff Name", dash(input.assessment.staffName)],
-    ["Equipment-Related", humanizeLabel(input.assessment.equipmentRelated)]
-  ]);
 
-  layout.drawSpacer(2);
+  layout.drawFullWidthLabel("Submitted By");
+  layout.drawTextBlock(dash(input.assessment.staffName), 11);
+
   layout.drawFullWidthLabel("Determination");
   layout.drawTextBlock(humanizeLabel(input.assessment.determination), 11);
 
-  layout.drawFullWidthLabel("What the Customer Was Told");
+  layout.drawFullWidthLabel("Splash Response");
   layout.drawTextBlock(input.assessment.whatCustomerWasTold || "—", 11);
 
   // ============================================================

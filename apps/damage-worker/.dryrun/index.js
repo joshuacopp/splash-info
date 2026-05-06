@@ -43072,14 +43072,11 @@ async function generateClaimSummaryPdf(input) {
   layout.drawTextBlock(input.customer.whatHappened || "\u2014", 11);
   layout.drawSpacer(8);
   layout.drawSectionHeading("Staff Assessment");
-  layout.drawKeyValueGrid([
-    ["Staff Name", dash(input.assessment.staffName)],
-    ["Equipment-Related", humanizeLabel(input.assessment.equipmentRelated)]
-  ]);
-  layout.drawSpacer(2);
+  layout.drawFullWidthLabel("Submitted By");
+  layout.drawTextBlock(dash(input.assessment.staffName), 11);
   layout.drawFullWidthLabel("Determination");
   layout.drawTextBlock(humanizeLabel(input.assessment.determination), 11);
-  layout.drawFullWidthLabel("What the Customer Was Told");
+  layout.drawFullWidthLabel("Splash Response");
   layout.drawTextBlock(input.assessment.whatCustomerWasTold || "\u2014", 11);
   const footerText1 = `Claim ID: ${input.claimId}`;
   const footerText2 = "This summary was generated automatically. For questions, contact the location directly.";
@@ -43103,8 +43100,16 @@ async function generateClaimSummaryPdf(input) {
 __name(generateClaimSummaryPdf, "generateClaimSummaryPdf");
 
 // src/maintainx.ts
-var ASSIGNEES_PRODUCTION = [{ id: 409112 }, { id: 426577 }];
-var ASSIGNEES_TEST = [{ id: 443948 }];
+var ASSIGNEES_PRODUCTION = [
+  { type: "USER", id: 409112 },
+  // Brett Sullivan (bsullivan@splashcarwashes.com)
+  { type: "USER", id: 426577 }
+  // Scott Butler   (scott.butler@splashcarwashes.com)
+];
+var ASSIGNEES_TEST = [
+  { type: "USER", id: 443948 }
+  // Josh Copp (josh.copp@splashcarwashes.com)
+];
 function assigneesByMode(mode) {
   return mode === "production" ? ASSIGNEES_PRODUCTION : ASSIGNEES_TEST;
 }
@@ -43503,6 +43508,47 @@ async function handleStatusTransition(request, env, session, claimId) {
   const requestedTo = (form.get("to_status") ?? "").trim();
   const noteText = (form.get("note") ?? "").trim();
   const amountStr = (form.get("approved_amount") ?? "").trim();
+  const overrideEqRelRaw = (form.get("override_equipment_related") ?? "").toString().trim().toLowerCase();
+  const overrideEqPieceRaw = (form.get("override_equipment_piece") ?? "").toString().trim();
+  const eqOverrideTargets = /* @__PURE__ */ new Set([
+    "Approved \u2014 Pending Quotes",
+    "Approved \u2014 In House \u2014 Parts Ordered"
+  ]);
+  let applyEquipmentOverride = false;
+  let overrideEquipmentPiece = "";
+  if (overrideEqRelRaw === "yes") {
+    if (!eqOverrideTargets.has(requestedTo)) {
+      return jsonError(
+        400,
+        "Equipment override is only valid for active-repair approval transitions."
+      );
+    }
+    if (claim.equipment_related !== 0) {
+      return jsonError(
+        400,
+        "Equipment override only flips no\u2192yes; this claim already has equipment_related=yes."
+      );
+    }
+    if (!overrideEqPieceRaw) {
+      return jsonError(
+        400,
+        "Select an equipment piece when flagging this claim equipment-related."
+      );
+    }
+    if (overrideEqPieceRaw.length > 200) {
+      return jsonError(
+        400,
+        "override_equipment_piece is too long (max 200 characters)."
+      );
+    }
+    applyEquipmentOverride = true;
+    overrideEquipmentPiece = overrideEqPieceRaw;
+  } else if (overrideEqRelRaw && overrideEqRelRaw !== "no") {
+    return jsonError(
+      400,
+      "override_equipment_related must be 'yes' or 'no' if supplied."
+    );
+  }
   const transition = findTransition(claim.claim_status, requestedTo);
   if (!transition) {
     return jsonError(
@@ -43623,11 +43669,22 @@ async function handleStatusTransition(request, env, session, claimId) {
     setParts.push("approved_quote_id = ?");
     params.push(selectedQuoteId);
   }
+  if (applyEquipmentOverride) {
+    setParts.push("equipment_related = 1");
+    setParts.push("equipment_piece = ?");
+    params.push(overrideEquipmentPiece);
+  }
   const updateSql = `UPDATE claims SET ${setParts.join(", ")} WHERE claim_id = ?`;
   params.push(claimId);
-  const activityNote = approvalReset ? noteText ? `${noteText}
-
-[Reset approval details on revert]` : "[Reset approval details on revert]" : noteText || null;
+  const noteParts = [];
+  if (noteText) noteParts.push(noteText);
+  if (approvalReset) noteParts.push("[Reset approval details on revert]");
+  if (applyEquipmentOverride) {
+    noteParts.push(
+      `[Equipment override] ${session.email} flipped equipment_related to yes during "${finalTo}" approval (equipment_piece: ${overrideEquipmentPiece})`
+    );
+  }
+  const activityNote = noteParts.length > 0 ? noteParts.join("\n\n") : null;
   const updateStmt = env.DB.prepare(updateSql).bind(...params);
   const activityStmt = env.DB.prepare(
     `INSERT INTO claim_activity (
@@ -43639,6 +43696,19 @@ async function handleStatusTransition(request, env, session, claimId) {
   } catch (err) {
     console.error("handleStatusTransition failed:", err);
     return jsonError(500, "Failed to apply status change.");
+  }
+  let maintainxAttempted = false;
+  let maintainxOk = null;
+  if (applyEquipmentOverride) {
+    const mx = await tryCreateMaintainXIfMissing({
+      env,
+      claim,
+      finalTo,
+      overrideEquipmentPiece,
+      actorEmail: session.email
+    });
+    maintainxAttempted = mx.attempted;
+    maintainxOk = mx.attempted ? mx.ok : null;
   }
   if (finalTo === "Approved \u2014 Check Request Submitted" && selectedQuote) {
     await runCheckRequestPdfStep({
@@ -43689,9 +43759,132 @@ async function handleStatusTransition(request, env, session, claimId) {
       }
     }
   }
-  return json({ ok: true, status: finalTo, lifecycle: lifecycleForStatus(finalTo) });
+  return json({
+    ok: true,
+    status: finalTo,
+    lifecycle: lifecycleForStatus(finalTo),
+    // Brief 43 — only present on the override path. Lets apps/web surface
+    // a "MaintainX work order couldn't be created" toast on top of the
+    // normal success message; absent on every non-override transition.
+    ...maintainxAttempted ? { maintainx_attempted: true, maintainx_ok: maintainxOk === true } : {}
+  });
 }
 __name(handleStatusTransition, "handleStatusTransition");
+async function tryCreateMaintainXIfMissing(input) {
+  const { env, claim, finalTo, overrideEquipmentPiece, actorEmail } = input;
+  if (!env.MAINTAINX_API_KEY) {
+    console.warn(
+      "[mx] MAINTAINX_API_KEY unbound; skipping override WO creation for",
+      claim.claim_id
+    );
+    return { attempted: false, ok: false };
+  }
+  let dedupeRow = null;
+  try {
+    dedupeRow = await getClaimById(env.DB, claim.claim_id);
+  } catch (e) {
+    console.warn("[mx] dedupe re-read failed; proceeding with helper attempt", e);
+  }
+  if (dedupeRow && dedupeRow.maintainx_workorder_id != null) {
+    console.warn(
+      "[mx] dedupe \u2014 claim",
+      claim.claim_id,
+      "already has WO id",
+      dedupeRow.maintainx_workorder_id,
+      "\u2014 skipping override creation"
+    );
+    return { attempted: false, ok: true };
+  }
+  const claimRowForMx = {
+    ...claim,
+    equipment_related: 1,
+    equipment_piece: overrideEquipmentPiece,
+    claim_status: finalTo,
+    lifecycle_state: lifecycleForStatus(finalTo)
+  };
+  let mxLocationId = null;
+  try {
+    mxLocationId = await getMaintainXLocationId(env, claim.location_code);
+  } catch (mxLocErr) {
+    console.warn(
+      "[mx] getMaintainXLocationId threw \u2014 proceeding without locationId:",
+      mxLocErr
+    );
+  }
+  const mxMode = env.MAINTAINX_MODE ?? "test";
+  const mxBaseUrl = env.MAINTAINX_BASE_URL ?? "https://api.getmaintainx.com/v1";
+  const mxAppsWebBaseUrl = env.APPS_WEB_BASE_URL ?? "https://splashcarwashes.info";
+  const ctrl = new AbortController();
+  const timeoutId = setTimeout(() => ctrl.abort(), 8e3);
+  let maintainxResult;
+  try {
+    maintainxResult = await createMaintainXWorkOrder({
+      claim: claimRowForMx,
+      locationPretty: claimRowForMx.location_pretty,
+      maintainxLocationId: mxLocationId,
+      apiKey: env.MAINTAINX_API_KEY,
+      mode: mxMode,
+      baseUrl: mxBaseUrl,
+      appsWebBaseUrl: mxAppsWebBaseUrl,
+      signal: ctrl.signal
+    });
+  } catch (mxErr) {
+    maintainxResult = {
+      ok: false,
+      workOrderId: null,
+      error: mxErr instanceof Error ? mxErr.message : String(mxErr),
+      status: 0,
+      request: {}
+    };
+  } finally {
+    clearTimeout(timeoutId);
+  }
+  if (maintainxResult.ok && maintainxResult.workOrderId != null) {
+    try {
+      await updateMaintainXWorkOrderId(
+        env.DB,
+        claim.claim_id,
+        maintainxResult.workOrderId
+      );
+    } catch (updateErr) {
+      console.error(
+        "[mx] updateMaintainXWorkOrderId failed for",
+        claim.claim_id,
+        updateErr
+      );
+    }
+    try {
+      await logActivity(env.DB, {
+        claimId: claim.claim_id,
+        activityType: "note",
+        notes: `[maintainx] Work order #${maintainxResult.workOrderId} created via approval-time override (mode: ${mxMode})`,
+        actorEmail,
+        actorName: actorEmail
+      });
+    } catch (logErr) {
+      console.error("[mx] override activity log (success) failed:", logErr);
+    }
+    return { attempted: true, ok: true };
+  }
+  console.error(
+    "[mx] override WO creation failed for",
+    claim.claim_id,
+    maintainxResult.error
+  );
+  try {
+    await logActivity(env.DB, {
+      claimId: claim.claim_id,
+      activityType: "note",
+      notes: `[maintainx] Override WO creation failed \u2014 ${maintainxResult.error ?? "unknown error"} (status: ${maintainxResult.status}, mode: ${mxMode})`,
+      actorEmail,
+      actorName: "system"
+    });
+  } catch (logErr) {
+    console.error("[mx] override activity log (failure) failed:", logErr);
+  }
+  return { attempted: true, ok: false };
+}
+__name(tryCreateMaintainXIfMissing, "tryCreateMaintainXIfMissing");
 function applyStamps(transition, setParts, params, actorEmail) {
   if (transition.stamps.includes("gm")) {
     setParts.push("gm_approved_at = datetime('now')");
@@ -44515,7 +44708,6 @@ async function buildAndStoreClaimSummaryPdf(env, claimData, _baseOrigin) {
     },
     assessment: {
       staffName: claimData.employeeName || null,
-      equipmentRelated: claimData.equipmentInvolved && claimData.equipmentInvolved !== "N/A" ? "yes" : claimData.equipmentInvolved === "" ? "no" : claimData.equipmentInvolved ? "yes" : "no",
       determination: claimData.determination || "",
       whatCustomerWasTold: claimData.customerTold || ""
     },
