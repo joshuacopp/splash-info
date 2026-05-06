@@ -13,6 +13,7 @@ import {
   inputClass,
   submitClass
 } from "../_components/OperationCard";
+import { LocationCodePicker } from "../_components/LocationCodePicker";
 import { UserPicker } from "../_components/UserPicker";
 import {
   createUserAction,
@@ -99,17 +100,13 @@ function CreateUserCard() {
         <div>
           <FieldLabel
             htmlFor="create-location-code"
-            helper="Required only for location_admin role"
+            helper="Required only for location_admin role — search by site #, name, or code"
           >
-            Location code
+            Location
           </FieldLabel>
-          <input
-            id="create-location-code"
+          <LocationCodePicker
             name="location_code"
-            type="text"
-            autoComplete="off"
-            className={`${inputClass} font-mono`}
-            placeholder="binghamton"
+            inputId="create-location-code"
           />
           <p className="mt-1 text-[0.6875rem] text-splash-navy/50">
             Ignored for super_admin and no-role.
@@ -186,17 +183,13 @@ function SetRoleCard() {
         <div>
           <FieldLabel
             htmlFor="set-role-location-code"
-            helper="Required for location_admin role"
+            helper="Required for location_admin role — search by site #, name, or code"
           >
-            Location code
+            Location
           </FieldLabel>
-          <input
-            id="set-role-location-code"
+          <LocationCodePicker
             name="location_code"
-            type="text"
-            autoComplete="off"
-            className={`${inputClass} font-mono`}
-            placeholder="binghamton"
+            inputId="set-role-location-code"
           />
           <p className="mt-1 text-[0.6875rem] text-splash-navy/50">
             Ignored for super_admin and clear-role operations.

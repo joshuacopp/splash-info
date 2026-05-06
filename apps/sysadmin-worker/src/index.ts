@@ -64,6 +64,15 @@
 //                                          across location_code,
 //                                          location_pretty, site. Returns up
 //                                          to 50 rows. Empty q -> [].
+//   GET   /sysadmin/api/pricing-simple/locations?q=...
+//                                        — Brief 39. Distinct (location_code,
+//                                          location_pretty, site) tuples for
+//                                          the Set Role location-picker. ilike
+//                                          substring match on the same three
+//                                          fields as /pricing-simple/search,
+//                                          but deduped to one row per
+//                                          location_code. Returns up to 50
+//                                          distinct entries. Empty q -> [].
 //   GET   /sysadmin/api/locations/search?q=...
 //                                        — Brief 27. ilike substring match
 //                                          across site, location, area_manager,
@@ -138,6 +147,7 @@ const OWNED_PATCH_PATHS = new Set([
 const OWNED_GET_PATHS = new Set([
   "/sysadmin/api/users",
   "/sysadmin/api/pricing-simple/search",
+  "/sysadmin/api/pricing-simple/locations",
   "/sysadmin/api/locations/search",
   "/sysadmin/api/audit-log"
 ]);
@@ -185,6 +195,9 @@ export default {
         }
         if (path === "/sysadmin/api/pricing-simple/search") {
           return await handleSearchPricingSimple(env, url);
+        }
+        if (path === "/sysadmin/api/pricing-simple/locations") {
+          return await handleSearchPricingSimpleLocations(env, url);
         }
         if (path === "/sysadmin/api/locations/search") {
           return await handleSearchLocations(env, url);
@@ -910,6 +923,78 @@ async function handleSearchPricingSimple(env: Env, url: URL): Promise<Response> 
   }
   const rows = (await resp.json().catch(() => [])) as unknown[];
   return json(rows);
+}
+
+/* ============================================================
+ * GET /sysadmin/api/pricing-simple/locations?q=<substring>  (Brief 39)
+ *
+ * Distinct (location_code, location_pretty, site) typeahead backing
+ * apps/web's LocationCodePicker on the "Set role" sysadmin card. Same
+ * ilike substring match as `/pricing-simple/search` (across
+ * location_code, location_pretty, site) but deduped to one row per
+ * location_code so the picker shows one entry per location regardless
+ * of how many packages match. PostgREST has no SQL DISTINCT projection,
+ * so we fetch up to 200 raw rows ordered by site then dedupe in the
+ * worker, returning up to 50 distinct location entries.
+ *
+ * Empty / whitespace-only q returns []. Sanitize against PostgREST
+ * or() separators — drop ',', '(', ')', '*', '%', '_' — same posture
+ * as handleSearchPricingSimple.
+ *
+ * Auth gate is super_admin (single gate at the top of fetch()). No
+ * isOriginAllowed gate per Brief 11b convention.
+ * ============================================================ */
+
+interface LocationCodeSearchRow {
+  location_code: string;
+  location_pretty: string | null;
+  site: string | null;
+}
+
+async function handleSearchPricingSimpleLocations(
+  env: Env,
+  url: URL
+): Promise<Response> {
+  const raw = (url.searchParams.get("q") ?? "").trim();
+  if (raw.length === 0) return json([]);
+  const escaped = raw.replace(/[%_,()*]/g, "");
+  if (escaped.length === 0) return json([]);
+  const needle = encodeURIComponent(`%${escaped}%`);
+
+  const restUrl =
+    `${env.SUPABASE_URL}/rest/v1/pricing_simple` +
+    `?select=location_code,location_pretty,site` +
+    `&or=(location_code.ilike.${needle},location_pretty.ilike.${needle},site.ilike.${needle})` +
+    `&order=site.asc` +
+    `&limit=200`;
+
+  const resp = await fetch(restUrl, {
+    headers: {
+      apikey: env.SUPABASE_SERVICE_KEY,
+      Authorization: `Bearer ${env.SUPABASE_SERVICE_KEY}`
+    }
+  });
+  if (!resp.ok) {
+    const errText = await resp.text().catch(() => "");
+    return jsonError(500, `Search failed: ${resp.status} ${errText}`);
+  }
+  const rawRows = (await resp.json().catch(() => [])) as LocationCodeSearchRow[];
+
+  const seen = new Set<string>();
+  const deduped: LocationCodeSearchRow[] = [];
+  for (const row of rawRows) {
+    if (!row || typeof row.location_code !== "string") continue;
+    if (seen.has(row.location_code)) continue;
+    seen.add(row.location_code);
+    deduped.push({
+      location_code: row.location_code,
+      location_pretty: row.location_pretty ?? null,
+      site: row.site ?? null
+    });
+    if (deduped.length >= 50) break;
+  }
+
+  return json(deduped);
 }
 
 /* ============================================================

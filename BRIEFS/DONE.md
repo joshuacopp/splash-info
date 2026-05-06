@@ -38,3 +38,5 @@
 - 2026-05-05 23:15:27 brief-036-test-batch-pdf-humanize-mobile-upload-multi-pkg.md (success)
 - 2026-05-06 00:05:37 brief-037-mobile-upload-legacy-port-plus-add-doc-anchor.md (success)
 - 2026-05-06 00:13:08 brief-038-mobile-upload-redo-with-correct-legacy-paths.md (success)
+- 2026-05-06 08:04:20 brief-039-set-role-location-code-picker.md (success)
+- 2026-05-06 08:09:34 brief-040-create-user-location-code-picker.md (success)

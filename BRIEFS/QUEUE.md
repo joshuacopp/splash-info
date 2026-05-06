@@ -22,7 +22,9 @@
 # brief-036-test-batch-pdf-humanize-mobile-upload-multi-pkg.md  (completed 2026-05-05)
 # brief-037-mobile-upload-legacy-port-plus-add-doc-anchor.md  (completed 2026-05-06)
 # brief-038-mobile-upload-redo-with-correct-legacy-paths.md  (completed 2026-05-06)
+# brief-039-set-role-location-code-picker.md  (completed 2026-05-06)
 
+brief-041-claim-form-damage-type-selector.md
 
 
 
