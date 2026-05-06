@@ -24,7 +24,7 @@ export default async function PricingAdminPage() {
   const data = await workerGetJson<ListLocationsResponse>("/admin/api/locations");
   if (!data) {
     return (
-      <section style={{ padding: 24, maxWidth: 480 }}>
+      <section className="mx-auto w-full max-w-[520px] px-5 py-9">
         <SignupAdminTabs locationCode={null} active="pricing" />
         <h1>Signup Admin · Pricing</h1>
         <p style={{ color: "#dc2626" }}>
@@ -46,7 +46,7 @@ export default async function PricingAdminPage() {
 
   if (locations.length === 0) {
     return (
-      <section style={{ padding: 24, maxWidth: 520 }}>
+      <section className="mx-auto w-full max-w-[520px] px-5 py-9">
         <SignupAdminTabs locationCode={null} active="pricing" />
         <h1>Signup Admin · Pricing</h1>
         <p style={{ color: "#6b7280" }}>
@@ -63,7 +63,7 @@ export default async function PricingAdminPage() {
   }
 
   return (
-    <section style={{ padding: 24, maxWidth: 720 }}>
+    <section className="mx-auto w-full max-w-[820px] px-5 py-9">
       <SignupAdminTabs locationCode={null} active="pricing" />
       <h1 style={{ marginBottom: 12 }}>Signup Admin · Pricing</h1>
       <p style={{ color: "#6b7280", marginBottom: 18 }}>

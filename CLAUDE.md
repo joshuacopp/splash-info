@@ -217,6 +217,19 @@ When given a new task:
   reference legacy patterns (e.g., damage-worker tests #1-2 expect HTML
   pages, but the new architecture is API-only). Don't blindly run all
   PRE_DEPLOY tests; check whether each applies.
+- **Damage-worker manage endpoints** (post-Brief 59):
+  `GET /manage/api/claims` (now with `regional_director_email`,
+  `regional_manager_email`, `submitted_from`, `submitted_to` query
+  params), `GET /manage/api/claim/{id}`, the write surfaces under
+  `/manage/api/claim/{id}/{note,transition,document,document/{docId}/{delete,edit}}`,
+  the check-request preview, plus the two Brief 59 read endpoints:
+  `GET /manage/api/contact-roster?role=regional_director|regional_manager`
+  (returns `{email,name,location_codes}[]`, dc_role-scoped) and
+  `GET /manage/api/reporting?location=&regional_director_email=&regional_manager_email=&window=current_month|past_month|qtd|past_quarter|ytd`
+  (returns aggregate KPIs, by-location pivot, and damage-type
+  breakdowns; cost = sum of approved-quote + receipt amounts —
+  `claim_photos.amount` for `Quote`/`Receipt` rows on Approved-family
+  claims).
 - **MaintainX integration (Brief 42).** `MAINTAINX_API_KEY` is a
   `wrangler secret` bound on **damage-worker only** — bearer token for
   `https://api.getmaintainx.com/v1/workorders`. Three companion
@@ -247,8 +260,10 @@ When given a new task:
 - Real pages: `/login`, `/change-password`, `/admin/dashboard`,
   `/admin/pricing`, `/admin/pricing/[location]`, `/admin/signups`
   (Brief 56), `/admin/signups/[location]` (Brief 56), `/admin/sysadmin`,
+  `/admin/damage`, `/admin/damage/[id]`,
+  `/admin/damage/reporting` (Brief 59),
   `/logout` (route handler).
-- Placeholder pages: `/admin/damage`, `/admin/performance`.
+- Placeholder pages: `/admin/performance`.
 - Redirect-only pages: `/` (Brief 50: redirects to `/login` or
   `/admin/dashboard` based on cookie presence).
 - Missing routes: `/sysadmin/*` top-level (sysadmin lives under
@@ -430,6 +445,33 @@ URL-based — service bindings don't apply to those.
 
 ## Glossary
 
+- **Reporting** - Brief 59's corporate-style aggregate view of damage
+  claims at `/admin/damage/reporting`. KPI tiles (Open / Closed /
+  Approved / Denied / Repair Cost), per-location pivot table, and
+  damage-type breakdowns for Approved + Denied. Backed by
+  `GET /manage/api/reporting?location=&regional_director_email=&regional_manager_email=&window=`
+  on damage-worker; window resolves server-side relative to "now"
+  (5 presets: `current_month` / `past_month` / `qtd` (default) /
+  `past_quarter` / `ytd`). Cost = sum of `claim_photos.amount` for
+  `Quote` AND `Receipt` rows on Approved-family claims (claim_status
+  `LIKE 'Approved —%'` OR `Closed — Paid` OR
+  `Closed — Approved/No Response`). Limitation: claims with both a
+  quote and a receipt double-count; v2 candidate is per-claim
+  resolution preferring receipt over quote. dc_role scoping holds —
+  RD/RM dropdowns and report data are intersected with the user's
+  dcLocations. Tab nav (`<DamageTabs>`) sits above both
+  `/admin/damage` and `/admin/damage/reporting`; the detail page
+  `/admin/damage/[id]` is intentionally untabbed.
+- **Regional Director / Regional Manager (label-vs-data divergence)** -
+  UI labels added in Brief 59 for the AM/RM filters and the
+  Reporting page. The org calls these roles "Regional Director" and
+  "Regional Manager", but the underlying Supabase fields keep their
+  legacy names: `pricing_simple.area_manager` / `am_email` is the
+  Regional Director, `pricing_simple.regional_manager` / `rm_email`
+  is the Regional Manager. Field names stay (sysadmin Update
+  Location editor still shows "Area manager"); only the customer-
+  facing UI labels change. Don't rename the fields — the trigger
+  `trg_sync_pricing_simple` and PostgREST clients depend on them.
 - **Signup admin** - Brief 56's umbrella term for the signup-worker
   admin surface. Two sub-views accessible via a tab nav at the top of
   every page (`apps/web/app/admin/_components/SignupAdminTabs.tsx`):

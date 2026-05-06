@@ -211,6 +211,123 @@ export async function getLocationContactInfo(
   return { site_email: trimmed ? trimmed : null };
 }
 
+/**
+ * Brief 59 — single entry on the AM/RM contact roster used by damage-worker
+ * to power the Regional Director / Regional Manager filters and the
+ * Reporting tab.
+ *
+ * Label-vs-data divergence (per CLAUDE.md): the org's `area_manager` field
+ * stores the Regional Director's name; `regional_manager` stores the
+ * Regional Manager's name. Field names stay; UI labels become
+ * "Regional Director" / "Regional Manager".
+ */
+export interface ContactRosterEntry {
+  email: string;
+  name: string;
+  location_codes: string[];
+}
+
+/**
+ * Brief 59 — list distinct AM/RM emails (with display name + assigned
+ * location_codes) from `pricing_simple`. Used by damage-worker's
+ * `/manage/api/contact-roster` endpoint.
+ *
+ * Reads pricing_simple (single source of truth post-Brief 33; the
+ * `trg_sync_pricing_simple` trigger keeps it eventually consistent with
+ * the locations row).
+ *
+ * Grouping: by canonical email. If two rows share the same email but
+ * different names (rare data-hygiene case), pick the most-common name;
+ * ties broken lexicographically.
+ *
+ * Fail-soft: any thrown error returns `[]` so the caller's filter UI
+ * degrades to "(any)" rather than 5xxing.
+ */
+export async function listContactRoster(
+  env: { SUPABASE_URL: string; SUPABASE_SERVICE_KEY: string },
+  role: "regional_director" | "regional_manager"
+): Promise<ContactRosterEntry[]> {
+  const emailField = role === "regional_director" ? "am_email" : "rm_email";
+  const nameField = role === "regional_director" ? "area_manager" : "regional_manager";
+
+  const url = new URL("/rest/v1/pricing_simple", env.SUPABASE_URL);
+  url.searchParams.set(
+    "select",
+    "location_code,am_email,area_manager,rm_email,regional_manager"
+  );
+  url.searchParams.set(emailField, "not.is.null");
+  url.searchParams.set("order", `${nameField}.asc`);
+  url.searchParams.set("limit", "1000");
+
+  let response: Response;
+  try {
+    response = await fetch(url.toString(), {
+      headers: {
+        apikey: env.SUPABASE_SERVICE_KEY,
+        Authorization: `Bearer ${env.SUPABASE_SERVICE_KEY}`
+      }
+    });
+  } catch (err) {
+    console.error("listContactRoster: fetch threw", err);
+    return [];
+  }
+  if (!response.ok) {
+    console.error("listContactRoster: returned", response.status);
+    return [];
+  }
+  const rows = (await response.json().catch(() => [])) as Array<{
+    location_code: string | null;
+    am_email: string | null;
+    area_manager: string | null;
+    rm_email: string | null;
+    regional_manager: string | null;
+  }>;
+
+  // Group: email → { nameCounts, location_codes }.
+  const groups = new Map<
+    string,
+    { nameCounts: Map<string, number>; codes: Set<string> }
+  >();
+  for (const row of rows) {
+    const rawEmail = role === "regional_director" ? row.am_email : row.rm_email;
+    const email = typeof rawEmail === "string" ? rawEmail.trim().toLowerCase() : "";
+    if (!email) continue;
+    const code = typeof row.location_code === "string" ? row.location_code.trim() : "";
+    if (!code) continue;
+    const rawName = role === "regional_director" ? row.area_manager : row.regional_manager;
+    const name = typeof rawName === "string" ? rawName.trim() : "";
+
+    let bucket = groups.get(email);
+    if (!bucket) {
+      bucket = { nameCounts: new Map(), codes: new Set() };
+      groups.set(email, bucket);
+    }
+    bucket.codes.add(code);
+    if (name) {
+      bucket.nameCounts.set(name, (bucket.nameCounts.get(name) ?? 0) + 1);
+    }
+  }
+
+  const entries: ContactRosterEntry[] = [];
+  for (const [email, bucket] of groups.entries()) {
+    let chosenName = "";
+    let chosenCount = -1;
+    for (const [n, c] of bucket.nameCounts.entries()) {
+      if (c > chosenCount || (c === chosenCount && n.localeCompare(chosenName) < 0)) {
+        chosenName = n;
+        chosenCount = c;
+      }
+    }
+    entries.push({
+      email,
+      name: chosenName || email,
+      location_codes: [...bucket.codes].sort()
+    });
+  }
+  entries.sort((a, b) => a.name.localeCompare(b.name));
+  return entries;
+}
+
 const LOCATION_COLS =
   "id,site_number,site,location,mla_location,area_manager,regional_manager,rm_group,rm_email,am_email,hrt_email,site_email,hrt1,hrt2,fivestar";
 

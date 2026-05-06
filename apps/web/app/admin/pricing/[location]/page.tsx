@@ -53,7 +53,7 @@ export default async function LocationPricingPage({ params }: PageProps) {
   if (!data) {
     const returnPath = `/admin/pricing/${encodeURIComponent(location)}`;
     return (
-      <section style={{ padding: 24, maxWidth: 520 }}>
+      <section className="mx-auto w-full max-w-[520px] px-5 py-9">
         <SignupAdminTabs locationCode={location} active="pricing" />
         <h1>Signup Admin · Pricing</h1>
         <p style={{ color: "#dc2626" }}>
@@ -75,7 +75,7 @@ export default async function LocationPricingPage({ params }: PageProps) {
   }
 
   return (
-    <section style={{ padding: 24, maxWidth: 880 }}>
+    <section className="mx-auto w-full max-w-[880px] px-5 py-9">
       <SignupAdminTabs locationCode={location} active="pricing" />
       <p style={{ marginBottom: 8 }}>
         <a href="/admin/pricing" style={{ color: "#2b3491" }}>

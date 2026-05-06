@@ -16,7 +16,15 @@
 import Link from "next/link";
 import { damageGetJson } from "./_lib/worker-fetch";
 import { LifecycleBadge } from "./_components/LifecycleBadge";
+import { DamageTabs } from "./_components/DamageTabs";
 import type { ClaimRow, ClaimStatus, LifecycleState } from "@splash/types/claims";
+
+// Brief 59 — shape returned from /manage/api/contact-roster.
+interface ContactRosterEntry {
+  email: string;
+  name: string;
+  location_codes: string[];
+}
 
 // What the worker actually returns from GET /manage/api/claims — the D1
 // listClaims helper (packages/db-d1/src/claims.ts) selects a subset of
@@ -86,6 +94,10 @@ export default async function DamageClaimsListPage({ searchParams }: PageProps) 
   const locationParam = firstParam(sp.location) || "All";
   const statusParam = firstParam(sp.status) || "All";
   const lifecycleParam = (firstParam(sp.lifecycle) || "Open") as LifecycleState | "All";
+  const rdEmailParam = firstParam(sp.regional_director_email).trim();
+  const rmEmailParam = firstParam(sp.regional_manager_email).trim();
+  const submittedFromParam = firstParam(sp.submitted_from).trim();
+  const submittedToParam = firstParam(sp.submitted_to).trim();
 
   // Build worker query string, omitting empty filters.
   const qs = new URLSearchParams();
@@ -93,12 +105,26 @@ export default async function DamageClaimsListPage({ searchParams }: PageProps) 
   if (locationParam && locationParam !== "All") qs.set("location", locationParam);
   if (statusParam && statusParam !== "All") qs.set("status", statusParam);
   qs.set("lifecycle", lifecycleParam);
+  if (rdEmailParam) qs.set("regional_director_email", rdEmailParam);
+  if (rmEmailParam) qs.set("regional_manager_email", rmEmailParam);
+  if (submittedFromParam) qs.set("submitted_from", submittedFromParam);
+  if (submittedToParam) qs.set("submitted_to", submittedToParam);
   const workerPath = `/manage/api/claims${qs.toString() ? `?${qs.toString()}` : ""}`;
 
   let claims: ClaimListRow[] | null = null;
   let fetchError: string | null = null;
+  let rdRoster: ContactRosterEntry[] = [];
+  let rmRoster: ContactRosterEntry[] = [];
   try {
-    claims = await damageGetJson<ClaimListRow[]>(workerPath);
+    [claims, rdRoster, rmRoster] = await Promise.all([
+      damageGetJson<ClaimListRow[]>(workerPath),
+      damageGetJson<ContactRosterEntry[]>(
+        "/manage/api/contact-roster?role=regional_director"
+      ).then((r) => r ?? []),
+      damageGetJson<ContactRosterEntry[]>(
+        "/manage/api/contact-roster?role=regional_manager"
+      ).then((r) => r ?? [])
+    ]);
   } catch (err) {
     fetchError = err instanceof Error ? err.message : "Unknown error fetching claims.";
   }
@@ -111,9 +137,14 @@ export default async function DamageClaimsListPage({ searchParams }: PageProps) 
     if (locationParam && locationParam !== "All") currentQs.set("location", locationParam);
     if (statusParam && statusParam !== "All") currentQs.set("status", statusParam);
     if (lifecycleParam !== "Open") currentQs.set("lifecycle", lifecycleParam);
+    if (rdEmailParam) currentQs.set("regional_director_email", rdEmailParam);
+    if (rmEmailParam) currentQs.set("regional_manager_email", rmEmailParam);
+    if (submittedFromParam) currentQs.set("submitted_from", submittedFromParam);
+    if (submittedToParam) currentQs.set("submitted_to", submittedToParam);
     const returnPath = `/admin/damage${currentQs.toString() ? `?${currentQs.toString()}` : ""}`;
     return (
       <section className="mx-auto w-full max-w-[1100px] px-5 py-9">
+        <DamageTabs active="claims" />
         <PageBanner />
         <div className="rounded-splash-lg border border-gray-light bg-white p-6 shadow-splash-card">
           <p className="mb-4 text-splash-deny">
@@ -135,6 +166,7 @@ export default async function DamageClaimsListPage({ searchParams }: PageProps) 
   if (fetchError) {
     return (
       <section className="mx-auto w-full max-w-[1100px] px-5 py-9">
+        <DamageTabs active="claims" />
         <PageBanner />
         <div className="rounded-splash-lg border border-gray-light bg-white p-6 shadow-splash-card">
           <h2 className="mb-2 text-lg font-bold text-splash-deny">
@@ -170,6 +202,7 @@ export default async function DamageClaimsListPage({ searchParams }: PageProps) 
 
   return (
     <section className="mx-auto w-full max-w-[1100px] px-5 py-9">
+      <DamageTabs active="claims" />
       <PageBanner />
 
       {/* Filter bar — pure server-rendered GET form. */}
@@ -243,6 +276,66 @@ export default async function DamageClaimsListPage({ searchParams }: PageProps) 
                 </option>
               ))}
             </select>
+          </label>
+
+          <label className="flex flex-col gap-1">
+            <span className="text-xs font-semibold uppercase tracking-wider text-splash-navy/70">
+              Regional Director
+            </span>
+            <select
+              name="regional_director_email"
+              defaultValue={rdEmailParam}
+              className="rounded-splash-sm border border-gray-light bg-white px-3 py-2 text-sm text-splash-navy focus:border-splash-blue focus:outline-none"
+            >
+              <option value="">(any)</option>
+              {rdRoster.map((e) => (
+                <option key={e.email} value={e.email}>
+                  {e.name}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <label className="flex flex-col gap-1">
+            <span className="text-xs font-semibold uppercase tracking-wider text-splash-navy/70">
+              Regional Manager
+            </span>
+            <select
+              name="regional_manager_email"
+              defaultValue={rmEmailParam}
+              className="rounded-splash-sm border border-gray-light bg-white px-3 py-2 text-sm text-splash-navy focus:border-splash-blue focus:outline-none"
+            >
+              <option value="">(any)</option>
+              {rmRoster.map((e) => (
+                <option key={e.email} value={e.email}>
+                  {e.name}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <label className="flex flex-col gap-1">
+            <span className="text-xs font-semibold uppercase tracking-wider text-splash-navy/70">
+              Submitted from
+            </span>
+            <input
+              type="date"
+              name="submitted_from"
+              defaultValue={submittedFromParam}
+              className="rounded-splash-sm border border-gray-light bg-white px-3 py-2 text-sm text-splash-navy focus:border-splash-blue focus:outline-none"
+            />
+          </label>
+
+          <label className="flex flex-col gap-1">
+            <span className="text-xs font-semibold uppercase tracking-wider text-splash-navy/70">
+              Submitted to
+            </span>
+            <input
+              type="date"
+              name="submitted_to"
+              defaultValue={submittedToParam}
+              className="rounded-splash-sm border border-gray-light bg-white px-3 py-2 text-sm text-splash-navy focus:border-splash-blue focus:outline-none"
+            />
           </label>
         </div>
 

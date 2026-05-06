@@ -56,3 +56,5 @@
 - 2026-05-06 16:47:46 brief-055-hide-equipment-malfunction-checkbox.md (success)
 - 2026-05-06 17:22:49 brief-056-signup-admin-rename-and-signups-viewer.md (success)
 - 2026-05-06 17:27:49 brief-057-fill-again-redirect-to-picker.md (success)
+- 2026-05-06 17:49:12 brief-058-pricing-pages-center-align.md (success)
+- 2026-05-06 18:06:59 brief-059-damage-am-rm-filters-and-reporting-tab.md (success)

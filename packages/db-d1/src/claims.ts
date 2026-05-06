@@ -187,6 +187,10 @@ export interface ClaimsListFilters {
   claimStatus?: ClaimStatus;
   /** Substring match on customer_name. */
   search?: string;
+  /** Brief 59 — inclusive ISO timestamp lower bound on submitted_at. */
+  submittedFrom?: string;
+  /** Brief 59 — inclusive ISO timestamp upper bound on submitted_at. */
+  submittedTo?: string;
   limit?: number;
 }
 
@@ -228,6 +232,14 @@ export async function listClaims(
   if (filters.search && filters.search.trim()) {
     where.push("customer_name LIKE ?");
     params.push(`%${filters.search.trim()}%`);
+  }
+  if (filters.submittedFrom) {
+    where.push("submitted_at >= ?");
+    params.push(filters.submittedFrom);
+  }
+  if (filters.submittedTo) {
+    where.push("submitted_at <= ?");
+    params.push(filters.submittedTo);
   }
 
   const sql = `

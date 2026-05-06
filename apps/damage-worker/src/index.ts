@@ -39,6 +39,8 @@
 // READ ENDPOINTS for apps/web SSR (added in Chunk 2):
 //   GET  /manage/api/claims                                 — list claims (filtered)
 //   GET  /manage/api/claim/{id}                             — claim detail JSON
+//   GET  /manage/api/contact-roster?role=...                — Brief 59 RD/RM list
+//   GET  /manage/api/reporting?...                          — Brief 59 reporting aggregates
 //
 // =============================================================================
 // AUTH GATE POSITION
@@ -87,9 +89,11 @@ import {
   type ClaimInsert
 } from "@splash/db-d1";
 import {
+  type ContactRosterEntry,
   getActiveLocationByCode,
   getLocationContactInfo,
   getMaintainXLocationId,
+  listContactRoster,
   type SupabaseEnv
 } from "@splash/db-supabase";
 import { isOriginAllowed, json, jsonError, readForm } from "@splash/http";
@@ -323,6 +327,20 @@ async function dispatchManageApi(
     return getClaimsList(env, session, new URL(request.url));
   }
 
+  // Brief 59 — GET /manage/api/contact-roster?role=regional_director|regional_manager
+  if (
+    subParts.length === 1 &&
+    subParts[0] === "contact-roster" &&
+    method === "GET"
+  ) {
+    return getContactRoster(env, session, new URL(request.url));
+  }
+
+  // Brief 59 — GET /manage/api/reporting?...
+  if (subParts.length === 1 && subParts[0] === "reporting" && method === "GET") {
+    return getReporting(env, session, new URL(request.url));
+  }
+
   // /manage/api/claim/{id}/...
   if (subParts[0] === "claim" && subParts[1]) {
     const claimId = decodeURIComponent(subParts[1]);
@@ -469,6 +487,13 @@ function damageScopeForSession(session: Session): DamageScope {
  *   status    — full claim_status string or "All"
  *   lifecycle — "Open" | "Closed" | "All"  (default "Open")
  *
+ * Brief 59 additions:
+ *   regional_director_email — single email; resolved via listContactRoster
+ *     to a set of location_codes that gets intersected with the user's
+ *     dc_role scope.
+ *   regional_manager_email — same pattern for RM.
+ *   submitted_from / submitted_to — ISO dates; both inclusive.
+ *
  * For gm/rm users, the `location` param is intersected with their
  * dcLocations — out-of-scope filter requests return [] rather than 403,
  * so the existence of locations outside scope isn't leaked.
@@ -481,31 +506,575 @@ async function getClaimsList(env: Env, session: Session, url: URL): Promise<Resp
   const lifecycleParam = url.searchParams.get("lifecycle") ?? "Open";
   const statusParam = url.searchParams.get("status") ?? "All";
   const search = url.searchParams.get("search")?.trim() || undefined;
+  const rdEmail = url.searchParams.get("regional_director_email")?.trim().toLowerCase() || null;
+  const rmEmail = url.searchParams.get("regional_manager_email")?.trim().toLowerCase() || null;
+  const submittedFromParam = url.searchParams.get("submitted_from")?.trim() || null;
+  const submittedToParam = url.searchParams.get("submitted_to")?.trim() || null;
 
-  // Resolve location filter against the dc_role scope.
-  let locationCodes: string[] | undefined;
-  if (scope.kind === "global") {
-    locationCodes = requestedLocation && requestedLocation !== "All" ? [requestedLocation] : undefined;
-  } else {
-    // scope.kind === "scoped"
-    if (scope.codes.length === 0) return json([]);
-    if (requestedLocation && requestedLocation !== "All") {
-      if (!scope.codes.includes(requestedLocation)) return json([]); // out-of-scope filter → empty
-      locationCodes = [requestedLocation];
-    } else {
-      locationCodes = [...scope.codes];
-    }
-  }
+  const resolved = await resolveLocationCodesWithFilters(env, scope, {
+    requestedLocation,
+    rdEmail,
+    rmEmail
+  });
+  if (resolved.kind === "empty") return json([]);
 
   const filters: ClaimsListFilters = {
-    locationCodes,
+    locationCodes: resolved.codes,
     lifecycle: (lifecycleParam === "All" ? "All" : lifecycleParam) as LifecycleState | "All",
     claimStatus: statusParam !== "All" ? (statusParam as ClaimStatus) : undefined,
-    search
+    search,
+    submittedFrom: normalizeSubmittedBound(submittedFromParam, "from"),
+    submittedTo: normalizeSubmittedBound(submittedToParam, "to")
   };
 
   const claims = await listClaims(env.DB, filters);
   return json(claims);
+}
+
+/**
+ * Brief 59 — resolve the effective `location_codes` filter for a damage
+ * read by intersecting (a) the user's dc_role scope, (b) an optional
+ * single-location filter, and (c) any RD/RM-email-derived location set.
+ *
+ *   { kind: "all" }            → no IN-clause; caller passes undefined
+ *                                (only valid for global scope).
+ *   { kind: "subset", codes }  → caller passes this list as locationCodes.
+ *   { kind: "empty" }          → return [] without hitting D1.
+ */
+type ResolvedCodes =
+  | { kind: "all" }
+  | { kind: "subset"; codes: string[] }
+  | { kind: "empty" };
+
+async function resolveLocationCodesWithFilters(
+  env: Env,
+  scope: DamageScope,
+  args: {
+    requestedLocation: string;
+    rdEmail: string | null;
+    rmEmail: string | null;
+  }
+): Promise<
+  | { kind: "all"; codes?: undefined }
+  | { kind: "subset"; codes: string[] }
+  | { kind: "empty" }
+> {
+  if (scope.kind === "denied") return { kind: "empty" };
+
+  // Layer 1 — start with the dc_role scope.
+  let working: Set<string> | null = null; // null = "global, no restriction yet"
+  if (scope.kind === "scoped") {
+    if (scope.codes.length === 0) return { kind: "empty" };
+    working = new Set(scope.codes);
+  }
+
+  // Layer 2 — single-location filter.
+  if (args.requestedLocation && args.requestedLocation !== "All") {
+    if (working === null) {
+      working = new Set([args.requestedLocation]);
+    } else {
+      if (!working.has(args.requestedLocation)) return { kind: "empty" };
+      working = new Set([args.requestedLocation]);
+    }
+  }
+
+  // Layer 3 — RD/RM email filters. Resolve each to a set of location_codes
+  // and intersect. If both are set the claim must match BOTH (same location
+  // must be covered by both the named RD and RM).
+  if (args.rdEmail) {
+    const set = await resolveRosterCodes(env, "regional_director", args.rdEmail);
+    if (set.size === 0) return { kind: "empty" };
+    working = working ? intersectSet(working, set) : set;
+    if (working.size === 0) return { kind: "empty" };
+  }
+  if (args.rmEmail) {
+    const set = await resolveRosterCodes(env, "regional_manager", args.rmEmail);
+    if (set.size === 0) return { kind: "empty" };
+    working = working ? intersectSet(working, set) : set;
+    if (working.size === 0) return { kind: "empty" };
+  }
+
+  if (working === null) return { kind: "all" };
+  return { kind: "subset", codes: [...working] };
+}
+
+async function resolveRosterCodes(
+  env: Env,
+  role: "regional_director" | "regional_manager",
+  email: string
+): Promise<Set<string>> {
+  const roster = await listContactRoster(env, role);
+  const entry = roster.find((e) => e.email.toLowerCase() === email.toLowerCase());
+  return new Set(entry?.location_codes ?? []);
+}
+
+function intersectSet(a: Set<string>, b: Set<string>): Set<string> {
+  const out = new Set<string>();
+  for (const v of a) if (b.has(v)) out.add(v);
+  return out;
+}
+
+/**
+ * Normalize an HTML5-date-style string into an ISO timestamp suitable for
+ * `submitted_at >= ?` / `submitted_at <= ?` comparisons. `submitted_at` in
+ * D1 is stored as ISO ("YYYY-MM-DD HH:MM:SS" or full "T...Z" form), and
+ * lexicographic compare matches chronological compare.
+ *
+ * - Bare `YYYY-MM-DD`: snap "from" to start-of-day, "to" to end-of-day.
+ * - Anything else: pass through (worker-side caller is the only writer;
+ *   we trust apps/web's HTML5 date input to produce well-formed strings).
+ * - Invalid input (regex miss): undefined → filter skipped.
+ */
+function normalizeSubmittedBound(
+  input: string | null,
+  edge: "from" | "to"
+): string | undefined {
+  if (!input) return undefined;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(input)) {
+    return edge === "from" ? `${input}T00:00:00.000Z` : `${input}T23:59:59.999Z`;
+  }
+  return input;
+}
+
+/**
+ * Brief 59 — GET /manage/api/contact-roster?role=regional_director|regional_manager
+ *
+ * Returns the AM/RM roster (email, name, assigned location_codes), filtered
+ * by dc_role scope so a `gm`/`rm` user only sees RDs/RMs who cover at least
+ * one of their dcLocations.
+ */
+async function getContactRoster(env: Env, session: Session, url: URL): Promise<Response> {
+  const scope = damageScopeForSession(session);
+  if (scope.kind === "denied") return jsonError(403, "no damage role assigned");
+
+  const roleParam = url.searchParams.get("role");
+  const role: "regional_director" | "regional_manager" =
+    roleParam === "regional_manager" ? "regional_manager" : "regional_director";
+
+  const roster = await listContactRoster(env, role);
+  if (scope.kind === "global") return json(roster);
+
+  // scope.kind === "scoped"
+  if (scope.codes.length === 0) return json([]);
+  const allowed = new Set(scope.codes);
+  const filtered: ContactRosterEntry[] = [];
+  for (const entry of roster) {
+    const codes = entry.location_codes.filter((c) => allowed.has(c));
+    if (codes.length === 0) continue;
+    filtered.push({ email: entry.email, name: entry.name, location_codes: codes });
+  }
+  return json(filtered);
+}
+
+/* ============================================================
+ * Brief 59 — Reporting endpoint
+ *
+ * GET /manage/api/reporting?location=<code|All>
+ *                          &regional_director_email=<email>
+ *                          &regional_manager_email=<email>
+ *                          &window=current_month|past_month|qtd|past_quarter|ytd
+ *
+ * Server-side resolves the window relative to "now", then runs a single
+ * D1 batch of count + cost aggregates. dc_role scoping applies the same as
+ * everywhere else.
+ * ============================================================ */
+
+type ReportingWindow =
+  | "current_month"
+  | "past_month"
+  | "qtd"
+  | "past_quarter"
+  | "ytd";
+
+const REPORTING_WINDOWS: ReadonlySet<string> = new Set([
+  "current_month",
+  "past_month",
+  "qtd",
+  "past_quarter",
+  "ytd"
+]);
+
+interface ReportingTotals {
+  open: number;
+  closed: number;
+  approved: number;
+  denied: number;
+  repair_cost: number;
+}
+
+interface ReportingByLocationRow {
+  location_code: string;
+  location_pretty: string | null;
+  open: number;
+  closed: number;
+  approved: number;
+  denied: number;
+  repair_cost: number;
+}
+
+interface ReportingByDamageTypeRow {
+  damage_type: string;
+  count: number;
+}
+
+interface ReportingResponse {
+  window: ReportingWindow;
+  from: string;
+  to: string;
+  filters: {
+    location: string;
+    rd_email: string | null;
+    rm_email: string | null;
+  };
+  totals: ReportingTotals;
+  by_location: ReportingByLocationRow[];
+  by_damage_type_approved: ReportingByDamageTypeRow[];
+  by_damage_type_denied: ReportingByDamageTypeRow[];
+}
+
+function resolveReportingWindow(window: ReportingWindow, now: Date): { from: string; to: string } {
+  const y = now.getUTCFullYear();
+  const m = now.getUTCMonth(); // 0-11
+  const startOfDay = (d: Date) => new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), 0, 0, 0, 0));
+  const startOfMonth = (year: number, month: number) => new Date(Date.UTC(year, month, 1, 0, 0, 0, 0));
+  const endOfMonth = (year: number, month: number) =>
+    new Date(Date.UTC(year, month + 1, 1, 0, 0, 0, 0) - 1);
+  const quarterStartMonth = (month: number) => Math.floor(month / 3) * 3;
+
+  if (window === "current_month") {
+    return { from: startOfMonth(y, m).toISOString(), to: now.toISOString() };
+  }
+  if (window === "past_month") {
+    const prevMonth = m === 0 ? 11 : m - 1;
+    const prevYear = m === 0 ? y - 1 : y;
+    return {
+      from: startOfMonth(prevYear, prevMonth).toISOString(),
+      to: endOfMonth(prevYear, prevMonth).toISOString()
+    };
+  }
+  if (window === "qtd") {
+    const qStart = quarterStartMonth(m);
+    return { from: startOfMonth(y, qStart).toISOString(), to: now.toISOString() };
+  }
+  if (window === "past_quarter") {
+    const qStart = quarterStartMonth(m);
+    const prevQEnd = qStart === 0 ? { year: y - 1, month: 11 } : { year: y, month: qStart - 1 };
+    const prevQStartMonth = quarterStartMonth(prevQEnd.month);
+    return {
+      from: startOfMonth(prevQEnd.year, prevQStartMonth).toISOString(),
+      to: endOfMonth(prevQEnd.year, prevQEnd.month).toISOString()
+    };
+  }
+  // ytd
+  return { from: startOfMonth(y, 0).toISOString(), to: now.toISOString() };
+}
+
+async function getReporting(env: Env, session: Session, url: URL): Promise<Response> {
+  const scope = damageScopeForSession(session);
+  if (scope.kind === "denied") return jsonError(403, "no damage role assigned");
+
+  const requestedLocation = url.searchParams.get("location") ?? "All";
+  const rdEmail = url.searchParams.get("regional_director_email")?.trim().toLowerCase() || null;
+  const rmEmail = url.searchParams.get("regional_manager_email")?.trim().toLowerCase() || null;
+  const windowParam = url.searchParams.get("window") ?? "qtd";
+  const window: ReportingWindow = REPORTING_WINDOWS.has(windowParam)
+    ? (windowParam as ReportingWindow)
+    : "qtd";
+
+  const { from, to } = resolveReportingWindow(window, new Date());
+
+  const resolved = await resolveLocationCodesWithFilters(env, scope, {
+    requestedLocation,
+    rdEmail,
+    rmEmail
+  });
+
+  const filters = {
+    location: requestedLocation && requestedLocation !== "All" ? requestedLocation : "All",
+    rd_email: rdEmail,
+    rm_email: rmEmail
+  };
+
+  // For "global + no filters", we still need a finite set of location_codes
+  // for the IN clause. Pull the distinct set from the claims table within
+  // the window. (Damage-worker has no access to the full Supabase location
+  // list here without an extra round-trip; the in-D1 distinct is cheap.)
+  let codes: string[];
+  if (resolved.kind === "empty") {
+    return json(emptyReportingResponse(window, from, to, filters));
+  }
+  if (resolved.kind === "all") {
+    const distinct = await env.DB
+      .prepare(
+        "SELECT DISTINCT location_code FROM claims WHERE submitted_at BETWEEN ?1 AND ?2 AND deleted_at IS NULL"
+      )
+      .bind(from, to)
+      .all<{ location_code: string }>();
+    codes = (distinct.results ?? []).map((r) => r.location_code).filter((c): c is string => !!c);
+    if (codes.length === 0) {
+      return json(emptyReportingResponse(window, from, to, filters));
+    }
+  } else {
+    codes = resolved.codes;
+  }
+
+  const inPlaceholders = codes.map((_, i) => `?${i + 3}`).join(",");
+  const baseBindings: unknown[] = [from, to, ...codes];
+
+  const lifecycleSql = `
+    SELECT lifecycle_state, COUNT(*) AS n
+    FROM claims
+    WHERE submitted_at BETWEEN ?1 AND ?2
+      AND location_code IN (${inPlaceholders})
+      AND deleted_at IS NULL
+    GROUP BY lifecycle_state
+  `;
+  const approvedSql = `
+    SELECT COUNT(*) AS n
+    FROM claims
+    WHERE submitted_at BETWEEN ?1 AND ?2
+      AND location_code IN (${inPlaceholders})
+      AND deleted_at IS NULL
+      AND (
+        claim_status LIKE 'Approved —%'
+        OR claim_status = 'Closed — Paid'
+        OR claim_status = 'Closed — Approved/No Response'
+      )
+  `;
+  const deniedSql = `
+    SELECT COUNT(*) AS n
+    FROM claims
+    WHERE submitted_at BETWEEN ?1 AND ?2
+      AND location_code IN (${inPlaceholders})
+      AND deleted_at IS NULL
+      AND claim_status = 'Closed — Denied'
+  `;
+  const costSql = `
+    SELECT COALESCE(SUM(cp.amount), 0) AS cost
+    FROM claim_photos cp
+    JOIN claims c ON c.claim_id = cp.claim_id
+    WHERE c.submitted_at BETWEEN ?1 AND ?2
+      AND c.location_code IN (${inPlaceholders})
+      AND c.deleted_at IS NULL
+      AND cp.deleted_at IS NULL
+      AND cp.photo_type IN ('Quote', 'Receipt')
+      AND cp.amount IS NOT NULL
+      AND (
+        c.claim_status LIKE 'Approved —%'
+        OR c.claim_status = 'Closed — Paid'
+        OR c.claim_status = 'Closed — Approved/No Response'
+      )
+  `;
+  const byLocationSql = `
+    SELECT location_code,
+           MAX(location_pretty) AS location_pretty,
+           lifecycle_state,
+           COUNT(*) AS n
+    FROM claims
+    WHERE submitted_at BETWEEN ?1 AND ?2
+      AND location_code IN (${inPlaceholders})
+      AND deleted_at IS NULL
+    GROUP BY location_code, lifecycle_state
+    ORDER BY location_code
+  `;
+  const byLocationApprovedSql = `
+    SELECT location_code, COUNT(*) AS n
+    FROM claims
+    WHERE submitted_at BETWEEN ?1 AND ?2
+      AND location_code IN (${inPlaceholders})
+      AND deleted_at IS NULL
+      AND (
+        claim_status LIKE 'Approved —%'
+        OR claim_status = 'Closed — Paid'
+        OR claim_status = 'Closed — Approved/No Response'
+      )
+    GROUP BY location_code
+  `;
+  const byLocationDeniedSql = `
+    SELECT location_code, COUNT(*) AS n
+    FROM claims
+    WHERE submitted_at BETWEEN ?1 AND ?2
+      AND location_code IN (${inPlaceholders})
+      AND deleted_at IS NULL
+      AND claim_status = 'Closed — Denied'
+    GROUP BY location_code
+  `;
+  const byLocationCostSql = `
+    SELECT c.location_code, COALESCE(SUM(cp.amount), 0) AS cost
+    FROM claim_photos cp
+    JOIN claims c ON c.claim_id = cp.claim_id
+    WHERE c.submitted_at BETWEEN ?1 AND ?2
+      AND c.location_code IN (${inPlaceholders})
+      AND c.deleted_at IS NULL
+      AND cp.deleted_at IS NULL
+      AND cp.photo_type IN ('Quote', 'Receipt')
+      AND cp.amount IS NOT NULL
+      AND (
+        c.claim_status LIKE 'Approved —%'
+        OR c.claim_status = 'Closed — Paid'
+        OR c.claim_status = 'Closed — Approved/No Response'
+      )
+    GROUP BY c.location_code
+  `;
+  const byDamageTypeApprovedSql = `
+    SELECT COALESCE(damage_type, '(none)') AS damage_type, COUNT(*) AS n
+    FROM claims
+    WHERE submitted_at BETWEEN ?1 AND ?2
+      AND location_code IN (${inPlaceholders})
+      AND deleted_at IS NULL
+      AND (
+        claim_status LIKE 'Approved —%'
+        OR claim_status = 'Closed — Paid'
+        OR claim_status = 'Closed — Approved/No Response'
+      )
+    GROUP BY damage_type
+    ORDER BY n DESC
+  `;
+  const byDamageTypeDeniedSql = `
+    SELECT COALESCE(damage_type, '(none)') AS damage_type, COUNT(*) AS n
+    FROM claims
+    WHERE submitted_at BETWEEN ?1 AND ?2
+      AND location_code IN (${inPlaceholders})
+      AND deleted_at IS NULL
+      AND claim_status = 'Closed — Denied'
+    GROUP BY damage_type
+    ORDER BY n DESC
+  `;
+
+  const stmts = [
+    env.DB.prepare(lifecycleSql).bind(...baseBindings),
+    env.DB.prepare(approvedSql).bind(...baseBindings),
+    env.DB.prepare(deniedSql).bind(...baseBindings),
+    env.DB.prepare(costSql).bind(...baseBindings),
+    env.DB.prepare(byLocationSql).bind(...baseBindings),
+    env.DB.prepare(byLocationApprovedSql).bind(...baseBindings),
+    env.DB.prepare(byLocationDeniedSql).bind(...baseBindings),
+    env.DB.prepare(byLocationCostSql).bind(...baseBindings),
+    env.DB.prepare(byDamageTypeApprovedSql).bind(...baseBindings),
+    env.DB.prepare(byDamageTypeDeniedSql).bind(...baseBindings)
+  ];
+  const batchResult = await env.DB.batch(stmts);
+  const lifecycleRes = batchResult[0];
+  const approvedRes = batchResult[1];
+  const deniedRes = batchResult[2];
+  const costRes = batchResult[3];
+  const byLocationRes = batchResult[4];
+  const byLocationApprovedRes = batchResult[5];
+  const byLocationDeniedRes = batchResult[6];
+  const byLocationCostRes = batchResult[7];
+  const byDamageApprovedRes = batchResult[8];
+  const byDamageDeniedRes = batchResult[9];
+
+  const lifecycleRows = (lifecycleRes?.results ?? []) as Array<{
+    lifecycle_state: string;
+    n: number;
+  }>;
+  let totalsOpen = 0;
+  let totalsClosed = 0;
+  for (const r of lifecycleRows) {
+    if (r.lifecycle_state === "Open") totalsOpen = Number(r.n) || 0;
+    else if (r.lifecycle_state === "Closed") totalsClosed = Number(r.n) || 0;
+  }
+
+  const approvedTotal = Number((approvedRes?.results?.[0] as { n?: number } | undefined)?.n ?? 0);
+  const deniedTotal = Number((deniedRes?.results?.[0] as { n?: number } | undefined)?.n ?? 0);
+  const costTotal = Number((costRes?.results?.[0] as { cost?: number } | undefined)?.cost ?? 0);
+
+  // Pivot per-location lifecycle rows into one row per location.
+  const perLoc = new Map<string, ReportingByLocationRow>();
+  for (const r of (byLocationRes?.results ?? []) as Array<{
+    location_code: string;
+    location_pretty: string | null;
+    lifecycle_state: string;
+    n: number;
+  }>) {
+    let row = perLoc.get(r.location_code);
+    if (!row) {
+      row = {
+        location_code: r.location_code,
+        location_pretty: r.location_pretty ?? null,
+        open: 0,
+        closed: 0,
+        approved: 0,
+        denied: 0,
+        repair_cost: 0
+      };
+      perLoc.set(r.location_code, row);
+    }
+    if (r.lifecycle_state === "Open") row.open = Number(r.n) || 0;
+    else if (r.lifecycle_state === "Closed") row.closed = Number(r.n) || 0;
+  }
+  for (const r of (byLocationApprovedRes?.results ?? []) as Array<{
+    location_code: string;
+    n: number;
+  }>) {
+    const row = perLoc.get(r.location_code);
+    if (row) row.approved = Number(r.n) || 0;
+  }
+  for (const r of (byLocationDeniedRes?.results ?? []) as Array<{
+    location_code: string;
+    n: number;
+  }>) {
+    const row = perLoc.get(r.location_code);
+    if (row) row.denied = Number(r.n) || 0;
+  }
+  for (const r of (byLocationCostRes?.results ?? []) as Array<{
+    location_code: string;
+    cost: number;
+  }>) {
+    const row = perLoc.get(r.location_code);
+    if (row) row.repair_cost = Number(r.cost) || 0;
+  }
+  const byLocation = [...perLoc.values()].sort((a, b) =>
+    (a.location_pretty ?? a.location_code).localeCompare(
+      b.location_pretty ?? b.location_code
+    )
+  );
+
+  const byDamageApproved = ((byDamageApprovedRes?.results ?? []) as Array<{
+    damage_type: string;
+    n: number;
+  }>).map((r) => ({ damage_type: r.damage_type, count: Number(r.n) || 0 }));
+  const byDamageDenied = ((byDamageDeniedRes?.results ?? []) as Array<{
+    damage_type: string;
+    n: number;
+  }>).map((r) => ({ damage_type: r.damage_type, count: Number(r.n) || 0 }));
+
+  const response: ReportingResponse = {
+    window,
+    from,
+    to,
+    filters,
+    totals: {
+      open: totalsOpen,
+      closed: totalsClosed,
+      approved: approvedTotal,
+      denied: deniedTotal,
+      repair_cost: costTotal
+    },
+    by_location: byLocation,
+    by_damage_type_approved: byDamageApproved,
+    by_damage_type_denied: byDamageDenied
+  };
+  return json(response);
+}
+
+function emptyReportingResponse(
+  window: ReportingWindow,
+  from: string,
+  to: string,
+  filters: ReportingResponse["filters"]
+): ReportingResponse {
+  return {
+    window,
+    from,
+    to,
+    filters,
+    totals: { open: 0, closed: 0, approved: 0, denied: 0, repair_cost: 0 },
+    by_location: [],
+    by_damage_type_approved: [],
+    by_damage_type_denied: []
+  };
 }
 
 /**
