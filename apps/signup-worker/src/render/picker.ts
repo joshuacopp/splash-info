@@ -58,7 +58,7 @@ ${PICKER_CSS}
   <div class="scroll-wrapper">
     <div class="container">
       <div class="header">
-        <img class="logo" src="${ASSETS.logoBlue}" alt="Splash Car Wash"/>
+        <img class="logo" src="${ASSETS.logoWhite}" alt="Splash Car Wash"/>
         <div class="location-title">${escHtml(cap(locationCode))}</div>
       </div>
       <div class="content">

@@ -56,7 +56,7 @@ ${FORM_CSS}
   <div class="scroll-wrapper">
     <div class="container">
       <div class="header">
-        <img class="logo" src="${ASSETS.logoBlue}" alt="Splash Car Wash"/>
+        <img class="logo" src="${ASSETS.logoWhite}" alt="Splash Car Wash"/>
         <h1>${escHtml(cap(locationCode))} MaxPass</h1>
       </div>
 
