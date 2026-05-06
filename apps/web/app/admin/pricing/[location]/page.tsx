@@ -7,6 +7,7 @@
 
 import Link from "next/link";
 import { workerGetJson } from "../_lib/worker-fetch";
+import { SignupAdminTabs } from "../../_components/SignupAdminTabs";
 import { PricingGrid } from "./grid";
 
 interface PageProps {
@@ -53,7 +54,8 @@ export default async function LocationPricingPage({ params }: PageProps) {
     const returnPath = `/admin/pricing/${encodeURIComponent(location)}`;
     return (
       <section style={{ padding: 24, maxWidth: 520 }}>
-        <h1>Pricing Admin</h1>
+        <SignupAdminTabs locationCode={location} active="pricing" />
+        <h1>Signup Admin · Pricing</h1>
         <p style={{ color: "#dc2626" }}>
           You don&rsquo;t have access to <strong>{location}</strong>.
         </p>
@@ -74,6 +76,7 @@ export default async function LocationPricingPage({ params }: PageProps) {
 
   return (
     <section style={{ padding: 24, maxWidth: 880 }}>
+      <SignupAdminTabs locationCode={location} active="pricing" />
       <p style={{ marginBottom: 8 }}>
         <a href="/admin/pricing" style={{ color: "#2b3491" }}>
           ← All locations

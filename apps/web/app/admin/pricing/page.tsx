@@ -9,6 +9,7 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { workerGetJson } from "./_lib/worker-fetch";
+import { SignupAdminTabs } from "../_components/SignupAdminTabs";
 
 interface LocationSummary {
   location_code: string;
@@ -24,9 +25,10 @@ export default async function PricingAdminPage() {
   if (!data) {
     return (
       <section style={{ padding: 24, maxWidth: 480 }}>
-        <h1>Pricing Admin</h1>
+        <SignupAdminTabs locationCode={null} active="pricing" />
+        <h1>Signup Admin · Pricing</h1>
         <p style={{ color: "#dc2626" }}>
-          You don&rsquo;t have access to Pricing Admin. Contact your administrator.
+          You don&rsquo;t have access to Signup Admin. Contact your administrator.
         </p>
         <p style={{ marginTop: 16 }}>
           <Link
@@ -45,9 +47,10 @@ export default async function PricingAdminPage() {
   if (locations.length === 0) {
     return (
       <section style={{ padding: 24, maxWidth: 520 }}>
-        <h1>Pricing Admin</h1>
+        <SignupAdminTabs locationCode={null} active="pricing" />
+        <h1>Signup Admin · Pricing</h1>
         <p style={{ color: "#6b7280" }}>
-          Your account has the Pricing Admin grant but no locations are assigned.
+          Your account has the Signup Admin grant but no locations are assigned.
           Ask your administrator to add your email to the appropriate location
           rows in <code>pricing_simple</code> as Site, AM, or RM contact.
         </p>
@@ -61,7 +64,8 @@ export default async function PricingAdminPage() {
 
   return (
     <section style={{ padding: 24, maxWidth: 720 }}>
-      <h1 style={{ marginBottom: 12 }}>Pricing Admin</h1>
+      <SignupAdminTabs locationCode={null} active="pricing" />
+      <h1 style={{ marginBottom: 12 }}>Signup Admin · Pricing</h1>
       <p style={{ color: "#6b7280", marginBottom: 18 }}>
         Pick a location to manage its MaxPass pricing.
       </p>

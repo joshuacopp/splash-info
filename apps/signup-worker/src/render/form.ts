@@ -291,13 +291,12 @@ ${FORM_CSS}
         overlay.appendChild(card);
         document.body.appendChild(overlay);
         document.getElementById('fillAgainBtn').addEventListener('click', function(){
-          closeOverlay(overlay);
-          phoneInput.value = '';
-          emailInput.value = '';
-          agree.checked = false;
-          submitBtn.disabled = true;
-          submitBtn.textContent = 'Complete Sign Up';
-          phoneInput.focus();
+          // Brief 57 (2026-05-06): redirect to the package picker so the
+          // next signup can pick a different package. Previously this
+          // reset the form in-place which assumed the next signup was
+          // for the same package — operationally, "fill again" usually
+          // means a different vehicle in the same household.
+          window.location.href = '/signup/${escHtml(locationCode)}';
         });
       }
 

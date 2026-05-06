@@ -88,3 +88,50 @@ export async function workerGetJson<T>(path: string): Promise<T | null> {
   }
   return (await resp.json()) as T;
 }
+
+/* ============================================================
+ * Brief 56 — per-location signups viewer types + helper
+ * ============================================================
+ *
+ * Signups read-only viewer reuses the same SIGNUP_WORKER service binding
+ * + URL fallback transport (workerGetJson above) — adding the domain
+ * wrapper here keeps the signup-worker-side adapter colocated. The
+ * signups pages live under apps/web/app/admin/signups/ and import this
+ * helper.
+ */
+
+export type SignupDays = 1 | 7 | 30;
+
+export interface SignupRow {
+  submitted_at: string;
+  phone_formatted: string;
+  email: string | null;
+  package_pretty: string;
+  today_price: number;
+  city: string | null;
+  region: string | null;
+}
+
+export interface SignupsResponse {
+  rows: SignupRow[];
+  count: number;
+  since: string;
+  days: number;
+  limit_hit: boolean;
+}
+
+/**
+ * Fetch recent signups for a location.
+ *
+ *   Returns `null` on 401/403 (no access — caller renders sign-in card).
+ *   Throws on other errors (malformed response, 5xx, etc).
+ */
+export async function getSignupsForLocation(
+  locationCode: string,
+  days: SignupDays
+): Promise<SignupsResponse | null> {
+  const path =
+    `/admin/api/locations/${encodeURIComponent(locationCode)}/signups` +
+    `?days=${days}`;
+  return workerGetJson<SignupsResponse>(path);
+}

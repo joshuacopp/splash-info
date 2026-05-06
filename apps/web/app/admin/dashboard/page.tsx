@@ -35,9 +35,10 @@ interface Tile {
 const TILES: ReadonlyArray<Tile> = [
   {
     href: "/admin/pricing",
-    eyebrow: "Pricing",
-    title: "Pricing Admin",
-    description: "Manage MaxPass signup pricing across all locations.",
+    eyebrow: "Signup admin",
+    title: "Signup Admin",
+    description:
+      "Manage MaxPass pricing and review recent signups across your locations.",
     icon: (
       <svg
         viewBox="0 0 24 24"

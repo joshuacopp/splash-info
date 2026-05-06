@@ -65,6 +65,7 @@ const ADMIN_KNOWN_SUBPATHS = new Set<string>([
   "damage",
   "performance",
   "pricing",
+  "signups",
   "sysadmin",
   "api",
   // legacy redirect targets — also live under /admin/, must not be re-redirected

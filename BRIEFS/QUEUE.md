@@ -37,6 +37,8 @@
 
 # brief-055-hide-equipment-malfunction-checkbox.md  (completed 2026-05-06)
 
+# brief-056-signup-admin-rename-and-signups-viewer.md  (completed 2026-05-06)
+# brief-057-fill-again-redirect-to-picker.md  (completed 2026-05-06)
 
 
 

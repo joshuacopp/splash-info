@@ -68,14 +68,14 @@ import { invalidatePricingCache } from "../pricing/cache.js";
  * ============================================================ */
 
 /** True if session may read/write the given location_code. */
-function userCanAccessLocation(session: Session, locationCode: string): boolean {
+export function userCanAccessLocation(session: Session, locationCode: string): boolean {
   if (session.role === "super_admin") return true;
   const code = locationCode.toLowerCase();
   return session.locations.some((l) => l.toLowerCase() === code);
 }
 
 /** Discriminated-union outcome of the common admin gate. */
-type AdminGate =
+export type AdminGate =
   | { ok: true; session: Session; sb: SupabaseClient }
   | { ok: false; response: Response };
 
@@ -84,8 +84,12 @@ type AdminGate =
  * Returns the session + a service-key client on success, or a typed
  * error response on failure. CSRF check is the caller's responsibility
  * (POST handlers run isOriginAllowed BEFORE calling this).
+ *
+ * Exported (Brief 56) so the sibling admin-signups.ts handler can reuse
+ * the same gate verbatim — the brief explicitly requires identical auth
+ * semantics for the per-location signups read.
  */
-async function adminGate(request: Request, env: Env): Promise<AdminGate> {
+export async function adminGate(request: Request, env: Env): Promise<AdminGate> {
   const auth = await authenticate(request, env);
   if (auth.status !== "authenticated") {
     return { ok: false, response: jsonError(401, "unauthorized") };

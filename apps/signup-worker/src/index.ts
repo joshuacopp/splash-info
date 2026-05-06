@@ -9,6 +9,7 @@
 // ADMIN ROUTES (Chunk 4 — this commit):
 //   GET  /admin/api/locations                          — list user's locations
 //   GET  /admin/api/locations/{loc}                    — packages + pricing
+//   GET  /admin/api/locations/{loc}/signups?days=N     — recent signups (Brief 56)
 //   POST /admin/api/locations/{loc}/set-mode           — set mode (some/all pkgs)
 //   POST /admin/api/locations/{loc}/flip               — quick-flip full↔same
 //   POST /admin/api/bulk-set-mode                      — super_admin only
@@ -36,6 +37,7 @@ import {
   handleListAdminLocations,
   handleSetMode
 } from "./handlers/admin-pricing.js";
+import { handleGetAdminLocationSignups } from "./handlers/admin-signups.js";
 import { handleSignupSubmission } from "./handlers/submit-signup.js";
 import { getCachedPricingForLocation } from "./pricing/cache.js";
 import { renderInlinePackagePicker, renderInlineSignupForm } from "./signature/inline.js";
@@ -173,6 +175,7 @@ async function handleSignupForm(
  * Path layout:
  *   /admin/api/locations                          (GET)
  *   /admin/api/locations/{loc}                    (GET)
+ *   /admin/api/locations/{loc}/signups?days=N     (GET)  — Brief 56
  *   /admin/api/locations/{loc}/set-mode           (POST)
  *   /admin/api/locations/{loc}/flip               (POST)
  *   /admin/api/bulk-set-mode                      (POST)
@@ -206,6 +209,10 @@ async function dispatchAdminApi(
       // /admin/api/locations/{loc}
       if (segs.length === 2 && method === "GET") {
         return handleGetAdminLocation(request, env, loc);
+      }
+      // /admin/api/locations/{loc}/signups (Brief 56)
+      if (segs.length === 3 && method === "GET" && segs[2] === "signups") {
+        return handleGetAdminLocationSignups(request, env, loc);
       }
       // /admin/api/locations/{loc}/{action}
       if (segs.length === 3 && method === "POST") {

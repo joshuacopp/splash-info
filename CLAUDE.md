@@ -21,8 +21,9 @@ workspaces (`pnpm-workspace.yaml`).
 ```
 apps/
   apps/dashboard-worker     SSO entry: /api/login, /api/logout, /api/forced-reset
-  apps/signup-worker        Customer signup + admin pricing JSON API
-                            (worker name on Cloudflare: splash-signup-next,
+  apps/signup-worker        Customer signup + Signup Admin JSON API
+                            (pricing + per-location recent signups viewer;
+                            worker name on Cloudflare: splash-signup-next,
                             renames to splash-signup at cutover)
   apps/performance-worker   Performance tracker API at /pertrack/*
   apps/sysadmin-worker      User management JSON API at /sysadmin/api/*
@@ -244,8 +245,9 @@ When given a new task:
 
 - Next.js 14+, App Router (`app/` directory).
 - Real pages: `/login`, `/change-password`, `/admin/dashboard`,
-  `/admin/pricing`, `/admin/pricing/[location]`, `/admin/sysadmin`
-  (placeholder), `/logout` (route handler).
+  `/admin/pricing`, `/admin/pricing/[location]`, `/admin/signups`
+  (Brief 56), `/admin/signups/[location]` (Brief 56), `/admin/sysadmin`,
+  `/logout` (route handler).
 - Placeholder pages: `/admin/damage`, `/admin/performance`.
 - Redirect-only pages: `/` (Brief 50: redirects to `/login` or
   `/admin/dashboard` based on cookie presence).
@@ -428,6 +430,17 @@ URL-based — service bindings don't apply to those.
 
 ## Glossary
 
+- **Signup admin** - Brief 56's umbrella term for the signup-worker
+  admin surface. Two sub-views accessible via a tab nav at the top of
+  every page (`apps/web/app/admin/_components/SignupAdminTabs.tsx`):
+  (1) **Pricing** at `/admin/pricing` + `/admin/pricing/{loc}` — set
+  per-location pricing modes. (2) **Signups** at `/admin/signups` +
+  `/admin/signups/{loc}` — read-only viewer of recent customer
+  submissions in `maxpass_signups` (1 / 7 / 30 day filter, max 200
+  rows). Same auth gate as the existing per-location pricing endpoint
+  via the new `GET /admin/api/locations/{loc}/signups?days=N` worker
+  endpoint. Dashboard tile relabels to "Signup Admin"; URL
+  `/admin/pricing/*` is intentionally unchanged (operator bookmarks).
 - **admin** - Pricing administration. Lives in signup-worker
   (`/admin/api/*`) + apps/web (`/admin/pricing/*`). Used by area
   managers and location admins to set per-location pricing modes.
