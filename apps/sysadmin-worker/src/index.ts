@@ -890,8 +890,12 @@ async function handleSearchUsers(env: Env, url: URL): Promise<Response> {
  * has ~10 packages, so 50 covers ~5 locations of typeahead bandwidth).
  *
  * Empty / whitespace-only q returns [] (don't dump the full table).
- * Sanitize against PostgREST or() separators — drop ',', '(', ')', '*',
- * '%', '_' — same posture as searchUsersByEmail (Brief 18).
+ * Sanitize against PostgREST or() separators — drop ',', '(', ')', '*' —
+ * and the ILIKE multi-char wildcard '%'. We do NOT strip '_' (single-char
+ * wildcard) because dropping it corrupts queries containing literal
+ * underscores in location_codes (e.g., batavia_ii). Treating literal '_'
+ * as a single-char wildcard is behaviorally equivalent for the operator's
+ * intent of substring search (Brief 52 fix to Brief 26's defect).
  *
  * Auth gate is super_admin (single gate at the top of fetch()). No
  * isOriginAllowed gate per Brief 11b convention (browsers omit Origin
@@ -901,7 +905,7 @@ async function handleSearchUsers(env: Env, url: URL): Promise<Response> {
 async function handleSearchPricingSimple(env: Env, url: URL): Promise<Response> {
   const raw = (url.searchParams.get("q") ?? "").trim();
   if (raw.length === 0) return json([]);
-  const escaped = raw.replace(/[%_,()*]/g, "");
+  const escaped = raw.replace(/[%,()*]/g, "");
   if (escaped.length === 0) return json([]);
   const needle = encodeURIComponent(`%${escaped}%`);
 
@@ -938,8 +942,13 @@ async function handleSearchPricingSimple(env: Env, url: URL): Promise<Response> 
  * worker, returning up to 50 distinct location entries.
  *
  * Empty / whitespace-only q returns []. Sanitize against PostgREST
- * or() separators — drop ',', '(', ')', '*', '%', '_' — same posture
- * as handleSearchPricingSimple.
+ * or() separators — drop ',', '(', ')', '*' — and the ILIKE multi-char
+ * wildcard '%'. We do NOT strip '_' (single-char wildcard) because
+ * dropping it corrupts queries containing literal underscores in
+ * location_codes (e.g., batavia_ii). Treating literal '_' as a
+ * single-char wildcard is behaviorally equivalent for the operator's
+ * intent of substring search (Brief 52 fix; same posture as
+ * handleSearchPricingSimple).
  *
  * Auth gate is super_admin (single gate at the top of fetch()). No
  * isOriginAllowed gate per Brief 11b convention.
@@ -957,7 +966,7 @@ async function handleSearchPricingSimpleLocations(
 ): Promise<Response> {
   const raw = (url.searchParams.get("q") ?? "").trim();
   if (raw.length === 0) return json([]);
-  const escaped = raw.replace(/[%_,()*]/g, "");
+  const escaped = raw.replace(/[%,()*]/g, "");
   if (escaped.length === 0) return json([]);
   const needle = encodeURIComponent(`%${escaped}%`);
 

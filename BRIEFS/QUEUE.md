@@ -31,6 +31,8 @@
 
 # brief-046-maintainx-assignee-type-field.md  (completed 2026-05-06)
 # brief-048-customer-webhook-add-site-email.md  (completed 2026-05-06)
+# brief-050-signup-flow-ownership-and-root-redirect.md  (completed 2026-05-06)
+
 
 
 

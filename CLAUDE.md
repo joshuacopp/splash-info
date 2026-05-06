@@ -46,9 +46,10 @@ packages/
 3. `CUTOVER_PLAN.md` - declared "build phase complete" but was incomplete
    (apps/web was not audited before declaration). Read for context, not
    as authoritative on current state.
-4. `PRE_DEPLOY_*.md` - five files (DAMAGE, DASHBOARD, PERFORMANCE,
-   SIGNUP, SYSADMIN). Per-worker deploy notes. There is no
-   PRE_DEPLOY_WEB.md (gap noted in BUILD_STATE.md).
+4. `PRE_DEPLOY_*.md` - six files (DAMAGE, DASHBOARD, PERFORMANCE,
+   SIGNUP, SYSADMIN, WEB). Per-deployable deploy notes.
+   PRE_DEPLOY_WEB.md (Brief 51) consolidates every apps/web-specific
+   deploy-time gotcha learned across Briefs 1-50.
 5. The brief in `BRIEFS/` you've been asked to execute.
 
 If any of these are missing, stop and report it instead of guessing.
@@ -63,6 +64,10 @@ If any of these are missing, stop and report it instead of guessing.
    Renaming them silently breaks the bookmark UX until devices are
    re-bookmarked manually. Any task that proposes touching these URLs
    must be rejected without explicit operator override.
+   Customer-facing routes (`/signup/{location}`, `/q/{location}`,
+   `/join/{location}`, `/claims/{site}`) are served by their owning
+   workers (signup-worker for signup/q/join, damage-worker for claims),
+   NOT by apps/web. apps/web is admin-only post-Brief-50.
 
 2. **`pkg$` column name is intentional.** The `pricing_simple` table has
    a column literally named `pkg$` (with the `$`). This requires Postgres
@@ -241,8 +246,9 @@ When given a new task:
 - Real pages: `/login`, `/change-password`, `/admin/dashboard`,
   `/admin/pricing`, `/admin/pricing/[location]`, `/admin/sysadmin`
   (placeholder), `/logout` (route handler).
-- Placeholder pages: `/`, `/admin/damage`, `/admin/performance`,
-  `/signup/[location]`.
+- Placeholder pages: `/admin/damage`, `/admin/performance`.
+- Redirect-only pages: `/` (Brief 50: redirects to `/login` or
+  `/admin/dashboard` based on cookie presence).
 - Missing routes: `/sysadmin/*` top-level (sysadmin lives under
   `/admin/sysadmin/*`), `/claims/{site}` (damage-worker owns - see
   decisions 8/9 in BUILD_STATE.md).

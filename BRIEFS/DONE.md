@@ -48,3 +48,6 @@
 - 2026-05-06 10:33:46 brief-047-claim-pdf-trim-staff-assessment-rename-splash-response.md (success)
 - 2026-05-06 10:45:12 brief-048-customer-webhook-add-site-email.md (success)
 - 2026-05-06 11:44:16 brief-049-getlocationcontactinfo-read-from-pricing-simple.md (success)
+- 2026-05-06 14:58:47 brief-050-signup-flow-ownership-and-root-redirect.md (success)
+- 2026-05-06 15:08:03 brief-051-pre-deploy-web-runbook.md (success)
+- 2026-05-06 15:13:03 brief-052-sysadmin-search-underscore-sanitization.md (success)
