@@ -25507,6 +25507,57 @@ async function getActiveLocationByCode(env, locationCode) {
   return rows[0] ?? null;
 }
 __name(getActiveLocationByCode, "getActiveLocationByCode");
+async function getMaintainXLocationId(env, locationCode) {
+  const sanitized = locationCode.trim().toLowerCase();
+  if (!sanitized || !/^[a-z0-9_]+$/.test(sanitized)) return null;
+  const headers = {
+    apikey: env.SUPABASE_SERVICE_KEY,
+    Authorization: `Bearer ${env.SUPABASE_SERVICE_KEY}`
+  };
+  const psUrl = new URL("/rest/v1/pricing_simple", env.SUPABASE_URL);
+  psUrl.searchParams.set("location_code", `eq.${sanitized}`);
+  psUrl.searchParams.set("select", "site");
+  psUrl.searchParams.set("limit", "1");
+  let psResponse;
+  try {
+    psResponse = await fetch(psUrl.toString(), { headers });
+  } catch (err) {
+    console.error("getMaintainXLocationId: pricing_simple fetch threw", err);
+    return null;
+  }
+  if (!psResponse.ok) {
+    console.error(
+      "getMaintainXLocationId: pricing_simple returned",
+      psResponse.status
+    );
+    return null;
+  }
+  const psRows = await psResponse.json().catch(() => []);
+  const site = psRows[0]?.site;
+  if (!site) return null;
+  const locUrl = new URL("/rest/v1/locations", env.SUPABASE_URL);
+  locUrl.searchParams.set("site", `eq.${site}`);
+  locUrl.searchParams.set("select", "maintainx_id");
+  locUrl.searchParams.set("limit", "1");
+  let locResponse;
+  try {
+    locResponse = await fetch(locUrl.toString(), { headers });
+  } catch (err) {
+    console.error("getMaintainXLocationId: locations fetch threw", err);
+    return null;
+  }
+  if (!locResponse.ok) {
+    console.error(
+      "getMaintainXLocationId: locations returned",
+      locResponse.status
+    );
+    return null;
+  }
+  const locRows = await locResponse.json().catch(() => []);
+  const id = locRows[0]?.maintainx_id;
+  return typeof id === "number" && Number.isFinite(id) ? id : null;
+}
+__name(getMaintainXLocationId, "getMaintainXLocationId");
 
 // ../../packages/auth/src/session.ts
 async function authenticate(request, env) {
@@ -25580,11 +25631,13 @@ async function writeClaimBatch(db, c) {
         submitted_by,
         equipment_related,
         equipment_piece,
+        damage_type,
+        damage_other,
         lifecycle_state,
         claim_status,
         status_updated_by,
         submitted_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Open', ?, ?, ?)`
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Open', ?, ?, ?)`
   ).bind(
     c.claim_id,
     c.location_code,
@@ -25605,6 +25658,8 @@ async function writeClaimBatch(db, c) {
     c.submitted_by,
     c.equipment_related,
     c.equipment_piece,
+    c.damage_type,
+    c.damage_other,
     c.initial_status,
     c.submitted_by,
     c.submitted_at
@@ -25664,6 +25719,12 @@ async function getClaimById(db, claimId) {
   return row ?? null;
 }
 __name(getClaimById, "getClaimById");
+async function updateMaintainXWorkOrderId(db, claimId, workOrderId) {
+  await db.prepare(
+    "UPDATE claims SET maintainx_workorder_id = ? WHERE claim_id = ? AND maintainx_workorder_id IS NULL"
+  ).bind(workOrderId, claimId).run();
+}
+__name(updateMaintainXWorkOrderId, "updateMaintainXWorkOrderId");
 
 // ../../packages/db-d1/src/photos.ts
 async function listPhotosForClaim(db, claimId) {
@@ -42208,6 +42269,32 @@ function renderClaimForm(args) {
             <textarea id="preExistingDamage" name="preExistingDamage" placeholder="e.g., Scratch on rear bumper, dent on driver door..."></textarea>
           </div>
 
+          <!-- Damage type (Brief 41): selecting "Other" reveals the
+               free-text description input. Worker enforces the same
+               allow-list on POST. -->
+          <div class="form-group">
+            <label for="damageType">Damage Type <span class="required">*</span></label>
+            <select id="damageType" name="damageType" required>
+              <option value="">Select damage type...</option>
+              <option value="License Plate">License Plate</option>
+              <option value="Wiper">Wiper</option>
+              <option value="Collision">Collision</option>
+              <option value="Roof Rack/Roof Accessory">Roof Rack/Roof Accessory</option>
+              <option value="PS Mirror">PS Mirror</option>
+              <option value="DS Mirror">DS Mirror</option>
+              <option value="Window">Window</option>
+              <option value="Paint Damage">Paint Damage</option>
+              <option value="Rims">Rims</option>
+              <option value="Tires">Tires</option>
+              <option value="Other">Other</option>
+            </select>
+            <div id="damageOtherWrap" hidden style="margin-top: 12px;">
+              <label for="damageOther">Description of other <span class="required">*</span></label>
+              <input type="text" id="damageOther" name="damageOther"
+                     placeholder="Describe the damage..." maxlength="200">
+            </div>
+          </div>
+
           <!-- Equipment toggle (Brief 25): defaults to No; flipping to Yes
                reveals the dropdown. equipmentInvolved submits as empty string
                when No, so the worker derives equipment_related = 0. -->
@@ -42382,6 +42469,25 @@ var FORM_SCRIPT = `(function () {
     });
   }
 
+  // ---- Damage type (Brief 41) -------------------------------------------
+  var dmgTypeSel = document.getElementById('damageType');
+  var dmgOtherWrap = document.getElementById('damageOtherWrap');
+  var dmgOtherInput = document.getElementById('damageOther');
+  function syncDamageOther() {
+    var isOther = dmgTypeSel && dmgTypeSel.value === 'Other';
+    if (dmgOtherWrap) dmgOtherWrap.hidden = !isOther;
+    if (dmgOtherInput) {
+      if (isOther) {
+        dmgOtherInput.setAttribute('required', '');
+      } else {
+        dmgOtherInput.removeAttribute('required');
+        dmgOtherInput.value = '';
+      }
+    }
+  }
+  if (dmgTypeSel) dmgTypeSel.addEventListener('change', syncDamageOther);
+  syncDamageOther();
+
   // ---- Equipment toggle --------------------------------------------------
   var eqDetails = document.getElementById('equipmentDetails');
   var eqSelect = document.getElementById('equipmentInvolved');
@@ -42520,9 +42626,12 @@ var FORM_SCRIPT = `(function () {
   function validateBeforeSubmit() {
     clearError();
     syncEquipment();
+    syncDamageOther();
     // HTML5 validation across the whole form (now that employee fields are
     // visible). reportValidity() shows the browser's bubble on the first
-    // invalid input.
+    // invalid input. damageType is required; damageOther is required only
+    // when damageType === 'Other' (toggled by syncDamageOther) \u2014 so both
+    // gates are covered without explicit checks here.
     if (!form.checkValidity()) {
       form.reportValidity();
       return false;
@@ -42685,6 +42794,13 @@ function dash(v) {
   return s ? s : "\u2014";
 }
 __name(dash, "dash");
+function humanizeLabel(v) {
+  if (!v) return "\u2014";
+  const s = String(v).trim();
+  if (!s) return "\u2014";
+  return s.split(/[_-]/g).filter((part) => part.length > 0).map((part) => part.charAt(0).toUpperCase() + part.slice(1).toLowerCase()).join(" ");
+}
+__name(humanizeLabel, "humanizeLabel");
 function formatTimestamp(iso) {
   try {
     const d = new Date(iso);
@@ -42956,14 +43072,13 @@ async function generateClaimSummaryPdf(input) {
   layout.drawTextBlock(input.customer.whatHappened || "\u2014", 11);
   layout.drawSpacer(8);
   layout.drawSectionHeading("Staff Assessment");
-  const equipmentLabel = input.assessment.equipmentRelated === "yes" ? "Yes" : input.assessment.equipmentRelated === "no" ? "No" : "\u2014";
   layout.drawKeyValueGrid([
     ["Staff Name", dash(input.assessment.staffName)],
-    ["Equipment-Related", equipmentLabel]
+    ["Equipment-Related", humanizeLabel(input.assessment.equipmentRelated)]
   ]);
   layout.drawSpacer(2);
   layout.drawFullWidthLabel("Determination");
-  layout.drawTextBlock(input.assessment.determination || "\u2014", 11);
+  layout.drawTextBlock(humanizeLabel(input.assessment.determination), 11);
   layout.drawFullWidthLabel("What the Customer Was Told");
   layout.drawTextBlock(input.assessment.whatCustomerWasTold || "\u2014", 11);
   const footerText1 = `Claim ID: ${input.claimId}`;
@@ -42987,6 +43102,164 @@ async function generateClaimSummaryPdf(input) {
 }
 __name(generateClaimSummaryPdf, "generateClaimSummaryPdf");
 
+// src/maintainx.ts
+var ASSIGNEES_PRODUCTION = [{ id: 409112 }, { id: 426577 }];
+var ASSIGNEES_TEST = [{ id: 443948 }];
+function assigneesByMode(mode) {
+  return mode === "production" ? ASSIGNEES_PRODUCTION : ASSIGNEES_TEST;
+}
+__name(assigneesByMode, "assigneesByMode");
+var ERROR_BODY_MAX_BYTES = 2 * 1024;
+function valueOrDash(v) {
+  if (v === null || v === void 0) return "\u2014";
+  const s = String(v).trim();
+  return s.length > 0 ? s : "\u2014";
+}
+__name(valueOrDash, "valueOrDash");
+function buildTitle(locationPretty, claim) {
+  const damageTypeOrFallback = claim.damage_type ?? "Unspecified";
+  if (claim.damage_type === "Other") {
+    const other = (claim.damage_other ?? "").trim();
+    const suffix = other ? `Other (${other})` : "Other";
+    return `Damage Claim - ${locationPretty} - ${suffix}`;
+  }
+  return `Damage Claim - ${locationPretty} - ${damageTypeOrFallback}`;
+}
+__name(buildTitle, "buildTitle");
+function buildDescription(claim, appsWebBaseUrl) {
+  const damageTypeLine = claim.damage_type === "Other" && (claim.damage_other ?? "").trim().length > 0 ? `${claim.damage_type} (Other: ${claim.damage_other})` : valueOrDash(claim.damage_type);
+  const vehicleLine = `${valueOrDash(claim.vehicle_year)} ${valueOrDash(
+    claim.vehicle_make
+  )} ${valueOrDash(claim.vehicle_model)} ${valueOrDash(
+    claim.vehicle_color
+  )} \u2014 Plate: ${valueOrDash(claim.license_plate)}`;
+  const adminBase = appsWebBaseUrl.replace(/\/$/, "");
+  const adminLink = `${adminBase}/admin/damage/${encodeURIComponent(claim.claim_id)}`;
+  return [
+    `Claim ID: ${claim.claim_id}`,
+    `Submitted: ${claim.submitted_at}`,
+    `Submitted by: ${claim.submitted_by}`,
+    "",
+    "Customer:",
+    `  Name: ${valueOrDash(claim.customer_name)}`,
+    `  Phone: ${valueOrDash(claim.customer_phone)}`,
+    `  Email: ${valueOrDash(claim.customer_email)}`,
+    "",
+    "Vehicle:",
+    `  ${vehicleLine}`,
+    "",
+    `Damage type: ${damageTypeLine}`,
+    `Damage description: ${valueOrDash(claim.damage_description)}`,
+    `Equipment involved: ${valueOrDash(claim.equipment_piece)}`,
+    `Pre-existing damage: ${valueOrDash(claim.preexisting_damage)}`,
+    `Determination: ${valueOrDash(claim.determination)}`,
+    "",
+    `Admin link: ${adminLink}`
+  ].join("\n");
+}
+__name(buildDescription, "buildDescription");
+function buildPayload(input) {
+  const title = buildTitle(input.locationPretty, input.claim);
+  const description = buildDescription(input.claim, input.appsWebBaseUrl);
+  const assignees = assigneesByMode(input.mode);
+  const body = {
+    title,
+    description,
+    priority: "HIGH",
+    categories: ["Vehicle Damage"],
+    assignees
+  };
+  if (input.maintainxLocationId != null) {
+    body.locationId = input.maintainxLocationId;
+  }
+  return body;
+}
+__name(buildPayload, "buildPayload");
+function extractWorkOrderId(body) {
+  if (!body || typeof body !== "object") return null;
+  const obj = body;
+  const candidates = [
+    obj.id,
+    obj.workOrder?.id,
+    obj.data?.id
+  ];
+  for (const c of candidates) {
+    if (typeof c === "number" && Number.isFinite(c)) return c;
+    if (typeof c === "string" && /^\d+$/.test(c)) return Number.parseInt(c, 10);
+  }
+  return null;
+}
+__name(extractWorkOrderId, "extractWorkOrderId");
+async function createMaintainXWorkOrder(input) {
+  const body = buildPayload(input);
+  const url = `${input.baseUrl.replace(/\/$/, "")}/workorders`;
+  let res;
+  try {
+    res = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${input.apiKey}`
+      },
+      body: JSON.stringify(body),
+      signal: input.signal
+    });
+  } catch (e) {
+    return {
+      ok: false,
+      workOrderId: null,
+      error: e instanceof Error ? e.message : String(e),
+      status: 0,
+      request: body
+    };
+  }
+  if (!res.ok) {
+    let errText = "";
+    try {
+      errText = await res.text();
+    } catch {
+    }
+    const truncated = errText.slice(0, ERROR_BODY_MAX_BYTES);
+    return {
+      ok: false,
+      workOrderId: null,
+      error: `MX ${res.status}: ${truncated}`,
+      status: res.status,
+      request: body
+    };
+  }
+  let parsed = null;
+  try {
+    parsed = await res.json();
+  } catch {
+    return {
+      ok: false,
+      workOrderId: null,
+      error: `MX ${res.status}: response was not valid JSON`,
+      status: res.status,
+      request: body
+    };
+  }
+  const workOrderId = extractWorkOrderId(parsed);
+  if (workOrderId == null) {
+    return {
+      ok: false,
+      workOrderId: null,
+      error: `MX ${res.status}: response missing recognizable work order id (tried id, workOrder.id, data.id)`,
+      status: res.status,
+      request: body
+    };
+  }
+  return {
+    ok: true,
+    workOrderId,
+    error: null,
+    status: res.status,
+    request: body
+  };
+}
+__name(createMaintainXWorkOrder, "createMaintainXWorkOrder");
+
 // src/index.ts
 var SUMMARY_LOGO_R2_KEY = "assets/splash-logo-white.png";
 var CUSTOMER_WEBHOOK_BASE64_MAX_BYTES = 3 * 1024 * 1024;
@@ -43008,6 +43281,19 @@ var PHOTO_CATEGORIES = [
   { field: "damagePhotos", type: "Damage" },
   { field: "platePhoto", type: "License Plate" }
 ];
+var ALLOWED_DAMAGE_TYPES = /* @__PURE__ */ new Set([
+  "License Plate",
+  "Wiper",
+  "Collision",
+  "Roof Rack/Roof Accessory",
+  "PS Mirror",
+  "DS Mirror",
+  "Window",
+  "Paint Damage",
+  "Rims",
+  "Tires",
+  "Other"
+]);
 var index_default = {
   async fetch(request, env, _ctx) {
     const url = new URL(request.url);
@@ -43424,13 +43710,22 @@ function applyStamps(transition, setParts, params, actorEmail) {
   }
 }
 __name(applyStamps, "applyStamps");
+var UPLOAD_ERROR_MAX_LEN = 240;
+function buildUploadRedirect(request, claimId, errorMessage) {
+  const originHeader = request.headers.get("Origin");
+  const origin = originHeader && /^https?:\/\//.test(originHeader) ? originHeader : new URL(request.url).origin;
+  const path = `/admin/damage/${encodeURIComponent(claimId)}`;
+  const query = errorMessage ? `?upload_error=${encodeURIComponent(errorMessage.slice(0, UPLOAD_ERROR_MAX_LEN))}` : "";
+  return Response.redirect(`${origin}${path}${query}`, 303);
+}
+__name(buildUploadRedirect, "buildUploadRedirect");
 async function handleDocumentUpload(request, env, session, claimId) {
   if (!isOriginAllowed(request)) return jsonError(403, "bad origin");
   const guard = await loadAndScopeCheck(env, session, claimId);
   if (!guard.ok) return guard.response;
   const ctype = request.headers.get("content-type") ?? "";
   if (!ctype.includes("multipart/form-data")) {
-    return jsonError(400, "Document upload must be multipart/form-data.");
+    return buildUploadRedirect(request, claimId, "Document upload must be multipart/form-data.");
   }
   const form = await request.formData();
   const file = form.get("file");
@@ -43441,61 +43736,79 @@ async function handleDocumentUpload(request, env, session, claimId) {
   const payToTypeRaw = String(form.get("pay_to_type") ?? "").trim().toLowerCase();
   const vendorAddress = String(form.get("vendor_address") ?? "").trim() || null;
   if (!DOCUMENT_TYPES.has(docType)) {
-    return jsonError(400, "Invalid document type. Must be Quote or Receipt.");
+    return buildUploadRedirect(request, claimId, "Invalid document type. Must be Quote or Receipt.");
   }
   if (!file || typeof file === "string" || !(file instanceof File) || !file.name) {
-    return jsonError(400, "No file selected.");
+    return buildUploadRedirect(request, claimId, "No file selected.");
   }
   if (file.size > DOCUMENT_MAX_BYTES) {
-    return jsonError(400, `File too large (max ${DOCUMENT_MAX_BYTES / (1024 * 1024)} MB).`);
+    return buildUploadRedirect(
+      request,
+      claimId,
+      `File too large (max ${DOCUMENT_MAX_BYTES / (1024 * 1024)} MB).`
+    );
   }
   if (file.size === 0) {
-    return jsonError(400, "File is empty.");
+    return buildUploadRedirect(request, claimId, "File is empty.");
   }
   const mime = (file.type || "").toLowerCase();
   const ext = (file.name.split(".").pop() ?? "").toLowerCase();
   if (!DOCUMENT_ALLOWED_EXT.has(ext) && !DOCUMENT_ALLOWED_MIME.has(mime)) {
-    return jsonError(400, "Unsupported file type. Allowed: PDF, JPG, PNG, HEIC.");
+    return buildUploadRedirect(
+      request,
+      claimId,
+      "Unsupported file type. Allowed: PDF, JPG, PNG, HEIC."
+    );
   }
   if (docType === "Quote" && !amountStr) {
-    return jsonError(400, "Amount is required for Quote documents.");
+    return buildUploadRedirect(request, claimId, "Amount is required for Quote documents.");
   }
   if (docType === "Quote" && !payToTypeRaw) {
-    return jsonError(400, "Pay to (customer or vendor) is required for Quote documents.");
+    return buildUploadRedirect(
+      request,
+      claimId,
+      "Pay to (customer or vendor) is required for Quote documents."
+    );
   }
   let amount = null;
   if (amountStr) {
     const parsed = Number.parseFloat(amountStr);
     if (Number.isNaN(parsed) || parsed < 0) {
-      return jsonError(400, "Amount must be a non-negative number.");
+      return buildUploadRedirect(request, claimId, "Amount must be a non-negative number.");
     }
     amount = parsed;
   }
   if (notesText && notesText.length > 5e3) {
-    return jsonError(400, "Notes are too long (max 5000 characters).");
+    return buildUploadRedirect(request, claimId, "Notes are too long (max 5000 characters).");
   }
   let payToType = null;
   let payToVendorAddress = null;
   if (docType === "Quote") {
     if (payToTypeRaw !== "customer" && payToTypeRaw !== "vendor") {
-      return jsonError(400, "Pay to must be 'customer' or 'vendor'.");
+      return buildUploadRedirect(request, claimId, "Pay to must be 'customer' or 'vendor'.");
     }
     payToType = payToTypeRaw;
     if (payToType === "vendor") {
       if (!vendor) {
-        return jsonError(
-          400,
+        return buildUploadRedirect(
+          request,
+          claimId,
           "Vendor name is required when paying the vendor directly."
         );
       }
       if (!vendorAddress) {
-        return jsonError(
-          400,
+        return buildUploadRedirect(
+          request,
+          claimId,
           "Vendor address is required when paying the vendor directly."
         );
       }
       if (vendorAddress.length > 1e3) {
-        return jsonError(400, "Vendor address is too long (max 1000 characters).");
+        return buildUploadRedirect(
+          request,
+          claimId,
+          "Vendor address is too long (max 1000 characters)."
+        );
       }
       payToVendorAddress = vendorAddress;
     }
@@ -43509,7 +43822,9 @@ async function handleDocumentUpload(request, env, session, claimId) {
     index: seqCount,
     images: env.IMAGES
   });
-  if (!r2) return jsonError(500, "Upload to storage failed. Please try again.");
+  if (!r2) {
+    return buildUploadRedirect(request, claimId, "Upload to storage failed. Please try again.");
+  }
   try {
     await insertDocPhoto(env.DB, {
       claimId,
@@ -43535,9 +43850,9 @@ async function handleDocumentUpload(request, env, session, claimId) {
     await touchClaim(env.DB, claimId);
   } catch (err) {
     console.error("handleDocumentUpload failed:", err);
-    return jsonError(500, "Failed to record upload.");
+    return buildUploadRedirect(request, claimId, "Failed to record upload.");
   }
-  return json({ ok: true, r2Key: r2.key });
+  return buildUploadRedirect(request, claimId);
 }
 __name(handleDocumentUpload, "handleDocumentUpload");
 async function handleDocumentDelete(request, env, session, claimId, docIdStr) {
@@ -43600,6 +43915,8 @@ async function handleClaimSubmission(request, env) {
       locationPretty: String(formData.get("locationPretty") ?? ""),
       membershipNumber: String(formData.get("membershipNumber") ?? ""),
       preExistingDamage: String(formData.get("preExistingDamage") ?? ""),
+      damageType: String(formData.get("damageType") ?? ""),
+      damageOther: String(formData.get("damageOther") ?? ""),
       equipmentInvolved: String(formData.get("equipmentInvolved") ?? ""),
       equipmentMalfunction: String(formData.get("equipmentMalfunction") ?? "") === "true",
       determination: String(formData.get("determination") ?? ""),
@@ -43610,7 +43927,9 @@ async function handleClaimSubmission(request, env) {
       userAgent: request.headers.get("User-Agent") ?? "Unknown",
       claimId: "",
       // filled below
-      photos: []
+      photos: [],
+      maintainxWorkorderId: null
+      // filled by Brief 42 hook after writeClaimBatch
     };
     const emailTrimmed = claimData.customerEmail.trim();
     const emailValid = /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(emailTrimmed);
@@ -43626,6 +43945,47 @@ async function handleClaimSubmission(request, env) {
       return json({ ok: false, error: message, success: false }, 400);
     }
     claimData.customerEmail = emailTrimmed;
+    const damageTypeTrimmed = claimData.damageType.trim();
+    if (!damageTypeTrimmed) {
+      const message = "Damage type required";
+      if (browserMode) {
+        const slug = encodeURIComponent(claimData.location || "") || "unknown";
+        const target = new URL(
+          `${baseOrigin}/claims/${slug}?error=${encodeURIComponent(message)}`
+        );
+        return Response.redirect(target.toString(), 303);
+      }
+      return json({ ok: false, error: message, success: false }, 400);
+    }
+    if (!ALLOWED_DAMAGE_TYPES.has(damageTypeTrimmed)) {
+      const message = "Invalid damage type";
+      if (browserMode) {
+        const slug = encodeURIComponent(claimData.location || "") || "unknown";
+        const target = new URL(
+          `${baseOrigin}/claims/${slug}?error=${encodeURIComponent(message)}`
+        );
+        return Response.redirect(target.toString(), 303);
+      }
+      return json({ ok: false, error: message, success: false }, 400);
+    }
+    claimData.damageType = damageTypeTrimmed;
+    if (claimData.damageType === "Other") {
+      const damageOtherTrimmed = claimData.damageOther.trim().slice(0, 200);
+      if (!damageOtherTrimmed) {
+        const message = "Description of other required";
+        if (browserMode) {
+          const slug = encodeURIComponent(claimData.location || "") || "unknown";
+          const target = new URL(
+            `${baseOrigin}/claims/${slug}?error=${encodeURIComponent(message)}`
+          );
+          return Response.redirect(target.toString(), 303);
+        }
+        return json({ ok: false, error: message, success: false }, 400);
+      }
+      claimData.damageOther = damageOtherTrimmed;
+    } else {
+      claimData.damageOther = "";
+    }
     claimData.claimId = generateClaimId(claimData.location);
     for (const category of PHOTO_CATEGORIES) {
       const files = formData.getAll(category.field);
@@ -43687,6 +44047,8 @@ async function handleClaimSubmission(request, env) {
         submitted_by: submittedBy,
         equipment_related: equipmentRelated,
         equipment_piece: claimData.equipmentInvolved || null,
+        damage_type: claimData.damageType || null,
+        damage_other: claimData.damageOther || null,
         initial_status: initialStatus,
         submitted_at: claimData.submittedAt,
         photos: claimData.photos.map((p) => ({
@@ -43706,6 +44068,138 @@ async function handleClaimSubmission(request, env) {
         }
       } catch (locErr) {
         console.warn("location_pretty Supabase resolution failed (using form value):", locErr);
+      }
+      if (insert.equipment_related === 1) {
+        if (!env.MAINTAINX_API_KEY) {
+          console.warn(
+            "[mx] MAINTAINX_API_KEY unbound; skipping WO creation for",
+            claimData.claimId
+          );
+        } else {
+          const claimRowForMx = {
+            claim_id: insert.claim_id,
+            location_code: insert.location_code,
+            location_pretty: claimData.locationPretty || insert.location_pretty,
+            customer_name: insert.customer_name,
+            customer_phone: insert.customer_phone,
+            customer_email: insert.customer_email,
+            customer_mailing_address: insert.customer_mailing_address,
+            vehicle_year: insert.vehicle_year,
+            vehicle_make: insert.vehicle_make,
+            vehicle_model: insert.vehicle_model,
+            vehicle_color: insert.vehicle_color,
+            license_plate: insert.license_plate,
+            damage_description: insert.damage_description,
+            preexisting_damage: insert.preexisting_damage,
+            staff_notes: insert.staff_notes,
+            determination: insert.determination,
+            submitted_by: insert.submitted_by,
+            equipment_related: insert.equipment_related,
+            equipment_piece: insert.equipment_piece,
+            damage_type: insert.damage_type,
+            damage_other: insert.damage_other,
+            lifecycle_state: lifecycleForStatus(insert.initial_status),
+            claim_status: insert.initial_status,
+            contact_status: null,
+            submitted_at: insert.submitted_at,
+            status_updated_at: null,
+            status_updated_by: insert.submitted_by,
+            updated_at: null,
+            gm_approved_at: null,
+            gm_approved_by: null,
+            rm_approved_at: null,
+            rm_approved_by: null,
+            ceo_approved_at: null,
+            ceo_approved_by: null,
+            approved_amount: null,
+            approved_quote_id: null,
+            parts_ordered: null,
+            vendor_name: null,
+            maintainx_workorder_id: null,
+            deleted_at: null
+          };
+          let mxLocationId = null;
+          try {
+            mxLocationId = await getMaintainXLocationId(env, insert.location_code);
+          } catch (mxLocErr) {
+            console.warn(
+              "[mx] getMaintainXLocationId threw \u2014 proceeding without locationId:",
+              mxLocErr
+            );
+          }
+          const mxMode = env.MAINTAINX_MODE ?? "test";
+          const mxBaseUrl = env.MAINTAINX_BASE_URL ?? "https://api.getmaintainx.com/v1";
+          const mxAppsWebBaseUrl = env.APPS_WEB_BASE_URL ?? "https://splashcarwashes.info";
+          const ctrl = new AbortController();
+          const timeoutId = setTimeout(() => ctrl.abort(), 8e3);
+          let maintainxResult;
+          try {
+            maintainxResult = await createMaintainXWorkOrder({
+              claim: claimRowForMx,
+              locationPretty: claimRowForMx.location_pretty,
+              maintainxLocationId: mxLocationId,
+              apiKey: env.MAINTAINX_API_KEY,
+              mode: mxMode,
+              baseUrl: mxBaseUrl,
+              appsWebBaseUrl: mxAppsWebBaseUrl,
+              signal: ctrl.signal
+            });
+          } catch (mxErr) {
+            maintainxResult = {
+              ok: false,
+              workOrderId: null,
+              error: mxErr instanceof Error ? mxErr.message : String(mxErr),
+              status: 0,
+              request: {}
+            };
+          } finally {
+            clearTimeout(timeoutId);
+          }
+          if (maintainxResult.ok && maintainxResult.workOrderId != null) {
+            try {
+              await updateMaintainXWorkOrderId(
+                env.DB,
+                insert.claim_id,
+                maintainxResult.workOrderId
+              );
+            } catch (updateErr) {
+              console.error(
+                "[mx] updateMaintainXWorkOrderId failed for",
+                insert.claim_id,
+                updateErr
+              );
+            }
+            claimData.maintainxWorkorderId = maintainxResult.workOrderId;
+            try {
+              await logActivity(env.DB, {
+                claimId: insert.claim_id,
+                activityType: "note",
+                notes: `[maintainx] Work order #${maintainxResult.workOrderId} created (mode: ${mxMode})`,
+                actorEmail: null,
+                actorName: insert.submitted_by
+              });
+            } catch (logErr) {
+              console.error("[mx] activity log (success) failed:", logErr);
+            }
+          } else {
+            console.error(
+              "[mx] WO creation failed for",
+              insert.claim_id,
+              maintainxResult.error
+            );
+            try {
+              await logActivity(env.DB, {
+                claimId: insert.claim_id,
+                activityType: "note",
+                notes: `[maintainx] Work order creation failed \u2014 ${maintainxResult.error ?? "unknown error"} (status: ${maintainxResult.status}, mode: ${mxMode})`,
+                actorEmail: null,
+                actorName: "system"
+              });
+            } catch (logErr) {
+              console.error("[mx] activity log (failure) failed:", logErr);
+            }
+          }
+        }
       }
     } catch (d1Error) {
       console.error("D1 write failed:", d1Error);

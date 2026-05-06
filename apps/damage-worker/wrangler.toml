@@ -105,10 +105,24 @@ routes = [
 # the worker falls back to fetching ASSETS.logoWhite over HTTPS — works,
 # but adds ~50-200ms to every claim submission. Upload to skip the fallback.
 
+# Brief 42 — non-secret env vars consumed by the MaintainX integration.
+#   MAINTAINX_MODE       — "test" routes WOs only to Josh (Brett/Scott bypassed
+#                          so dev/staging traffic doesn't page real assignees);
+#                          flip to "production" at cutover (manual edit + redeploy
+#                          OR override via the CF Workers dashboard env vars).
+#   MAINTAINX_BASE_URL   — REST root (no trailing /workorders).
+#   APPS_WEB_BASE_URL    — used to build the admin link inside each WO
+#                          description. Today apps/web is on workers.dev / staging;
+#                          flip to the prod hostname at cutover.
+[vars]
+MAINTAINX_MODE = "test"
+MAINTAINX_BASE_URL = "https://api.getmaintainx.com/v1"
+APPS_WEB_BASE_URL = "https://splashcarwashes.info"
+
 [[d1_databases]]
 binding = "DB"
-database_name = "splash-damage-claims" 
-database_id   = "5cc2ad92-8069-4d0d-81f8-7d560822776a"   
+database_name = "splash-damage-claims"
+database_id   = "5cc2ad92-8069-4d0d-81f8-7d560822776a"
 
 [[r2_buckets]]
 binding = "R2_BUCKET"

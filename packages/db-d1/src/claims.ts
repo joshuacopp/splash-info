@@ -77,6 +77,8 @@ export interface ClaimInsert {
   submitted_by: string;
   equipment_related: 0 | 1;
   equipment_piece: string | null;
+  damage_type: string | null;
+  damage_other: string | null;
 
   initial_status: ClaimStatus;
   submitted_at: string;
@@ -119,11 +121,13 @@ export async function writeClaimBatch(db: D1Database, c: ClaimInsert): Promise<v
         submitted_by,
         equipment_related,
         equipment_piece,
+        damage_type,
+        damage_other,
         lifecycle_state,
         claim_status,
         status_updated_by,
         submitted_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Open', ?, ?, ?)`
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Open', ?, ?, ?)`
     )
     .bind(
       c.claim_id,
@@ -145,6 +149,8 @@ export async function writeClaimBatch(db: D1Database, c: ClaimInsert): Promise<v
       c.submitted_by,
       c.equipment_related,
       c.equipment_piece,
+      c.damage_type,
+      c.damage_other,
       c.initial_status,
       c.submitted_by,
       c.submitted_at
@@ -252,4 +258,26 @@ export async function getClaimById(db: D1Database, claimId: string): Promise<Cla
     .bind(claimId)
     .first<ClaimRow>();
   return row ?? null;
+}
+
+/**
+ * Brief 42 — set `claims.maintainx_workorder_id` on an existing claim row.
+ *
+ * Called immediately after a successful POST to MaintainX. Used as the
+ * dedupe key when Brief 43's GM-side modal re-triggers WO creation: the
+ * UPDATE only sets the column when it's currently NULL, so a second
+ * concurrent attempt (e.g. legitimate retry vs. modal click) lands at
+ * most one WO per claim. The first writer wins; later writers no-op.
+ */
+export async function updateMaintainXWorkOrderId(
+  db: D1Database,
+  claimId: string,
+  workOrderId: number
+): Promise<void> {
+  await db
+    .prepare(
+      "UPDATE claims SET maintainx_workorder_id = ? WHERE claim_id = ? AND maintainx_workorder_id IS NULL"
+    )
+    .bind(workOrderId, claimId)
+    .run();
 }

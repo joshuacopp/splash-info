@@ -62,6 +62,88 @@ export async function getActiveLocationByCode(
   return rows[0] ?? null;
 }
 
+/**
+ * Brief 42 — resolve `locations.maintainx_id` (integer) for a customer URL
+ * slug. Used by damage-worker to populate the `locationId` field on each
+ * MaintainX work order created when `equipment_related === 1` on the
+ * customer claim form.
+ *
+ * Two-step lookup because the `locations` table doesn't carry a
+ * `location_code` column (the unique business key is `site_number`; the
+ * `trg_sync_pricing_simple` trigger denormalizes into `pricing_simple` by
+ * `site` text). We resolve the slug → `site` via `pricing_simple` first,
+ * then look up `locations.maintainx_id` by that `site`.
+ *
+ * Fail-soft: returns null on bad-shape slug, missing pricing_simple row,
+ * missing locations row, missing/null `maintainx_id`, or any non-2xx
+ * response. Caller (damage-worker) omits `locationId` from the WO body
+ * when null — MaintainX accepts WOs without a location, and we'd rather
+ * have a WO than fail because a location was added in Supabase but
+ * didn't get its `maintainx_id` populated yet.
+ */
+export async function getMaintainXLocationId(
+  env: { SUPABASE_URL: string; SUPABASE_SERVICE_KEY: string },
+  locationCode: string
+): Promise<number | null> {
+  const sanitized = locationCode.trim().toLowerCase();
+  if (!sanitized || !/^[a-z0-9_]+$/.test(sanitized)) return null;
+
+  const headers = {
+    apikey: env.SUPABASE_SERVICE_KEY,
+    Authorization: `Bearer ${env.SUPABASE_SERVICE_KEY}`
+  };
+
+  // Step 1 — pricing_simple.location_code → site (text).
+  const psUrl = new URL("/rest/v1/pricing_simple", env.SUPABASE_URL);
+  psUrl.searchParams.set("location_code", `eq.${sanitized}`);
+  psUrl.searchParams.set("select", "site");
+  psUrl.searchParams.set("limit", "1");
+  let psResponse: Response;
+  try {
+    psResponse = await fetch(psUrl.toString(), { headers });
+  } catch (err) {
+    console.error("getMaintainXLocationId: pricing_simple fetch threw", err);
+    return null;
+  }
+  if (!psResponse.ok) {
+    console.error(
+      "getMaintainXLocationId: pricing_simple returned",
+      psResponse.status
+    );
+    return null;
+  }
+  const psRows = (await psResponse.json().catch(() => [])) as Array<{
+    site: string | null;
+  }>;
+  const site = psRows[0]?.site;
+  if (!site) return null;
+
+  // Step 2 — locations.site → maintainx_id (integer or null).
+  const locUrl = new URL("/rest/v1/locations", env.SUPABASE_URL);
+  locUrl.searchParams.set("site", `eq.${site}`);
+  locUrl.searchParams.set("select", "maintainx_id");
+  locUrl.searchParams.set("limit", "1");
+  let locResponse: Response;
+  try {
+    locResponse = await fetch(locUrl.toString(), { headers });
+  } catch (err) {
+    console.error("getMaintainXLocationId: locations fetch threw", err);
+    return null;
+  }
+  if (!locResponse.ok) {
+    console.error(
+      "getMaintainXLocationId: locations returned",
+      locResponse.status
+    );
+    return null;
+  }
+  const locRows = (await locResponse.json().catch(() => [])) as Array<{
+    maintainx_id: number | null;
+  }>;
+  const id = locRows[0]?.maintainx_id;
+  return typeof id === "number" && Number.isFinite(id) ? id : null;
+}
+
 const LOCATION_COLS =
   "id,site_number,site,location,mla_location,area_manager,regional_manager,rm_group,rm_email,am_email,hrt_email,site_email,hrt1,hrt2,fivestar";
 

@@ -211,6 +211,25 @@ When given a new task:
   reference legacy patterns (e.g., damage-worker tests #1-2 expect HTML
   pages, but the new architecture is API-only). Don't blindly run all
   PRE_DEPLOY tests; check whether each applies.
+- **MaintainX integration (Brief 42).** `MAINTAINX_API_KEY` is a
+  `wrangler secret` bound on **damage-worker only** — bearer token for
+  `https://api.getmaintainx.com/v1/workorders`. Three companion
+  non-secret `[vars]` entries live in `apps/damage-worker/wrangler.toml`:
+  `MAINTAINX_MODE` (`"test"` default — routes WOs only to Josh; flip to
+  `"production"` at cutover), `MAINTAINX_BASE_URL`, and
+  `APPS_WEB_BASE_URL` (used to build the admin link inside each WO
+  description). The hook fires inside `handleClaimSubmission` only when
+  `equipment_related === 1`; failure is fail-soft (activity-log entry
+  with `[maintainx]` prefix on the existing `note` activity_type, claim
+  still proceeds). Assignee IDs are encoded as module-level const arrays
+  in `apps/damage-worker/src/maintainx.ts` so they're grep-able when
+  someone leaves the company: Brett Sullivan (409112,
+  bsullivan@splashcarwashes.com), Scott Butler (426577,
+  scott.butler@splashcarwashes.com), Josh Copp (443948,
+  josh.copp@splashcarwashes.com). The `claims.maintainx_workorder_id`
+  D1 column doubles as the dedupe key for Brief 43's GM-side modal —
+  `updateMaintainXWorkOrderId` UPDATEs only when the column is NULL,
+  so a re-trigger lands at most one WO per claim.
 
 ---
 

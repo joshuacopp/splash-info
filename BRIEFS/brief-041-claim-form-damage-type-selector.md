@@ -1,8 +1,8 @@
 # Brief 41: Damage type selector on the claim form (employee section)
 
-**Status:** Ready for Claude Code
-**Started:**
-**Completed:**
+**Status:** Completed (2026-05-06)
+**Started:** 2026-05-06
+**Completed:** 2026-05-06
 **Blocks:** Brief 42 (MaintainX work order on equipment_related=yes)
 will use `damage_type` in the work order title. Brief 41 lands the
 column + form field; Brief 42 reads it. Brief 41 must complete
@@ -318,4 +318,51 @@ damage type on their copy.
 
 ## Outcome
 
-(Filled in by Claude Code on completion.)
+**Files modified:**
+- `apps/damage-worker/src/render/claim-form.ts` — new `<select id="damageType" required>` form group inserted directly above the existing equipment-toggle block (employee section). 11 options match the brief verbatim; selecting "Other" reveals `<input id="damageOther" maxlength="200">`. New JS handler `syncDamageOther()` toggles the wrap's `hidden` attr and the `required` attr on the input; called on `change` and once on init. `validateBeforeSubmit()` calls `syncDamageOther()` ahead of `form.checkValidity()` (mirrors the existing `syncEquipment()` call). One ergonomic detail: the comment block I first wrote inside `FORM_SCRIPT` had backticks around the word "required" (`` `required` ``); since `FORM_SCRIPT` is itself a backtick-delimited template literal, those inner backticks closed it and broke the parse. Reworded the comment to drop the backticks; second typecheck pass clean.
+- `apps/damage-worker/src/index.ts` — `ClaimSubmissionPayload` extended with `damageType: string` + `damageOther: string`; the `formData.get(...)` parse block reads both via the existing `String(... ?? "")` idiom. New const `ALLOWED_DAMAGE_TYPES: ReadonlySet<string>` (top of file, near `PHOTO_CATEGORIES`) mirrors the form's 11 options exactly. After the email-required gate, three new validation gates (same dual-mode 303/JSON 400 shape as the email gate): empty `damageType` → "Damage type required"; out-of-allow-list → "Invalid damage type"; `damageType === "Other"` with empty `damageOther.trim().slice(0, 200)` → "Description of other required". When `damageType !== "Other"`, server-side blanks `damageOther = ""` so the client can't smuggle stale free-text into the row. `claimData.damageType` + `damageOther` then ride on the existing payload object, so the `JSON.stringify(claimData)` POST to `POWER_AUTOMATE_URL` and the `saveClaimSubmission` R2 write pick them up automatically (no separate code path).
+- `packages/types/src/claims.ts` — `ClaimRow` gained `damage_type: string | null` + `damage_other: string | null` (both nullable for back-compat with pre-Brief-41 rows).
+- `packages/db-d1/src/claims.ts` — `ClaimInsert` interface extended; `writeClaimBatch`'s INSERT statement adds the two columns + two `?` placeholders + two `.bind(...)` args, positioned directly after `equipment_piece` for readability. The static prepared statement now has 25 placeholders (was 23).
+- `apps/web/app/admin/damage/[id]/page.tsx` — new `<Field label="Damage Type">` row inserted directly above "Equipment involved". Renders `claim.damage_type ?? "—"`, with the special case `damage_type === "Other" && damage_other` → `Other — {damage_other}`.
+- `BRIEFS/INDEX.md` — Brief 41 row added (Completed 2026-05-06).
+- `BUILD_STATE.md` — Last-updated bump, full Findings entry, prioritized work list row 41 added.
+- `BRIEFS/brief-041-claim-form-damage-type-selector.md` (this file) — Status set to Completed, Outcome filled in.
+
+**Files created:** none.
+**Files deleted:** none.
+
+**D1 schema:**
+```
+ALTER TABLE claims ADD COLUMN damage_type TEXT;   -- ran successfully on splash-damage-claims (remote)
+ALTER TABLE claims ADD COLUMN damage_other TEXT;  -- already present (PRAGMA-confirmed); duplicate-column error treated as success
+```
+
+PRAGMA `table_info(claims)` confirms `damage_other` at cid 54 and `damage_type` at cid 55 — both `TEXT NOT NULL=0` (nullable). The brief's `wrangler d1 execute splash-damage` command pointed at the wrong DB name; the actual binding (`apps/damage-worker/wrangler.toml`) uses `splash-damage-claims`. Ran with the corrected name.
+
+**Decisions made on operator's behalf:**
+1. **D1 database name corrected from brief.** Brief said `splash-damage`; `wrangler.toml` `[[d1_databases]] database_name` is `splash-damage-claims`. Corrected without halting — this is a brief-text error, not an ambiguity.
+2. **`damage_other` was already present on the table.** Second ALTER errored "duplicate column"; PRAGMA confirms both columns are present, so I treated the apparent failure as success. Likely a prior partial run or manual addition of the column.
+3. **No explicit JS toast in `validateBeforeSubmit()`.** The brief asked for a missing-field toast pattern, but HTML5 `required` attrs on `damageType` (always) and `damageOther` (toggled by `syncDamageOther`) cover both gates via the existing `form.checkValidity()` + `reportValidity()` path. Adding a redundant array-push check would surface two error UIs for the same condition (browser bubble + showError toast). The `syncDamageOther()` call is added at the top of `validateBeforeSubmit()` for defense-in-depth (matches the existing `syncEquipment()` invocation).
+4. **Server-side `damageOther.trim().slice(0, 200)` cap.** Matches the form's `maxlength="200"` and defends against programmatic JSON callers that bypass the HTML attr.
+5. **Allow-list `Set<string>` lives in `apps/damage-worker/src/index.ts` (the validator) rather than `claim-form.ts` (the renderer).** Mirrors the existing `EQUIPMENT_CHOICES` / `DETERMINATION_CHOICES` pattern from `claim-form.ts` (form-side enum truth), and is referenced only at the validation gate. The brief's option list serves as the canonical reference; both files must change together.
+6. **Claim summary PDF left untouched.** Phase 5.1 said "if the PDF doesn't surface assessment fields, leave it alone". The PDF includes only `equipmentRelated` (yes/no), not `equipment_piece`, so per the conditional clause we skipped the PDF.
+
+**Latent issues / forward flags:**
+- **SharePoint Parse JSON schema needs operator-side update.** The PA flow consuming the webhook payload has a Parse JSON action that won't pick up `damageType`/`damageOther` until the operator re-runs schema discovery from a sample submission. Until then PA can still write the row (any unknown fields are dropped at the SharePoint side); but downstream PA expressions referencing `body('Parse_JSON')?['damageType']` will return null.
+- **No backfill for historical claims.** They keep NULL `damage_type` + `damage_other`; manager UI renders em-dash. Brief explicitly out-of-scoped backfill.
+- **Brief 42 unblocked.** MaintainX work order title can now read `damage_type` directly off the `claims` row.
+- **Allow-list source-of-truth is split across two files.** Adding/removing damage type options requires a coordinated edit to the form HTML in `claim-form.ts` AND the `ALLOWED_DAMAGE_TYPES` set in `index.ts`. This brief's option list is the canonical reference; the worker rejects any value not in the set.
+
+**Validation:**
+- `pnpm typecheck` 13/13 successful, 6.796s (after the backtick-in-template-literal fix). 7 cached + 6 cache-miss — apps/web + damage-worker + db-d1 + types + downstream consumers ran fresh as expected.
+- `pnpm --filter @splash/web build` succeeded — `next build` compiled in 5.1s, all 12 routes generated; `/admin/damage/[id]` route bundle 3.1 kB / 108 kB First Load JS (zero delta — server-side render row, no new client island).
+- `pnpm --filter @splash/damage-worker exec wrangler deploy --dry-run --outdir=.dryrun` succeeded — bundle 1667.47 KiB / 378.06 KiB gzip (was 1662.94 KiB / 377.28 KiB post-Brief-37 → +4.53 KiB / +0.78 KiB gzip). Brief estimated +0.2 kB but the new form group + JS handler + validation block + allow-list constant + comments add slightly more than the form-field-only estimate. Comfortably within CF's 3 MiB compressed limit.
+
+**Bundle deltas:**
+- damage-worker: +4.53 KiB uncompressed / +0.78 KiB gzip vs. Brief 37 baseline.
+- apps/web `/admin/damage/[id]`: zero delta (server-side render row only).
+
+**Operator action items:**
+1. Update the PA Parse JSON action's schema to include `damageType` (string) and `damageOther` (string) so downstream expressions can reference them.
+2. On next damage-worker deploy, smoke-test the public claim form: pick each of the 11 damage types and confirm submission succeeds; pick "Other", leave the description blank, confirm validation rejects it with "Description of other required"; pick a non-Other type and confirm `damage_other` is blank in the resulting D1 row even if the client somehow set a value.
+3. Verify the manager detail page renders `Damage Type — {value}` (or `Other — {description}` for Other) above "Equipment involved" on `/admin/damage/[id]`.

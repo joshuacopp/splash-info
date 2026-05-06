@@ -62,6 +62,7 @@ import {
   damagePhotoUrl
 } from "../_lib/worker-fetch";
 import { DocumentEditDetails } from "../_components/DocumentEditDetails";
+import { EquipmentOverrideSubmit } from "../_components/EquipmentOverrideModal";
 import { LifecycleBadge } from "../_components/LifecycleBadge";
 import { PhotoLightbox } from "../_components/PhotoLightbox";
 import { UploadDocumentCard } from "../_components/UploadDocumentCard";
@@ -322,6 +323,7 @@ export default async function DamageClaimDetailPage({ params, searchParams }: Pa
         claimId={claim.claim_id}
         transitions={transitions}
         quotes={activeQuotes}
+        equipmentRelated={claim.equipment_related}
       />
       <PhotoGalleryCard
         claimId={claim.claim_id}
@@ -492,6 +494,16 @@ function SummaryCard({
           </div>
         </Field>
 
+        <Field label="Damage Type">
+          <div className="text-sm text-splash-navy">
+            {claim.damage_type
+              ? claim.damage_type === "Other" && claim.damage_other
+                ? `Other — ${claim.damage_other}`
+                : claim.damage_type
+              : "—"}
+          </div>
+        </Field>
+
         <Field label="Equipment involved">
           <div className="text-sm text-splash-navy">
             {claim.equipment_related ? "Yes" : "No"}
@@ -500,6 +512,27 @@ function SummaryCard({
                 — {claim.equipment_piece}
               </span>
             ) : null}
+          </div>
+        </Field>
+
+        <Field label="MaintainX WO">
+          <div className="text-sm text-splash-navy">
+            {claim.maintainx_workorder_id != null ? (
+              <a
+                className="font-mono text-splash-blue underline hover:text-splash-navy"
+                href={`https://app.getmaintainx.com/workorders/${claim.maintainx_workorder_id}`}
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                #{claim.maintainx_workorder_id}
+              </a>
+            ) : claim.equipment_related ? (
+              <span className="inline-block rounded bg-yellow-100 px-2 py-0.5 text-xs font-medium text-yellow-800">
+                MaintainX work order not created — see activity log.
+              </span>
+            ) : (
+              <span className="text-splash-navy/60">—</span>
+            )}
           </div>
         </Field>
       </dl>
@@ -749,11 +782,13 @@ function transitionDisabledHint(
 function TransitionSection({
   claimId,
   transitions,
-  quotes
+  quotes,
+  equipmentRelated
 }: {
   claimId: string;
   transitions: TransitionRow[];
   quotes: ClaimPhotoRow[];
+  equipmentRelated: 0 | 1;
 }) {
   return (
     <div className="mb-6 rounded-splash-lg border border-gray-light bg-white p-6 shadow-splash-card">
@@ -772,6 +807,7 @@ function TransitionSection({
               quotes={quotes}
               enabled={row.enabled}
               disabledHint={row.disabledHint}
+              equipmentRelated={equipmentRelated}
             />
           ))}
         </div>
@@ -780,18 +816,26 @@ function TransitionSection({
   );
 }
 
+/** Brief 43 — target statuses on which the equipment-override modal fires. */
+const EQUIPMENT_OVERRIDE_TARGETS: ReadonlySet<string> = new Set([
+  "Approved — Pending Quotes",
+  "Approved — In House — Parts Ordered"
+]);
+
 function TransitionForm({
   claimId,
   transition,
   quotes,
   enabled,
-  disabledHint
+  disabledHint,
+  equipmentRelated
 }: {
   claimId: string;
   transition: UITransition;
   quotes: ClaimPhotoRow[];
   enabled: boolean;
   disabledHint: string;
+  equipmentRelated: 0 | 1;
 }) {
   const { label, to, requiresAmount, requiresQuoteSelection, requiresNote } =
     transition;
@@ -928,17 +972,14 @@ function TransitionForm({
       ) : null}
 
       <div className="flex sm:items-end">
-        <button
-          type="submit"
-          disabled={!enabled}
-          className={
-            enabled
-              ? "inline-flex items-center gap-1.5 rounded-splash-sm bg-splash-blue px-5 py-2.5 text-sm font-bold text-white shadow-splash-btn transition-colors hover:bg-splash-blue-dark"
-              : "inline-flex cursor-not-allowed items-center gap-1.5 rounded-splash-sm bg-splash-navy/20 px-5 py-2.5 text-sm font-bold text-splash-navy/50"
+        <EquipmentOverrideSubmit
+          label={label}
+          enabled={enabled}
+          modalEnabled={
+            equipmentRelated === 0 && EQUIPMENT_OVERRIDE_TARGETS.has(to)
           }
-        >
-          {label}
-        </button>
+          transitionLabel={label}
+        />
       </div>
     </ActionForm>
   );

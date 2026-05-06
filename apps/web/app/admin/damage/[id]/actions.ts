@@ -63,6 +63,29 @@ export async function transitionAction(
 
   revalidatePath(detailPath(claimId));
   const toStatus = String(formData.get("to_status") ?? "").trim();
+
+  // Brief 43 — when the override flow fires the MaintainX hook, the worker
+  // returns { ok, status, lifecycle, maintainx_attempted: true,
+  // maintainx_ok: boolean } so apps/web can distinguish the create-failed
+  // path. Failure is fail-soft on the worker — the status transition
+  // committed even though the WO couldn't be created. We surface a
+  // success-toned message that names the failure so the operator can
+  // check the activity log without thinking the transition itself broke.
+  const body = result.body;
+  if (
+    body &&
+    typeof body === "object" &&
+    (body as { maintainx_attempted?: unknown }).maintainx_attempted === true &&
+    (body as { maintainx_ok?: unknown }).maintainx_ok === false
+  ) {
+    return {
+      ok: true,
+      message: toStatus
+        ? `Status updated to ${toStatus}, but the MaintainX work order couldn't be created — see activity log.`
+        : "Status updated, but the MaintainX work order couldn't be created — see activity log."
+    };
+  }
+
   return {
     ok: true,
     message: toStatus ? `Status updated to ${toStatus}` : "Status updated"

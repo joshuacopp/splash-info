@@ -447,6 +447,32 @@ export function renderClaimForm(args: RenderClaimFormArgs): string {
             <textarea id="preExistingDamage" name="preExistingDamage" placeholder="e.g., Scratch on rear bumper, dent on driver door..."></textarea>
           </div>
 
+          <!-- Damage type (Brief 41): selecting "Other" reveals the
+               free-text description input. Worker enforces the same
+               allow-list on POST. -->
+          <div class="form-group">
+            <label for="damageType">Damage Type <span class="required">*</span></label>
+            <select id="damageType" name="damageType" required>
+              <option value="">Select damage type...</option>
+              <option value="License Plate">License Plate</option>
+              <option value="Wiper">Wiper</option>
+              <option value="Collision">Collision</option>
+              <option value="Roof Rack/Roof Accessory">Roof Rack/Roof Accessory</option>
+              <option value="PS Mirror">PS Mirror</option>
+              <option value="DS Mirror">DS Mirror</option>
+              <option value="Window">Window</option>
+              <option value="Paint Damage">Paint Damage</option>
+              <option value="Rims">Rims</option>
+              <option value="Tires">Tires</option>
+              <option value="Other">Other</option>
+            </select>
+            <div id="damageOtherWrap" hidden style="margin-top: 12px;">
+              <label for="damageOther">Description of other <span class="required">*</span></label>
+              <input type="text" id="damageOther" name="damageOther"
+                     placeholder="Describe the damage..." maxlength="200">
+            </div>
+          </div>
+
           <!-- Equipment toggle (Brief 25): defaults to No; flipping to Yes
                reveals the dropdown. equipmentInvolved submits as empty string
                when No, so the worker derives equipment_related = 0. -->
@@ -628,6 +654,25 @@ const FORM_SCRIPT = `(function () {
     });
   }
 
+  // ---- Damage type (Brief 41) -------------------------------------------
+  var dmgTypeSel = document.getElementById('damageType');
+  var dmgOtherWrap = document.getElementById('damageOtherWrap');
+  var dmgOtherInput = document.getElementById('damageOther');
+  function syncDamageOther() {
+    var isOther = dmgTypeSel && dmgTypeSel.value === 'Other';
+    if (dmgOtherWrap) dmgOtherWrap.hidden = !isOther;
+    if (dmgOtherInput) {
+      if (isOther) {
+        dmgOtherInput.setAttribute('required', '');
+      } else {
+        dmgOtherInput.removeAttribute('required');
+        dmgOtherInput.value = '';
+      }
+    }
+  }
+  if (dmgTypeSel) dmgTypeSel.addEventListener('change', syncDamageOther);
+  syncDamageOther();
+
   // ---- Equipment toggle --------------------------------------------------
   var eqDetails = document.getElementById('equipmentDetails');
   var eqSelect = document.getElementById('equipmentInvolved');
@@ -766,9 +811,12 @@ const FORM_SCRIPT = `(function () {
   function validateBeforeSubmit() {
     clearError();
     syncEquipment();
+    syncDamageOther();
     // HTML5 validation across the whole form (now that employee fields are
     // visible). reportValidity() shows the browser's bubble on the first
-    // invalid input.
+    // invalid input. damageType is required; damageOther is required only
+    // when damageType === 'Other' (toggled by syncDamageOther) — so both
+    // gates are covered without explicit checks here.
     if (!form.checkValidity()) {
       form.reportValidity();
       return false;

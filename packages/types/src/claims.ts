@@ -148,6 +148,10 @@ export interface ClaimRow {
   /** 0 if equipmentInvolved is empty or "N/A", else 1. */
   equipment_related: 0 | 1;
   equipment_piece: string | null;
+  /** Brief 41 — damage_type allow-list (11 values; "Other" pairs with damage_other). */
+  damage_type: string | null;
+  /** Brief 41 — free-text description when damage_type === "Other"; ≤200 chars. */
+  damage_other: string | null;
 
   // State
   lifecycle_state: LifecycleState;
@@ -175,6 +179,12 @@ export interface ClaimRow {
   /** Free-form notes captured at "Approve — In House Repair" time. */
   parts_ordered: string | null;
   vendor_name: string | null;
+
+  /** Brief 42 — MaintainX work-order ID. NULL means: not yet attempted,
+   *  MaintainX call failed, or not applicable (equipment_related=0).
+   *  NOT NULL means: WO created — used as the dedupe key when Brief 43's
+   *  GM-side modal re-triggers WO creation. */
+  maintainx_workorder_id: number | null;
 
   // Soft delete
   deleted_at: string | null;

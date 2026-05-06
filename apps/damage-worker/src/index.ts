@@ -82,10 +82,15 @@ import {
   softDeletePhoto,
   touchClaim,
   updateDocMetadata,
+  updateMaintainXWorkOrderId,
   writeClaimBatch,
   type ClaimInsert
 } from "@splash/db-d1";
-import { getActiveLocationByCode, type SupabaseEnv } from "@splash/db-supabase";
+import {
+  getActiveLocationByCode,
+  getMaintainXLocationId,
+  type SupabaseEnv
+} from "@splash/db-supabase";
 import { isOriginAllowed, json, jsonError, readForm } from "@splash/http";
 import {
   generateClaimId,
@@ -123,6 +128,7 @@ import {
   generateClaimSummaryPdf,
   type ClaimSummaryPdfInput
 } from "./render/claim-summary-pdf.js";
+import { createMaintainXWorkOrder, type MaintainXResult } from "./maintainx.js";
 import { ASSETS } from "@splash/storage-r2";
 
 interface Env extends SupabaseEnv {
@@ -149,6 +155,20 @@ interface Env extends SupabaseEnv {
    *  surfaces in the post-submit outcome card). Set via
    *  `wrangler secret put CUSTOMER_CLAIM_WEBHOOK_URL`. */
   CUSTOMER_CLAIM_WEBHOOK_URL?: string;
+  /** MaintainX bearer token (Brief 42). Bound on `splash-damage` only.
+   *  Set via `wrangler secret put MAINTAINX_API_KEY`. When unbound the
+   *  WO-creation hook silently skips and the claim still proceeds. */
+  MAINTAINX_API_KEY?: string;
+  /** "test" routes WOs only to Josh (Brett/Scott bypassed); "production"
+   *  pages the real assignee pair. Defined as a non-secret `[vars]` entry
+   *  in wrangler.toml so accidental dev deploys can't page real people. */
+  MAINTAINX_MODE: "production" | "test";
+  /** REST root (no trailing /workorders). Non-secret; visible in source for
+   *  diff-ability. `[vars]` entry; default `https://api.getmaintainx.com/v1`. */
+  MAINTAINX_BASE_URL: string;
+  /** Used to build the admin URL inside each WO description (Brief 42).
+   *  `[vars]` entry; flip to the prod hostname at cutover. */
+  APPS_WEB_BASE_URL: string;
 }
 
 /** R2 key for the brand logo embedded in the claim summary PDF header band
@@ -184,6 +204,26 @@ const PHOTO_CATEGORIES = [
   { field: "damagePhotos", type: "Damage" },
   { field: "platePhoto", type: "License Plate" }
 ] as const;
+
+/**
+ * Brief 41 — damage_type allow-list. Mirrors the <option value="..."> set
+ * in apps/damage-worker/src/render/claim-form.ts. Adding/removing options
+ * requires a coordinated edit to BOTH files (the form HTML and this set);
+ * the brief calls out its own option list as the source of truth.
+ */
+const ALLOWED_DAMAGE_TYPES: ReadonlySet<string> = new Set([
+  "License Plate",
+  "Wiper",
+  "Collision",
+  "Roof Rack/Roof Accessory",
+  "PS Mirror",
+  "DS Mirror",
+  "Window",
+  "Paint Damage",
+  "Rims",
+  "Tires",
+  "Other"
+]);
 
 export default {
   async fetch(request: Request, env: Env, _ctx: ExecutionContext): Promise<Response> {
@@ -612,6 +652,59 @@ async function handleStatusTransition(
   const noteText = (form.get("note") ?? "").trim();
   const amountStr = (form.get("approved_amount") ?? "").trim();
 
+  // Brief 43 — equipment-related override (no→yes flip during a GM/RM
+  // approval transition into one of the two "active repair" branches).
+  // Both fields are optional; when absent, the transition behaves exactly
+  // as before.
+  const overrideEqRelRaw = (form.get("override_equipment_related") ?? "")
+    .toString()
+    .trim()
+    .toLowerCase();
+  const overrideEqPieceRaw = (form.get("override_equipment_piece") ?? "")
+    .toString()
+    .trim();
+  const eqOverrideTargets: ReadonlySet<ClaimStatus> = new Set([
+    "Approved — Pending Quotes",
+    "Approved — In House — Parts Ordered"
+  ]);
+  let applyEquipmentOverride = false;
+  let overrideEquipmentPiece = "";
+  if (overrideEqRelRaw === "yes") {
+    if (!eqOverrideTargets.has(requestedTo)) {
+      return jsonError(
+        400,
+        "Equipment override is only valid for active-repair approval transitions."
+      );
+    }
+    if (claim.equipment_related !== 0) {
+      return jsonError(
+        400,
+        "Equipment override only flips no→yes; this claim already has equipment_related=yes."
+      );
+    }
+    if (!overrideEqPieceRaw) {
+      return jsonError(
+        400,
+        "Select an equipment piece when flagging this claim equipment-related."
+      );
+    }
+    if (overrideEqPieceRaw.length > 200) {
+      return jsonError(
+        400,
+        "override_equipment_piece is too long (max 200 characters)."
+      );
+    }
+    applyEquipmentOverride = true;
+    overrideEquipmentPiece = overrideEqPieceRaw;
+  } else if (overrideEqRelRaw && overrideEqRelRaw !== "no") {
+    return jsonError(
+      400,
+      "override_equipment_related must be 'yes' or 'no' if supplied."
+    );
+  }
+  // For overrideEqRelRaw === "no" (or unset), override_equipment_piece is
+  // ignored even if sent — keeps the no-branch a no-op on writes.
+
   // f. Transition (from, to) exists in table.
   const transition = findTransition(claim.claim_status, requestedTo);
   if (!transition) {
@@ -761,17 +854,35 @@ async function handleStatusTransition(
     params.push(selectedQuoteId);
   }
 
+  // Brief 43 — fold the equipment-related no→yes override into the same
+  // transaction that lands the status transition. Order is the SET clause
+  // builder's order, but writes are atomic — the post-batch MaintainX
+  // hook below reads `applyEquipmentOverride` rather than a re-read of
+  // the row.
+  if (applyEquipmentOverride) {
+    setParts.push("equipment_related = 1");
+    setParts.push("equipment_piece = ?");
+    params.push(overrideEquipmentPiece);
+  }
+
   const updateSql = `UPDATE claims SET ${setParts.join(", ")} WHERE claim_id = ?`;
   params.push(claimId);
 
   // Compose the activity-log notes. When the transition resets approval
   // details, append a sentinel suffix so reviewers can see the side-effect
-  // without diffing claim columns.
-  const activityNote = approvalReset
-    ? noteText
-      ? `${noteText}\n\n[Reset approval details on revert]`
-      : "[Reset approval details on revert]"
-    : noteText || null;
+  // without diffing claim columns. Brief 43 — the equipment-override
+  // side-effect appends its own sentinel suffix so the timeline records
+  // the no→yes flip on the same status_change row (per brief Phase 1.5,
+  // we don't introduce a separate activity_type for the override).
+  const noteParts: string[] = [];
+  if (noteText) noteParts.push(noteText);
+  if (approvalReset) noteParts.push("[Reset approval details on revert]");
+  if (applyEquipmentOverride) {
+    noteParts.push(
+      `[Equipment override] ${session.email} flipped equipment_related to yes during "${finalTo}" approval (equipment_piece: ${overrideEquipmentPiece})`
+    );
+  }
+  const activityNote = noteParts.length > 0 ? noteParts.join("\n\n") : null;
 
   const updateStmt = env.DB.prepare(updateSql).bind(...params);
   const activityStmt = env.DB.prepare(
@@ -785,6 +896,27 @@ async function handleStatusTransition(
   } catch (err) {
     console.error("handleStatusTransition failed:", err);
     return jsonError(500, "Failed to apply status change.");
+  }
+
+  // Brief 43 — fire the existing createMaintainXWorkOrder helper when the
+  // override flipped equipment_related no→yes. Same fail-soft posture as
+  // Brief 42's form-submit hook: never throw, dedupe via
+  // `claims.maintainx_workorder_id` (UPDATE-only-when-NULL semantics in
+  // updateMaintainXWorkOrderId), and log the outcome to the activity log
+  // either way. The status transition itself is already committed; a
+  // MaintainX failure cannot roll it back.
+  let maintainxAttempted = false;
+  let maintainxOk: boolean | null = null;
+  if (applyEquipmentOverride) {
+    const mx = await tryCreateMaintainXIfMissing({
+      env,
+      claim,
+      finalTo,
+      overrideEquipmentPiece,
+      actorEmail: session.email
+    });
+    maintainxAttempted = mx.attempted;
+    maintainxOk = mx.attempted ? mx.ok : null;
   }
 
   // Post-write Power Automate side-effects. These are best-effort —
@@ -861,7 +993,179 @@ async function handleStatusTransition(
     }
   }
 
-  return json({ ok: true, status: finalTo, lifecycle: lifecycleForStatus(finalTo) });
+  return json({
+    ok: true,
+    status: finalTo,
+    lifecycle: lifecycleForStatus(finalTo),
+    // Brief 43 — only present on the override path. Lets apps/web surface
+    // a "MaintainX work order couldn't be created" toast on top of the
+    // normal success message; absent on every non-override transition.
+    ...(maintainxAttempted
+      ? { maintainx_attempted: true, maintainx_ok: maintainxOk === true }
+      : {})
+  });
+}
+
+/* ============================================================
+ * Brief 43 — equipment-override → MaintainX hook.
+ *
+ * Defense-in-depth dedupe: the override path runs only when the loaded
+ * claim row had `equipment_related === 0`, and updateMaintainXWorkOrderId
+ * is UPDATE-only-when-NULL. A re-trigger on a row that already has a WO
+ * (e.g. operator clicks the modal twice in quick succession, both writes
+ * race) lands at most one WO per claim. We also re-read the column
+ * before issuing the POST so a concurrent write that landed first
+ * short-circuits this path and the helper never fires twice.
+ *
+ * Fail-soft: every error path returns `{ attempted: true/false, ok: false }`
+ * and writes a `[maintainx]` activity-log row. The transition's
+ * status_change is already committed; nothing rolls it back.
+ * ============================================================ */
+
+interface TryCreateMaintainXIfMissingInput {
+  env: Env;
+  claim: ClaimRow;
+  finalTo: ClaimStatus;
+  overrideEquipmentPiece: string;
+  actorEmail: string;
+}
+
+interface TryCreateMaintainXIfMissingResult {
+  attempted: boolean;
+  ok: boolean;
+}
+
+async function tryCreateMaintainXIfMissing(
+  input: TryCreateMaintainXIfMissingInput
+): Promise<TryCreateMaintainXIfMissingResult> {
+  const { env, claim, finalTo, overrideEquipmentPiece, actorEmail } = input;
+
+  if (!env.MAINTAINX_API_KEY) {
+    console.warn(
+      "[mx] MAINTAINX_API_KEY unbound; skipping override WO creation for",
+      claim.claim_id
+    );
+    return { attempted: false, ok: false };
+  }
+
+  // Re-read the row so a concurrent writer (Brief 42 retry, or another
+  // operator's modal click) that already landed a WO short-circuits us.
+  // The loaded `claim` is from the pre-update snapshot.
+  let dedupeRow: ClaimRow | null = null;
+  try {
+    dedupeRow = await getClaimById(env.DB, claim.claim_id);
+  } catch (e) {
+    console.warn("[mx] dedupe re-read failed; proceeding with helper attempt", e);
+  }
+  if (dedupeRow && dedupeRow.maintainx_workorder_id != null) {
+    console.warn(
+      "[mx] dedupe — claim",
+      claim.claim_id,
+      "already has WO id",
+      dedupeRow.maintainx_workorder_id,
+      "— skipping override creation"
+    );
+    return { attempted: false, ok: true };
+  }
+
+  // Construct a transient ClaimRow shape that reflects the post-UPDATE
+  // state (equipment_related=1, equipment_piece=<piece>, claim_status=finalTo)
+  // so the helper's title/description build off the right values.
+  const claimRowForMx: ClaimRow = {
+    ...claim,
+    equipment_related: 1,
+    equipment_piece: overrideEquipmentPiece,
+    claim_status: finalTo,
+    lifecycle_state: lifecycleForStatus(finalTo)
+  };
+
+  let mxLocationId: number | null = null;
+  try {
+    mxLocationId = await getMaintainXLocationId(env, claim.location_code);
+  } catch (mxLocErr) {
+    console.warn(
+      "[mx] getMaintainXLocationId threw — proceeding without locationId:",
+      mxLocErr
+    );
+  }
+
+  const mxMode = env.MAINTAINX_MODE ?? "test";
+  const mxBaseUrl = env.MAINTAINX_BASE_URL ?? "https://api.getmaintainx.com/v1";
+  const mxAppsWebBaseUrl =
+    env.APPS_WEB_BASE_URL ?? "https://splashcarwashes.info";
+
+  const ctrl = new AbortController();
+  const timeoutId = setTimeout(() => ctrl.abort(), 8000);
+  let maintainxResult: MaintainXResult;
+  try {
+    maintainxResult = await createMaintainXWorkOrder({
+      claim: claimRowForMx,
+      locationPretty: claimRowForMx.location_pretty,
+      maintainxLocationId: mxLocationId,
+      apiKey: env.MAINTAINX_API_KEY,
+      mode: mxMode,
+      baseUrl: mxBaseUrl,
+      appsWebBaseUrl: mxAppsWebBaseUrl,
+      signal: ctrl.signal
+    });
+  } catch (mxErr) {
+    // createMaintainXWorkOrder is supposed to never throw; defense-in-depth.
+    maintainxResult = {
+      ok: false,
+      workOrderId: null,
+      error: mxErr instanceof Error ? mxErr.message : String(mxErr),
+      status: 0,
+      request: {}
+    };
+  } finally {
+    clearTimeout(timeoutId);
+  }
+
+  if (maintainxResult.ok && maintainxResult.workOrderId != null) {
+    try {
+      await updateMaintainXWorkOrderId(
+        env.DB,
+        claim.claim_id,
+        maintainxResult.workOrderId
+      );
+    } catch (updateErr) {
+      console.error(
+        "[mx] updateMaintainXWorkOrderId failed for",
+        claim.claim_id,
+        updateErr
+      );
+    }
+    try {
+      await logActivity(env.DB, {
+        claimId: claim.claim_id,
+        activityType: "note",
+        notes: `[maintainx] Work order #${maintainxResult.workOrderId} created via approval-time override (mode: ${mxMode})`,
+        actorEmail: actorEmail,
+        actorName: actorEmail
+      });
+    } catch (logErr) {
+      console.error("[mx] override activity log (success) failed:", logErr);
+    }
+    return { attempted: true, ok: true };
+  }
+
+  console.error(
+    "[mx] override WO creation failed for",
+    claim.claim_id,
+    maintainxResult.error
+  );
+  try {
+    await logActivity(env.DB, {
+      claimId: claim.claim_id,
+      activityType: "note",
+      notes: `[maintainx] Override WO creation failed — ${maintainxResult.error ?? "unknown error"} (status: ${maintainxResult.status}, mode: ${mxMode})`,
+      actorEmail: actorEmail,
+      actorName: "system"
+    });
+  } catch (logErr) {
+    console.error("[mx] override activity log (failure) failed:", logErr);
+  }
+  return { attempted: true, ok: false };
 }
 
 /** Apply stamps to the SET parts. Mutates `setParts` and `params`. */
@@ -1183,6 +1487,8 @@ interface ClaimSubmissionPayload {
   locationPretty: string;
   membershipNumber: string;
   preExistingDamage: string;
+  damageType: string;
+  damageOther: string;
   equipmentInvolved: string;
   equipmentMalfunction: boolean;
   determination: string;
@@ -1201,6 +1507,11 @@ interface ClaimSubmissionPayload {
     fileSize: number;
     contentType: string;
   }>;
+  /** Brief 42 — set after a successful MaintainX WO creation. NULL when
+   *  equipment_related=0, when MAINTAINX_API_KEY is unbound, or when the
+   *  MaintainX call failed. Rides on the SharePoint webhook payload so
+   *  Power Automate can surface the WO ID in finance/audit views. */
+  maintainxWorkorderId: number | null;
 }
 
 async function handleClaimSubmission(request: Request, env: Env): Promise<Response> {
@@ -1239,6 +1550,8 @@ async function handleClaimSubmission(request: Request, env: Env): Promise<Respon
       locationPretty: String(formData.get("locationPretty") ?? ""),
       membershipNumber: String(formData.get("membershipNumber") ?? ""),
       preExistingDamage: String(formData.get("preExistingDamage") ?? ""),
+      damageType: String(formData.get("damageType") ?? ""),
+      damageOther: String(formData.get("damageOther") ?? ""),
       equipmentInvolved: String(formData.get("equipmentInvolved") ?? ""),
       equipmentMalfunction: String(formData.get("equipmentMalfunction") ?? "") === "true",
       determination: String(formData.get("determination") ?? ""),
@@ -1248,7 +1561,8 @@ async function handleClaimSubmission(request: Request, env: Env): Promise<Respon
       ipAddress: request.headers.get("CF-Connecting-IP") ?? "Unknown",
       userAgent: request.headers.get("User-Agent") ?? "Unknown",
       claimId: "", // filled below
-      photos: []
+      photos: [],
+      maintainxWorkorderId: null // filled by Brief 42 hook after writeClaimBatch
     };
 
     // Brief 32 — email is now required. Worker re-validates after the form's
@@ -1270,6 +1584,57 @@ async function handleClaimSubmission(request: Request, env: Env): Promise<Respon
       return json({ ok: false, error: message, success: false }, 400);
     }
     claimData.customerEmail = emailTrimmed;
+
+    // Brief 41 — damage_type is required and must match the form's
+    // allow-list. When 'Other' is selected, damage_other (≤200 chars) is
+    // required; for any other value, server-side blanks damageOther so the
+    // client can't smuggle stale free-text into the row. Same dual-mode
+    // 303/JSON 400 pattern as the email gate above.
+    const damageTypeTrimmed = claimData.damageType.trim();
+    if (!damageTypeTrimmed) {
+      const message = "Damage type required";
+      if (browserMode) {
+        const slug =
+          encodeURIComponent(claimData.location || "") || "unknown";
+        const target = new URL(
+          `${baseOrigin}/claims/${slug}?error=${encodeURIComponent(message)}`
+        );
+        return Response.redirect(target.toString(), 303);
+      }
+      return json({ ok: false, error: message, success: false }, 400);
+    }
+    if (!ALLOWED_DAMAGE_TYPES.has(damageTypeTrimmed)) {
+      const message = "Invalid damage type";
+      if (browserMode) {
+        const slug =
+          encodeURIComponent(claimData.location || "") || "unknown";
+        const target = new URL(
+          `${baseOrigin}/claims/${slug}?error=${encodeURIComponent(message)}`
+        );
+        return Response.redirect(target.toString(), 303);
+      }
+      return json({ ok: false, error: message, success: false }, 400);
+    }
+    claimData.damageType = damageTypeTrimmed;
+
+    if (claimData.damageType === "Other") {
+      const damageOtherTrimmed = claimData.damageOther.trim().slice(0, 200);
+      if (!damageOtherTrimmed) {
+        const message = "Description of other required";
+        if (browserMode) {
+          const slug =
+            encodeURIComponent(claimData.location || "") || "unknown";
+          const target = new URL(
+            `${baseOrigin}/claims/${slug}?error=${encodeURIComponent(message)}`
+          );
+          return Response.redirect(target.toString(), 303);
+        }
+        return json({ ok: false, error: message, success: false }, 400);
+      }
+      claimData.damageOther = damageOtherTrimmed;
+    } else {
+      claimData.damageOther = "";
+    }
 
     // 2. Generate claim_id.
     claimData.claimId = generateClaimId(claimData.location);
@@ -1349,6 +1714,8 @@ async function handleClaimSubmission(request: Request, env: Env): Promise<Respon
         submitted_by: submittedBy,
         equipment_related: equipmentRelated,
         equipment_piece: claimData.equipmentInvolved || null,
+        damage_type: claimData.damageType || null,
+        damage_other: claimData.damageOther || null,
         initial_status: initialStatus,
         submitted_at: claimData.submittedAt,
         photos: claimData.photos.map((p) => ({
@@ -1383,6 +1750,156 @@ async function handleClaimSubmission(request: Request, env: Env): Promise<Respon
         }
       } catch (locErr) {
         console.warn("location_pretty Supabase resolution failed (using form value):", locErr);
+      }
+
+      // Brief 42 — auto-create a MaintainX work order when the claim flags
+      // equipment as involved. Fail-soft: a MaintainX failure logs an
+      // activity-log entry and is otherwise invisible to the customer; the
+      // claim record + R2 + SharePoint pipeline continue regardless.
+      // Hook fires AFTER writeClaimBatch succeeds and BEFORE the SharePoint
+      // (Power Automate) POST so the WO ID can ride along on the PA payload.
+      if (insert.equipment_related === 1) {
+        if (!env.MAINTAINX_API_KEY) {
+          console.warn(
+            "[mx] MAINTAINX_API_KEY unbound; skipping WO creation for",
+            claimData.claimId
+          );
+        } else {
+          // Construct a transient ClaimRow shape for the helper. The columns
+          // the helper reads come straight off `insert`; the rest are defaulted
+          // to the post-INSERT shape (status_updated_by mirrors submitted_by,
+          // audit stamps null, no soft-delete). Avoids an extra D1 round trip.
+          const claimRowForMx: ClaimRow = {
+            claim_id: insert.claim_id,
+            location_code: insert.location_code,
+            location_pretty: claimData.locationPretty || insert.location_pretty,
+            customer_name: insert.customer_name,
+            customer_phone: insert.customer_phone,
+            customer_email: insert.customer_email,
+            customer_mailing_address: insert.customer_mailing_address,
+            vehicle_year: insert.vehicle_year,
+            vehicle_make: insert.vehicle_make,
+            vehicle_model: insert.vehicle_model,
+            vehicle_color: insert.vehicle_color,
+            license_plate: insert.license_plate,
+            damage_description: insert.damage_description,
+            preexisting_damage: insert.preexisting_damage,
+            staff_notes: insert.staff_notes,
+            determination: insert.determination as ClaimDetermination | null,
+            submitted_by: insert.submitted_by,
+            equipment_related: insert.equipment_related,
+            equipment_piece: insert.equipment_piece,
+            damage_type: insert.damage_type,
+            damage_other: insert.damage_other,
+            lifecycle_state: lifecycleForStatus(insert.initial_status),
+            claim_status: insert.initial_status,
+            contact_status: null,
+            submitted_at: insert.submitted_at,
+            status_updated_at: null,
+            status_updated_by: insert.submitted_by,
+            updated_at: null,
+            gm_approved_at: null,
+            gm_approved_by: null,
+            rm_approved_at: null,
+            rm_approved_by: null,
+            ceo_approved_at: null,
+            ceo_approved_by: null,
+            approved_amount: null,
+            approved_quote_id: null,
+            parts_ordered: null,
+            vendor_name: null,
+            maintainx_workorder_id: null,
+            deleted_at: null
+          };
+
+          let mxLocationId: number | null = null;
+          try {
+            mxLocationId = await getMaintainXLocationId(env, insert.location_code);
+          } catch (mxLocErr) {
+            console.warn(
+              "[mx] getMaintainXLocationId threw — proceeding without locationId:",
+              mxLocErr
+            );
+          }
+
+          const mxMode = env.MAINTAINX_MODE ?? "test";
+          const mxBaseUrl = env.MAINTAINX_BASE_URL ?? "https://api.getmaintainx.com/v1";
+          const mxAppsWebBaseUrl =
+            env.APPS_WEB_BASE_URL ?? "https://splashcarwashes.info";
+
+          const ctrl = new AbortController();
+          const timeoutId = setTimeout(() => ctrl.abort(), 8000);
+          let maintainxResult: MaintainXResult;
+          try {
+            maintainxResult = await createMaintainXWorkOrder({
+              claim: claimRowForMx,
+              locationPretty: claimRowForMx.location_pretty,
+              maintainxLocationId: mxLocationId,
+              apiKey: env.MAINTAINX_API_KEY,
+              mode: mxMode,
+              baseUrl: mxBaseUrl,
+              appsWebBaseUrl: mxAppsWebBaseUrl,
+              signal: ctrl.signal
+            });
+          } catch (mxErr) {
+            // createMaintainXWorkOrder is supposed to never throw; defense-in-depth.
+            maintainxResult = {
+              ok: false,
+              workOrderId: null,
+              error: mxErr instanceof Error ? mxErr.message : String(mxErr),
+              status: 0,
+              request: {}
+            };
+          } finally {
+            clearTimeout(timeoutId);
+          }
+
+          if (maintainxResult.ok && maintainxResult.workOrderId != null) {
+            try {
+              await updateMaintainXWorkOrderId(
+                env.DB,
+                insert.claim_id,
+                maintainxResult.workOrderId
+              );
+            } catch (updateErr) {
+              console.error(
+                "[mx] updateMaintainXWorkOrderId failed for",
+                insert.claim_id,
+                updateErr
+              );
+            }
+            // Ride along on PA payload + R2 fallback + outcome page.
+            claimData.maintainxWorkorderId = maintainxResult.workOrderId;
+            try {
+              await logActivity(env.DB, {
+                claimId: insert.claim_id,
+                activityType: "note",
+                notes: `[maintainx] Work order #${maintainxResult.workOrderId} created (mode: ${mxMode})`,
+                actorEmail: null,
+                actorName: insert.submitted_by
+              });
+            } catch (logErr) {
+              console.error("[mx] activity log (success) failed:", logErr);
+            }
+          } else {
+            console.error(
+              "[mx] WO creation failed for",
+              insert.claim_id,
+              maintainxResult.error
+            );
+            try {
+              await logActivity(env.DB, {
+                claimId: insert.claim_id,
+                activityType: "note",
+                notes: `[maintainx] Work order creation failed — ${maintainxResult.error ?? "unknown error"} (status: ${maintainxResult.status}, mode: ${mxMode})`,
+                actorEmail: null,
+                actorName: "system"
+              });
+            } catch (logErr) {
+              console.error("[mx] activity log (failure) failed:", logErr);
+            }
+          }
+        }
       }
     } catch (d1Error) {
       console.error("D1 write failed:", d1Error);

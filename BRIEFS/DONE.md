@@ -40,3 +40,6 @@
 - 2026-05-06 00:13:08 brief-038-mobile-upload-redo-with-correct-legacy-paths.md (success)
 - 2026-05-06 08:04:20 brief-039-set-role-location-code-picker.md (success)
 - 2026-05-06 08:09:34 brief-040-create-user-location-code-picker.md (success)
+- 2026-05-06 08:39:29 brief-041-claim-form-damage-type-selector.md (success)
+- 2026-05-06 09:01:03 brief-042-maintainx-workorder-on-equipment-related.md (success)
+- 2026-05-06 09:31:55 brief-043-gm-equipment-related-modal-on-approve.md (success)
