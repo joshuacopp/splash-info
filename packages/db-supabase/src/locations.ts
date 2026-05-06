@@ -144,6 +144,91 @@ export async function getMaintainXLocationId(
   return typeof id === "number" && Number.isFinite(id) ? id : null;
 }
 
+/**
+ * Brief 48 — resolve `locations.site_email` (string or null) for a customer
+ * URL slug. Used by damage-worker to populate the `site_email` field on the
+ * `CUSTOMER_CLAIM_WEBHOOK_URL` payload so Power Automate can wire customer
+ * confirmation-email replies to the per-location inbox via a Reply-To header.
+ *
+ * Two-step lookup mirrors `getMaintainXLocationId`: the `locations` table
+ * doesn't carry `location_code`; we resolve slug → `site` via `pricing_simple`,
+ * then fetch `locations.site_email` by `site`. The pricing_simple row also
+ * carries a denormalized `site_email`, but the `locations` row is the
+ * authoritative source (the `trg_sync_pricing_simple` trigger writes one
+ * direction only — locations → pricing_simple), so the helper goes to the
+ * source.
+ *
+ * Fail-soft: returns null on bad-shape slug, missing pricing_simple row,
+ * missing locations row, missing/null `site_email`, or any non-2xx response.
+ * Caller (damage-worker) emits `site_email: null` in the webhook payload on
+ * null; PA gracefully no-ops the Reply-To header for those locations.
+ */
+export async function getLocationContactInfo(
+  env: { SUPABASE_URL: string; SUPABASE_SERVICE_KEY: string },
+  locationCode: string
+): Promise<{ site_email: string | null }> {
+  const sanitized = locationCode.trim().toLowerCase();
+  if (!sanitized || !/^[a-z0-9_]+$/.test(sanitized)) {
+    return { site_email: null };
+  }
+
+  const headers = {
+    apikey: env.SUPABASE_SERVICE_KEY,
+    Authorization: `Bearer ${env.SUPABASE_SERVICE_KEY}`
+  };
+
+  // Step 1 — pricing_simple.location_code → site (text).
+  const psUrl = new URL("/rest/v1/pricing_simple", env.SUPABASE_URL);
+  psUrl.searchParams.set("location_code", `eq.${sanitized}`);
+  psUrl.searchParams.set("select", "site");
+  psUrl.searchParams.set("limit", "1");
+  let psResponse: Response;
+  try {
+    psResponse = await fetch(psUrl.toString(), { headers });
+  } catch (err) {
+    console.error("getLocationContactInfo: pricing_simple fetch threw", err);
+    return { site_email: null };
+  }
+  if (!psResponse.ok) {
+    console.error(
+      "getLocationContactInfo: pricing_simple returned",
+      psResponse.status
+    );
+    return { site_email: null };
+  }
+  const psRows = (await psResponse.json().catch(() => [])) as Array<{
+    site: string | null;
+  }>;
+  const site = psRows[0]?.site;
+  if (!site) return { site_email: null };
+
+  // Step 2 — locations.site → site_email (text or null).
+  const locUrl = new URL("/rest/v1/locations", env.SUPABASE_URL);
+  locUrl.searchParams.set("site", `eq.${site}`);
+  locUrl.searchParams.set("select", "site_email");
+  locUrl.searchParams.set("limit", "1");
+  let locResponse: Response;
+  try {
+    locResponse = await fetch(locUrl.toString(), { headers });
+  } catch (err) {
+    console.error("getLocationContactInfo: locations fetch threw", err);
+    return { site_email: null };
+  }
+  if (!locResponse.ok) {
+    console.error(
+      "getLocationContactInfo: locations returned",
+      locResponse.status
+    );
+    return { site_email: null };
+  }
+  const locRows = (await locResponse.json().catch(() => [])) as Array<{
+    site_email: string | null;
+  }>;
+  const raw = locRows[0]?.site_email;
+  const trimmed = typeof raw === "string" ? raw.trim() : "";
+  return { site_email: trimmed ? trimmed : null };
+}
+
 const LOCATION_COLS =
   "id,site_number,site,location,mla_location,area_manager,regional_manager,rm_group,rm_email,am_email,hrt_email,site_email,hrt1,hrt2,fivestar";
 

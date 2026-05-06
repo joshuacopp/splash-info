@@ -46,3 +46,4 @@
 - 2026-05-06 09:58:35 brief-045-equipment-modal-portal-fix.md (success)
 - 2026-05-06 10:14:27 brief-046-maintainx-assignee-type-field.md (success)
 - 2026-05-06 10:33:46 brief-047-claim-pdf-trim-staff-assessment-rename-splash-response.md (success)
+- 2026-05-06 10:45:12 brief-048-customer-webhook-add-site-email.md (success)

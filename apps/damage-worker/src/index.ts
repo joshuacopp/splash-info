@@ -88,6 +88,7 @@ import {
 } from "@splash/db-d1";
 import {
   getActiveLocationByCode,
+  getLocationContactInfo,
   getMaintainXLocationId,
   type SupabaseEnv
 } from "@splash/db-supabase";
@@ -1957,11 +1958,29 @@ async function handleClaimSubmission(request: Request, env: Env): Promise<Respon
         // the env var isn't configured (intentional staging-without-PA
         // posture). Errors logged + swallowed so submission still returns ok.
         if (env.CUSTOMER_CLAIM_WEBHOOK_URL) {
+          // Brief 48 — resolve `site_email` from Supabase `locations` so PA
+          // can use it as the Reply-To header. Lookup is fail-soft: any
+          // throw or missing row collapses to null and the payload still
+          // ships (PA falls back to the From mailbox for replies).
+          let siteEmail: string | null = null;
+          try {
+            const contact = await getLocationContactInfo(
+              env,
+              claimData.location
+            );
+            siteEmail = contact.site_email;
+          } catch (siteEmailErr) {
+            console.warn(
+              "site_email Supabase resolution failed (defaulting to null):",
+              siteEmailErr
+            );
+          }
           await fireCustomerClaimWebhook(
             env.CUSTOMER_CLAIM_WEBHOOK_URL,
             claimData,
             pdfBytes,
-            summaryPdfUrl
+            summaryPdfUrl,
+            siteEmail
           );
         }
       }
@@ -2418,7 +2437,8 @@ async function fireCustomerClaimWebhook(
   webhookUrl: string,
   claimData: ClaimSubmissionPayload,
   pdfBytes: Uint8Array,
-  summaryPdfUrl: string
+  summaryPdfUrl: string,
+  siteEmail: string | null
 ): Promise<void> {
   // Vehicle string for PA convenience: "2020 Honda Civic - Blue".
   const vehicleParts = [
@@ -2447,7 +2467,11 @@ async function fireCustomerClaimWebhook(
     customer_email: claimData.customerEmail,
     customer_phone: claimData.customerPhone || null,
     vehicle,
-    summary_pdf_url: summaryPdfUrl
+    summary_pdf_url: summaryPdfUrl,
+    // Brief 48 — per-location reply address (Supabase `locations.site_email`).
+    // PA wires this to the confirmation email's Reply-To header so customer
+    // replies route to the location inbox; null falls back to the From mailbox.
+    site_email: siteEmail
   };
   if (includeBase64) {
     payload.summary_pdf_base64 = bytesToBase64(pdfBytes);

@@ -519,10 +519,16 @@ URL-based — service bindings don't apply to those.
 - **CUSTOMER_CLAIM_WEBHOOK_URL** - Optional damage-worker secret
   (Brief 32) fired after a customer-submitted claim — Power Automate
   receives a JSON payload with `claim_id`, `customer_email`,
-  `summary_pdf_url`, and (for PDFs ≤ 3 MB raw) `summary_pdf_base64`.
-  Fail-soft: when unbound, the customer-email path silently skips —
-  the PDF still generates and the post-submit outcome card surfaces
-  the "Download a copy" link.
+  `summary_pdf_url`, (for PDFs ≤ 3 MB raw) `summary_pdf_base64`, and
+  `site_email` (Brief 48; the location's per-site contact address from
+  Supabase `locations`, used by PA as the Reply-To header so customer
+  replies land in the per-location inbox; null when the location has
+  no site_email set, in which case PA falls back to the From mailbox
+  for replies). Fail-soft: when unbound, the customer-email path
+  silently skips — the PDF still generates and the post-submit outcome
+  card surfaces the "Download a copy" link. The `site_email` lookup is
+  also fail-soft: any throw from the `getLocationContactInfo` helper
+  collapses to null and the webhook still fires.
 - **maxpass_signups** - Customer signup table. 18 columns including
   `confirmation_token` (UUID), `terms_text` (exact string customer
   saw), country/city/region from `request.cf`.
