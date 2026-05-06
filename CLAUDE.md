@@ -97,6 +97,16 @@ If any of these are missing, stop and report it instead of guessing.
    instruction - both states are intentional snapshots of an in-progress
    migration. The repo reflects intent; CF reflects history.
 
+7. **Never rotate `NEXT_SERVER_ACTIONS_ENCRYPTION_KEY` without
+   coordination.** This key (Brief 31) is a build-time env var on
+   apps/web's CF Workers Builds config that stabilizes server-action
+   IDs across deploys. Rotating it invalidates every action ID on every
+   open browser tab — operators mid-session get an `UnrecognizedActionError`
+   white-page on next form submit (the `/admin/error.tsx` boundary
+   softens this to a "Reload" CTA, but it's still a UX disruption).
+   If rotation is truly needed, plan it during a maintenance window
+   when no operators are mid-session.
+
 ---
 
 ## Operator preferences
@@ -242,6 +252,22 @@ When given a new task:
   splash-navy bar. Uses `usePathname()` to gate admin controls
   (Dashboard + Change Password + Sign Out) on `/admin/*` and
   `/sysadmin/*`.
+- **Server-action ID stability** (Brief 31). apps/web depends on a
+  `NEXT_SERVER_ACTIONS_ENCRYPTION_KEY` build-time env var (set in CF
+  Workers Builds → splash-web → Settings → Build → Environment
+  variables, NOT via `wrangler secret put`). Without it, Next
+  regenerates a fresh encryption key on every `next build`, which
+  invalidates all open-tab action IDs and white-pages mid-session
+  submits with `UnrecognizedActionError`. See `apps/web/.env.example`
+  for the rationale and generation commands. Defense in depth:
+  `apps/web/app/admin/error.tsx` is a segment-level error boundary
+  that catches `UnrecognizedActionError` (message contains "Server
+  Action … was not found on the server") and renders a "Reload" CTA;
+  all other errors get a generic "Try again" CTA via `reset()`. The
+  boundary covers every `/admin/*` route — every server-action write
+  surface — in one shot. Don't move it to `/admin/sysadmin/error.tsx`
+  or similar; the boundary is intentionally placed at the segment
+  that bounds every action-driven page.
 - Damage detail (`/admin/damage/[id]`) renders every valid-from-status
   transition; rows whose `allowedRoles` don't include the caller's
   `session.dcRole` show with a disabled (greyed) button + an inline
@@ -414,7 +440,23 @@ URL-based — service bindings don't apply to those.
   cross-worker invalidation isn't wired yet, so newly added or edited
   rows take up to 5 minutes to surface on the customer signup form —
   this gap is now flagged in three brief outcomes; Brief 28 will close
-  it).
+  it). Brief 30 reorganized the sysadmin page into a two-mode hub:
+  `?mode=users` (default) renders 5 user-management cards (Create user,
+  Set role, Grant tool, Revoke tool, Reset password); `?mode=tables`
+  renders 3 table-management cards (Add location, Update package,
+  Update location). Both modes also render an inline filterable
+  Activity log panel below the operations, backed by a new
+  `GET /sysadmin/api/audit-log` endpoint. Filter params live in URL
+  search params: `audit_actor` (substring on actor_email),
+  `audit_action` (allow-list), `audit_table` (target_type allow-list),
+  `audit_user_id` (UUID; pins target_type to user-related rows),
+  `audit_location_code` (pins target_type to pricing_simple/locations
+  and matches `target_id` eq or `code/%` to catch composite IDs from
+  Brief 26), and `audit_offset` (offset pagination, default limit 50,
+  max 200). The log fetch surfaces `total_estimate` from PostgREST's
+  `Content-Range` header (sent via `Prefer: count=estimated`). No
+  audit row is written for audit-log reads themselves — observation
+  is read-only.
 - **inline mode** - signup-worker's default `SIGNATURE_MODE`. Renders
   the form HTML and POSTs straight to `maxpass_signups`.
 - **jotform mode** - signup-worker's alternative `SIGNATURE_MODE`. 302
@@ -425,6 +467,29 @@ URL-based — service bindings don't apply to those.
   POSTs in the new damage-worker.
 - **dc_role** - User's effective role for damage claims access scoping.
   super_admin sees all claims; gm/rm sees only their dcLocations.
+- **claim summary PDF** - Customer-facing PDF auto-generated on every
+  successful submission of the public claim form (Brief 32). pdf-lib
+  programmatic layout (no AcroForm template); stored in R2 at
+  `claims/<claimId>/summary.pdf`; served via the public route
+  `GET /claims-api/summary/<claimId>` (no auth gate — same posture as
+  the existing photo serve). Two delivery channels: (a) "Download a
+  copy (PDF)" link in the post-submit outcome card, (b) optional
+  `CUSTOMER_CLAIM_WEBHOOK_URL` POST so Power Automate can email the
+  customer. Both fail-soft: PDF generation failure does NOT fail the
+  submission; webhook failure does NOT fail the PDF. The brand logo
+  embedded in the navy header band loads from R2 at
+  `assets/splash-logo-white.png` (operator must upload), with an
+  HTTPS fallback to `ASSETS.logoWhite` when the R2 key is missing.
+  Email is now required at submission time (HTML5 + worker-side
+  regex `^[^@\s]+@[^@\s]+\.[^@\s]+$`); the D1 `customer_email`
+  column stays nullable for back-compat with pre-Brief-32 rows.
+- **CUSTOMER_CLAIM_WEBHOOK_URL** - Optional damage-worker secret
+  (Brief 32) fired after a customer-submitted claim — Power Automate
+  receives a JSON payload with `claim_id`, `customer_email`,
+  `summary_pdf_url`, and (for PDFs ≤ 3 MB raw) `summary_pdf_base64`.
+  Fail-soft: when unbound, the customer-email path silently skips —
+  the PDF still generates and the post-submit outcome card surfaces
+  the "Download a copy" link.
 - **maxpass_signups** - Customer signup table. 18 columns including
   `confirmation_token` (UUID), `terms_text` (exact string customer
   saw), country/city/region from `request.cf`.

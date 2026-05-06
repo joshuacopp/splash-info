@@ -15,6 +15,7 @@ pnpm --filter @splash/damage-worker exec wrangler secret put SUPABASE_SERVICE_KE
 pnpm --filter @splash/damage-worker exec wrangler secret put POWER_AUTOMATE_URL
 pnpm --filter @splash/damage-worker exec wrangler secret put INCIDENTS_WEBHOOK_URL
 pnpm --filter @splash/damage-worker exec wrangler secret put AP_WEBHOOK_URL
+pnpm --filter @splash/damage-worker exec wrangler secret put CUSTOMER_CLAIM_WEBHOOK_URL
 ```
 
 | Name | Type | Required? | Purpose |
@@ -25,8 +26,9 @@ pnpm --filter @splash/damage-worker exec wrangler secret put AP_WEBHOOK_URL
 | `POWER_AUTOMATE_URL` | secret | yes (for prod) | webhook for SharePoint sync of new claims; legacy hardcoded this URL with an embedded signature |
 | `INCIDENTS_WEBHOOK_URL` | secret | optional, fail-soft | fired after RM approves a quote — Incidents desk receives the auto-generated Check Request PDF |
 | `AP_WEBHOOK_URL` | secret | optional, fail-soft | fired after Incidents submits for payment — AP desk receives the fully-signed Check Request PDF |
+| `CUSTOMER_CLAIM_WEBHOOK_URL` | secret | optional, fail-soft (Brief 32) | fired after a customer-submitted claim — PA receives the auto-generated claim summary PDF URL + customer email and emails the customer their copy. When unbound, PDF still generates and the outcome card surfaces a "Download a copy" link. |
 
-**Fail-soft contract:** if `INCIDENTS_WEBHOOK_URL` or `AP_WEBHOOK_URL` are unbound, the corresponding status transition still succeeds; an activity row notes the email-skipped outcome. R2 still has the canonical record (claim JSON + photos). Only the SharePoint/desk sync is skipped.
+**Fail-soft contract:** if `INCIDENTS_WEBHOOK_URL`, `AP_WEBHOOK_URL`, or `CUSTOMER_CLAIM_WEBHOOK_URL` are unbound, the corresponding side effect (Incidents email / AP email / customer-copy email) is skipped; the underlying claim/transition/PDF still completes. R2 still has the canonical record (claim JSON + photos + summary PDF).
 
 If `POWER_AUTOMATE_URL` is unbound, claim submissions still write to R2 + D1 successfully — only the SharePoint sync is skipped (with a `console.warn` line). For production this is a misconfiguration; for dev / smoke-test it's acceptable.
 
@@ -53,9 +55,11 @@ bucket_name = "splash-vehicle-claims"
 
 The bucket must exist before deploy. Used for:
 - `claims/{claimId}/{type}_{n}.{ext}` — customer photos + Quote/Receipt docs
+- `claims/{claimId}/summary.pdf` — auto-generated customer-facing claim summary PDF (Brief 32)
 - `submissions/{claimId}.json` — full claim JSON archive (canonical record, written unconditionally)
 - `failed_submissions/{claimId}.json` — Power Automate failure fallback
 - `templates/check-request.pdf` — **AcroForm template; operator MUST upload before any check-request transition can succeed**
+- `assets/splash-logo-white.png` — **Brief 32 brand logo** for the claim summary PDF header band; ~144×36 pt white-on-navy PNG (4× raster fine). Optional: when missing, the worker falls back to fetching `ASSETS.logoWhite` over HTTPS, so claim submissions still succeed but incur an extra 50-200 ms.
 
 ### Images (Cloudflare Images binding — optional)
 
@@ -117,6 +121,13 @@ curl -i -X POST "$WORKER/manage/api/claim/<id>/note" \
 - [ ] gm/rm users see only claims at their `dcLocations`; out-of-scope claims return 404 (anti-leak).
 - [ ] super_admin sees every claim regardless of location.
 - [ ] Photo upload of an HEIC file converts to JPEG when `IMAGES` is bound, otherwise stores as `.heic`.
+- [ ] **(Brief 32)** Submit a customer claim from `/claims/{site}` with a real email and verify:
+  - The post-submit outcome card shows a **Download a copy (PDF)** link.
+  - Clicking the link opens `/claims-api/summary/<claimId>` in a new tab and renders a Splash-branded PDF with: navy header band (logo + "Vehicle Issue Report" + claim ID + timestamp), Customer Information grid (Name / Email / Phone / Vehicle / License Plate), "What Happened" text block, up to 4 photo thumbnails (or none if photos failed to load), Staff Assessment (Staff Name / Equipment-Related / Determination / What Customer Was Told), and a footer with claim ID + contact note.
+  - R2 contains an object at `claims/<claimId>/summary.pdf` (verifiable via `wrangler r2 object get`).
+  - If `CUSTOMER_CLAIM_WEBHOOK_URL` is bound, the configured PA flow received a JSON POST with `claim_id`, `customer_email`, `summary_pdf_url`, and (for PDFs ≤ 3 MB) `summary_pdf_base64`.
+  - If `CUSTOMER_CLAIM_WEBHOOK_URL` is **un**bound, the submission still succeeds and the outcome card still shows the download link (verifies fail-soft).
+- [ ] **(Brief 32)** Submit a customer claim with the email field empty: form-side HTML5 validation should block submit. If you bypass with a programmatic curl/fetch (no email), the worker returns `400 { ok: false, error: "Email required" }` (JSON mode) or 303-redirects back to `/claims/<slug>?error=Email%20required` (browser mode).
 
 ## Production route binding (cutover-time)
 

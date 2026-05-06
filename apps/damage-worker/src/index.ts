@@ -120,6 +120,11 @@ import {
   renderClaimNotFound,
   renderThanksPage
 } from "./render/claim-form.js";
+import {
+  generateClaimSummaryPdf,
+  type ClaimSummaryPdfInput
+} from "./render/claim-summary-pdf.js";
+import { ASSETS } from "@splash/storage-r2";
 
 interface Env extends SupabaseEnv {
   DB: D1Database;
@@ -138,7 +143,26 @@ interface Env extends SupabaseEnv {
   /** Webhook URL fired after Incidents submits for payment — AP desk
    *  receives the fully-signed Check Request PDF. Optional; fail-soft. */
   AP_WEBHOOK_URL?: string;
+  /** Webhook URL fired after a customer-submitted claim — PA receives the
+   *  claim summary URL + customer email and emails the customer their copy
+   *  of the claim (Brief 32). Optional; fail-soft. When unbound the
+   *  customer-email path is silently skipped (PDF still generates and
+   *  surfaces in the post-submit outcome card). Set via
+   *  `wrangler secret put CUSTOMER_CLAIM_WEBHOOK_URL`. */
+  CUSTOMER_CLAIM_WEBHOOK_URL?: string;
 }
+
+/** R2 key for the brand logo embedded in the claim summary PDF header band
+ *  (Brief 32). Operator must upload an ~36pt-tall white-on-navy PNG to this
+ *  key in the damagedocs bucket; the worker falls back to fetching ASSETS.logoWhite
+ *  via HTTPS if the R2 object is missing. */
+const SUMMARY_LOGO_R2_KEY = "assets/splash-logo-white.png";
+
+/** Soft cap on the base64-encoded PDF that goes into the customer-email
+ *  webhook payload. Above this threshold the worker omits `summary_pdf_base64`
+ *  and relies on `summary_pdf_url` only (PA fetches by URL). 4 MB is the
+ *  brief's stated cutoff; raw bytes ~3 MB encode to ~4 MB base64. */
+const CUSTOMER_WEBHOOK_BASE64_MAX_BYTES = 3 * 1024 * 1024;
 
 /** Document types accepted by /manage/api/claim/{id}/document. */
 const DOCUMENT_TYPES = new Set<string>(["Quote", "Receipt"]);
@@ -186,6 +210,21 @@ export default {
         // provides obscurity but not real access control. If this becomes
         // a concern, add auth-gating in a follow-up.
         return serveClaimPhoto(env.R2_BUCKET, photoKey);
+      }
+
+      // GET /claims-api/summary/{claimId} — stream the auto-generated
+      // claim summary PDF (Brief 32). No auth gate, mirroring the photo-
+      // serving security posture. The URL is unguessable enough (random
+      // 4-char suffix in claim_id) and is shared with the customer via
+      // PA email + the post-submit outcome card.
+      if (
+        parts[0] === "claims-api" &&
+        parts[1] === "summary" &&
+        parts.length === 3 &&
+        parts[2] &&
+        method === "GET"
+      ) {
+        return handleServeClaimSummary(env, decodeURIComponent(parts[2]));
       }
 
       // GET /claims/{slug} — render the public customer claim form.
@@ -1156,6 +1195,26 @@ async function handleClaimSubmission(request: Request, env: Env): Promise<Respon
       photos: []
     };
 
+    // Brief 32 — email is now required. Worker re-validates after the form's
+    // HTML5 + inline-script gates because programmatic JSON callers can
+    // bypass them. Same simple regex used in sysadmin-worker per Brief 24/27.
+    // The DB column stays nullable for back-compat with any historical rows;
+    // this is a contract change at the surface, not at the storage level.
+    const emailTrimmed = claimData.customerEmail.trim();
+    const emailValid = /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(emailTrimmed);
+    if (!emailTrimmed || !emailValid) {
+      const message = "Email required";
+      if (browserMode) {
+        let slug = encodeURIComponent(claimData.location || "") || "unknown";
+        const target = new URL(
+          `${baseOrigin}/claims/${slug}?error=${encodeURIComponent(message)}`
+        );
+        return Response.redirect(target.toString(), 303);
+      }
+      return json({ ok: false, error: message, success: false }, 400);
+    }
+    claimData.customerEmail = emailTrimmed;
+
     // 2. Generate claim_id.
     claimData.claimId = generateClaimId(claimData.location);
 
@@ -1304,6 +1363,41 @@ async function handleClaimSubmission(request: Request, env: Env): Promise<Respon
       );
     }
 
+    // 8. Brief 32 — generate the customer-facing claim summary PDF, store
+    // it in R2 at `claims/<claimId>/summary.pdf`, and (if the customer-
+    // email webhook is bound) hand PA the URL + base64 to email the
+    // customer their copy. PDF generation MUST NOT fail the submission;
+    // the whole block is wrapped in try/catch and logs + swallows on error.
+    let summaryPdfUrl: string | undefined;
+    try {
+      const pdfBytes = await buildAndStoreClaimSummaryPdf(
+        env,
+        claimData,
+        baseOrigin
+      );
+      if (pdfBytes) {
+        summaryPdfUrl = `${baseOrigin}/claims-api/summary/${encodeURIComponent(
+          claimData.claimId
+        )}`;
+        // Fire-and-forget customer-email webhook. Fail-soft and silent when
+        // the env var isn't configured (intentional staging-without-PA
+        // posture). Errors logged + swallowed so submission still returns ok.
+        if (env.CUSTOMER_CLAIM_WEBHOOK_URL) {
+          await fireCustomerClaimWebhook(
+            env.CUSTOMER_CLAIM_WEBHOOK_URL,
+            claimData,
+            pdfBytes,
+            summaryPdfUrl
+          );
+        }
+      }
+    } catch (pdfErr) {
+      console.error(
+        `Claim summary PDF pipeline failed for ${claimData.claimId}:`,
+        pdfErr
+      );
+    }
+
     if (browserMode) {
       const slug =
         encodeURIComponent(claimData.location || "") || "unknown";
@@ -1316,6 +1410,8 @@ async function handleClaimSubmission(request: Request, env: Env): Promise<Respon
     // Brief 25: form's fetch reads `{ ok, claim_id }`. The legacy
     // `success` / `claimId` keys are mirrored alongside for any
     // programmatic caller that may still consume the older shape.
+    // Brief 32: `summary_pdf_url` is included when the post-submit PDF
+    // pipeline succeeded; absent on PDF-failure (fail-soft).
     return json({
       ok: true,
       claim_id: claimData.claimId,
@@ -1323,7 +1419,8 @@ async function handleClaimSubmission(request: Request, env: Env): Promise<Respon
       claimId: claimData.claimId,
       powerAutomateSuccess,
       d1Success,
-      photosUploaded: claimData.photos.length
+      photosUploaded: claimData.photos.length,
+      ...(summaryPdfUrl ? { summary_pdf_url: summaryPdfUrl } : {})
     });
   } catch (error) {
     console.error("Claim submission error:", error);
@@ -1574,5 +1671,269 @@ async function handleCheckRequestPreview(
       "Cache-Control": "no-store"
     }
   });
+}
+
+/* ============================================================
+ * GET /claims-api/summary/{claimId} — Brief 32
+ *
+ * Streams the auto-generated claim summary PDF stored at
+ * `claims/<claimId>/summary.pdf` in R2. Public read (no auth gate),
+ * mirroring the photo-serving security posture. Customers reach this URL
+ * via the post-submit outcome card and the customer-email webhook.
+ * ============================================================ */
+
+async function handleServeClaimSummary(
+  env: Env,
+  claimId: string
+): Promise<Response> {
+  // Defensive: claim_id pattern is letters/digits/dash; reject pathy input.
+  if (!/^[A-Za-z0-9_-]+$/.test(claimId)) {
+    return new Response("Not found", { status: 404 });
+  }
+  const key = `claims/${claimId}/summary.pdf`;
+  const obj = await env.R2_BUCKET.get(key);
+  if (!obj) {
+    return new Response("Not found", { status: 404 });
+  }
+  const headers = new Headers();
+  headers.set("Content-Type", "application/pdf");
+  headers.set(
+    "Content-Disposition",
+    `inline; filename="claim-${claimId}.pdf"`
+  );
+  // Same conservative cache as photo-serving (24h public).
+  headers.set("Cache-Control", "public, max-age=86400");
+  return new Response(obj.body, { headers });
+}
+
+/* ============================================================
+ * Claim summary PDF pipeline — Brief 32
+ *
+ * Helper functions invoked from handleClaimSubmission's post-submit step.
+ * All wrapped in try/catch by the caller — these may throw freely; the
+ * caller logs and swallows.
+ * ============================================================ */
+
+/**
+ * Load brand-logo PNG bytes for the summary PDF header.
+ *
+ * Tries R2 first (`assets/splash-logo-white.png` in damagedocs); falls
+ * back to fetching ASSETS.logoWhite over HTTPS (the customer-facing form
+ * already loads this URL). Returns a zero-length Uint8Array if both fail —
+ * the PDF generator handles that path gracefully (header band still
+ * renders with text only on the right).
+ */
+async function loadSummaryLogoBytes(env: Env): Promise<Uint8Array> {
+  try {
+    const obj = await env.R2_BUCKET.get(SUMMARY_LOGO_R2_KEY);
+    if (obj) {
+      return new Uint8Array(await obj.arrayBuffer());
+    }
+  } catch (err) {
+    console.warn(
+      "loadSummaryLogoBytes: R2 read failed, falling back to ASSETS.logoWhite",
+      err
+    );
+  }
+  try {
+    const res = await fetch(ASSETS.logoWhite);
+    if (res.ok) {
+      return new Uint8Array(await res.arrayBuffer());
+    }
+    console.warn(
+      `loadSummaryLogoBytes: ASSETS.logoWhite fetch returned ${res.status}`
+    );
+  } catch (err) {
+    console.warn("loadSummaryLogoBytes: HTTPS fallback failed", err);
+  }
+  return new Uint8Array(0);
+}
+
+/**
+ * Pull up to 4 photo thumbnails from R2 (originals; no resize). The
+ * IMAGES binding's minimal interface (`@splash/storage-r2` ImagesBinding)
+ * supports format-conversion only, not resize, so we embed originals and
+ * accept oversized PDFs as the brief's documented degraded fallback.
+ */
+async function loadPhotoThumbnails(
+  env: Env,
+  photos: Array<{ r2Key: string; fileName: string }>
+): Promise<Array<{ filename: string; bytes: Uint8Array }>> {
+  const out: Array<{ filename: string; bytes: Uint8Array }> = [];
+  for (const p of photos.slice(0, 4)) {
+    try {
+      const obj = await env.R2_BUCKET.get(p.r2Key);
+      if (!obj) continue;
+      const bytes = new Uint8Array(await obj.arrayBuffer());
+      out.push({ filename: p.fileName, bytes });
+    } catch (err) {
+      console.warn(
+        `loadPhotoThumbnails: failed to read ${p.r2Key}`,
+        err
+      );
+    }
+  }
+  return out;
+}
+
+/**
+ * Generate the claim summary PDF for a fresh submission and write it to
+ * R2 at `claims/<claimId>/summary.pdf`. Returns the PDF bytes on success
+ * (so the caller can also hand them to the customer-email webhook), or
+ * null when generation/storage failed.
+ *
+ * The submission has already landed in D1 + R2 + (optionally) PA at this
+ * point — the PDF is purely additive.
+ */
+async function buildAndStoreClaimSummaryPdf(
+  env: Env,
+  claimData: ClaimSubmissionPayload,
+  _baseOrigin: string
+): Promise<Uint8Array | null> {
+  const [logoPng, thumbs] = await Promise.all([
+    loadSummaryLogoBytes(env),
+    loadPhotoThumbnails(env, claimData.photos)
+  ]);
+
+  const input: ClaimSummaryPdfInput = {
+    claimId: claimData.claimId,
+    submittedAt: claimData.submittedAt,
+    locationPretty: claimData.locationPretty || claimData.location,
+    locationCode: claimData.location,
+    customer: {
+      name: claimData.customerName,
+      email: claimData.customerEmail,
+      phone: claimData.customerPhone || null,
+      vehicleMake: claimData.vehicleMake,
+      vehicleModel: claimData.vehicleModel,
+      vehicleYear: claimData.vehicleYear,
+      vehicleColor: claimData.vehicleColor || null,
+      licensePlate: claimData.licensePlate || null,
+      // The claim form does not collect a license-plate state today;
+      // leave null. If a future field is added, surface it here.
+      licenseState: null,
+      whatHappened: claimData.issueDescription
+    },
+    photos: thumbs,
+    assessment: {
+      staffName: claimData.employeeName || null,
+      equipmentRelated:
+        claimData.equipmentInvolved && claimData.equipmentInvolved !== "N/A"
+          ? "yes"
+          : claimData.equipmentInvolved === ""
+            ? "no"
+            : claimData.equipmentInvolved
+              ? "yes"
+              : "no",
+      determination: claimData.determination || "",
+      whatCustomerWasTold: claimData.customerTold || ""
+    },
+    logoPng
+  };
+
+  let pdfBytes: Uint8Array;
+  try {
+    pdfBytes = await generateClaimSummaryPdf(input);
+  } catch (err) {
+    console.error(
+      `generateClaimSummaryPdf failed for ${claimData.claimId}:`,
+      err
+    );
+    return null;
+  }
+
+  const key = `claims/${claimData.claimId}/summary.pdf`;
+  try {
+    await env.R2_BUCKET.put(key, pdfBytes, {
+      httpMetadata: { contentType: "application/pdf" },
+      customMetadata: {
+        claimId: claimData.claimId,
+        generatedAt: new Date().toISOString()
+      }
+    });
+  } catch (err) {
+    console.error(
+      `R2 put failed for claim summary ${claimData.claimId}:`,
+      err
+    );
+    return null;
+  }
+  return pdfBytes;
+}
+
+/**
+ * Encode bytes to base64 (Workers btoa is byte-safe via String.fromCharCode
+ * loop). Mirrors the helper in pdf.ts but kept local to avoid adding an
+ * export to the existing module.
+ */
+function bytesToBase64(bytes: Uint8Array): string {
+  let binary = "";
+  for (let i = 0; i < bytes.byteLength; i++) {
+    binary += String.fromCharCode(bytes[i]!);
+  }
+  return btoa(binary);
+}
+
+/**
+ * Fire the customer-email webhook with the claim summary URL + (optionally)
+ * the base64-encoded PDF. Fail-soft: never throws; caller's try/catch
+ * covers any escape.
+ */
+async function fireCustomerClaimWebhook(
+  webhookUrl: string,
+  claimData: ClaimSubmissionPayload,
+  pdfBytes: Uint8Array,
+  summaryPdfUrl: string
+): Promise<void> {
+  // Vehicle string for PA convenience: "2020 Honda Civic - Blue".
+  const vehicleParts = [
+    claimData.vehicleYear,
+    claimData.vehicleMake,
+    claimData.vehicleModel
+  ].filter((p) => (p ?? "").toString().trim());
+  let vehicle = vehicleParts.join(" ");
+  if (claimData.vehicleColor && claimData.vehicleColor.trim()) {
+    vehicle = vehicle
+      ? `${vehicle} - ${claimData.vehicleColor.trim()}`
+      : claimData.vehicleColor.trim();
+  }
+
+  // Omit the base64 attachment when the PDF is too large to keep the JSON
+  // payload under PA's reasonable inbound limit (PA flows have varying
+  // limits; 4 MB JSON is a common ceiling). PA can still fetch the URL.
+  const includeBase64 = pdfBytes.byteLength <= CUSTOMER_WEBHOOK_BASE64_MAX_BYTES;
+
+  const payload: Record<string, unknown> = {
+    claim_id: claimData.claimId,
+    submitted_at: claimData.submittedAt,
+    location_pretty: claimData.locationPretty,
+    location_code: claimData.location,
+    customer_name: claimData.customerName,
+    customer_email: claimData.customerEmail,
+    customer_phone: claimData.customerPhone || null,
+    vehicle,
+    summary_pdf_url: summaryPdfUrl
+  };
+  if (includeBase64) {
+    payload.summary_pdf_base64 = bytesToBase64(pdfBytes);
+  }
+
+  try {
+    const res = await fetch(webhookUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    });
+    if (!res.ok) {
+      console.error(
+        `CUSTOMER_CLAIM_WEBHOOK_URL POST failed for ${claimData.claimId}: status ${res.status}`
+      );
+    }
+  } catch (err) {
+    console.error(
+      `CUSTOMER_CLAIM_WEBHOOK_URL POST error for ${claimData.claimId}:`,
+      err
+    );
+  }
 }
 

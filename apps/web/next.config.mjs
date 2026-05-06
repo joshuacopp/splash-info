@@ -1,5 +1,13 @@
 // Next.js config for apps/web. Deployed to Cloudflare Workers via
 // @opennextjs/cloudflare (the supported successor to @cloudflare/next-on-pages).
+//
+// Build-time env vars consumed implicitly by Next during `next build`:
+//   - NEXT_SERVER_ACTIONS_ENCRYPTION_KEY (Brief 31) — stable key that
+//     deterministically hashes server-action IDs. Without it, IDs
+//     regenerate every build, so redeploys white-page any open tab on
+//     form submit (UnrecognizedActionError). Set as a CF Workers Builds
+//     BUILD-TIME env var on splash-web; documented in apps/web/.env.example.
+//     Don't rotate without coordination.
 
 import { initOpenNextCloudflareForDev } from "@opennextjs/cloudflare";
 

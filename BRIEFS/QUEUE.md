@@ -12,5 +12,8 @@
 # brief-025-claim-form-polish.md  (completed 2026-05-05)
 # brief-026-sysadmin-update-package.md  (completed 2026-05-05)
 # brief-027-sysadmin-update-location.md  (completed 2026-05-05)
+# brief-029-tab-title-add-location-row-claim-overlay.md  (completed 2026-05-05)
+# brief-030-sysadmin-mode-hub-and-audit-log.md  (completed 2026-05-05)
+
 
 

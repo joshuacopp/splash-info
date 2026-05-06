@@ -332,8 +332,10 @@ export function renderClaimForm(args: RenderClaimFormArgs): string {
 
           <div class="form-row">
             <div class="form-group">
-              <label for="customerEmail">Email Address</label>
-              <input type="email" id="customerEmail" name="customerEmail" autocomplete="email">
+              <label for="customerEmail">Email Address <span class="required">*</span>
+                <span class="hint">We'll email you a copy of this claim.</span>
+              </label>
+              <input type="email" id="customerEmail" name="customerEmail" required autocomplete="email">
             </div>
             <div class="form-group">
               <label for="mailingAddress">Mailing Address
@@ -507,7 +509,10 @@ export function renderClaimForm(args: RenderClaimFormArgs): string {
       <p>Your claim for <strong>${escHtml(locationPretty)}</strong> has been recorded.</p>
       <div class="claim-id-line">Claim ID: <strong id="outcomeClaimId"></strong></div>
       <p>Please give the customer a copy or photo of the claim ID for their records. A manager will review and may follow up.</p>
-      <button type="button" class="btn-primary" onclick="window.location.reload()">Submit another claim</button>
+      <p id="outcomeDownloadRow" hidden style="margin: 18px 0 6px;">
+        <a id="outcomeDownloadLink" class="btn-primary" href="#" target="_blank" rel="noopener noreferrer">Download a copy (PDF)</a>
+      </p>
+      <button type="button" class="btn-primary" onclick="window.location.reload()" style="margin-top: 10px;">Submit another claim</button>
     </div>
   </div>
 
@@ -569,6 +574,8 @@ const FORM_SCRIPT = `(function () {
   var formPage = document.getElementById('formPage');
   var outcomePage = document.getElementById('outcomePage');
   var outcomeClaimId = document.getElementById('outcomeClaimId');
+  var outcomeDownloadRow = document.getElementById('outcomeDownloadRow');
+  var outcomeDownloadLink = document.getElementById('outcomeDownloadLink');
   var submitBtn = document.getElementById('submitBtn');
   var employeeNameInput = document.getElementById('employeeName');
 
@@ -742,11 +749,17 @@ const FORM_SCRIPT = `(function () {
     if (on) submitBtn.textContent = 'Submitting...';
     else submitBtn.textContent = 'Submit claim';
   }
-  function showOutcome(claimId) {
+  function showOutcome(claimId, summaryPdfUrl) {
     setSubmitting(false);
     formPage.hidden = true;
     outcomePage.hidden = false;
     outcomeClaimId.textContent = claimId || '(unknown)';
+    if (summaryPdfUrl && outcomeDownloadLink && outcomeDownloadRow) {
+      outcomeDownloadLink.setAttribute('href', summaryPdfUrl);
+      outcomeDownloadRow.hidden = false;
+    } else if (outcomeDownloadRow) {
+      outcomeDownloadRow.hidden = true;
+    }
     window.scrollTo({ top: 0, behavior: 'smooth' });
   }
 
@@ -806,7 +819,10 @@ const FORM_SCRIPT = `(function () {
       });
     }).then(function (out) {
       if (out.ok && out.body && out.body.ok) {
-        showOutcome(out.body.claim_id || out.body.claimId || '');
+        showOutcome(
+          out.body.claim_id || out.body.claimId || '',
+          out.body.summary_pdf_url || ''
+        );
       } else {
         var errMsg = (out.body && out.body.error)
           || (out.body && out.body.message)

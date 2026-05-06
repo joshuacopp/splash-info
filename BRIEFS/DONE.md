@@ -29,3 +29,6 @@
 - 2026-05-05 12:15:31 brief-027-sysadmin-update-location.md (success)
 - 2026-05-05 14:41:21 brief-028-tab-title-add-location-row-claim-overlay.md (success)
 - 2026-05-05 14:44:41 brief-029-tab-title-add-location-row-claim-overlay.md (success)
+- 2026-05-05 15:30:37 brief-030-sysadmin-mode-hub-and-audit-log.md (success)
+- 2026-05-05 15:38:09 brief-031-server-action-id-stability.md (success)
+- 2026-05-05 15:59:07 brief-032-claim-summary-pdf-and-customer-email.md (success)

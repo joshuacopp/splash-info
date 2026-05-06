@@ -73,12 +73,29 @@ routes = [
 #                         AP desk receives the fully-signed Check Request PDF.
 #                         Set with `wrangler secret put AP_WEBHOOK_URL`.
 #                         Fail-soft: same semantics as INCIDENTS_WEBHOOK_URL.)
+# CUSTOMER_CLAIM_WEBHOOK_URL — secret (Brief 32; fired after a customer-
+#                         submitted claim — PA receives the auto-generated
+#                         claim summary PDF URL + customer email and emails
+#                         the customer their copy. Set with
+#                         `wrangler secret put CUSTOMER_CLAIM_WEBHOOK_URL`.
+#                         Fail-soft: when unbound the customer-email path is
+#                         silently skipped — the summary PDF still generates
+#                         and the post-submit outcome card surfaces a
+#                         "Download a copy" link so the customer can save it
+#                         without waiting for an email.)
 #
 # OPERATOR PREREQUISITE: the Check Request AcroForm template MUST be uploaded
 # to R2 at key "templates/check-request.pdf" before any transition that
 # triggers PDF generation can succeed. The template's AcroForm field names
 # are referenced verbatim in apps/damage-worker/src/pdf.ts — do NOT rename
 # them in the template without coordinating a code change.
+#
+# OPERATOR PREREQUISITE (Brief 32): upload a white-on-navy PNG of the Splash
+# logo to R2 at key "assets/splash-logo-white.png" (~36pt header height,
+# ~144pt wide; 4x raster for retina is fine). The claim summary PDF
+# generator embeds it in the navy header band. If the R2 object is missing,
+# the worker falls back to fetching ASSETS.logoWhite over HTTPS — works,
+# but adds ~50-200ms to every claim submission. Upload to skip the fallback.
 
 [[d1_databases]]
 binding = "DB"

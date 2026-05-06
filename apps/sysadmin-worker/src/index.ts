@@ -70,6 +70,20 @@
 //                                          regional_manager (plus site_number
 //                                          .eq when q is numeric). Up to 50
 //                                          rows. Empty q -> [].
+//   GET   /sysadmin/api/audit-log        — Brief 30. Filtered read of
+//                                          sysadmin_audit_log. Filters: actor
+//                                          (ilike substring), action (exact;
+//                                          allowed list), table (exact;
+//                                          allowed target_type list), user_id
+//                                          (UUID — pins target_type to
+//                                          user-related rows), location_code
+//                                          (pins target_type to
+//                                          pricing_simple/locations and
+//                                          matches target_id eq or `code/%`),
+//                                          since/until (ISO-8601), limit
+//                                          (default 50, max 200), offset.
+//                                          Response: { rows, total_estimate,
+//                                          next_offset }.
 //
 // AUTH GATE POSITION:
 //   ALL endpoints — single authenticate() + super_admin check at the top
@@ -123,7 +137,8 @@ const OWNED_PATCH_PATHS = new Set([
 const OWNED_GET_PATHS = new Set([
   "/sysadmin/api/users",
   "/sysadmin/api/pricing-simple/search",
-  "/sysadmin/api/locations/search"
+  "/sysadmin/api/locations/search",
+  "/sysadmin/api/audit-log"
 ]);
 
 export default {
@@ -172,6 +187,9 @@ export default {
         }
         if (path === "/sysadmin/api/locations/search") {
           return await handleSearchLocations(env, url);
+        }
+        if (path === "/sysadmin/api/audit-log") {
+          return await handleSearchAuditLog(env, url);
         }
       }
 
@@ -1420,6 +1438,205 @@ async function handleUpdateLocation(
     cascade_note:
       "pricing_simple + user_permissions updated by triggers"
   });
+}
+
+/* ============================================================
+ * GET /sysadmin/api/audit-log  (Brief 30)
+ *
+ * Filtered read of sysadmin_audit_log. All filters AND-combined; missing
+ * filters apply no constraint. Ordered created_at.desc. Default limit 50,
+ * max 200. Offset pagination (no smart cursor; this is observation
+ * tooling, not a feed).
+ *
+ * Filter sanitization:
+ *   - actor (ilike substring): drop `,`, `(`, `)`, `*`, `%`, `_` per the
+ *     existing search pattern (same posture as handleSearchUsers).
+ *   - action / target_type: exact-match; validated against an allow-list
+ *     so the URL space stays tight (unknown values 400).
+ *   - user_id: UUID-shape regex; rejects on shape mismatch.
+ *   - location_code: lowercase letters/numbers/underscore only.
+ *   - since / until: Date.parse must yield a finite number; rejects on
+ *     shape mismatch.
+ *
+ * Counting strategy: send `Prefer: count=estimated` so PostgREST returns
+ * a Content-Range header like `0-49/12345`. The trailing number is the
+ * estimate; we surface it as `total_estimate` (nullable on miss). Exact
+ * counts would require count=exact which is more expensive at scale —
+ * the audit log can grow indefinitely so estimated is the right default.
+ *
+ * No audit-log entry for the audit-log read itself — reading the log is
+ * a read-only super_admin observation; logging reads would create a
+ * feedback loop and add noise.
+ * ============================================================ */
+
+const ALLOWED_AUDIT_ACTIONS: ReadonlySet<string> = new Set([
+  "create_user",
+  "set_role_super_admin",
+  "set_role_location_admin",
+  "clear_role",
+  "grant_tool",
+  "grant_tool_noop",
+  "revoke_tool",
+  "revoke_tool_noop",
+  "reset_password",
+  "create_location",
+  "update_package",
+  "update_location"
+]);
+
+const ALLOWED_AUDIT_TARGET_TYPES: ReadonlySet<string> = new Set([
+  "user_permissions",
+  "user_tool_access",
+  "auth.users",
+  "pricing_simple",
+  "locations"
+]);
+
+const USER_TARGET_TYPES_CSV = "user_permissions,user_tool_access,auth.users";
+const LOCATION_TARGET_TYPES_CSV = "pricing_simple,locations";
+
+const UUID_RE = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+
+interface AuditLogResponse {
+  rows: unknown[];
+  total_estimate: number | null;
+  next_offset: number | null;
+}
+
+async function handleSearchAuditLog(env: Env, url: URL): Promise<Response> {
+  // limit / offset
+  const limitRaw = url.searchParams.get("limit");
+  let limit = 50;
+  if (limitRaw !== null) {
+    const n = Number(limitRaw);
+    if (!Number.isInteger(n) || n < 1) {
+      return jsonError(400, "limit must be a positive integer");
+    }
+    limit = Math.min(n, 200);
+  }
+  const offsetRaw = url.searchParams.get("offset");
+  let offset = 0;
+  if (offsetRaw !== null) {
+    const n = Number(offsetRaw);
+    if (!Number.isInteger(n) || n < 0) {
+      return jsonError(400, "offset must be a non-negative integer");
+    }
+    offset = n;
+  }
+
+  const params: string[] = [];
+
+  // actor — substring ilike on actor_email
+  const actorRaw = (url.searchParams.get("actor") ?? "").trim();
+  if (actorRaw.length > 0) {
+    const actorEsc = actorRaw.replace(/[%_,()*]/g, "");
+    if (actorEsc.length > 0) {
+      params.push(`actor_email=ilike.${encodeURIComponent(`%${actorEsc}%`)}`);
+    }
+  }
+
+  // action — exact match against allow-list
+  const actionRaw = (url.searchParams.get("action") ?? "").trim();
+  if (actionRaw.length > 0) {
+    if (!ALLOWED_AUDIT_ACTIONS.has(actionRaw)) {
+      return jsonError(400, `Unknown action: ${actionRaw}`);
+    }
+    params.push(`action=eq.${encodeURIComponent(actionRaw)}`);
+  }
+
+  // table — exact match against allow-list of target_type values
+  const tableRaw = (url.searchParams.get("table") ?? "").trim();
+  if (tableRaw.length > 0) {
+    if (!ALLOWED_AUDIT_TARGET_TYPES.has(tableRaw)) {
+      return jsonError(400, `Unknown table: ${tableRaw}`);
+    }
+    params.push(`target_type=eq.${encodeURIComponent(tableRaw)}`);
+  }
+
+  // user_id — UUID, pins target_type to user-related rows
+  const userIdRaw = (url.searchParams.get("user_id") ?? "").trim();
+  if (userIdRaw.length > 0) {
+    if (!UUID_RE.test(userIdRaw)) {
+      return jsonError(400, "user_id must be a UUID");
+    }
+    // AND of two constraints; PostgREST AND's repeated top-level params.
+    params.push(`target_type=in.(${USER_TARGET_TYPES_CSV})`);
+    params.push(`target_id=eq.${encodeURIComponent(userIdRaw)}`);
+  }
+
+  // location_code — pins target_type to pricing_simple/locations,
+  // matches target_id eq or `code/%`
+  const locRaw = (url.searchParams.get("location_code") ?? "").trim();
+  if (locRaw.length > 0) {
+    if (!LOCATION_CODE_RE.test(locRaw)) {
+      return jsonError(
+        400,
+        "location_code must contain only lowercase letters, numbers, and underscores"
+      );
+    }
+    params.push(`target_type=in.(${LOCATION_TARGET_TYPES_CSV})`);
+    const eqArm = `target_id.eq.${locRaw}`;
+    const ilikeArm = `target_id.ilike.${encodeURIComponent(`${locRaw}/%`)}`;
+    params.push(`or=(${eqArm},${ilikeArm})`);
+  }
+
+  // since / until — ISO-8601, Date.parse-validated
+  const sinceRaw = (url.searchParams.get("since") ?? "").trim();
+  if (sinceRaw.length > 0) {
+    if (!Number.isFinite(Date.parse(sinceRaw))) {
+      return jsonError(400, "since must be a valid ISO-8601 timestamp");
+    }
+    params.push(`created_at=gte.${encodeURIComponent(sinceRaw)}`);
+  }
+  const untilRaw = (url.searchParams.get("until") ?? "").trim();
+  if (untilRaw.length > 0) {
+    if (!Number.isFinite(Date.parse(untilRaw))) {
+      return jsonError(400, "until must be a valid ISO-8601 timestamp");
+    }
+    params.push(`created_at=lte.${encodeURIComponent(untilRaw)}`);
+  }
+
+  params.push("order=created_at.desc");
+  params.push(`limit=${limit}`);
+  if (offset > 0) {
+    params.push(`offset=${offset}`);
+  }
+  params.push("select=*");
+
+  const restUrl = `${env.SUPABASE_URL}/rest/v1/sysadmin_audit_log?${params.join("&")}`;
+  const resp = await fetch(restUrl, {
+    headers: {
+      apikey: env.SUPABASE_SERVICE_KEY,
+      Authorization: `Bearer ${env.SUPABASE_SERVICE_KEY}`,
+      Prefer: "count=estimated"
+    }
+  });
+  if (!resp.ok) {
+    const errText = await resp.text().catch(() => "");
+    return jsonError(500, `Audit-log fetch failed: ${resp.status} ${errText}`);
+  }
+  const rows = (await resp.json().catch(() => [])) as unknown[];
+  const safeRows = Array.isArray(rows) ? rows : [];
+
+  // Parse Content-Range: "0-49/12345" or "*/12345" — trailing number is total.
+  let totalEstimate: number | null = null;
+  const cr = resp.headers.get("Content-Range");
+  if (cr) {
+    const m = /\/(\d+)$/.exec(cr);
+    if (m) {
+      const n = Number(m[1]);
+      if (Number.isFinite(n)) totalEstimate = n;
+    }
+  }
+
+  const nextOffset = safeRows.length < limit ? null : offset + safeRows.length;
+
+  const body: AuditLogResponse = {
+    rows: safeRows,
+    total_estimate: totalEstimate,
+    next_offset: nextOffset
+  };
+  return json(body);
 }
 
 /* ============================================================
