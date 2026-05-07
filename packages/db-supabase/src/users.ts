@@ -320,7 +320,6 @@ export async function createUserPermissionsRow(
 
 interface DamageRoleRow {
   user_id: string;
-  email: string;
   dc_role: DcRole;
 }
 
@@ -341,6 +340,14 @@ interface DamageLocationRow {
  *     bypass scoping by design); existing dc_locations rows are wiped to
  *     prevent stale-data leakage if the role is later downgraded.
  *   - role === null: delete from both tables (clears DC access).
+ *
+ * Schema note (Brief 64): writes to `damage_claim_user_roles` pass only
+ * `(user_id, dc_role)`. Email lives on `auth.users` and is joined by
+ * the `auth_unified` view at read time — DO NOT add `email` to either
+ * the upsert payload or the RETURNING select; the column does not
+ * exist on this table (Postgres 42703). The `email` argument is kept
+ * on the function signature for the audit-log path (the caller passes
+ * session.email; future audit detail could surface it in target labels).
  *
  * Atomicity: Supabase JS client doesn't expose transactions; the calls
  * run sequentially. If a step fails mid-flight, the helper throws and
@@ -363,7 +370,7 @@ export async function setDcRole(
   // 1. Read current state for the audit-log before snapshot.
   const beforeRoleResp = await client
     .from("damage_claim_user_roles")
-    .select("user_id,email,dc_role")
+    .select("user_id,dc_role")
     .eq("user_id", args.userId)
     .maybeSingle();
   if (beforeRoleResp.error) throw beforeRoleResp.error;
@@ -407,18 +414,18 @@ export async function setDcRole(
     };
   }
 
-  // role is set — upsert the role row.
+  // role is set — upsert the role row. Schema is (user_id, dc_role);
+  // email is intentionally absent (Brief 64).
   const upsertResp = await client
     .from("damage_claim_user_roles")
     .upsert(
       {
         user_id: args.userId,
-        email: args.email,
         dc_role: args.role
       },
       { onConflict: "user_id" }
     )
-    .select("user_id,email,dc_role")
+    .select("user_id,dc_role")
     .single();
   if (upsertResp.error) {
     throw new Error(`Set dc_role failed: ${upsertResp.error.message}`);

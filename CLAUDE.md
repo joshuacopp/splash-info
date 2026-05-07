@@ -576,6 +576,14 @@ URL-based — service bindings don't apply to those.
   `damage_claim_user_roles` target_type; the log's `audit_user_id`
   filter pins target_type to user-related rows including
   `damage_claim_user_roles`.
+  Schema note (Brief 64): `damage_claim_user_roles` is
+  `(user_id, dc_role)` and `damage_claim_user_locations` is
+  `(user_id, location_code)`. Email lives on `auth.users` and is
+  joined by the `auth_unified` view at read time — sysadmin writes
+  to either table do NOT include `email`. That denormalization
+  pattern is `user_permissions`-specific; future helpers touching
+  the dc_role / dc_locations tables must not model their writes
+  after `setRole`'s payload shape.
 - **inline mode** - signup-worker's default `SIGNATURE_MODE`. Renders
   the form HTML and POSTs straight to `maxpass_signups`.
 - **jotform mode** - signup-worker's alternative `SIGNATURE_MODE`. 302

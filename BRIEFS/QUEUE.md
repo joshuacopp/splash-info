@@ -44,7 +44,6 @@
 
 # brief-061-sysadmin-set-dc-role-tool.md  (completed 2026-05-07)
 
-brief-064-set-dc-role-drop-email-column.md
 
 
 

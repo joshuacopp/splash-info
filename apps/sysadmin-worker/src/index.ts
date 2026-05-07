@@ -414,8 +414,10 @@ async function handleSetRole(
  * Brief 61 — POST /sysadmin/api/users/{userId}/dc-role.
  *
  * Sets / clears a user's dc_role + dc_locations atomically. The user's
- * email is resolved from the auth admin API (damage_claim_user_roles.email
- * is NOT NULL on inserts). The setDcRole helper writes both
+ * email is resolved from the auth admin API and passed to the setDcRole
+ * helper for audit-log purposes only — `damage_claim_user_roles` is
+ * `(user_id, dc_role)` and the `email` column does not exist on it
+ * (see Brief 64). The setDcRole helper writes both
  * damage_claim_user_roles and damage_claim_user_locations and returns
  * before/after snapshots for the audit log.
  *
@@ -476,7 +478,9 @@ async function handleSetDcRole(
     locationCodes = codes;
   }
 
-  // Resolve email — damage_claim_user_roles.email is NOT NULL.
+  // Resolve email for the audit-log path. The setDcRole helper accepts
+  // it on its signature but does NOT write it to damage_claim_user_roles
+  // (the column does not exist on that table — see Brief 64).
   const userObj = await adminGetUser(env, userId);
   if (!userObj.email) return jsonError(400, "User has no email on file");
 
