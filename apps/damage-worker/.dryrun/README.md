@@ -1,1 +1,0 @@
-This folder contains the built output assets for the worker "splash-damage" generated at 2026-05-06T14:30:01.355Z.

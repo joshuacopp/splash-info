@@ -131,9 +131,21 @@ bucket_name = "damagedocs"
 [images]
 binding = "IMAGES"
 
+# Brief 65 (2026-05-07): daily open-claims summary cron. Fires every day at
+# 13:00 UTC (8 AM ET). The scheduled handler in src/index.ts builds per-user
+# digests and POSTs to DAILY_SUMMARY_WEBHOOK_URL (Power Automate). Operator
+# binds the webhook URL out-of-code via:
+#   pnpm --filter @splash/damage-worker exec wrangler secret put DAILY_SUMMARY_WEBHOOK_URL
+# When unbound, the scheduled handler logs a warning and exits cleanly —
+# same fail-soft posture as CUSTOMER_CLAIM_WEBHOOK_URL (Brief 32).
+[triggers]
+crons = ["0 13 * * *"]
+
 # Brief 63 (2026-05-07): keeps Workers Logs sticky across deploys. Without
 # this, CF Builds re-provisions the worker on every push and the dashboard
 # "Logs → Enabled" toggle reverts to off. New workers should copy this block.
+# Brief 65 note: scheduled invocations show up in the same logs view with
+# `eventType: scheduled`, distinct from `fetch`.
 [observability.logs]
 enabled = true
 invocation_logs = true

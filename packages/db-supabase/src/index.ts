@@ -19,3 +19,4 @@ export * from "./phones.js";
 export * from "./locations.js";
 export * from "./performance.js";
 export * from "./audit.js";
+export * from "./summary.js";

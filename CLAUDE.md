@@ -223,6 +223,16 @@ When given a new task:
   push-triggered deploys. Without it, CF Builds re-provisions the worker
   on every deploy and the dashboard toggle reverts to off. New workers
   should copy the block verbatim from any existing one.
+- **Scheduled handlers (Brief 65).** damage-worker's default export is
+  `{ fetch, scheduled }`; the scheduled handler runs the daily
+  open-claims summary cron (`[triggers] crons = ["0 13 * * *"]` =
+  13:00 UTC = 8 AM ET; see `runDailySummaryCron` in
+  `apps/damage-worker/src/index.ts`). Future cron additions to other
+  workers should follow the same pattern: extend the default export to
+  `{ fetch, scheduled }`, add a `[triggers] crons = [...]` block to
+  wrangler.toml. The Workers Logs `[observability.logs]` block from
+  Brief 63 covers scheduled invocations automatically — they show up
+  with `eventType: scheduled` (vs `fetch`).
 - **Damage-worker manage endpoints** (post-Brief 59):
   `GET /manage/api/claims` (now with `regional_director_email`,
   `regional_manager_email`, `submitted_from`, `submitted_to` query
@@ -461,6 +471,21 @@ URL-based — service bindings don't apply to those.
 
 ## Glossary
 
+- **Daily summary** - Brief 65's once-a-day digest of open damage
+  claims emitted by damage-worker's `scheduled` handler at 13:00 UTC
+  (8 AM ET). Recipients are every gm / rm / admin / super_admin in
+  `auth_unified` (filtered server-side by `dc_role` and again in-code
+  by the `SUMMARY_DC_ROLES` constant). gm / rm digests are scoped to
+  their `dc_locations`; admin / super_admin digests are unrestricted
+  and group hierarchically by Regional Director → Regional Manager →
+  Location → claims (sorted by count desc within each level; oldest
+  claim first within each location). Skip-on-empty: zero open claims
+  for a recipient produces no email. Each digest is POSTed to the
+  optional `DAILY_SUMMARY_WEBHOOK_URL` secret on damage-worker (15s
+  timeout, fail-soft when unbound — same posture as
+  `CUSTOMER_CLAIM_WEBHOOK_URL`); Power Automate fans out to email.
+  Per-user opt-out is coarse today (remove dc_role, or edit
+  `SUMMARY_DC_ROLES`); per-user opt-in flag deferred to v2.
 - **Reporting** - Brief 59's corporate-style aggregate view of damage
   claims at `/admin/damage/reporting`. KPI tiles (Open / Closed /
   Approved / Denied / Repair Cost), per-location pivot table, and

@@ -90,10 +90,14 @@ import {
 } from "@splash/db-d1";
 import {
   type ContactRosterEntry,
+  fetchLocationRoster,
   getActiveLocationByCode,
   getLocationContactInfo,
   getMaintainXLocationId,
   listContactRoster,
+  listSummaryRecipients,
+  type LocationRosterEntry,
+  type SummaryRecipient,
   type SupabaseEnv
 } from "@splash/db-supabase";
 import { isOriginAllowed, json, jsonError, readForm } from "@splash/http";
@@ -110,6 +114,7 @@ import type {
   ClaimPhotoRow,
   ClaimRow,
   ClaimStatus,
+  DamageRole,
   LifecycleState,
   PayToType
 } from "@splash/types/claims";
@@ -174,6 +179,11 @@ interface Env extends SupabaseEnv {
   /** Used to build the admin URL inside each WO description (Brief 42).
    *  `[vars]` entry; flip to the prod hostname at cutover. */
   APPS_WEB_BASE_URL: string;
+  /** Brief 65 — daily open-claims summary webhook (Power Automate). The
+   *  scheduled handler POSTs one DigestPayload per recipient. Optional;
+   *  when unbound the cron logs and exits cleanly. Bind via
+   *  `wrangler secret put DAILY_SUMMARY_WEBHOOK_URL`. */
+  DAILY_SUMMARY_WEBHOOK_URL?: string;
 }
 
 /** R2 key for the brand logo embedded in the claim summary PDF header band
@@ -307,6 +317,13 @@ export default {
       console.error("damage-worker request failed:", path, err);
       return jsonError(500, err instanceof Error ? err.message : "server error");
     }
+  },
+
+  // Brief 65 — daily open-claims summary cron. Wrangler trigger
+  // `0 13 * * *` (13:00 UTC = 8 AM ET) fires this handler once a day. See
+  // runDailySummaryCron below for the per-recipient digest pipeline.
+  async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
+    ctx.waitUntil(runDailySummaryCron(env));
   }
 } satisfies ExportedHandler<Env>;
 
@@ -3081,6 +3098,365 @@ async function fireCustomerClaimWebhook(
       `CUSTOMER_CLAIM_WEBHOOK_URL POST error for ${claimData.claimId}:`,
       err
     );
+  }
+}
+
+/* ============================================================
+ * Brief 65 — Daily open-claims summary cron
+ * ============================================================ */
+
+/**
+ * Brief 65 — recipient role allow-list. Operator's 2026-05-07 decision:
+ * every gm / rm / admin / super_admin gets the daily digest. Promote to a
+ * per-user opt-in column (e.g., `subscribe_daily_summary`) when a specific
+ * user requests opt-out without a role change. `listSummaryRecipients`
+ * already filters server-side; this constant documents the intent and
+ * gives a single edit point.
+ */
+const SUMMARY_DC_ROLES: ReadonlyArray<DamageRole> = [
+  "gm",
+  "rm",
+  "admin",
+  "super_admin"
+];
+
+/** Sentinel name shown in the digest when a location's RD or RM is null. */
+const UNASSIGNED_NAME = "(unassigned)";
+
+interface SummaryClaim {
+  claim_id: string;
+  customer_name: string | null;
+  vehicle: string;
+  claim_status: string;
+  submitted_at: string;
+  age_days: number;
+}
+
+interface SummaryLocation {
+  location_code: string;
+  location_pretty: string;
+  count: number;
+  claims: SummaryClaim[];
+}
+
+interface SummaryRm {
+  rm_email: string | null;
+  rm_name: string;
+  count: number;
+  locations: SummaryLocation[];
+}
+
+interface SummaryRd {
+  rd_email: string | null;
+  rd_name: string;
+  count: number;
+  regional_managers: SummaryRm[];
+}
+
+interface DigestPayload {
+  user: {
+    user_id: string;
+    email: string;
+    name: string | null;
+    dc_role: DamageRole;
+  };
+  as_of: string;
+  total_open: number;
+  regional_directors: SummaryRd[];
+}
+
+/**
+ * Top-level cron entry-point. Catastrophic errors (e.g., listClaims itself
+ * fails) are logged and re-thrown so CF marks the invocation failed; per-
+ * user errors stay swallowed inside the loop so one bad recipient doesn't
+ * kill the batch.
+ */
+async function runDailySummaryCron(env: Env): Promise<void> {
+  if (!env.DAILY_SUMMARY_WEBHOOK_URL) {
+    console.warn("[daily-summary] DAILY_SUMMARY_WEBHOOK_URL unbound — skipping");
+    return;
+  }
+
+  const asOf = new Date().toISOString();
+  let recipients: SummaryRecipient[] = [];
+  let locationsByCode: Map<string, LocationRosterEntry> = new Map();
+  let allOpenClaims: Awaited<ReturnType<typeof listClaims>> = [];
+
+  try {
+    [recipients, locationsByCode, allOpenClaims] = await Promise.all([
+      listSummaryRecipients(env),
+      fetchLocationRoster(env),
+      listClaims(env.DB, { lifecycle: "Open", limit: 5000 })
+    ]);
+  } catch (err) {
+    console.error("[daily-summary] catastrophic load failure", err);
+    throw err;
+  }
+
+  let sentCount = 0;
+  let skippedEmptyCount = 0;
+  let failedCount = 0;
+
+  for (const user of recipients) {
+    if (!SUMMARY_DC_ROLES.includes(user.dc_role)) continue;
+
+    try {
+      const isUnrestricted =
+        user.dc_role === "admin" || user.dc_role === "super_admin";
+      const userClaims = isUnrestricted
+        ? allOpenClaims
+        : allOpenClaims.filter((c) => user.dc_locations.includes(c.location_code));
+
+      if (userClaims.length === 0) {
+        skippedEmptyCount += 1;
+        continue;
+      }
+
+      const payload = buildDigestPayload(user, userClaims, locationsByCode, asOf);
+      const ok = await postDigest(env.DAILY_SUMMARY_WEBHOOK_URL, payload, user.email);
+      if (ok) sentCount += 1;
+      else failedCount += 1;
+    } catch (err) {
+      failedCount += 1;
+      console.error("[daily-summary] per-user failure", {
+        user_email: user.email,
+        error: err instanceof Error ? err.message : String(err)
+      });
+    }
+  }
+
+  console.log("[daily-summary] batch complete", {
+    recipients: recipients.length,
+    sent: sentCount,
+    skipped_empty: skippedEmptyCount,
+    failed_post: failedCount
+  });
+}
+
+/**
+ * Build the hierarchical RD → RM → location → claims structure for one
+ * recipient. Locations whose `rd_email`/`rm_email` are null bucket under
+ * `(unassigned)`; locations missing entirely from `locationsByCode` (e.g.,
+ * pricing_simple row was deleted but D1 still references the code) bucket
+ * under `(unassigned)` for both levels with the location_code as
+ * location_pretty.
+ *
+ * Sort order:
+ *   - regional_directors / regional_managers / locations: count desc, then name asc
+ *   - claims within each location: submitted_at asc (oldest first)
+ */
+function buildDigestPayload(
+  user: SummaryRecipient,
+  userClaims: ReadonlyArray<{
+    claim_id: string;
+    location_code: string;
+    location_pretty: string | null;
+    customer_name: string | null;
+    vehicle_year: number | null;
+    vehicle_make: string | null;
+    vehicle_model: string | null;
+    submitted_at: string;
+    claim_status: string;
+  }>,
+  locationsByCode: Map<string, LocationRosterEntry>,
+  asOf: string
+): DigestPayload {
+  // Group bucket: rd_key → rm_key → location_code → SummaryClaim[].
+  // Keys use the email when present; sentinel "(unassigned)" otherwise. We
+  // also stash the display name on the bucket so we don't have to re-look
+  // up by key.
+  interface RdBucket {
+    rd_email: string | null;
+    rd_name: string;
+    rms: Map<string, RmBucket>;
+  }
+  interface RmBucket {
+    rm_email: string | null;
+    rm_name: string;
+    locations: Map<string, LocationBucket>;
+  }
+  interface LocationBucket {
+    location_code: string;
+    location_pretty: string;
+    claims: SummaryClaim[];
+  }
+
+  const rdBuckets = new Map<string, RdBucket>();
+  const nowMs = Date.parse(asOf);
+
+  for (const claim of userClaims) {
+    const roster = locationsByCode.get(claim.location_code);
+    const rdEmail = roster?.rd_email ?? null;
+    const rdName = roster?.rd_name ?? null;
+    const rmEmail = roster?.rm_email ?? null;
+    const rmName = roster?.rm_name ?? null;
+    const locationPretty =
+      roster?.location_pretty ?? claim.location_pretty ?? claim.location_code;
+
+    const rdKey = rdEmail ?? `__unassigned__::${rdName ?? ""}`;
+    const rmKey = rmEmail ?? `__unassigned__::${rmName ?? ""}`;
+
+    let rd = rdBuckets.get(rdKey);
+    if (!rd) {
+      rd = {
+        rd_email: rdEmail,
+        rd_name: rdName ?? UNASSIGNED_NAME,
+        rms: new Map()
+      };
+      rdBuckets.set(rdKey, rd);
+    }
+
+    let rm = rd.rms.get(rmKey);
+    if (!rm) {
+      rm = {
+        rm_email: rmEmail,
+        rm_name: rmName ?? UNASSIGNED_NAME,
+        locations: new Map()
+      };
+      rd.rms.set(rmKey, rm);
+    }
+
+    let loc = rm.locations.get(claim.location_code);
+    if (!loc) {
+      loc = {
+        location_code: claim.location_code,
+        location_pretty: locationPretty,
+        claims: []
+      };
+      rm.locations.set(claim.location_code, loc);
+    }
+
+    loc.claims.push({
+      claim_id: claim.claim_id,
+      customer_name: claim.customer_name ?? null,
+      vehicle: assembleVehicle(
+        claim.vehicle_year,
+        claim.vehicle_make,
+        claim.vehicle_model
+      ),
+      claim_status: claim.claim_status,
+      submitted_at: claim.submitted_at,
+      age_days: ageDays(claim.submitted_at, nowMs)
+    });
+  }
+
+  // Materialize the sorted, count-stamped output structure.
+  const sortByCountThenName = <T extends { count: number; name: string }>(
+    a: T,
+    b: T
+  ): number => (b.count - a.count) || a.name.localeCompare(b.name);
+
+  const regional_directors: SummaryRd[] = [...rdBuckets.values()]
+    .map((rd) => {
+      const regional_managers: SummaryRm[] = [...rd.rms.values()]
+        .map((rm) => {
+          const locations: SummaryLocation[] = [...rm.locations.values()]
+            .map((loc) => ({
+              location_code: loc.location_code,
+              location_pretty: loc.location_pretty,
+              count: loc.claims.length,
+              claims: loc.claims.sort((a, b) =>
+                a.submitted_at.localeCompare(b.submitted_at)
+              )
+            }))
+            .sort((a, b) =>
+              sortByCountThenName(
+                { count: a.count, name: a.location_pretty },
+                { count: b.count, name: b.location_pretty }
+              )
+            );
+          const count = locations.reduce((sum, l) => sum + l.count, 0);
+          return {
+            rm_email: rm.rm_email,
+            rm_name: rm.rm_name,
+            count,
+            locations
+          };
+        })
+        .sort((a, b) =>
+          sortByCountThenName(
+            { count: a.count, name: a.rm_name },
+            { count: b.count, name: b.rm_name }
+          )
+        );
+      const count = regional_managers.reduce((sum, r) => sum + r.count, 0);
+      return {
+        rd_email: rd.rd_email,
+        rd_name: rd.rd_name,
+        count,
+        regional_managers
+      };
+    })
+    .sort((a, b) =>
+      sortByCountThenName(
+        { count: a.count, name: a.rd_name },
+        { count: b.count, name: b.rd_name }
+      )
+    );
+
+  return {
+    user: {
+      user_id: user.user_id,
+      email: user.email,
+      name: user.name,
+      dc_role: user.dc_role
+    },
+    as_of: asOf,
+    total_open: userClaims.length,
+    regional_directors
+  };
+}
+
+function assembleVehicle(
+  year: number | null,
+  make: string | null,
+  model: string | null
+): string {
+  const parts = [
+    year != null ? String(year) : null,
+    make ?? null,
+    model ?? null
+  ].filter((p): p is string => typeof p === "string" && p.trim().length > 0);
+  return parts.length > 0 ? parts.join(" ") : "—";
+}
+
+function ageDays(submittedAt: string, nowMs: number): number {
+  const t = Date.parse(submittedAt);
+  if (!Number.isFinite(t)) return 0;
+  const diff = Math.floor((nowMs - t) / 86_400_000);
+  return diff < 0 ? 0 : diff;
+}
+
+/**
+ * POST one digest. Returns true on 2xx, false on any non-2xx / network /
+ * abort. Caller increments sent/failed counters accordingly.
+ */
+async function postDigest(
+  webhookUrl: string,
+  payload: DigestPayload,
+  userEmail: string
+): Promise<boolean> {
+  try {
+    const res = await fetch(webhookUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(15_000)
+    });
+    if (!res.ok) {
+      console.error("[daily-summary] POST failed", {
+        user_email: userEmail,
+        status: res.status
+      });
+      return false;
+    }
+    return true;
+  } catch (err) {
+    console.error("[daily-summary] POST threw", {
+      user_email: userEmail,
+      error: err instanceof Error ? err.message : String(err)
+    });
+    return false;
   }
 }
 
