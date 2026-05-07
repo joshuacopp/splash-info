@@ -20,6 +20,7 @@ declare global {
     PERFORMANCE_WORKER: Fetcher;
     SYSADMIN_WORKER: Fetcher;
     DAMAGE_WORKER: Fetcher;
+    WORKORDERS_WORKER: Fetcher;
   }
 }
 

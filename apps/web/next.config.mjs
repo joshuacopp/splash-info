@@ -45,7 +45,10 @@ const REWRITE_TARGETS = [
   { source: "/pertrack/:path*", envVar: "NEXT_PUBLIC_PERFORMANCE_WORKER_URL" },
 
   // sysadmin-worker
-  { source: "/sysadmin/api/:path*", envVar: "NEXT_PUBLIC_SYSADMIN_WORKER_URL" }
+  { source: "/sysadmin/api/:path*", envVar: "NEXT_PUBLIC_SYSADMIN_WORKER_URL" },
+
+  // workorders-worker (Brief 70)
+  { source: "/workorders/api/:path*", envVar: "NEXT_PUBLIC_WORKORDERS_WORKER_URL" }
 ];
 
 /** @type {import('next').NextConfig} */

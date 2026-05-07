@@ -11,11 +11,12 @@ that next, then the brief you've been asked to execute (under `BRIEFS/`).
 
 ## What this project is
 
-Splash Car Wash's MaxPass internal tooling monorepo. Five Cloudflare
-Workers (apps/) ported from a single legacy worker (`info-signup-worker`)
-plus a Next.js apps/web that consumes their JSON APIs. Seven shared
-packages (packages/) provide auth, http, database, types, UI, storage,
-and config. Build orchestration via Turbo (`turbo.json`) and pnpm
+Splash Car Wash's MaxPass internal tooling monorepo. Six Cloudflare
+Workers (apps/) — five ported from a single legacy worker
+(`info-signup-worker`) plus the new workorders-worker (Brief 70) — plus
+a Next.js apps/web that consumes their JSON APIs. Seven shared packages
+(packages/) provide auth, http, database, types, UI, storage, and
+config. Build orchestration via Turbo (`turbo.json`) and pnpm
 workspaces (`pnpm-workspace.yaml`).
 
 ```
@@ -29,8 +30,12 @@ apps/
   apps/sysadmin-worker      User management JSON API at /sysadmin/api/*
   apps/damage-worker        Damage claims API + R2 photos + D1 records +
                             Power Automate webhooks + Check Request PDF gen
+                            + MaintainX WO create path (Brief 42 / 43)
+  apps/workorders-worker    Work Orders read API at /workorders/api/*
+                            (MaintainX integration; sibling of damage-worker
+                            — Brief 70)
   apps/web                  Next.js (App Router), deploys via OpenNext to
-                            Cloudflare Workers. Consumer of all five
+                            Cloudflare Workers. Consumer of all six
                             workers' JSON APIs.
 
 packages/
@@ -201,7 +206,7 @@ When given a new task:
 
 - Worker code lives in `apps/<worker-name>/src/`. Wrangler config is
   `apps/<worker-name>/wrangler.toml`.
-- All five workers are deployed to `*.workers.dev` only. Production
+- All six workers are deployed to `*.workers.dev` only. Production
   routes are commented in every wrangler.toml. Don't uncomment without
   explicit instruction.
 - Secrets are bound via `wrangler secret put`, scoped per worker. The
@@ -246,10 +251,16 @@ When given a new task:
   breakdowns; cost = sum of approved-quote + receipt amounts —
   `claim_photos.amount` for `Quote`/`Receipt` rows on Approved-family
   claims).
+- **`MAINTAINX_API_KEY` is bound on TWO workers** (Brief 70):
+  damage-worker for the WO-create path (Brief 42 / 43), and
+  workorders-worker for the WO-read path (`GET /workorders/api/list`).
+  Same value on both; per-worker bindings. Future MaintainX surfaces
+  should pick one of these two workers as the home rather than
+  spawning a third.
 - **MaintainX integration (Brief 42).** `MAINTAINX_API_KEY` is a
-  `wrangler secret` bound on **damage-worker only** — bearer token for
-  `https://api.getmaintainx.com/v1/workorders`. Three companion
-  non-secret `[vars]` entries live in `apps/damage-worker/wrangler.toml`:
+  `wrangler secret` bound on **damage-worker AND workorders-worker** —
+  bearer token for `https://api.getmaintainx.com/v1/workorders`. Three
+  companion non-secret `[vars]` entries live in `apps/damage-worker/wrangler.toml`:
   `MAINTAINX_MODE` (`"test"` default — routes WOs only to Josh; flip to
   `"production"` at cutover), `MAINTAINX_BASE_URL`, and
   `APPS_WEB_BASE_URL` (used to build the admin link inside each WO
@@ -277,6 +288,16 @@ When given a new task:
   earlier version that joined on `locations.site` and silently
   returned null for every slug — same bug class Brief 49 fixed for
   `getLocationContactInfo`.
+- **Workorders-worker endpoints** (Brief 70): `GET /workorders/api/list`
+  is the only endpoint today. dc_role-gated (super_admin / admin
+  global, gm / rm scoped to dc_locations); upstream MaintainX call
+  has an 8s `AbortController` timeout. Fail modes:
+  `MAINTAINX_API_KEY` unbound → 503 (page surfaces "integration not
+  configured"), MaintainX non-2xx → 502, network/abort → 504. The
+  bulk Supabase helpers `getMaintainXIdsForLocationCodes` /
+  `getLocationCodesByMaintainXIds` (in `@splash/db-supabase/locations`)
+  resolve location_code ↔ maintainx_id in two PostgREST GETs total
+  per direction (not 2N round-trips); both fail-soft.
 
 ---
 
@@ -288,6 +309,7 @@ When given a new task:
   (Brief 56), `/admin/signups/[location]` (Brief 56), `/admin/sysadmin`,
   `/admin/damage`, `/admin/damage/[id]`,
   `/admin/damage/reporting` (Brief 59),
+  `/workorders` (Brief 70 — top-level, NOT under /admin/*),
   `/logout` (route handler).
 - Placeholder pages: `/admin/performance`.
 - Redirect-only pages: `/` (Brief 50: redirects to `/login` or
@@ -481,6 +503,18 @@ URL-based — service bindings don't apply to those.
 
 ## Glossary
 
+- **Work Orders** (Brief 70) - Read-only MaintainX integration. Surfaces
+  open / in-progress / on-hold work orders to operators on `/workorders`
+  (top-level apps/web page, dc_role gated). Backed by
+  `GET /workorders/api/list` on the new `splash-workorders` worker
+  (`apps/workorders-worker/`). Grouped by Splash `location_code`,
+  ordered by priority HIGH → MEDIUM → LOW → NONE within each group
+  (tie-breaker `updatedAt` desc). Each WO row links out to MaintainX
+  itself (`app.getmaintainx.com/workorders/{id}`); this view does not
+  write or edit WOs (Brief 42 / 43 own the create path on
+  damage-worker). `MAINTAINX_API_KEY` is bound on BOTH workers (same
+  value); per-worker bindings. Filter excludes DONE / CANCELED /
+  SKIPPED — operators who want closed WOs follow the link out.
 - **`age_days`** (Brief 68) - Server-computed days-since-submission
   field on the `/manage/api/claims` list response. Lives in the
   `listClaims` SELECT projection in `packages/db-d1/src/claims.ts` as

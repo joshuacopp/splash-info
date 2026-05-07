@@ -389,3 +389,328 @@ export async function getSiteNumbersForUser(
   const rows = (data ?? []) as unknown as Array<{ site_number: number | null }>;
   return [...new Set(rows.map((r) => r.site_number).filter((n): n is number => n != null))];
 }
+
+/**
+ * Brief 70 — bulk-resolution shape used by both directions of the
+ * location_code ↔ maintainx_id lookup. Mirrors the two-step join chain
+ * codified by Brief 62's `getMaintainXLocationId` helper:
+ * `pricing_simple.location_code` → `pricing_simple.site` (denormalized
+ * site_number text) → `locations.site_number` → `locations.maintainx_id`.
+ */
+export interface MaintainXLocationInfo {
+  location_code: string;
+  location_pretty: string | null;
+  site_number: string | null;
+  maintainx_id: number | null;
+}
+
+const LOCATION_CODE_RE = /^[a-z0-9_]+$/;
+
+function escapeForInClause(value: string): string {
+  // PostgREST IN-clause values are comma-separated. Anything matching the
+  // location_code regex is already safe for inclusion verbatim, but we
+  // double-quote defensively so a malformed code can't break the clause.
+  return `"${value.replace(/"/g, '""')}"`;
+}
+
+/**
+ * Brief 70 — bulk variant of `getMaintainXLocationId`. Resolves a list of
+ * Splash `location_code`s to MaintainX info in two PostgREST GETs total
+ * (one per table), preserving the caller's input set in the result so a
+ * downstream consumer can keep the user's dc_locations ordering.
+ *
+ * Entries with `maintainx_id: null` mean the locations row exists but no
+ * MaintainX site is mapped — the caller surfaces these as a soft warning.
+ * Entries missing from `pricing_simple` entirely (bad slug, retired
+ * location) come back with all-null fields under the same input code.
+ *
+ * Fail-soft: any throw or non-2xx returns one all-null entry per requested
+ * code. Caller treats nulls as "not mapped" — this helper never raises.
+ */
+export async function getMaintainXIdsForLocationCodes(
+  env: { SUPABASE_URL: string; SUPABASE_SERVICE_KEY: string },
+  locationCodes: string[]
+): Promise<MaintainXLocationInfo[]> {
+  const sanitized = [
+    ...new Set(
+      locationCodes
+        .map((c) => (typeof c === "string" ? c.trim().toLowerCase() : ""))
+        .filter((c) => c.length > 0 && LOCATION_CODE_RE.test(c))
+    )
+  ];
+  if (sanitized.length === 0) {
+    return locationCodes.map((c) => ({
+      location_code: typeof c === "string" ? c : "",
+      location_pretty: null,
+      site_number: null,
+      maintainx_id: null
+    }));
+  }
+
+  const headers = {
+    apikey: env.SUPABASE_SERVICE_KEY,
+    Authorization: `Bearer ${env.SUPABASE_SERVICE_KEY}`
+  };
+
+  // Step 1 — pricing_simple.location_code → site (text). Multiple rows per
+  // location (one per package) so we dedupe by location_code, picking the
+  // first non-null site / location_pretty seen.
+  type PricingSimpleRow = {
+    location_code: string | null;
+    location_pretty: string | null;
+    site: string | null;
+  };
+  const psUrl = new URL("/rest/v1/pricing_simple", env.SUPABASE_URL);
+  psUrl.searchParams.set("select", "location_code,location_pretty,site");
+  psUrl.searchParams.set(
+    "location_code",
+    `in.(${sanitized.map(escapeForInClause).join(",")})`
+  );
+  // Per-location N rows (~7 packages × 67 locations max in this dataset);
+  // 4000 covers the worst case with comfortable headroom.
+  psUrl.searchParams.set("limit", "4000");
+
+  let psRows: PricingSimpleRow[] = [];
+  try {
+    const res = await fetch(psUrl.toString(), { headers });
+    if (!res.ok) {
+      console.error(
+        "getMaintainXIdsForLocationCodes: pricing_simple returned",
+        res.status
+      );
+      return sanitized.map((code) => ({
+        location_code: code,
+        location_pretty: null,
+        site_number: null,
+        maintainx_id: null
+      }));
+    }
+    psRows = (await res.json().catch(() => [])) as PricingSimpleRow[];
+  } catch (err) {
+    console.error("getMaintainXIdsForLocationCodes: pricing_simple fetch threw", err);
+    return sanitized.map((code) => ({
+      location_code: code,
+      location_pretty: null,
+      site_number: null,
+      maintainx_id: null
+    }));
+  }
+
+  const codeToInfo = new Map<
+    string,
+    { location_pretty: string | null; site: string | null }
+  >();
+  for (const row of psRows) {
+    const code = typeof row.location_code === "string" ? row.location_code : "";
+    if (!code) continue;
+    const existing = codeToInfo.get(code);
+    if (!existing) {
+      codeToInfo.set(code, {
+        location_pretty: row.location_pretty ?? null,
+        site: row.site ?? null
+      });
+      continue;
+    }
+    if (existing.location_pretty == null && row.location_pretty != null) {
+      existing.location_pretty = row.location_pretty;
+    }
+    if (existing.site == null && row.site != null) {
+      existing.site = row.site;
+    }
+  }
+
+  // Step 2 — locations.site_number → maintainx_id. Use the distinct
+  // non-null site values from step 1.
+  const distinctSites = [
+    ...new Set(
+      [...codeToInfo.values()]
+        .map((v) => v.site)
+        .filter((s): s is string => typeof s === "string" && s.length > 0)
+    )
+  ];
+
+  const siteToMaintainxId = new Map<string, number | null>();
+  if (distinctSites.length > 0) {
+    const locUrl = new URL("/rest/v1/locations", env.SUPABASE_URL);
+    locUrl.searchParams.set("select", "site_number,maintainx_id");
+    locUrl.searchParams.set(
+      "site_number",
+      `in.(${distinctSites.map(escapeForInClause).join(",")})`
+    );
+    locUrl.searchParams.set("limit", String(distinctSites.length));
+    try {
+      const res = await fetch(locUrl.toString(), { headers });
+      if (res.ok) {
+        const rows = (await res.json().catch(() => [])) as Array<{
+          site_number: string | null;
+          maintainx_id: number | null;
+        }>;
+        for (const row of rows) {
+          if (typeof row.site_number !== "string") continue;
+          const mx = typeof row.maintainx_id === "number" && Number.isFinite(row.maintainx_id)
+            ? row.maintainx_id
+            : null;
+          siteToMaintainxId.set(row.site_number, mx);
+        }
+      } else {
+        console.error(
+          "getMaintainXIdsForLocationCodes: locations returned",
+          res.status
+        );
+      }
+    } catch (err) {
+      console.error("getMaintainXIdsForLocationCodes: locations fetch threw", err);
+    }
+  }
+
+  return sanitized.map((code) => {
+    const ps = codeToInfo.get(code);
+    const site = ps?.site ?? null;
+    const maintainx = site != null ? siteToMaintainxId.get(site) ?? null : null;
+    return {
+      location_code: code,
+      location_pretty: ps?.location_pretty ?? null,
+      site_number: site,
+      maintainx_id: maintainx
+    };
+  });
+}
+
+/**
+ * Brief 70 — global-path companion to `getMaintainXIdsForLocationCodes`.
+ * Resolves a set of MaintainX numeric `locationId`s back to Splash
+ * `location_code` info. Used when a global-scoped operator
+ * (super_admin / admin) fetches every open WO and the worker needs to
+ * group them by Splash location.
+ *
+ * Returns a `Map<maintainx_id, MaintainXLocationInfo>` for O(1) lookup.
+ * Unmapped MaintainX IDs simply don't appear in the Map — the caller
+ * surfaces those as `unmatchedWorkOrders` so operators can spot
+ * MaintainX-side data hygiene gaps.
+ *
+ * Fail-soft: any throw / non-2xx → empty Map. Caller falls back to
+ * surfacing every WO under `unmatchedWorkOrders`.
+ */
+export async function getLocationCodesByMaintainXIds(
+  env: { SUPABASE_URL: string; SUPABASE_SERVICE_KEY: string },
+  maintainxIds: number[]
+): Promise<Map<number, MaintainXLocationInfo>> {
+  const sanitizedIds = [
+    ...new Set(maintainxIds.filter((n) => Number.isFinite(n)))
+  ];
+  if (sanitizedIds.length === 0) return new Map();
+
+  const headers = {
+    apikey: env.SUPABASE_SERVICE_KEY,
+    Authorization: `Bearer ${env.SUPABASE_SERVICE_KEY}`
+  };
+
+  // Step 1 — locations.maintainx_id → site_number.
+  type LocationsRow = {
+    site_number: string | null;
+    maintainx_id: number | null;
+  };
+  const locUrl = new URL("/rest/v1/locations", env.SUPABASE_URL);
+  locUrl.searchParams.set("select", "site_number,maintainx_id");
+  locUrl.searchParams.set(
+    "maintainx_id",
+    `in.(${sanitizedIds.map(String).join(",")})`
+  );
+  locUrl.searchParams.set("limit", String(sanitizedIds.length));
+
+  let locRows: LocationsRow[] = [];
+  try {
+    const res = await fetch(locUrl.toString(), { headers });
+    if (!res.ok) {
+      console.error(
+        "getLocationCodesByMaintainXIds: locations returned",
+        res.status
+      );
+      return new Map();
+    }
+    locRows = (await res.json().catch(() => [])) as LocationsRow[];
+  } catch (err) {
+    console.error("getLocationCodesByMaintainXIds: locations fetch threw", err);
+    return new Map();
+  }
+
+  // Build site_number → maintainx_id map (filter to rows with both fields).
+  const siteToMaintainxId = new Map<string, number>();
+  for (const row of locRows) {
+    if (
+      typeof row.site_number === "string" &&
+      typeof row.maintainx_id === "number" &&
+      Number.isFinite(row.maintainx_id)
+    ) {
+      siteToMaintainxId.set(row.site_number, row.maintainx_id);
+    }
+  }
+  if (siteToMaintainxId.size === 0) return new Map();
+
+  // Step 2 — pricing_simple.site → location_code, location_pretty. Dedupe
+  // by location_code (multi-row-per-location).
+  type PricingSimpleRow = {
+    location_code: string | null;
+    location_pretty: string | null;
+    site: string | null;
+  };
+  const distinctSites = [...siteToMaintainxId.keys()];
+  const psUrl = new URL("/rest/v1/pricing_simple", env.SUPABASE_URL);
+  psUrl.searchParams.set("select", "location_code,location_pretty,site");
+  psUrl.searchParams.set(
+    "site",
+    `in.(${distinctSites.map(escapeForInClause).join(",")})`
+  );
+  psUrl.searchParams.set("limit", "4000");
+
+  let psRows: PricingSimpleRow[] = [];
+  try {
+    const res = await fetch(psUrl.toString(), { headers });
+    if (!res.ok) {
+      console.error(
+        "getLocationCodesByMaintainXIds: pricing_simple returned",
+        res.status
+      );
+      return new Map();
+    }
+    psRows = (await res.json().catch(() => [])) as PricingSimpleRow[];
+  } catch (err) {
+    console.error("getLocationCodesByMaintainXIds: pricing_simple fetch threw", err);
+    return new Map();
+  }
+
+  const siteToInfo = new Map<
+    string,
+    { location_code: string; location_pretty: string | null }
+  >();
+  for (const row of psRows) {
+    const site = row.site;
+    const code = row.location_code;
+    if (typeof site !== "string" || !site) continue;
+    if (typeof code !== "string" || !code) continue;
+    const existing = siteToInfo.get(site);
+    if (!existing) {
+      siteToInfo.set(site, {
+        location_code: code,
+        location_pretty: row.location_pretty ?? null
+      });
+      continue;
+    }
+    if (existing.location_pretty == null && row.location_pretty != null) {
+      existing.location_pretty = row.location_pretty;
+    }
+  }
+
+  const result = new Map<number, MaintainXLocationInfo>();
+  for (const [site, mxId] of siteToMaintainxId.entries()) {
+    const info = siteToInfo.get(site);
+    if (!info) continue;
+    result.set(mxId, {
+      location_code: info.location_code,
+      location_pretty: info.location_pretty,
+      site_number: site,
+      maintainx_id: mxId
+    });
+  }
+  return result;
+}

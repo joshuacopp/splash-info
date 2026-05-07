@@ -67,3 +67,5 @@
 - 2026-05-07 10:32:42 brief-066-rm-revert-from-approved-pending-quotes.md (success)
 - 2026-05-07 11:23:36 brief-067-reporting-cost-column-drilldown-avg-days.md (success)
 - 2026-05-07 11:32:29 brief-068-age-pill-on-damage-claims-list.md (success)
+- 2026-05-07 12:23:03 brief-069-age-pill-two-tier-thresholds.md (success)
+- 2026-05-07 16:52:48 brief-070-workorders-worker-and-page.md (success)

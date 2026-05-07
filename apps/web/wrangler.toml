@@ -66,6 +66,11 @@ service = "splash-sysadmin"
 binding = "DAMAGE_WORKER"
 service = "splash-damage"
 
+# Brief 70 — workorders-worker (read-only MaintainX integration).
+[[services]]
+binding = "WORKORDERS_WORKER"
+service = "splash-workorders"
+
 # OpenNext static asset binding (CSS/JS/public/).
 [assets]
 directory = ".open-next/assets"

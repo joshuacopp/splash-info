@@ -44,6 +44,9 @@
 
 # brief-061-sysadmin-set-dc-role-tool.md  (completed 2026-05-07)
 
+# brief-070-workorders-worker-and-page.md  (completed 2026-05-07)
+
+
 
 
 

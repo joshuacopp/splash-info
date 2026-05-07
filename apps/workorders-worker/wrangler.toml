@@ -1,0 +1,71 @@
+# Splash Work Orders Worker — Brief 70.
+#
+# Read-only MaintainX integration. Surfaces open / in-progress / on-hold
+# work orders to operators on apps/web's /workorders page (server
+# component SSR-fetches GET /workorders/api/list via the
+# WORKORDERS_WORKER service binding).
+#
+# Permission domain: dc_role (Brief 61) — super_admin / admin global,
+# gm / rm scoped to dc_locations. The damage-worker's MaintainX write
+# path (Brief 42 / 43 — `createMaintainXWorkOrder`) is unchanged; this
+# worker is a sibling, not a replacement.
+#
+# DEPLOY STRATEGY: workers.dev fallback only until apps/web cuts over.
+# Staging route binds /workorders/api/* on staging.splashcarwashes.info
+# so apps/web (also bound to staging) can call same-origin (per Brief
+# 16 pattern). Production routes intentionally NOT bound (commented).
+
+name = "splash-workorders"
+main = "src/index.ts"
+compatibility_date = "2026-05-01"
+compatibility_flags = ["nodejs_compat"]
+
+workers_dev = true
+
+# Step 7 cutover routes (uncomment when apps/web is ready):
+# routes = [
+#   { pattern = "splashcarwashes.info/workorders/api/*", zone_name = "splashcarwashes.info" }
+# ]
+
+# Staging routes (Brief 16 pattern).
+routes = [
+  { pattern = "staging.splashcarwashes.info/workorders/api/*", zone_name = "splashcarwashes.info" }
+]
+
+# Bindings:
+# SUPABASE_URL          — string. Set via `wrangler secret put SUPABASE_URL`
+#                         (matches the deploy-time pattern used on every
+#                         other worker; the value is the same Supabase
+#                         project URL bound on splash-damage / splash-sysadmin).
+# SUPABASE_ANON_KEY     — secret. `wrangler secret put SUPABASE_ANON_KEY`.
+#                         Required by `authenticate()` in @splash/auth — the
+#                         /auth/v1/user round-trip uses the anon key.
+# SUPABASE_SERVICE_KEY  — secret. `wrangler secret put SUPABASE_SERVICE_KEY`
+#                         (same value as on splash-damage / splash-sysadmin —
+#                         service-role bypasses RLS for the bulk
+#                         maintainx_id resolution chain).
+# MAINTAINX_API_KEY     — secret. `wrangler secret put MAINTAINX_API_KEY`
+#                         with the SAME value already bound on splash-damage
+#                         (Brief 42). The API key is per-organization, not
+#                         per-worker; this worker reuses it for the GET
+#                         /workorders read path. Optional — when unbound
+#                         the endpoint returns 503 and the page surfaces a
+#                         friendly "integration not configured" empty state.
+
+# Brief 70 — non-secret env vars consumed by the MaintainX read path.
+#   MAINTAINX_BASE_URL — REST root (no trailing /workorders). Mirrors the
+#                        damage-worker var of the same name (Brief 42).
+#   APPS_WEB_BASE_URL  — populated for parity with damage-worker so future
+#                        cross-link rendering inside responses can reuse it.
+#                        Not consumed in this brief's v1 endpoint shape.
+[vars]
+MAINTAINX_BASE_URL = "https://api.getmaintainx.com/v1"
+APPS_WEB_BASE_URL  = "https://splashcarwashes.info"
+
+# Brief 63 (2026-05-07): keeps Workers Logs sticky across deploys. Without
+# this, CF Builds re-provisions the worker on every push and the dashboard
+# "Logs → Enabled" toggle reverts to off. New workers must include this
+# block from day one.
+[observability.logs]
+enabled = true
+invocation_logs = true
