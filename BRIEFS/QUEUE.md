@@ -46,6 +46,8 @@
 
 # brief-070-workorders-worker-and-page.md  (completed 2026-05-07)
 
+# brief-071-workorders-v2-gating-grouping-assignees-types.md  (completed 2026-05-07)
+
 
 
 

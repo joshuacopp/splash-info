@@ -1,34 +1,47 @@
-// Splash Work Orders Worker — Brief 70.
+// Splash Work Orders Worker — Brief 70 + Brief 71.
 //
-// Read-only MaintainX integration. apps/web's /workorders page SSR-
-// fetches GET /workorders/api/list via the WORKORDERS_WORKER service
-// binding; the response is server-grouped by Splash location_code with
-// per-group sort by priority (HIGH/MEDIUM/LOW/NONE), tie-breaker
-// updatedAt desc.
+// Read-only MaintainX integration. apps/web's /workorders page SSR-fetches
+// GET /workorders/api/list via the WORKORDERS_WORKER service binding; the
+// response is server-bucketed Reactive vs Preventive (by MaintainX
+// `wo.type`) and grouped by MaintainX location, with per-group sort by
+// priority HIGH → MEDIUM → LOW → NONE then `updatedAt` desc.
 //
-// PERMISSION DOMAIN — dc_role (Brief 61):
-//   super_admin / admin       → global (no location filter sent to MX)
-//   gm / rm                   → scoped to dc_locations
-//   no dc_role                → 403 (page renders an inline gated message)
+// PERMISSION DOMAIN — pure email-on-locations (Brief 71):
+//   Each user sees the locations whose `am_email`, `rm_email`, or
+//   `site_email` (`locations` table) equals their session email.
+//   super_admin / admin do NOT have a global override; if they want
+//   global visibility they need their email on the relevant rows.
+//   No dc_role check, no global path, no "unmatched" bucket.
 //
 // FAIL-SOFT POSTURE:
 //   - MAINTAINX_API_KEY unbound → 503 with friendly body
 //   - MaintainX upstream non-2xx → 502
 //   - Network / abort → 504
 //   - Anything else → 500
+//
+// SCHEDULED HANDLER (Brief 71):
+//   The default export is { fetch, scheduled }. The scheduled handler
+//   runs the daily MaintainX user/team sync (`[triggers] crons` in
+//   wrangler.toml — 11:30 UTC). Same pattern as damage-worker post-
+//   Brief 65; Workers Logs `[observability.logs]` block from Brief 63
+//   covers scheduled invocations automatically (eventType: scheduled).
 
 import { authenticate, type Session } from "@splash/auth";
 import {
-  getLocationCodesByMaintainXIds,
-  getMaintainXIdsForLocationCodes,
-  type MaintainXLocationInfo,
-  type SupabaseEnv
+  getLocationsByContactEmail,
+  getMaintainXTeamsByIds,
+  getMaintainXUsersByIds,
+  type MaintainXTeamRow,
+  type MaintainXUserRow,
+  type SupabaseEnv,
+  type UserAccessibleLocation
 } from "@splash/db-supabase";
 import { json, jsonError } from "@splash/http";
 import {
   fetchMaintainXWorkOrders,
   type RawWorkOrder
 } from "./maintainx.js";
+import { runMaintainXUserTeamSync, type SyncResult } from "./sync.js";
 
 interface Env extends SupabaseEnv {
   /** MaintainX bearer token. Same value as on splash-damage (Brief 42).
@@ -40,44 +53,32 @@ interface Env extends SupabaseEnv {
   APPS_WEB_BASE_URL: string;
 }
 
-/** Hard cap on the description text echoed back in the list response.
- *  MaintainX descriptions can be 1-2 KB; the page is for scanning, not
- *  reading — operators click out to MaintainX for the full text. */
-const DESCRIPTION_MAX_CHARS = 500;
-
-/** AbortController timeout for the upstream MaintainX call. Mirrors
+/** AbortController timeout for the upstream MaintainX read call. Mirrors
  *  damage-worker's WO-create timeout (Brief 42). */
 const MAINTAINX_TIMEOUT_MS = 8000;
 
-/* ============================================================
- * dc_role scope helper — duplicated from damage-worker by design.
- * Brief 70 explicitly chose duplication over shared package: the
- * helper is six lines, the two workers are domain-isolated, and
- * extracting to a package would couple them on a stable API
- * surface for marginal gain. If a third domain reuses this shape
- * we can lift it then.
- * ============================================================ */
-
-type WorkOrderScope =
-  | { kind: "global" }
-  | { kind: "scoped"; codes: string[] }
-  | { kind: "denied" };
-
-function workOrderScopeForSession(session: Session): WorkOrderScope {
-  if (session.dcRole === null) return { kind: "denied" };
-  if (session.dcRole === "super_admin" || session.dcRole === "admin") {
-    return { kind: "global" };
-  }
-  return { kind: "scoped", codes: session.dcLocations };
-}
+/** Hardcoded super-admin allow-list for the on-demand sync trigger. Mirrors
+ *  the operator/super_admin list called out in CLAUDE.md "operator
+ *  preferences"; defense-in-depth backed by `session.dcRole === "super_admin"`
+ *  fallback in `isSyncTriggerAllowed`. */
+const SYNC_ADMIN_EMAILS = new Set<string>([
+  "joshua.copp@gmail.com",
+  "josh.copp@splashcarwashes.com",
+  "noah@splashcarwashes.com",
+  "alexandro@splashcarwashes.com",
+  "jacob@splashcarwashes.com",
+  "rwilliams@splashcarwashes.com"
+]);
 
 /* ============================================================
- * Response shape — server already sorted + grouped.
+ * Response shape — server already bucketed + grouped + decorated.
  * ============================================================ */
 
 interface AssigneeOut {
   id: number | null;
+  type: "USER" | "TEAM" | "OTHER";
   name: string;
+  email: string | null;
 }
 
 interface WorkOrderOut {
@@ -86,34 +87,34 @@ interface WorkOrderOut {
   title: string;
   status: "OPEN" | "IN_PROGRESS" | "ON_HOLD" | string;
   priority: "HIGH" | "MEDIUM" | "LOW" | "NONE" | string;
+  type: string | null;
   createdAt: string | null;
   updatedAt: string | null;
   dueDate: string | null;
   description: string | null;
   assignees: AssigneeOut[];
-  thumbnailUrl: string | null;
   categories: string[];
+  locationId: number | null;
 }
 
 interface GroupOut {
-  location_code: string;
-  location_pretty: string | null;
+  /** MaintainX location ID — group key. */
   maintainx_id: number;
+  /** Header label. Prefers MaintainX's own `expand=location.name`; falls
+   *  back to the Splash-side postal address from `locations.location`,
+   *  then to a "(unknown location)" placeholder. */
+  location_pretty: string;
   work_orders: WorkOrderOut[];
 }
 
-interface UnmatchedWorkOrderOut extends WorkOrderOut {
-  maintainxLocationId: number | null;
-  maintainxLocationName: string | null;
-}
-
 interface ListResponse {
-  scope: "global" | "scoped";
-  missingMaintainxIds: string[];
-  groups: GroupOut[];
-  unmatchedWorkOrders: UnmatchedWorkOrderOut[];
-  truncated: boolean;
+  reactive: { groups: GroupOut[] };
+  preventive: { groups: GroupOut[] };
   fetchedAt: string;
+  truncated: boolean;
+  accessibleLocationCount: number;
+  mappedLocationCount: number;
+  email: string;
 }
 
 /* ============================================================
@@ -132,66 +133,76 @@ export default {
         return handleList(env, auth.session);
       }
 
+      if (path === "workorders/api/sync-maintainx-users" && request.method === "POST") {
+        const auth = await authenticate(request, env);
+        if (auth.status !== "authenticated") return jsonError(401, "unauthorized");
+        if (!isSyncTriggerAllowed(auth.session)) {
+          return jsonError(403, "manual sync requires super_admin");
+        }
+        const result = await runMaintainXUserTeamSync(env);
+        console.log("workorders-worker manual sync complete:", JSON.stringify(result));
+        return json(result satisfies SyncResult);
+      }
+
       return new Response("Not found", { status: 404 });
     } catch (err) {
       console.error("workorders-worker request failed:", path, err);
       return jsonError(500, err instanceof Error ? err.message : "server error");
     }
+  },
+
+  async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
+    ctx.waitUntil(
+      (async () => {
+        try {
+          const result = await runMaintainXUserTeamSync(env);
+          console.log("workorders-worker scheduled sync complete:", JSON.stringify(result));
+        } catch (err) {
+          console.error("workorders-worker scheduled sync failed:", err);
+        }
+      })()
+    );
   }
 } satisfies ExportedHandler<Env>;
 
+function isSyncTriggerAllowed(session: Session): boolean {
+  const email = session.email?.trim().toLowerCase() ?? "";
+  if (email && SYNC_ADMIN_EMAILS.has(email)) return true;
+  return session.dcRole === "super_admin";
+}
+
 /* ============================================================
- * GET /workorders/api/list
+ * GET /workorders/api/list — pure email-on-locations gate.
  * ============================================================ */
 
 async function handleList(env: Env, session: Session): Promise<Response> {
-  const scope = workOrderScopeForSession(session);
-  if (scope.kind === "denied") return jsonError(403, "no damage role assigned");
+  const email = session.email?.trim().toLowerCase() ?? "";
+  if (!email) return jsonError(401, "no session email");
 
   if (!env.MAINTAINX_API_KEY) {
     return jsonError(503, "MaintainX integration not configured");
   }
 
-  // For scoped users, resolve dc_locations → maintainx_ids. Drop unmapped.
-  let scopedLocationInfo: MaintainXLocationInfo[] = [];
-  let maintainxIdFilter: number[] | undefined;
-  let missingMaintainxIds: string[] = [];
+  // Phase 1 — resolve user's accessible locations via email match.
+  const accessible = await getLocationsByContactEmail(env, email);
+  const mappedMxIds = accessible
+    .map((l) => l.maintainx_id)
+    .filter((n): n is number => typeof n === "number" && Number.isFinite(n));
 
-  if (scope.kind === "scoped") {
-    if (scope.codes.length === 0) {
-      // gm/rm with no assigned locations → empty result, not 403.
-      return json({
-        scope: "scoped",
-        missingMaintainxIds: [],
-        groups: [],
-        unmatchedWorkOrders: [],
-        truncated: false,
-        fetchedAt: new Date().toISOString()
-      } satisfies ListResponse);
-    }
-    scopedLocationInfo = await getMaintainXIdsForLocationCodes(env, scope.codes);
-    maintainxIdFilter = scopedLocationInfo
-      .map((info) => info.maintainx_id)
-      .filter((id): id is number => typeof id === "number" && Number.isFinite(id));
-    missingMaintainxIds = scopedLocationInfo
-      .filter((info) => info.maintainx_id == null)
-      .map((info) => info.location_code);
-
-    if (maintainxIdFilter.length === 0) {
-      // Every dc_location lacks a MaintainX mapping. Return empty groups
-      // but surface the missing list so the page can warn.
-      return json({
-        scope: "scoped",
-        missingMaintainxIds,
-        groups: [],
-        unmatchedWorkOrders: [],
-        truncated: false,
-        fetchedAt: new Date().toISOString()
-      } satisfies ListResponse);
-    }
+  const fetchedAt = new Date().toISOString();
+  if (mappedMxIds.length === 0) {
+    return json({
+      reactive: { groups: [] },
+      preventive: { groups: [] },
+      fetchedAt,
+      truncated: false,
+      accessibleLocationCount: accessible.length,
+      mappedLocationCount: 0,
+      email
+    } satisfies ListResponse);
   }
 
-  // Fire MaintainX with an 8s timeout.
+  // Phase 2 — fetch MaintainX work orders for those location IDs.
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), MAINTAINX_TIMEOUT_MS);
   let result;
@@ -199,7 +210,7 @@ async function handleList(env: Env, session: Session): Promise<Response> {
     result = await fetchMaintainXWorkOrders({
       apiKey: env.MAINTAINX_API_KEY,
       baseUrl: env.MAINTAINX_BASE_URL,
-      maintainxLocationIds: maintainxIdFilter,
+      maintainxLocationIds: mappedMxIds,
       signal: controller.signal
     });
   } finally {
@@ -207,51 +218,79 @@ async function handleList(env: Env, session: Session): Promise<Response> {
   }
 
   if (!result.ok) {
-    if (result.status === 0) {
-      // Network failure or AbortError.
-      return jsonError(504, "MaintainX timeout");
-    }
+    if (result.status === 0) return jsonError(504, "MaintainX timeout");
     return jsonError(502, `MaintainX upstream returned ${result.status}`);
   }
 
-  // Build the group structure.
-  const fetchedAt = new Date().toISOString();
-  if (scope.kind === "scoped") {
-    const groups = groupForScoped(result.workOrders, scopedLocationInfo);
-    return json({
-      scope: "scoped",
-      missingMaintainxIds,
-      groups,
-      unmatchedWorkOrders: [],
-      truncated: result.truncated,
-      fetchedAt
-    } satisfies ListResponse);
-  }
+  // Phase 3 — resolve assignee + team names from the Supabase cache.
+  const userIds = collectAssigneeIdsByType(result.workOrders, "USER");
+  const teamIds = collectAssigneeIdsByType(result.workOrders, "TEAM");
+  const [users, teams] = await Promise.all([
+    userIds.length ? getMaintainXUsersByIds(env, userIds) : Promise.resolve(new Map<number, MaintainXUserRow>()),
+    teamIds.length ? getMaintainXTeamsByIds(env, teamIds) : Promise.resolve(new Map<number, MaintainXTeamRow>())
+  ]);
 
-  // Global: resolve every distinct locationId from the response back to a
-  // location_code via the reverse lookup helper.
-  const distinctMxIds = [
-    ...new Set(
-      result.workOrders
-        .map((wo) => extractRawLocationId(wo))
-        .filter((n): n is number => typeof n === "number" && Number.isFinite(n))
-    )
-  ];
-  const reverseMap = await getLocationCodesByMaintainXIds(env, distinctMxIds);
-  const { groups, unmatched } = groupForGlobal(result.workOrders, reverseMap);
+  // Phase 4 — bucket Reactive vs Preventive, then group each bucket.
+  const buckets = bucketByType(result.workOrders);
+  const accessibleByMxId = new Map<number, UserAccessibleLocation>();
+  for (const loc of accessible) {
+    if (loc.maintainx_id != null) accessibleByMxId.set(loc.maintainx_id, loc);
+  }
+  const reactive = groupByLocation(buckets.reactive, users, teams, accessibleByMxId);
+  const preventive = groupByLocation(buckets.preventive, users, teams, accessibleByMxId);
+
   return json({
-    scope: "global",
-    missingMaintainxIds: [],
-    groups,
-    unmatchedWorkOrders: unmatched,
+    reactive: { groups: reactive },
+    preventive: { groups: preventive },
+    fetchedAt,
     truncated: result.truncated,
-    fetchedAt
+    accessibleLocationCount: accessible.length,
+    mappedLocationCount: mappedMxIds.length,
+    email
   } satisfies ListResponse);
 }
 
 /* ============================================================
- * Grouping + sort
+ * Bucketing + grouping helpers
  * ============================================================ */
+
+/**
+ * Canonical filter is `wo.type === "PREVENTIVE"`. Everything else
+ * (REACTIVE, CYCLE_COUNT, null, unknowns) lands in the Reactive bucket
+ * — operators day-to-day work the reactive queue. If MaintainX adds new
+ * preventive-flavored types (e.g. "PREVENTIVE_DAILY"), widen this rule
+ * to `type?.startsWith("PREVENT")` after operator confirmation.
+ */
+function bucketByType(workOrders: RawWorkOrder[]): {
+  reactive: RawWorkOrder[];
+  preventive: RawWorkOrder[];
+} {
+  const reactive: RawWorkOrder[] = [];
+  const preventive: RawWorkOrder[] = [];
+  for (const wo of workOrders) {
+    if (typeof wo.type === "string" && wo.type === "PREVENTIVE") {
+      preventive.push(wo);
+    } else {
+      reactive.push(wo);
+    }
+  }
+  return { reactive, preventive };
+}
+
+function collectAssigneeIdsByType(workOrders: RawWorkOrder[], type: "USER" | "TEAM"): number[] {
+  const out = new Set<number>();
+  for (const wo of workOrders) {
+    if (!Array.isArray(wo.assignees)) continue;
+    for (const a of wo.assignees) {
+      if (!a || typeof a !== "object") continue;
+      const t = typeof a.type === "string" ? a.type : null;
+      if (t !== type) continue;
+      const id = typeof a.id === "number" && Number.isFinite(a.id) ? a.id : null;
+      if (id != null) out.add(id);
+    }
+  }
+  return [...out];
+}
 
 const PRIORITY_NONE_RANK = 3;
 const PRIORITY_ORDER: Record<string, number> = {
@@ -270,7 +309,6 @@ function compareWorkOrders(a: WorkOrderOut, b: WorkOrderOut): number {
   const pa = priorityRank(a.priority);
   const pb = priorityRank(b.priority);
   if (pa !== pb) return pa - pb;
-  // updatedAt desc (newer first)
   const ua = a.updatedAt ?? "";
   const ub = b.updatedAt ?? "";
   if (ua === ub) return 0;
@@ -278,100 +316,58 @@ function compareWorkOrders(a: WorkOrderOut, b: WorkOrderOut): number {
 }
 
 function compareGroups(a: GroupOut, b: GroupOut): number {
-  const ap = a.location_pretty ?? a.location_code;
-  const bp = b.location_pretty ?? b.location_code;
-  return ap.localeCompare(bp);
+  return a.location_pretty.localeCompare(b.location_pretty);
 }
 
-function groupForScoped(
-  raw: RawWorkOrder[],
-  scopedInfo: MaintainXLocationInfo[]
+function groupByLocation(
+  workOrders: RawWorkOrder[],
+  users: Map<number, MaintainXUserRow>,
+  teams: Map<number, MaintainXTeamRow>,
+  accessibleByMxId: Map<number, UserAccessibleLocation>
 ): GroupOut[] {
-  const byMaintainxId = new Map<number, MaintainXLocationInfo>();
-  for (const info of scopedInfo) {
-    if (info.maintainx_id != null) {
-      byMaintainxId.set(info.maintainx_id, info);
-    }
-  }
-
-  const buckets = new Map<number, WorkOrderOut[]>();
-  for (const wo of raw) {
-    const mxId = extractRawLocationId(wo);
-    if (mxId == null) continue;
-    if (!byMaintainxId.has(mxId)) continue; // defense-in-depth filter
-    const projected = projectWorkOrder(wo);
+  const buckets = new Map<number, { header: string; items: WorkOrderOut[] }>();
+  for (const wo of workOrders) {
+    const projected = projectWorkOrder(wo, users, teams);
     if (!projected) continue;
+    const mxId = projected.locationId;
+    if (mxId == null) continue;
+
     let bucket = buckets.get(mxId);
     if (!bucket) {
-      bucket = [];
+      const headerFromMx = extractRawLocationName(wo);
+      const fallbackAddress = accessibleByMxId.get(mxId)?.location_address ?? null;
+      bucket = {
+        header: headerFromMx ?? fallbackAddress ?? "(unknown location)",
+        items: []
+      };
       buckets.set(mxId, bucket);
+    } else if (
+      bucket.header === "(unknown location)" ||
+      bucket.header === (accessibleByMxId.get(mxId)?.location_address ?? "")
+    ) {
+      // Upgrade the header if a later WO in this bucket carries the
+      // MaintainX-side name (Brief 71 prefers MX's name when available).
+      const headerFromMx = extractRawLocationName(wo);
+      if (headerFromMx) bucket.header = headerFromMx;
     }
-    bucket.push(projected);
+    bucket.items.push(projected);
   }
 
   const groups: GroupOut[] = [];
-  for (const [mxId, items] of buckets.entries()) {
-    const info = byMaintainxId.get(mxId);
-    if (!info) continue;
-    items.sort(compareWorkOrders);
+  for (const [mxId, b] of buckets.entries()) {
+    b.items.sort(compareWorkOrders);
     groups.push({
-      location_code: info.location_code,
-      location_pretty: info.location_pretty,
       maintainx_id: mxId,
-      work_orders: items
+      location_pretty: b.header,
+      work_orders: b.items
     });
   }
   groups.sort(compareGroups);
   return groups;
 }
 
-function groupForGlobal(
-  raw: RawWorkOrder[],
-  reverse: Map<number, MaintainXLocationInfo>
-): { groups: GroupOut[]; unmatched: UnmatchedWorkOrderOut[] } {
-  const buckets = new Map<number, WorkOrderOut[]>();
-  const unmatched: UnmatchedWorkOrderOut[] = [];
-
-  for (const wo of raw) {
-    const projected = projectWorkOrder(wo);
-    if (!projected) continue;
-    const mxId = extractRawLocationId(wo);
-    const info = mxId != null ? reverse.get(mxId) : undefined;
-    if (info && mxId != null) {
-      let bucket = buckets.get(mxId);
-      if (!bucket) {
-        bucket = [];
-        buckets.set(mxId, bucket);
-      }
-      bucket.push(projected);
-    } else {
-      unmatched.push({
-        ...projected,
-        maintainxLocationId: mxId ?? null,
-        maintainxLocationName: extractRawLocationName(wo)
-      });
-    }
-  }
-
-  const groups: GroupOut[] = [];
-  for (const [mxId, items] of buckets.entries()) {
-    const info = reverse.get(mxId);
-    if (!info) continue;
-    items.sort(compareWorkOrders);
-    groups.push({
-      location_code: info.location_code,
-      location_pretty: info.location_pretty,
-      maintainx_id: mxId,
-      work_orders: items
-    });
-  }
-  groups.sort(compareGroups);
-  unmatched.sort(compareWorkOrders);
-  return { groups, unmatched };
-}
-
 /* ============================================================
- * Projection — RawWorkOrder → WorkOrderOut
+ * Projection — RawWorkOrder → WorkOrderOut with name decoration.
  * ============================================================ */
 
 function extractRawLocationId(wo: RawWorkOrder): number | null {
@@ -391,20 +387,33 @@ function extractRawLocationName(wo: RawWorkOrder): string | null {
   return null;
 }
 
-function projectAssignees(raw: RawWorkOrder["assignees"]): AssigneeOut[] {
+function projectAssignees(
+  raw: RawWorkOrder["assignees"],
+  users: Map<number, MaintainXUserRow>,
+  teams: Map<number, MaintainXTeamRow>
+): AssigneeOut[] {
   if (!Array.isArray(raw)) return [];
   const out: AssigneeOut[] = [];
   for (const a of raw) {
     if (!a || typeof a !== "object") continue;
     const id = typeof a.id === "number" && Number.isFinite(a.id) ? a.id : null;
-    let name = typeof a.fullName === "string" ? a.fullName : "";
-    if (!name) {
-      const first = typeof a.firstName === "string" ? a.firstName : "";
-      const last = typeof a.lastName === "string" ? a.lastName : "";
-      name = `${first} ${last}`.trim();
+    const rawType = typeof a.type === "string" ? a.type : null;
+    let type: AssigneeOut["type"] = "OTHER";
+    let name = "";
+    let email: string | null = null;
+    if (rawType === "USER") {
+      type = "USER";
+      const cached = id != null ? users.get(id) : undefined;
+      name = cached?.full_name?.trim() || (id != null ? `User #${id}` : "Unknown user");
+      email = cached?.email ?? null;
+    } else if (rawType === "TEAM") {
+      type = "TEAM";
+      const cached = id != null ? teams.get(id) : undefined;
+      name = cached?.name?.trim() || (id != null ? `Team #${id}` : "Unknown team");
+    } else {
+      name = id != null ? `Assignee #${id}` : "Unknown";
     }
-    if (!name) name = id != null ? `User #${id}` : "Unknown";
-    out.push({ id, name });
+    out.push({ id, type, name, email });
   }
   return out;
 }
@@ -422,23 +431,11 @@ function projectCategories(raw: RawWorkOrder["categories"]): string[] {
   return out;
 }
 
-function projectThumbnail(wo: RawWorkOrder): string | null {
-  if (typeof wo.thumbnailUrl === "string" && wo.thumbnailUrl) return wo.thumbnailUrl;
-  if (wo.thumbnail && typeof wo.thumbnail.url === "string" && wo.thumbnail.url) {
-    return wo.thumbnail.url;
-  }
-  return null;
-}
-
-function truncateDescription(desc: string | null | undefined): string | null {
-  if (typeof desc !== "string") return null;
-  const trimmed = desc.trim();
-  if (!trimmed) return null;
-  if (trimmed.length <= DESCRIPTION_MAX_CHARS) return trimmed;
-  return `${trimmed.slice(0, DESCRIPTION_MAX_CHARS)}…`;
-}
-
-function projectWorkOrder(wo: RawWorkOrder): WorkOrderOut | null {
+function projectWorkOrder(
+  wo: RawWorkOrder,
+  users: Map<number, MaintainXUserRow>,
+  teams: Map<number, MaintainXTeamRow>
+): WorkOrderOut | null {
   if (typeof wo.id !== "number" || !Number.isFinite(wo.id)) return null;
   return {
     id: wo.id,
@@ -446,12 +443,15 @@ function projectWorkOrder(wo: RawWorkOrder): WorkOrderOut | null {
     title: typeof wo.title === "string" ? wo.title : "",
     status: typeof wo.status === "string" ? wo.status : "",
     priority: typeof wo.priority === "string" ? wo.priority : "NONE",
+    type: typeof wo.type === "string" ? wo.type : null,
     createdAt: typeof wo.createdAt === "string" ? wo.createdAt : null,
     updatedAt: typeof wo.updatedAt === "string" ? wo.updatedAt : null,
     dueDate: typeof wo.dueDate === "string" ? wo.dueDate : null,
-    description: truncateDescription(wo.description ?? null),
-    assignees: projectAssignees(wo.assignees),
-    thumbnailUrl: projectThumbnail(wo),
-    categories: projectCategories(wo.categories)
+    description: typeof wo.description === "string" && wo.description.trim()
+      ? wo.description.trim()
+      : null,
+    assignees: projectAssignees(wo.assignees, users, teams),
+    categories: projectCategories(wo.categories),
+    locationId: extractRawLocationId(wo)
   };
 }

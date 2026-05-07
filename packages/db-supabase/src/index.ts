@@ -17,6 +17,7 @@ export * from "./users.js";
 export * from "./signups.js";
 export * from "./phones.js";
 export * from "./locations.js";
+export * from "./maintainx-users.js";
 export * from "./performance.js";
 export * from "./audit.js";
 export * from "./summary.js";

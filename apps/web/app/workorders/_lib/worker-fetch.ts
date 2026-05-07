@@ -1,18 +1,20 @@
-// Brief 70 — server-side fetch helper for the workorders-worker. Mirrors
-// the dual-mode (service-binding preferred, URL fallback for `next dev`)
-// pattern from `apps/web/app/admin/damage/_lib/worker-fetch.ts`.
+// Brief 70 + Brief 71 — server-side fetch helper for the workorders-worker.
+// Mirrors the dual-mode (service-binding preferred, URL fallback for
+// `next dev`) pattern from `apps/web/app/admin/damage/_lib/worker-fetch.ts`.
 
 import { cookies, headers } from "next/headers";
 import { getCloudflareContext } from "@opennextjs/cloudflare";
 
 /* ============================================================
  * Response shape — matches workorders-worker's
- * `GET /workorders/api/list` JSON.
+ * `GET /workorders/api/list` JSON (Brief 71 shape).
  * ============================================================ */
 
 export interface WorkOrderAssignee {
   id: number | null;
+  type: "USER" | "TEAM" | "OTHER";
   name: string;
+  email: string | null;
 }
 
 export interface WorkOrderItem {
@@ -21,40 +23,35 @@ export interface WorkOrderItem {
   title: string;
   status: string;
   priority: string;
+  type: string | null;
   createdAt: string | null;
   updatedAt: string | null;
   dueDate: string | null;
   description: string | null;
   assignees: WorkOrderAssignee[];
-  thumbnailUrl: string | null;
   categories: string[];
+  locationId: number | null;
 }
 
 export interface WorkOrdersGroup {
-  location_code: string;
-  location_pretty: string | null;
   maintainx_id: number;
+  location_pretty: string;
   work_orders: WorkOrderItem[];
 }
 
-export interface UnmatchedWorkOrder extends WorkOrderItem {
-  maintainxLocationId: number | null;
-  maintainxLocationName: string | null;
+export interface WorkOrdersBucket {
+  groups: WorkOrdersGroup[];
 }
 
 export interface WorkOrdersListResponse {
-  scope: "global" | "scoped";
-  missingMaintainxIds: string[];
-  groups: WorkOrdersGroup[];
-  unmatchedWorkOrders: UnmatchedWorkOrder[];
-  truncated: boolean;
+  reactive: WorkOrdersBucket;
+  preventive: WorkOrdersBucket;
   fetchedAt: string;
+  truncated: boolean;
+  accessibleLocationCount: number;
+  mappedLocationCount: number;
+  email: string;
 }
-
-/* ============================================================
- * Result type — caller distinguishes auth-failure / 503
- * (integration-not-configured) / generic upstream errors.
- * ============================================================ */
 
 export type WorkOrdersListResult =
   | { kind: "ok"; data: WorkOrdersListResponse }

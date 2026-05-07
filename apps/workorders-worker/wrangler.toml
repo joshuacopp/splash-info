@@ -1,14 +1,15 @@
-# Splash Work Orders Worker — Brief 70.
+# Splash Work Orders Worker — Brief 70 + Brief 71.
 #
 # Read-only MaintainX integration. Surfaces open / in-progress / on-hold
 # work orders to operators on apps/web's /workorders page (server
 # component SSR-fetches GET /workorders/api/list via the
 # WORKORDERS_WORKER service binding).
 #
-# Permission domain: dc_role (Brief 61) — super_admin / admin global,
-# gm / rm scoped to dc_locations. The damage-worker's MaintainX write
-# path (Brief 42 / 43 — `createMaintainXWorkOrder`) is unchanged; this
-# worker is a sibling, not a replacement.
+# Permission domain (Brief 71): pure email-on-locations match against
+# `locations.am_email` / `rm_email` / `site_email`. super_admin and
+# admin do NOT have a global override. The damage-worker's MaintainX
+# write path (Brief 42 / 43 — `createMaintainXWorkOrder`) is unchanged;
+# this worker is a sibling, not a replacement.
 #
 # DEPLOY STRATEGY: workers.dev fallback only until apps/web cuts over.
 # Staging route binds /workorders/api/* on staging.splashcarwashes.info
@@ -61,6 +62,13 @@ routes = [
 [vars]
 MAINTAINX_BASE_URL = "https://api.getmaintainx.com/v1"
 APPS_WEB_BASE_URL  = "https://splashcarwashes.info"
+
+# Brief 71 — daily MaintainX user/team sync. 11:30 UTC = 6:30 AM ET. Runs
+# BEFORE the damage-worker daily summary cron at 13:00 UTC so any new
+# MaintainX users created overnight propagate to Supabase before they
+# could appear as assignees in that day's damage-summary email.
+[triggers]
+crons = ["30 11 * * *"]
 
 # Brief 63 (2026-05-07): keeps Workers Logs sticky across deploys. Without
 # this, CF Builds re-provisions the worker on every push and the dashboard

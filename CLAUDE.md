@@ -118,6 +118,15 @@ If any of these are missing, stop and report it instead of guessing.
    If rotation is truly needed, plan it during a maintenance window
    when no operators are mid-session.
 
+8. **`maintainx_users` and `maintainx_teams` Supabase tables are
+   read-only from worker code except for the daily sync handler.**
+   Brief 71 introduced these as a denormalized cache populated by
+   workorders-worker's scheduled handler (11:30 UTC daily, plus the
+   on-demand `POST /workorders/api/sync-maintainx-users` super_admin
+   endpoint). Manual SQL edits to these tables get overwritten on
+   the next sync. To change a user's metadata, change it in
+   MaintainX itself; the next sync (within 24h) propagates.
+
 ---
 
 ## Operator preferences
@@ -288,16 +297,31 @@ When given a new task:
   earlier version that joined on `locations.site` and silently
   returned null for every slug — same bug class Brief 49 fixed for
   `getLocationContactInfo`.
-- **Workorders-worker endpoints** (Brief 70): `GET /workorders/api/list`
-  is the only endpoint today. dc_role-gated (super_admin / admin
-  global, gm / rm scoped to dc_locations); upstream MaintainX call
-  has an 8s `AbortController` timeout. Fail modes:
+- **Workorders-worker endpoints** (Brief 70 / Brief 71):
+  `GET /workorders/api/list` and (Brief 71) `POST /workorders/api/sync-maintainx-users`.
+  Permission domain (Brief 71): pure email-on-locations match against
+  `locations.am_email` / `rm_email` / `site_email` — super_admin and
+  admin do NOT have a global override. The Brief 70 dc_role gate and
+  the Brief 70 bulk helpers (`getMaintainXIdsForLocationCodes` /
+  `getLocationCodesByMaintainXIds`, `MaintainXLocationInfo`) were
+  deleted in Brief 71; the read path now reads directly from
+  `locations` via `getLocationsByContactEmail`. Upstream MaintainX
+  read call has an 8s `AbortController` timeout. Fail modes:
   `MAINTAINX_API_KEY` unbound → 503 (page surfaces "integration not
   configured"), MaintainX non-2xx → 502, network/abort → 504. The
-  bulk Supabase helpers `getMaintainXIdsForLocationCodes` /
-  `getLocationCodesByMaintainXIds` (in `@splash/db-supabase/locations`)
-  resolve location_code ↔ maintainx_id in two PostgREST GETs total
-  per direction (not 2N round-trips); both fail-soft.
+  default export is `{ fetch, scheduled }`; the scheduled handler
+  (`[triggers] crons = ["30 11 * * *"]` — 11:30 UTC, fires before
+  the damage-worker daily summary at 13:00 UTC) runs the daily
+  MaintainX user/team sync into Supabase tables `maintainx_users` /
+  `maintainx_teams`. The `POST /sync-maintainx-users` endpoint runs
+  the same sync on demand, gated to a hardcoded super-admin email
+  allow-list with a `session.dcRole === "super_admin"` fallback.
+  The list response shape buckets work orders by `wo.type ===
+  "PREVENTIVE"` (Reactive vs Preventive tabs in apps/web) and groups
+  each bucket by MaintainX `locationId`; group headers prefer MX's
+  `expand=location.name` and fall back to `locations.location`
+  (postal address). `getMaintainXLocationId` (Brief 42 / 62 forward
+  helper used by damage-worker's WO-create path) is unchanged.
 
 ---
 
@@ -503,18 +527,34 @@ URL-based — service bindings don't apply to those.
 
 ## Glossary
 
-- **Work Orders** (Brief 70) - Read-only MaintainX integration. Surfaces
-  open / in-progress / on-hold work orders to operators on `/workorders`
-  (top-level apps/web page, dc_role gated). Backed by
-  `GET /workorders/api/list` on the new `splash-workorders` worker
-  (`apps/workorders-worker/`). Grouped by Splash `location_code`,
-  ordered by priority HIGH → MEDIUM → LOW → NONE within each group
-  (tie-breaker `updatedAt` desc). Each WO row links out to MaintainX
-  itself (`app.getmaintainx.com/workorders/{id}`); this view does not
-  write or edit WOs (Brief 42 / 43 own the create path on
-  damage-worker). `MAINTAINX_API_KEY` is bound on BOTH workers (same
-  value); per-worker bindings. Filter excludes DONE / CANCELED /
-  SKIPPED — operators who want closed WOs follow the link out.
+- **Work Orders** (Brief 70 / Brief 71) - Read-only MaintainX
+  integration. Surfaces open / in-progress / on-hold work orders to
+  operators on `/workorders` (top-level apps/web page, NOT under
+  `/admin/*`). Permission domain (Brief 71): pure email-on-locations
+  match against `locations.am_email` / `rm_email` / `site_email`.
+  super_admin and admin do NOT have a global override; if they want
+  global visibility they need their email on the relevant locations
+  rows. Backed by `GET /workorders/api/list` on the
+  `splash-workorders` worker (`apps/workorders-worker/`). The page
+  splits work orders into Reactive vs Preventive tabs (canonical
+  filter: `wo.type === "PREVENTIVE"` → Preventive; everything else
+  including REACTIVE / CYCLE_COUNT / null → Reactive). Each tab is
+  grouped by MaintainX location (header prefers MX's
+  `expand=location.name`, falls back to Splash-side
+  `locations.location` postal address); within each group rows are
+  ordered by priority HIGH → MEDIUM → LOW → NONE then `updatedAt`
+  desc. Rows are click-to-expand, surfacing full description, created
+  date, age in days, assignees, and category badges. Each WO row
+  links out to MaintainX itself (`app.getmaintainx.com/workorders/{id}`);
+  this view does not write or edit WOs (Brief 42 / 43 own the create
+  path on damage-worker). `MAINTAINX_API_KEY` is bound on BOTH
+  workers (same value); per-worker bindings. Filter excludes DONE /
+  CANCELED / SKIPPED — operators who want closed WOs follow the link
+  out. Brief 71 adds a daily MaintainX user/team sync at 11:30 UTC
+  populating `maintainx_users` and `maintainx_teams` Supabase tables;
+  the read handler joins those caches to render assignee names. An
+  on-demand sync trigger lives at
+  `POST /workorders/api/sync-maintainx-users` (super_admin only).
 - **`age_days`** (Brief 68) - Server-computed days-since-submission
   field on the `/manage/api/claims` list response. Lives in the
   `listClaims` SELECT projection in `packages/db-d1/src/claims.ts` as

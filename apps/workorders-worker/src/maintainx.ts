@@ -21,20 +21,32 @@ export interface RawWorkOrder {
   title?: string | null;
   status?: string | null;
   priority?: string | null;
+  /** MaintainX work-order type. Per the API sample: REACTIVE / PREVENTIVE
+   *  / CYCLE_COUNT and possibly other values. The field is on the WO body
+   *  without an `expand` parameter. Brief 71 buckets `PREVENTIVE` into
+   *  the Preventive tab; everything else lands under Reactive. */
+  type?: string | null;
   createdAt?: string | null;
   updatedAt?: string | null;
   dueDate?: string | null;
   description?: string | null;
-  /** Resolved when caller passes `expand=assignees`. */
-  assignees?: Array<{ id?: number; firstName?: string | null; lastName?: string | null; fullName?: string | null }>;
+  /** Resolved when caller passes `expand=assignees`. Per Brief 46 the
+   *  upstream shape on writes is `{ id, type: "USER" }`; reads carry
+   *  the same `type` field plus assignee-side metadata when available. */
+  assignees?: Array<{
+    id?: number;
+    type?: string | null;
+    firstName?: string | null;
+    lastName?: string | null;
+    fullName?: string | null;
+  }>;
   /** Resolved when caller passes `expand=location`. */
   location?: { id?: number; name?: string | null } | null;
   /** Often present without expand; integer ID alongside the optional
    *  expanded object. We read whichever is populated. */
   locationId?: number | null;
-  /** Resolved when caller passes `expand=thumbnail`. */
-  thumbnail?: { url?: string | null } | null;
-  thumbnailUrl?: string | null;
+  /** Resolved when caller passes `expand=categories`. Brief 71 surfaces
+   *  these as small badges on the expanded-row drawer in apps/web. */
   categories?: Array<string | { name?: string | null }>;
 }
 
@@ -69,7 +81,9 @@ function buildUrl(input: FetchInput): string {
   for (const status of ACTIVE_STATUSES) {
     url.searchParams.append("statuses", status);
   }
-  for (const expansion of ["assignees", "location", "thumbnail"]) {
+  // Brief 71: drop `thumbnail` (the page no longer renders thumbnails);
+  // add `categories` so the expanded-row drawer can show category badges.
+  for (const expansion of ["assignees", "location", "categories"]) {
     url.searchParams.append("expand", expansion);
   }
   url.searchParams.set("limit", "200");
