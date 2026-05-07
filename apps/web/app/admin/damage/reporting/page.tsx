@@ -8,6 +8,7 @@
 import Link from "next/link";
 import { damageGetJson } from "../_lib/worker-fetch";
 import { DamageTabs } from "../_components/DamageTabs";
+import { ByLocationTableClient } from "./_components/ByLocationTableClient";
 
 const WINDOW_PRESETS: ReadonlyArray<{
   value: ReportingWindow;
@@ -65,10 +66,28 @@ interface ReportingResponse {
     approved: number;
     denied: number;
     repair_cost: number;
+    avg_days_open: number | null;
   }>;
   by_damage_type_open: Array<{ damage_type: string; count: number }>;
-  by_damage_type_approved: Array<{ damage_type: string; count: number }>;
+  by_damage_type_approved: Array<{
+    damage_type: string;
+    count: number;
+    cost: number;
+  }>;
   by_damage_type_denied: Array<{ damage_type: string; count: number }>;
+  by_location_drilldown: Array<{
+    location_code: string;
+    location_pretty: string | null;
+    outcome_bucket:
+      | "open"
+      | "denied"
+      | "approved"
+      | "closed_approved"
+      | "closed_other";
+    damage_type: string;
+    n: number;
+    cost: number;
+  }>;
 }
 
 interface PageProps {
@@ -333,55 +352,10 @@ export default async function DamageReportingPage({ searchParams }: PageProps) {
 
       <section id="by-location" className="mb-8 scroll-mt-20">
         <h2 className="mb-3 text-lg font-bold text-splash-navy">By Location</h2>
-        {report.by_location.length === 0 ? (
-          <p className="text-sm text-splash-navy/70">No claims in this window.</p>
-        ) : (
-          <div className="overflow-hidden rounded-splash-lg border border-gray-light bg-white shadow-splash-card">
-            <div className="overflow-x-auto">
-              <table className="min-w-full divide-y divide-gray-light text-sm">
-                <thead className="bg-splash-navy/5 text-left text-xs font-semibold uppercase tracking-wider text-splash-navy/70">
-                  <tr>
-                    <th className="px-4 py-3">Location</th>
-                    <th className="px-4 py-3 text-right">Open</th>
-                    <th className="px-4 py-3 text-right">Closed</th>
-                    <th className="px-4 py-3 text-right">Approved</th>
-                    <th className="px-4 py-3 text-right">Denied</th>
-                    <th className="px-4 py-3 text-right">Cost</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-gray-light text-splash-navy">
-                  {report.by_location.map((row) => (
-                    <tr key={row.location_code}>
-                      <td className="px-4 py-3">
-                        <div className="text-splash-navy">
-                          {row.location_pretty ?? row.location_code}
-                        </div>
-                        <div className="font-mono text-xs text-splash-navy/60">
-                          {row.location_code}
-                        </div>
-                      </td>
-                      <td className="px-4 py-3 text-right font-mono text-xs text-splash-navy/80">
-                        {row.open}
-                      </td>
-                      <td className="px-4 py-3 text-right font-mono text-xs text-splash-navy/80">
-                        {row.closed}
-                      </td>
-                      <td className="px-4 py-3 text-right font-mono text-xs text-splash-navy/80">
-                        {row.approved}
-                      </td>
-                      <td className="px-4 py-3 text-right font-mono text-xs text-splash-navy/80">
-                        {row.denied}
-                      </td>
-                      <td className="px-4 py-3 text-right font-mono text-xs text-splash-navy/80">
-                        {formatCurrency(row.repair_cost)}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        )}
+        <ByLocationTableClient
+          rows={report.by_location}
+          drilldown={report.by_location_drilldown}
+        />
       </section>
 
       <section id="by-damage-type" className="mb-8 scroll-mt-20">
@@ -394,6 +368,7 @@ export default async function DamageReportingPage({ searchParams }: PageProps) {
           <DamageTypeTable
             heading="Approved"
             rows={report.by_damage_type_approved}
+            showCost
           />
           <DamageTypeTable
             heading="Denied"
@@ -403,9 +378,9 @@ export default async function DamageReportingPage({ searchParams }: PageProps) {
       </section>
 
       <p className="mt-6 text-xs text-splash-navy/60">
-        Cost = sum of approved quote amounts + receipt amounts. Claims with
-        both a quote and a receipt may be double-counted (limitation flagged
-        in Brief 59 — refine in v2).
+        Cost = approved quote amounts + receipt amounts on Approved-family
+        claims. Both are real spend — receipts are money paid out, approved
+        quotes are money committed — so summing them captures total exposure.
       </p>
     </section>
   );
@@ -424,10 +399,12 @@ function KpiTile({ label, value }: { label: string; value: string }) {
 
 function DamageTypeTable({
   heading,
-  rows
+  rows,
+  showCost = false
 }: {
   heading: string;
-  rows: Array<{ damage_type: string; count: number }>;
+  rows: Array<{ damage_type: string; count: number; cost?: number }>;
+  showCost?: boolean;
 }) {
   return (
     <div className="overflow-hidden rounded-splash-lg border border-gray-light bg-white shadow-splash-card">
@@ -445,6 +422,11 @@ function DamageTypeTable({
                 <td className="px-4 py-2 text-right font-mono text-xs text-splash-navy/80">
                   {row.count}
                 </td>
+                {showCost ? (
+                  <td className="px-4 py-2 text-right font-mono text-xs text-splash-navy/80">
+                    {formatCurrency(row.cost ?? 0)}
+                  </td>
+                ) : null}
               </tr>
             ))}
           </tbody>

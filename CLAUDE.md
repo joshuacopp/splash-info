@@ -481,6 +481,16 @@ URL-based — service bindings don't apply to those.
 
 ## Glossary
 
+- **`age_days`** (Brief 68) - Server-computed days-since-submission
+  field on the `/manage/api/claims` list response. Lives in the
+  `listClaims` SELECT projection in `packages/db-d1/src/claims.ts` as
+  `CAST((julianday('now') - julianday(submitted_at)) AS INTEGER) AS
+  age_days` — NOT a stored column on the `claims` table. Future
+  readers grep'ing the D1 schema won't find it. apps/web's
+  `<AgePill>` consumes it on the damage list page (`/admin/damage`)
+  with a four-tier color escalation (neutral / amber / orange / red
+  at 0-3 / 4-7 / 8-14 / 15+ days) on Open claims; Closed claims
+  render a static muted neutral pill.
 - **Daily summary** - Brief 65's once-a-day digest of open damage
   claims emitted by damage-worker's `scheduled` handler at 13:00 UTC
   (8 AM ET). Recipients are every gm / rm / admin / super_admin in

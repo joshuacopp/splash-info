@@ -194,8 +194,29 @@ export interface ClaimsListFilters {
   limit?: number;
 }
 
+// `age_days` is computed at query time via julianday() arithmetic (Brief 68).
+// It is NOT a stored column on `claims` — future readers grep'ing the schema
+// won't find it. The expression evaluates per-row inside the SELECT and rides
+// on the JSON response without any handler change.
+//
+// On-the-fly is the right choice because (a) generated columns require
+// deterministic expressions and `julianday('now')` is non-deterministic, and
+// (b) a stored column would need a daily refresh cron for zero benefit at our
+// scale.
 const CLAIMS_LIST_COLS =
-  "claim_id, location_code, location_pretty, customer_name, vehicle_year, vehicle_make, vehicle_model, submitted_at, claim_status, lifecycle_state, contact_status";
+  "claim_id, location_code, location_pretty, customer_name, vehicle_year, vehicle_make, vehicle_model, submitted_at, claim_status, lifecycle_state, contact_status, CAST((julianday('now') - julianday(submitted_at)) AS INTEGER) AS age_days";
+
+/**
+ * Row shape returned by `listClaims`. Subset of `ClaimRow` plus the
+ * server-computed `age_days` field (whole-day count since `submitted_at`).
+ */
+export type ClaimsListRow = Pick<ClaimRow,
+  | "claim_id" | "location_code" | "location_pretty" | "customer_name"
+  | "vehicle_year" | "vehicle_make" | "vehicle_model" | "submitted_at"
+  | "claim_status" | "lifecycle_state" | "contact_status"> & {
+  /** Whole days since `submitted_at`, computed at query time. */
+  age_days: number;
+};
 
 /**
  * List claims for the manager grid with optional filters.
@@ -205,10 +226,7 @@ const CLAIMS_LIST_COLS =
 export async function listClaims(
   db: D1Database,
   filters: ClaimsListFilters = {}
-): Promise<Array<Pick<ClaimRow,
-  | "claim_id" | "location_code" | "location_pretty" | "customer_name"
-  | "vehicle_year" | "vehicle_make" | "vehicle_model" | "submitted_at"
-  | "claim_status" | "lifecycle_state" | "contact_status">>> {
+): Promise<ClaimsListRow[]> {
   const where: string[] = ["deleted_at IS NULL"];
   const params: unknown[] = [];
 
@@ -254,10 +272,7 @@ export async function listClaims(
     .prepare(sql)
     .bind(...params)
     .all();
-  return (result.results ?? []) as Array<Pick<ClaimRow,
-    | "claim_id" | "location_code" | "location_pretty" | "customer_name"
-    | "vehicle_year" | "vehicle_make" | "vehicle_model" | "submitted_at"
-    | "claim_status" | "lifecycle_state" | "contact_status">>;
+  return (result.results ?? []) as ClaimsListRow[];
 }
 
 /**

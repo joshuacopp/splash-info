@@ -16,6 +16,7 @@
 import Link from "next/link";
 import { damageGetJson } from "./_lib/worker-fetch";
 import { LifecycleBadge } from "./_components/LifecycleBadge";
+import { AgePill } from "./_components/AgePill";
 import { DamageTabs } from "./_components/DamageTabs";
 import type { ClaimRow, ClaimStatus, LifecycleState } from "@splash/types/claims";
 
@@ -29,6 +30,9 @@ interface ContactRosterEntry {
 // What the worker actually returns from GET /manage/api/claims — the D1
 // listClaims helper (packages/db-d1/src/claims.ts) selects a subset of
 // columns. Keep this aligned with CLAIMS_LIST_COLS there.
+//
+// Brief 68: `age_days` is appended by the SELECT projection (computed via
+// julianday() arithmetic at query time; not a stored column on `claims`).
 type ClaimListRow = Pick<
   ClaimRow,
   | "claim_id"
@@ -42,7 +46,9 @@ type ClaimListRow = Pick<
   | "claim_status"
   | "lifecycle_state"
   | "contact_status"
->;
+> & {
+  age_days: number;
+};
 
 // Full ClaimStatus enum, ordered as in the type union for legibility (15 values).
 // Em-dashes are U+2014 — matches the DB CHECK constraint exactly. Do not
@@ -421,7 +427,13 @@ export default async function DamageClaimsListPage({ searchParams }: PageProps) 
                       <LifecycleBadge state={c.lifecycle_state} />
                     </td>
                     <td className="px-4 py-3 font-mono text-xs text-splash-navy/80">
-                      {formatSubmittedDate(c.submitted_at)}
+                      <div className="flex items-center gap-2">
+                        <span>{formatSubmittedDate(c.submitted_at)}</span>
+                        <AgePill
+                          ageDays={c.age_days}
+                          lifecycle={c.lifecycle_state}
+                        />
+                      </div>
                     </td>
                   </tr>
                 ))}

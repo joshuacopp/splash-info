@@ -694,6 +694,24 @@ async function getContactRoster(env: Env, session: Session, url: URL): Promise<R
  * Server-side resolves the window relative to "now", then runs a single
  * D1 batch of count + cost aggregates. dc_role scoping applies the same as
  * everywhere else.
+ *
+ * Brief 67 (2026-05-07) extended the response shape:
+ *   - by_location[].avg_days_open: number | null — average age in days of
+ *     currently-open claims at that location (NULL when zero open claims).
+ *   - by_damage_type_approved[].cost: number — sum of Quote + Receipt
+ *     amounts for approved-family claims, grouped by damage_type. Mirrors
+ *     the global Repair Cost rollup but split by damage_type.
+ *   - by_location_drilldown: 5-bucket per-(location, damage_type) split
+ *     (open / denied / approved / closed_approved / closed_other). The
+ *     apps/web renderer aggregates `denied + closed_approved + closed_other`
+ *     for the operator-facing "Closed" view and `approved + closed_approved`
+ *     for the operator-facing "Approved" view, matching the per-location
+ *     table's column semantics.
+ *
+ * Brief 67 also reframes the cost rollup: receipts are paid out, approved
+ * quotes are committed; both are real spend, so summing them is the
+ * intended behavior (operator confirmed 2026-05-07). The earlier "v2
+ * limitation" framing is dropped.
  * ============================================================ */
 
 type ReportingWindow =
@@ -727,11 +745,34 @@ interface ReportingByLocationRow {
   approved: number;
   denied: number;
   repair_cost: number;
+  avg_days_open: number | null;
 }
 
 interface ReportingByDamageTypeRow {
   damage_type: string;
   count: number;
+}
+
+interface ReportingByDamageTypeApprovedRow {
+  damage_type: string;
+  count: number;
+  cost: number;
+}
+
+type ReportingDrilldownBucket =
+  | "open"
+  | "denied"
+  | "approved"
+  | "closed_approved"
+  | "closed_other";
+
+interface ReportingByLocationDrilldownRow {
+  location_code: string;
+  location_pretty: string | null;
+  outcome_bucket: ReportingDrilldownBucket;
+  damage_type: string;
+  n: number;
+  cost: number;
 }
 
 interface ReportingResponse {
@@ -746,8 +787,9 @@ interface ReportingResponse {
   totals: ReportingTotals;
   by_location: ReportingByLocationRow[];
   by_damage_type_open: ReportingByDamageTypeRow[];
-  by_damage_type_approved: ReportingByDamageTypeRow[];
+  by_damage_type_approved: ReportingByDamageTypeApprovedRow[];
   by_damage_type_denied: ReportingByDamageTypeRow[];
+  by_location_drilldown: ReportingByLocationDrilldownRow[];
 }
 
 function resolveReportingWindow(window: ReportingWindow, now: Date): { from: string; to: string } {
@@ -944,18 +986,32 @@ async function getReporting(env: Env, session: Session, url: URL): Promise<Respo
     GROUP BY damage_type
     ORDER BY n DESC
   `;
+  // Brief 67: by_damage_type_approved gains a `cost` column. LEFT JOIN
+  // claim_photos so claims without any photos still surface with cost = 0;
+  // COUNT(DISTINCT claim_id) because the join multiplies rows when a claim
+  // has multiple photos. cp.deleted_at goes in the JOIN clause to preserve
+  // LEFT JOIN semantics on photo-less claims.
   const byDamageTypeApprovedSql = `
-    SELECT COALESCE(damage_type, '(none)') AS damage_type, COUNT(*) AS n
-    FROM claims
-    WHERE submitted_at BETWEEN ?1 AND ?2
-      AND location_code IN (${inPlaceholders})
-      AND deleted_at IS NULL
+    SELECT
+      COALESCE(c.damage_type, '(none)') AS damage_type,
+      COUNT(DISTINCT c.claim_id) AS n,
+      COALESCE(
+        SUM(CASE WHEN cp.photo_type IN ('Quote', 'Receipt')
+                 AND cp.amount IS NOT NULL
+                 THEN cp.amount END),
+        0
+      ) AS cost
+    FROM claims c
+    LEFT JOIN claim_photos cp ON cp.claim_id = c.claim_id AND cp.deleted_at IS NULL
+    WHERE c.submitted_at BETWEEN ?1 AND ?2
+      AND c.location_code IN (${inPlaceholders})
+      AND c.deleted_at IS NULL
       AND (
-        claim_status LIKE 'Approved —%'
-        OR claim_status = 'Closed — Paid'
-        OR claim_status = 'Closed — Approved/No Response'
+        c.claim_status LIKE 'Approved —%'
+        OR c.claim_status = 'Closed — Paid'
+        OR c.claim_status = 'Closed — Approved/No Response'
       )
-    GROUP BY damage_type
+    GROUP BY c.damage_type
     ORDER BY n DESC
   `;
   const byDamageTypeDeniedSql = `
@@ -967,6 +1023,53 @@ async function getReporting(env: Env, session: Session, url: URL): Promise<Respo
       AND claim_status = 'Closed — Denied'
     GROUP BY damage_type
     ORDER BY n DESC
+  `;
+  // Brief 67: per-location avg age (in days) of currently-open claims.
+  // `julianday('now') - julianday(submitted_at)` works under D1's SQLite.
+  // Locations with zero open claims simply produce no row; the apps/web
+  // renderer surfaces missing rows as `—`.
+  const byLocationAvgDaysOpenSql = `
+    SELECT location_code,
+           AVG(julianday('now') - julianday(submitted_at)) AS avg_days_open
+    FROM claims
+    WHERE submitted_at BETWEEN ?1 AND ?2
+      AND location_code IN (${inPlaceholders})
+      AND deleted_at IS NULL
+      AND lifecycle_state = 'Open'
+    GROUP BY location_code
+  `;
+  // Brief 67: per-location drill-down — one row per
+  // (location_code, outcome_bucket, damage_type) for the entire window.
+  // 5-bucket split lets the renderer aggregate to the operator's
+  // "Closed" view (`denied + closed_approved + closed_other`) and
+  // "Approved" view (`approved + closed_approved`, matching the
+  // per-location Approved column's claim_status filter).
+  const byLocationDrilldownSql = `
+    SELECT
+      c.location_code,
+      MAX(c.location_pretty) AS location_pretty,
+      CASE
+        WHEN c.lifecycle_state = 'Open' THEN 'open'
+        WHEN c.claim_status = 'Closed — Denied' THEN 'denied'
+        WHEN c.claim_status LIKE 'Approved —%' THEN 'approved'
+        WHEN c.claim_status IN ('Closed — Paid', 'Closed — Approved/No Response') THEN 'closed_approved'
+        ELSE 'closed_other'
+      END AS outcome_bucket,
+      COALESCE(c.damage_type, '(none)') AS damage_type,
+      COUNT(DISTINCT c.claim_id) AS n,
+      COALESCE(
+        SUM(CASE WHEN cp.photo_type IN ('Quote', 'Receipt')
+                 AND cp.amount IS NOT NULL
+                 THEN cp.amount END),
+        0
+      ) AS cost
+    FROM claims c
+    LEFT JOIN claim_photos cp ON cp.claim_id = c.claim_id AND cp.deleted_at IS NULL
+    WHERE c.submitted_at BETWEEN ?1 AND ?2
+      AND c.location_code IN (${inPlaceholders})
+      AND c.deleted_at IS NULL
+    GROUP BY c.location_code, outcome_bucket, c.damage_type
+    ORDER BY c.location_code, outcome_bucket, n DESC
   `;
 
   const stmts = [
@@ -980,7 +1083,9 @@ async function getReporting(env: Env, session: Session, url: URL): Promise<Respo
     env.DB.prepare(byLocationCostSql).bind(...baseBindings),
     env.DB.prepare(byDamageTypeOpenSql).bind(...baseBindings),
     env.DB.prepare(byDamageTypeApprovedSql).bind(...baseBindings),
-    env.DB.prepare(byDamageTypeDeniedSql).bind(...baseBindings)
+    env.DB.prepare(byDamageTypeDeniedSql).bind(...baseBindings),
+    env.DB.prepare(byLocationAvgDaysOpenSql).bind(...baseBindings),
+    env.DB.prepare(byLocationDrilldownSql).bind(...baseBindings)
   ];
   const batchResult = await env.DB.batch(stmts);
   const lifecycleRes = batchResult[0];
@@ -994,6 +1099,8 @@ async function getReporting(env: Env, session: Session, url: URL): Promise<Respo
   const byDamageOpenRes = batchResult[8];
   const byDamageApprovedRes = batchResult[9];
   const byDamageDeniedRes = batchResult[10];
+  const byLocationAvgDaysOpenRes = batchResult[11];
+  const byLocationDrilldownRes = batchResult[12];
 
   const lifecycleRows = (lifecycleRes?.results ?? []) as Array<{
     lifecycle_state: string;
@@ -1027,7 +1134,8 @@ async function getReporting(env: Env, session: Session, url: URL): Promise<Respo
         closed: 0,
         approved: 0,
         denied: 0,
-        repair_cost: 0
+        repair_cost: 0,
+        avg_days_open: null
       };
       perLoc.set(r.location_code, row);
     }
@@ -1055,6 +1163,16 @@ async function getReporting(env: Env, session: Session, url: URL): Promise<Respo
     const row = perLoc.get(r.location_code);
     if (row) row.repair_cost = Number(r.cost) || 0;
   }
+  for (const r of (byLocationAvgDaysOpenRes?.results ?? []) as Array<{
+    location_code: string;
+    avg_days_open: number | null;
+  }>) {
+    const row = perLoc.get(r.location_code);
+    if (row) {
+      const v = r.avg_days_open;
+      row.avg_days_open = v === null || v === undefined ? null : Number(v);
+    }
+  }
   const byLocation = [...perLoc.values()].sort((a, b) =>
     (a.location_pretty ?? a.location_code).localeCompare(
       b.location_pretty ?? b.location_code
@@ -1065,14 +1183,48 @@ async function getReporting(env: Env, session: Session, url: URL): Promise<Respo
     damage_type: string;
     n: number;
   }>).map((r) => ({ damage_type: r.damage_type, count: Number(r.n) || 0 }));
-  const byDamageApproved = ((byDamageApprovedRes?.results ?? []) as Array<{
+  const byDamageApproved: ReportingByDamageTypeApprovedRow[] = ((byDamageApprovedRes?.results ?? []) as Array<{
     damage_type: string;
     n: number;
-  }>).map((r) => ({ damage_type: r.damage_type, count: Number(r.n) || 0 }));
+    cost: number;
+  }>).map((r) => ({
+    damage_type: r.damage_type,
+    count: Number(r.n) || 0,
+    cost: Number(r.cost) || 0
+  }));
   const byDamageDenied = ((byDamageDeniedRes?.results ?? []) as Array<{
     damage_type: string;
     n: number;
   }>).map((r) => ({ damage_type: r.damage_type, count: Number(r.n) || 0 }));
+
+  const DRILLDOWN_BUCKETS: ReadonlySet<ReportingDrilldownBucket> = new Set([
+    "open",
+    "denied",
+    "approved",
+    "closed_approved",
+    "closed_other"
+  ]);
+  const byLocationDrilldown: ReportingByLocationDrilldownRow[] = (
+    (byLocationDrilldownRes?.results ?? []) as Array<{
+      location_code: string;
+      location_pretty: string | null;
+      outcome_bucket: string;
+      damage_type: string;
+      n: number;
+      cost: number;
+    }>
+  )
+    .filter((r): r is typeof r & { outcome_bucket: ReportingDrilldownBucket } =>
+      DRILLDOWN_BUCKETS.has(r.outcome_bucket as ReportingDrilldownBucket)
+    )
+    .map((r) => ({
+      location_code: r.location_code,
+      location_pretty: r.location_pretty ?? null,
+      outcome_bucket: r.outcome_bucket,
+      damage_type: r.damage_type,
+      n: Number(r.n) || 0,
+      cost: Number(r.cost) || 0
+    }));
 
   const response: ReportingResponse = {
     window,
@@ -1089,7 +1241,8 @@ async function getReporting(env: Env, session: Session, url: URL): Promise<Respo
     by_location: byLocation,
     by_damage_type_open: byDamageOpen,
     by_damage_type_approved: byDamageApproved,
-    by_damage_type_denied: byDamageDenied
+    by_damage_type_denied: byDamageDenied,
+    by_location_drilldown: byLocationDrilldown
   };
   return json(response);
 }
@@ -1109,7 +1262,8 @@ function emptyReportingResponse(
     by_location: [],
     by_damage_type_open: [],
     by_damage_type_approved: [],
-    by_damage_type_denied: []
+    by_damage_type_denied: [],
+    by_location_drilldown: []
   };
 }
 
