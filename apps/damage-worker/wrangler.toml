@@ -130,3 +130,10 @@ bucket_name = "damagedocs"
 
 [images]
 binding = "IMAGES"
+
+# Brief 63 (2026-05-07): keeps Workers Logs sticky across deploys. Without
+# this, CF Builds re-provisions the worker on every push and the dashboard
+# "Logs → Enabled" toggle reverts to off. New workers should copy this block.
+[observability.logs]
+enabled = true
+invocation_logs = true

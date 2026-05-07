@@ -41,3 +41,10 @@ routes = [
 # SUPABASE_URL          — string
 # SUPABASE_ANON_KEY     — secret (used for /auth/v1/token + /auth/v1/user)
 # SUPABASE_SERVICE_KEY  — secret (used for user_permissions reads via @splash/db-supabase)
+
+# Brief 63 (2026-05-07): keeps Workers Logs sticky across deploys. Without
+# this, CF Builds re-provisions the worker on every push and the dashboard
+# "Logs → Enabled" toggle reverts to off. New workers should copy this block.
+[observability.logs]
+enabled = true
+invocation_logs = true

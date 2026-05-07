@@ -217,6 +217,12 @@ When given a new task:
   reference legacy patterns (e.g., damage-worker tests #1-2 expect HTML
   pages, but the new architecture is API-only). Don't blindly run all
   PRE_DEPLOY tests; check whether each applies.
+- **Workers Logs (Brief 63).** Every worker's `wrangler.toml` MUST include
+  an `[observability.logs] enabled = true / invocation_logs = true` block
+  so the CF dashboard's "Logs → Enabled" toggle stays sticky across
+  push-triggered deploys. Without it, CF Builds re-provisions the worker
+  on every deploy and the dashboard toggle reverts to off. New workers
+  should copy the block verbatim from any existing one.
 - **Damage-worker manage endpoints** (post-Brief 59):
   `GET /manage/api/claims` (now with `regional_director_email`,
   `regional_manager_email`, `submitted_from`, `submitted_to` query
