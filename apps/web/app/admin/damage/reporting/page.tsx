@@ -66,6 +66,7 @@ interface ReportingResponse {
     denied: number;
     repair_cost: number;
   }>;
+  by_damage_type_open: Array<{ damage_type: string; count: number }>;
   by_damage_type_approved: Array<{ damage_type: string; count: number }>;
   by_damage_type_denied: Array<{ damage_type: string; count: number }>;
 }
@@ -385,7 +386,11 @@ export default async function DamageReportingPage({ searchParams }: PageProps) {
 
       <section id="by-damage-type" className="mb-8 scroll-mt-20">
         <h2 className="mb-3 text-lg font-bold text-splash-navy">By Damage Type</h2>
-        <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+          <DamageTypeTable
+            heading="Open"
+            rows={report.by_damage_type_open}
+          />
           <DamageTypeTable
             heading="Approved"
             rows={report.by_damage_type_approved}

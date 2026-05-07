@@ -728,6 +728,7 @@ interface ReportingResponse {
   };
   totals: ReportingTotals;
   by_location: ReportingByLocationRow[];
+  by_damage_type_open: ReportingByDamageTypeRow[];
   by_damage_type_approved: ReportingByDamageTypeRow[];
   by_damage_type_denied: ReportingByDamageTypeRow[];
 }
@@ -916,6 +917,16 @@ async function getReporting(env: Env, session: Session, url: URL): Promise<Respo
       )
     GROUP BY c.location_code
   `;
+  const byDamageTypeOpenSql = `
+    SELECT COALESCE(damage_type, '(none)') AS damage_type, COUNT(*) AS n
+    FROM claims
+    WHERE submitted_at BETWEEN ?1 AND ?2
+      AND location_code IN (${inPlaceholders})
+      AND deleted_at IS NULL
+      AND lifecycle_state = 'Open'
+    GROUP BY damage_type
+    ORDER BY n DESC
+  `;
   const byDamageTypeApprovedSql = `
     SELECT COALESCE(damage_type, '(none)') AS damage_type, COUNT(*) AS n
     FROM claims
@@ -950,6 +961,7 @@ async function getReporting(env: Env, session: Session, url: URL): Promise<Respo
     env.DB.prepare(byLocationApprovedSql).bind(...baseBindings),
     env.DB.prepare(byLocationDeniedSql).bind(...baseBindings),
     env.DB.prepare(byLocationCostSql).bind(...baseBindings),
+    env.DB.prepare(byDamageTypeOpenSql).bind(...baseBindings),
     env.DB.prepare(byDamageTypeApprovedSql).bind(...baseBindings),
     env.DB.prepare(byDamageTypeDeniedSql).bind(...baseBindings)
   ];
@@ -962,8 +974,9 @@ async function getReporting(env: Env, session: Session, url: URL): Promise<Respo
   const byLocationApprovedRes = batchResult[5];
   const byLocationDeniedRes = batchResult[6];
   const byLocationCostRes = batchResult[7];
-  const byDamageApprovedRes = batchResult[8];
-  const byDamageDeniedRes = batchResult[9];
+  const byDamageOpenRes = batchResult[8];
+  const byDamageApprovedRes = batchResult[9];
+  const byDamageDeniedRes = batchResult[10];
 
   const lifecycleRows = (lifecycleRes?.results ?? []) as Array<{
     lifecycle_state: string;
@@ -1031,6 +1044,10 @@ async function getReporting(env: Env, session: Session, url: URL): Promise<Respo
     )
   );
 
+  const byDamageOpen = ((byDamageOpenRes?.results ?? []) as Array<{
+    damage_type: string;
+    n: number;
+  }>).map((r) => ({ damage_type: r.damage_type, count: Number(r.n) || 0 }));
   const byDamageApproved = ((byDamageApprovedRes?.results ?? []) as Array<{
     damage_type: string;
     n: number;
@@ -1053,6 +1070,7 @@ async function getReporting(env: Env, session: Session, url: URL): Promise<Respo
       repair_cost: costTotal
     },
     by_location: byLocation,
+    by_damage_type_open: byDamageOpen,
     by_damage_type_approved: byDamageApproved,
     by_damage_type_denied: byDamageDenied
   };
@@ -1072,6 +1090,7 @@ function emptyReportingResponse(
     filters,
     totals: { open: 0, closed: 0, approved: 0, denied: 0, repair_cost: 0 },
     by_location: [],
+    by_damage_type_open: [],
     by_damage_type_approved: [],
     by_damage_type_denied: []
   };

@@ -40,6 +40,8 @@
 # brief-056-signup-admin-rename-and-signups-viewer.md  (completed 2026-05-06)
 # brief-057-fill-again-redirect-to-picker.md  (completed 2026-05-06)
 
+# brief-060-reporting-add-open-damage-type-breakdown.md  (completed 2026-05-06)
+
 
 
 
