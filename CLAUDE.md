@@ -250,7 +250,17 @@ When given a new task:
   `updateMaintainXWorkOrderId` UPDATEs only when the column is NULL,
   so a re-trigger lands at most one WO per claim. MaintainX assignee
   objects require `type: "USER"` alongside the user ID. Omitting it
-  returns 400 with `assignees.0.type` fieldPath (Brief 46).
+  returns 400 with `assignees.0.type` fieldPath (Brief 46). The
+  `getMaintainXLocationId` helper (in `@splash/db-supabase/locations`)
+  resolves `pricing_simple.location_code → pricing_simple.site`
+  (denormalized site_number text — e.g., "147" — populated by
+  `trg_sync_pricing_simple` from `locations.site_number::text`), then
+  joins `locations.site_number=eq.<that value>` to read `maintainx_id`.
+  The join key is `locations.site_number`, NOT `locations.site`
+  (which is the location name like "Oswego"). Brief 62 fixed an
+  earlier version that joined on `locations.site` and silently
+  returned null for every slug — same bug class Brief 49 fixed for
+  `getLocationContactInfo`.
 
 ---
 
@@ -545,7 +555,21 @@ URL-based — service bindings don't apply to those.
   max 200). The log fetch surfaces `total_estimate` from PostgREST's
   `Content-Range` header (sent via `Prefer: count=estimated`). No
   audit row is written for audit-log reads themselves — observation
-  is read-only.
+  is read-only. Brief 61 added a sixth Manage Users card — **Set DC
+  Role** — that writes the damage-claim permission domain
+  (`damage_claim_user_roles` + `damage_claim_user_locations`) via
+  `POST /sysadmin/api/users/{userId}/dc-role`. dc_role and
+  user_permissions.role are independent permission domains and must
+  be set separately: a user can be `location_admin` for Oswego in
+  user_permissions AND `gm` for Oswego in dc_role; both are needed.
+  For `super_admin` / `admin` dc_role, the worker skips the
+  dc_locations write (those roles bypass scoping); switching a user
+  from gm/rm to super_admin/admin or null always wipes existing
+  dc_locations rows to prevent stale-data leakage on downgrade.
+  Audit-log allow-lists now include the `set_dc_role` action and the
+  `damage_claim_user_roles` target_type; the log's `audit_user_id`
+  filter pins target_type to user-related rows including
+  `damage_claim_user_roles`.
 - **inline mode** - signup-worker's default `SIGNATURE_MODE`. Renders
   the form HTML and POSTs straight to `maxpass_signups`.
 - **jotform mode** - signup-worker's alternative `SIGNATURE_MODE`. 302

@@ -59,3 +59,5 @@
 - 2026-05-06 17:49:12 brief-058-pricing-pages-center-align.md (success)
 - 2026-05-06 18:06:59 brief-059-damage-am-rm-filters-and-reporting-tab.md (success)
 - 2026-05-06 19:03:33 brief-060-reporting-add-open-damage-type-breakdown.md (success)
+- 2026-05-07 08:52:36 brief-061-sysadmin-set-dc-role-tool.md (success)
+- 2026-05-07 09:00:29 brief-062-getmaintainxlocationid-fix-join-key.md (success)

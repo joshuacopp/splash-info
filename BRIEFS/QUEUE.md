@@ -42,6 +42,9 @@
 
 # brief-060-reporting-add-open-damage-type-breakdown.md  (completed 2026-05-06)
 
+# brief-061-sysadmin-set-dc-role-tool.md  (completed 2026-05-07)
+
+
 
 
 

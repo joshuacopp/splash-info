@@ -79,6 +79,18 @@
 //                                          regional_manager (plus site_number
 //                                          .eq when q is numeric). Up to 50
 //                                          rows. Empty q -> [].
+//   POST  /sysadmin/api/users/{userId}/dc-role
+//                                        — Brief 61. Set/clear a user's
+//                                          dc_role + dc_locations atomically.
+//                                          Body: { role, location_codes? }.
+//                                          super_admin gate. Writes both
+//                                          damage_claim_user_roles and
+//                                          damage_claim_user_locations; for
+//                                          super_admin/admin the locations
+//                                          write is skipped (those roles
+//                                          bypass scoping). Audit action
+//                                          set_dc_role; target_type
+//                                          damage_claim_user_roles.
 //   GET   /sysadmin/api/audit-log        — Brief 30. Filtered read of
 //                                          sysadmin_audit_log. Filters: actor
 //                                          (ilike substring), action (exact;
@@ -118,7 +130,9 @@ import {
   logSysadminAudit,
   revokeTool,
   searchUsersByEmail,
+  setDcRole,
   setRole,
+  type DcRole,
   type SupabaseEnv
 } from "@splash/db-supabase";
 import { isOriginAllowed, json, jsonError } from "@splash/http";
@@ -128,6 +142,10 @@ type Env = SupabaseEnv;
 
 const VALID_TOOLS: ReadonlySet<ToolName> = new Set(["pricing", "claims", "pertrack"]);
 const VALID_ROLES: ReadonlySet<UserRole> = new Set(["super_admin", "location_admin"]);
+const VALID_DC_ROLES: ReadonlySet<DcRole> = new Set(["gm", "rm", "admin", "super_admin"]);
+
+const DC_ROLE_MAX_LOCATIONS = 50;
+const DC_ROLE_PATH_RE = /^\/sysadmin\/api\/users\/([^/]+)\/dc-role$/;
 
 const OWNED_POST_PATHS = new Set([
   "/sysadmin/api/grant-tool",
@@ -161,11 +179,14 @@ export default {
     const isOwnedPost = OWNED_POST_PATHS.has(path);
     const isOwnedPatch = OWNED_PATCH_PATHS.has(path);
     const isOwnedGet = OWNED_GET_PATHS.has(path);
-    if (!isOwnedPost && !isOwnedPatch && !isOwnedGet) {
+    // Brief 61 — dynamic POST /sysadmin/api/users/{userId}/dc-role.
+    const dcRolePathMatch = DC_ROLE_PATH_RE.exec(path);
+    const isOwnedDcRolePost = dcRolePathMatch !== null;
+    if (!isOwnedPost && !isOwnedPatch && !isOwnedGet && !isOwnedDcRolePost) {
       return new Response("Not found", { status: 404 });
     }
 
-    if (isOwnedPost && method !== "POST") {
+    if ((isOwnedPost || isOwnedDcRolePost) && method !== "POST") {
       return jsonError(405, "POST required");
     }
     if (isOwnedPatch && method !== "PATCH") {
@@ -212,6 +233,11 @@ export default {
         body = (await request.json()) as Record<string, unknown>;
       } catch {
         return jsonError(400, "Invalid JSON");
+      }
+
+      if (isOwnedDcRolePost && dcRolePathMatch) {
+        const userId = decodeURIComponent(dcRolePathMatch[1] ?? "");
+        return await handleSetDcRole(env, userId, body, actor);
       }
 
       switch (path) {
@@ -382,6 +408,101 @@ async function handleSetRole(
     after
   });
   return json({ ok: true, after });
+}
+
+/**
+ * Brief 61 — POST /sysadmin/api/users/{userId}/dc-role.
+ *
+ * Sets / clears a user's dc_role + dc_locations atomically. The user's
+ * email is resolved from the auth admin API (damage_claim_user_roles.email
+ * is NOT NULL on inserts). The setDcRole helper writes both
+ * damage_claim_user_roles and damage_claim_user_locations and returns
+ * before/after snapshots for the audit log.
+ *
+ * For role === "super_admin" | "admin" | null, location_codes is ignored.
+ * For role === "gm" | "rm", location_codes is required and each entry
+ * must match LOCATION_CODE_RE; max DC_ROLE_MAX_LOCATIONS entries.
+ */
+async function handleSetDcRole(
+  env: Env,
+  userId: string,
+  body: Record<string, unknown>,
+  actor: { id: string; email: string }
+): Promise<Response> {
+  if (!UUID_RE.test(userId)) {
+    return jsonError(400, "Invalid user_id in path");
+  }
+
+  const roleRaw = body.role;
+  if (roleRaw !== null && typeof roleRaw !== "string") {
+    return jsonError(400, "role must be a string or null");
+  }
+  let role: DcRole | null;
+  if (roleRaw === null) {
+    role = null;
+  } else if (VALID_DC_ROLES.has(roleRaw as DcRole)) {
+    role = roleRaw as DcRole;
+  } else {
+    return jsonError(400, `Invalid role: ${roleRaw}`);
+  }
+
+  // location_codes is required for gm/rm; ignored otherwise.
+  let locationCodes: string[] = [];
+  if (role === "gm" || role === "rm") {
+    const raw = body.location_codes;
+    if (!Array.isArray(raw) || raw.length === 0) {
+      return jsonError(
+        400,
+        "location_codes is required and must be a non-empty array for role gm/rm"
+      );
+    }
+    if (raw.length > DC_ROLE_MAX_LOCATIONS) {
+      return jsonError(
+        400,
+        `location_codes may contain at most ${DC_ROLE_MAX_LOCATIONS} entries`
+      );
+    }
+    const codes: string[] = [];
+    for (const entry of raw) {
+      if (typeof entry !== "string") {
+        return jsonError(400, "location_codes entries must be strings");
+      }
+      const trimmed = entry.trim();
+      if (!LOCATION_CODE_RE.test(trimmed)) {
+        return jsonError(400, `Invalid location_code: ${entry}`);
+      }
+      codes.push(trimmed);
+    }
+    locationCodes = codes;
+  }
+
+  // Resolve email — damage_claim_user_roles.email is NOT NULL.
+  const userObj = await adminGetUser(env, userId);
+  if (!userObj.email) return jsonError(400, "User has no email on file");
+
+  const sb = createServiceClient(env);
+  const { before, after } = await setDcRole(sb, {
+    userId,
+    email: userObj.email,
+    role,
+    locationCodes
+  });
+
+  await logSysadminAudit(sb, {
+    actor,
+    action: "set_dc_role",
+    target_type: "damage_claim_user_roles",
+    target_id: userId,
+    before,
+    after
+  });
+
+  return json({
+    ok: true,
+    user_id: userId,
+    role: after.role,
+    location_codes: after.location_codes
+  });
 }
 
 async function handleResetPassword(
@@ -1881,6 +2002,7 @@ const ALLOWED_AUDIT_ACTIONS: ReadonlySet<string> = new Set([
   "set_role_super_admin",
   "set_role_location_admin",
   "clear_role",
+  "set_dc_role",
   "grant_tool",
   "grant_tool_noop",
   "revoke_tool",
@@ -1896,11 +2018,13 @@ const ALLOWED_AUDIT_TARGET_TYPES: ReadonlySet<string> = new Set([
   "user_permissions",
   "user_tool_access",
   "auth.users",
+  "damage_claim_user_roles",
   "pricing_simple",
   "locations"
 ]);
 
-const USER_TARGET_TYPES_CSV = "user_permissions,user_tool_access,auth.users";
+const USER_TARGET_TYPES_CSV =
+  "user_permissions,user_tool_access,auth.users,damage_claim_user_roles";
 const LOCATION_TARGET_TYPES_CSV = "pricing_simple,locations";
 
 const UUID_RE = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;

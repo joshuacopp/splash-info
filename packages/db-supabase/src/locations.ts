@@ -71,8 +71,17 @@ export async function getActiveLocationByCode(
  * Two-step lookup because the `locations` table doesn't carry a
  * `location_code` column (the unique business key is `site_number`; the
  * `trg_sync_pricing_simple` trigger denormalizes into `pricing_simple` by
- * `site` text). We resolve the slug → `site` via `pricing_simple` first,
- * then look up `locations.maintainx_id` by that `site`.
+ * `site` text). We resolve the slug → `pricing_simple.site` (which is the
+ * denormalized site_number text — e.g., "147" — populated by the
+ * trg_sync_pricing_simple trigger from locations.site_number::text), then
+ * look up `locations.maintainx_id` by `site_number=eq.<that value>`.
+ *
+ * The earlier (broken) version of this helper queried
+ * `locations.site=eq.<value>` which mismatches because `locations.site` is
+ * the location name (e.g., "Oswego") not the site_number — Brief 62 fixed
+ * the join key after operator confirmed every WO created since Brief 42
+ * shipped without a locationId. See Brief 49 for the parallel
+ * `getLocationContactInfo` fix that hit the same data-shape mismatch.
  *
  * Fail-soft: returns null on bad-shape slug, missing pricing_simple row,
  * missing locations row, missing/null `maintainx_id`, or any non-2xx
@@ -118,9 +127,13 @@ export async function getMaintainXLocationId(
   const site = psRows[0]?.site;
   if (!site) return null;
 
-  // Step 2 — locations.site → maintainx_id (integer or null).
+  // Step 2 — locations.site_number → maintainx_id (integer or null).
+  // Brief 62: the join key is `site_number` (the actual integer business key,
+  // surfaced as text in pricing_simple.site by trg_sync_pricing_simple), NOT
+  // `locations.site` (the location name like "Oswego"). The earlier version
+  // joined on `site` and silently returned null for every slug.
   const locUrl = new URL("/rest/v1/locations", env.SUPABASE_URL);
-  locUrl.searchParams.set("site", `eq.${site}`);
+  locUrl.searchParams.set("site_number", `eq.${site}`);
   locUrl.searchParams.set("select", "maintainx_id");
   locUrl.searchParams.set("limit", "1");
   let locResponse: Response;

@@ -164,6 +164,75 @@ export async function setRoleAction(
 }
 
 /* ============================================================
+ * Set DC Role (Brief 61)
+ *
+ * Writes the dc_role + dc_locations pair via
+ * POST /sysadmin/api/users/{userId}/dc-role. Distinct from setRoleAction:
+ * dc_role lives on damage_claim_user_roles + damage_claim_user_locations,
+ * not user_permissions.
+ *
+ * Body shape:
+ *   { role: "gm" | "rm" | "admin" | "super_admin" | null,
+ *     location_codes: string[] }
+ * For role super_admin/admin/null, location_codes is included as an empty
+ * array — the worker ignores it for those roles. For gm/rm the worker
+ * requires a non-empty array.
+ * ============================================================ */
+
+type DcRoleValue = "gm" | "rm" | "admin" | "super_admin";
+
+interface SetDcRoleBody {
+  role: DcRoleValue | null;
+  location_codes: string[];
+}
+
+export async function setDcRoleAction(
+  _prevState: ActionResult | null,
+  formData: FormData
+): Promise<ActionResult> {
+  const userId = fieldString(formData, "user_id");
+  if (userId.length === 0) {
+    return { ok: false, error: "Pick a user first." };
+  }
+
+  const roleRaw = fieldString(formData, "role");
+  const role: DcRoleValue | null =
+    roleRaw.length === 0 ? null : (roleRaw as DcRoleValue);
+
+  // formData.getAll returns FormDataEntryValue[]; coerce to string[].
+  const locationCodes = formData
+    .getAll("location_codes")
+    .map((v) => (typeof v === "string" ? v.trim() : ""))
+    .filter((v) => v.length > 0);
+
+  const body: SetDcRoleBody = {
+    role,
+    location_codes: locationCodes
+  };
+
+  const result = await sysadminPostJson(
+    `/sysadmin/api/users/${encodeURIComponent(userId)}/dc-role`,
+    body
+  );
+  if (!result.ok) {
+    return { ok: false, error: result.error };
+  }
+
+  revalidatePath(PAGE_PATH);
+  if (role === null) {
+    return { ok: true, message: "Cleared DC role + locations" };
+  }
+  if (role === "gm" || role === "rm") {
+    const count = locationCodes.length;
+    return {
+      ok: true,
+      message: `Set DC role ${role} on ${count} location${count === 1 ? "" : "s"}`
+    };
+  }
+  return { ok: true, message: `Set DC role ${role}` };
+}
+
+/* ============================================================
  * Grant tool
  * ============================================================ */
 

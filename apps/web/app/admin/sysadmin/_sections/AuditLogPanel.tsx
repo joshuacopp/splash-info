@@ -45,6 +45,7 @@ const ALLOWED_ACTIONS = [
   "set_role_super_admin",
   "set_role_location_admin",
   "clear_role",
+  "set_dc_role",
   "grant_tool",
   "grant_tool_noop",
   "revoke_tool",
@@ -60,6 +61,7 @@ const ALLOWED_TARGET_TYPES = [
   "user_permissions",
   "user_tool_access",
   "auth.users",
+  "damage_claim_user_roles",
   "pricing_simple",
   "locations"
 ] as const;
