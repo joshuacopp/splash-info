@@ -228,6 +228,16 @@ export const CLAIM_TRANSITIONS_UI: readonly UITransition[] = [
     label: "Close — Approved / No Response",
     role: "gm"
   }),
+  // Brief 66 — RM-allowed revert. Mirrors the worker entry of the same
+  // (from, to, role); see worker comment block for rationale.
+  tx({
+    from: "Approved — Pending Quotes",
+    to: "Closed — Denied",
+    label: "Close — Denied",
+    role: "rm",
+    requiresNote: true,
+    clearApprovalDetails: true
+  }),
 
   // ===== From "Pending RM Quote Approval" =====
   tx({
@@ -242,6 +252,15 @@ export const CLAIM_TRANSITIONS_UI: readonly UITransition[] = [
     to: "Closed — Denied",
     label: "Deny",
     role: "rm"
+  }),
+  // Brief 66 — RM-allowed revert. Mirrors the worker entry.
+  tx({
+    from: "Pending RM Quote Approval",
+    to: "Pending RM Review",
+    label: "Send back to RM Review",
+    role: "rm",
+    requiresNote: true,
+    clearApprovalDetails: true
   }),
 
   // ===== From "Approved — In House — Parts Ordered" =====
@@ -301,27 +320,34 @@ export const CLAIM_TRANSITIONS_UI: readonly UITransition[] = [
 
   // ===== Admin escape hatches =====
   // Brief 20 — clearApprovalDetails parity with worker table.
+  // Brief 66 (2026-05-07) — three of the four entries below are now
+  // `role: "rm"` (the two `Approved — Pending Quotes` reverts and the
+  // `Pending RM Quote Approval → Pending GM Review` revert) per
+  // operator decision. Labels lose the "(admin)" suffix on those
+  // three. The `Pending RM Quote Approval → Approved — Pending Quotes`
+  // entry stays admin-only — it moves the claim FORWARD again past
+  // where the RM might want to revert from.
   tx({
     from: "Approved — Pending Quotes",
     to: "Pending GM Review",
-    label: "Send back to GM Review (admin)",
-    role: "admin",
+    label: "Send back to GM Review",
+    role: "rm",
     requiresNote: true,
     clearApprovalDetails: true
   }),
   tx({
     from: "Approved — Pending Quotes",
     to: "Pending RM Review",
-    label: "Send back to RM Review (admin)",
-    role: "admin",
+    label: "Send back to RM Review",
+    role: "rm",
     requiresNote: true,
     clearApprovalDetails: true
   }),
   tx({
     from: "Pending RM Quote Approval",
     to: "Pending GM Review",
-    label: "Send back to GM Review (admin)",
-    role: "admin",
+    label: "Send back to GM Review",
+    role: "rm",
     requiresNote: true,
     clearApprovalDetails: true
   }),

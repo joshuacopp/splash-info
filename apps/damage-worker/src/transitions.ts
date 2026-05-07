@@ -177,6 +177,19 @@ export const CLAIM_TRANSITIONS: readonly ClaimTransitionDef[] = [
   // ===== From "Approved — Pending Quotes" =====
   tx({ from: "Approved — Pending Quotes", to: "Pending RM Quote Approval", role: "gm" }),
   tx({ from: "Approved — Pending Quotes", to: "Closed — Approved/No Response", role: "gm" }),
+  // Brief 66 — RM revert paths from Approved — Pending Quotes. GM may
+  // erroneously approve; RM catches it during quote-gathering and bounces
+  // back to GM Review, RM Review, or denies outright without admin
+  // escalation. clearApprovalDetails NULLs the approval columns + resets
+  // gm/rm/ceo audit stamps so the detail page doesn't render a stale
+  // Approval Details box on the reverted claim.
+  tx({
+    from: "Approved — Pending Quotes",
+    to: "Closed — Denied",
+    role: "rm",
+    requiresNote: true,
+    clearApprovalDetails: true
+  }),
 
   // ===== From "Pending RM Quote Approval" =====
   // Approve quote: requiresQuoteSelection — selected quote's amount becomes
@@ -189,6 +202,17 @@ export const CLAIM_TRANSITIONS: readonly ClaimTransitionDef[] = [
     requiresQuoteSelection: true
   }),
   tx({ from: "Pending RM Quote Approval", to: "Closed — Denied", role: "rm" }),
+  // Brief 66 — RM revert path from Pending RM Quote Approval back to
+  // Pending RM Review. Same use case as the Approved — Pending Quotes
+  // reverts above: RM bounces a misrouted claim back without admin
+  // escalation. clearApprovalDetails clears any partial approval state.
+  tx({
+    from: "Pending RM Quote Approval",
+    to: "Pending RM Review",
+    role: "rm",
+    requiresNote: true,
+    clearApprovalDetails: true
+  }),
 
   // ===== From "Approved — In House — Parts Ordered" =====
   tx({
@@ -240,24 +264,39 @@ export const CLAIM_TRANSITIONS: readonly ClaimTransitionDef[] = [
   // confuses reviewers. Intra-workflow steps that don't undo approval
   // (e.g. Submitted for Payment → Check Request Submitted) keep the
   // approval intact.
+  //
+  // Brief 66 (2026-05-07) — three of the rows below are now `role: "rm"`
+  // (not `role: "admin"`): the two `Approved — Pending Quotes` reverts
+  // and the `Pending RM Quote Approval → Pending GM Review` revert. Per
+  // operator decision: GM erroneously approves, RM catches it during
+  // quote-gathering, RM needs to bounce it back without admin
+  // escalation. The remaining admin-only reverts in this block involve
+  // work-in-progress (parts ordered, repaired) or finance touching the
+  // row (Submitted for Payment, Check Issued, Check Request Submitted),
+  // so admin oversight stays. The two new RM revert transitions added
+  // by Brief 66 (Approved — Pending Quotes → Closed — Denied; Pending
+  // RM Quote Approval → Pending RM Review) live in the per-from blocks
+  // above, alongside the other forward transitions for those statuses,
+  // not here. Keeping pre-approval reverts here as a mixed-role group
+  // because they share the same clearApprovalDetails posture.
   tx({
     from: "Approved — Pending Quotes",
     to: "Pending GM Review",
-    role: "admin",
+    role: "rm",
     requiresNote: true,
     clearApprovalDetails: true
   }),
   tx({
     from: "Approved — Pending Quotes",
     to: "Pending RM Review",
-    role: "admin",
+    role: "rm",
     requiresNote: true,
     clearApprovalDetails: true
   }),
   tx({
     from: "Pending RM Quote Approval",
     to: "Pending GM Review",
-    role: "admin",
+    role: "rm",
     requiresNote: true,
     clearApprovalDetails: true
   }),

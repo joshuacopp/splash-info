@@ -348,7 +348,17 @@ When given a new task:
   hint ("Requires admin or higher", or "Pending final approval" for the
   "Submit for Payment" transition specifically). Worker re-validates
   dc_role on POST as defense in depth — UI gating is a UX hint, not
-  access control.
+  access control. **Brief 66 (2026-05-07)** widened RM access on the
+  pre-quote-approval revert paths: from `Approved — Pending Quotes`
+  RMs can now Send back to GM Review, Send back to RM Review, or
+  Close — Denied; from `Pending RM Quote Approval` RMs can also Send
+  back to GM Review or Send back to RM Review (deny was already
+  RM-allowed). Admin-only revert paths now begin at
+  `Approved — In House — Parts Ordered` (work-in-progress) and the
+  finance-touched `Submitted for Payment` / `Check Issued` /
+  `Check Request Submitted` chain. The `Pending RM Quote Approval →
+  Approved — Pending Quotes` path also stays admin-only — it moves
+  the claim FORWARD again, not backward.
 
 ### Server actions: useActionState + router.refresh() pattern (Brief 19)
 
