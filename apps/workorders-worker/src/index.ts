@@ -53,9 +53,15 @@ interface Env extends SupabaseEnv {
   APPS_WEB_BASE_URL: string;
 }
 
-/** AbortController timeout for the upstream MaintainX read call. Mirrors
- *  damage-worker's WO-create timeout (Brief 42). */
-const MAINTAINX_TIMEOUT_MS = 8000;
+// Brief 72: pagination limits.
+//   - Single-location users: skip pagination; MaintainX's 200-per-call
+//     cap is enough headroom for any one site's open queue.
+//   - Multi-location users: paginate up to MAX_WORK_ORDERS_MULTI total.
+//     Past the cap, the page renders a truncation banner.
+const MAX_WORK_ORDERS_SINGLE = 200;
+const MAX_WORK_ORDERS_MULTI = 1000;
+const TIMEOUT_SINGLE_MS = 8_000;
+const TIMEOUT_MULTI_MS = 30_000;
 
 /** Hardcoded super-admin allow-list for the on-demand sync trigger. Mirrors
  *  the operator/super_admin list called out in CLAUDE.md "operator
@@ -112,6 +118,9 @@ interface ListResponse {
   preventive: { groups: GroupOut[] };
   fetchedAt: string;
   truncated: boolean;
+  /** Brief 72: number of MaintainX API calls made (1 for single-location
+   *  users, 1-5 for multi-location users on the paginated path). */
+  pageCount: number;
   accessibleLocationCount: number;
   mappedLocationCount: number;
   email: string;
@@ -196,6 +205,7 @@ async function handleList(env: Env, session: Session): Promise<Response> {
       preventive: { groups: [] },
       fetchedAt,
       truncated: false,
+      pageCount: 0,
       accessibleLocationCount: accessible.length,
       mappedLocationCount: 0,
       email
@@ -203,14 +213,21 @@ async function handleList(env: Env, session: Session): Promise<Response> {
   }
 
   // Phase 2 — fetch MaintainX work orders for those location IDs.
+  // Brief 72: multi-location users paginate the cursor; single-location
+  // users keep the original single-call posture.
+  const shouldPaginate = mappedMxIds.length > 1;
+  const timeoutMs = shouldPaginate ? TIMEOUT_MULTI_MS : TIMEOUT_SINGLE_MS;
+  const maxWorkOrders = shouldPaginate ? MAX_WORK_ORDERS_MULTI : MAX_WORK_ORDERS_SINGLE;
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), MAINTAINX_TIMEOUT_MS);
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
   let result;
   try {
     result = await fetchMaintainXWorkOrders({
       apiKey: env.MAINTAINX_API_KEY,
       baseUrl: env.MAINTAINX_BASE_URL,
       maintainxLocationIds: mappedMxIds,
+      paginate: shouldPaginate,
+      maxWorkOrders,
       signal: controller.signal
     });
   } finally {
@@ -239,11 +256,16 @@ async function handleList(env: Env, session: Session): Promise<Response> {
   const reactive = groupByLocation(buckets.reactive, users, teams, accessibleByMxId);
   const preventive = groupByLocation(buckets.preventive, users, teams, accessibleByMxId);
 
+  console.log(
+    `workorders-worker list: email=${email} mappedMxIds=${mappedMxIds.length} paginate=${shouldPaginate} pageCount=${result.pageCount} workOrders=${result.workOrders.length} truncated=${result.truncated}`
+  );
+
   return json({
     reactive: { groups: reactive },
     preventive: { groups: preventive },
     fetchedAt,
     truncated: result.truncated,
+    pageCount: result.pageCount,
     accessibleLocationCount: accessible.length,
     mappedLocationCount: mappedMxIds.length,
     email

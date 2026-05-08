@@ -555,6 +555,13 @@ URL-based — service bindings don't apply to those.
   the read handler joins those caches to render assignee names. An
   on-demand sync trigger lives at
   `POST /workorders/api/sync-maintainx-users` (super_admin only).
+  Pagination (Brief 72): single-location users get one MaintainX
+  call (200-cap); multi-location users paginate cursor-by-cursor
+  up to 1000 total WOs (5 pages × 200). Hard ceiling of 10 page
+  iterations as defense-in-depth. Page renders a truncation
+  banner when the 1000 cap is hit. The `pageCount` field on
+  `GET /workorders/api/list`'s response surfaces the actual call
+  count for observability.
 - **`age_days`** (Brief 68) - Server-computed days-since-submission
   field on the `/manage/api/claims` list response. Lives in the
   `listClaims` SELECT projection in `packages/db-d1/src/claims.ts` as

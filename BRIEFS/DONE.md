@@ -70,3 +70,4 @@
 - 2026-05-07 12:23:03 brief-069-age-pill-two-tier-thresholds.md (success)
 - 2026-05-07 16:52:48 brief-070-workorders-worker-and-page.md (success)
 - 2026-05-07 18:24:35 brief-071-workorders-v2-gating-grouping-assignees-types.md (success)
+- 2026-05-07 19:57:50 brief-072-workorders-conditional-pagination.md (success)

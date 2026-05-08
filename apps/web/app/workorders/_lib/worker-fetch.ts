@@ -48,6 +48,9 @@ export interface WorkOrdersListResponse {
   preventive: WorkOrdersBucket;
   fetchedAt: string;
   truncated: boolean;
+  /** Brief 72: number of MaintainX API calls made by the worker for
+   *  this response (1 for single-location users, 1-5 for multi-location). */
+  pageCount: number;
   accessibleLocationCount: number;
   mappedLocationCount: number;
   email: string;

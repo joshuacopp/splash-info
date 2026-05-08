@@ -172,9 +172,9 @@ function TabButton({
 
 function TruncatedNotice() {
   return (
-    <div className="mb-5 rounded-splash-lg border border-sudsy-blue/40 bg-sudsy-blue/10 px-5 py-3 text-sm text-splash-navy/80">
-      Showing the first 200 work orders. For the full list, log into
-      MaintainX directly.
+    <div className="mb-5 rounded-md border border-amber-200 bg-amber-50 px-4 py-2 text-sm text-amber-900">
+      Showing first 1000 work orders. Older items aren&apos;t visible
+      here — log into MaintainX directly for the full list.
     </div>
   );
 }
