@@ -54,6 +54,8 @@
 
 # brief-074-workorders-new-request-tab-and-priority-pill-fixes.md  (completed 2026-05-08)
 
+# brief-077-header-mobile-fit-and-workorders-pathname-gate.md  (completed 2026-05-08)
+
 
 
 

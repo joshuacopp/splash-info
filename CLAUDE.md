@@ -398,8 +398,16 @@ When given a new task:
 - Global Header at `apps/web/app/_components/Header.tsx` renders on
   every page from the root layout. White-script logo on dark
   splash-navy bar. Uses `usePathname()` to gate admin controls
-  (Dashboard + Change Password + Sign Out) on `/admin/*` and
-  `/sysadmin/*`.
+  (Dashboard + Sign Out buttons + email/role badge with a small
+  "Change password" text link beneath the badge) on `/admin/*`,
+  `/sysadmin/*`, and `/workorders/*`. Brief 77 (2026-05-08): added
+  `/workorders` to the gate (Brief 70 introduced it as a top-level
+  route outside `/admin/*` and the gate hadn't been updated), and
+  demoted "Change Password" from a third button to a small text
+  link under the role badge — the third button was crushing the
+  logo at iPhone widths and "change password" is a low-frequency
+  action (~once per 90 days or after a forced reset) that doesn't
+  need primary-button affordance.
 - **Server-action ID stability** (Brief 31). apps/web depends on a
   `NEXT_SERVER_ACTIONS_ENCRYPTION_KEY` build-time env var (set in CF
   Workers Builds → splash-web → Settings → Build → Environment

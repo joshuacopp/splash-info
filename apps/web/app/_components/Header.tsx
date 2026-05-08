@@ -4,10 +4,16 @@
 // rendered on EVERY page from the root layout.
 //
 // Path-aware admin controls:
-//   - On /admin/* and /sysadmin/* the header additionally renders a user
-//     identity row (email + role label) plus Dashboard + Change Password +
-//     Sign Out buttons (matching the legacy /admin/* chrome - see Josh's
-//     reference screenshots).
+//   - On /admin/*, /sysadmin/*, and /workorders/* the header additionally
+//     renders a user identity row (email + role label, with a small
+//     "Change password" text link beneath the role badge) plus Dashboard +
+//     Sign Out buttons. /workorders was added to the gate in Brief 77 —
+//     Brief 70 introduced it as a top-level route (intentionally outside
+//     /admin/*) and the gate hadn't been updated.
+//   - "Change Password" is intentionally a small text link rather than a
+//     third button (Brief 77): it's a low-frequency action (once per ~90
+//     days or after a forced reset) and the third button was crushing the
+//     logo at iPhone widths (operator screenshot 2026-05-08).
 //   - On all other paths (/, /login, /change-password, /signup/*, etc.)
 //     the header is logo-only.
 //   - Logo-link target also flips: admin pages link the logo to
@@ -38,15 +44,16 @@ import { usePathname } from "next/navigation";
 import { ASSETS } from "@splash/storage-r2/assets";
 import { SignOutButton } from "./SignOutButton";
 
-// Match /admin, /admin/..., /sysadmin, /sysadmin/... - the two admin-context
-// path families. Public surfaces (/, /login, /signup/*, /q/*, /join/*,
-// /claims/*, /change-password) all fall through to logo-only chrome.
+// Match /admin, /admin/..., /sysadmin, /sysadmin/..., /workorders,
+// /workorders/... - the three admin-context path families. Public surfaces
+// (/, /login, /signup/*, /q/*, /join/*, /claims/*, /change-password) all
+// fall through to logo-only chrome.
 //
 // `new RegExp(...)` rather than a regex literal - avoids TS-transpile-mode
 // parser ambiguity in .tsx files where `/<...` looks like a JSX closing
 // tag prefix to lightweight parsers. Real Next.js builds handle either
 // form; the constructor form is unambiguous everywhere.
-const ADMIN_PATH_RE = new RegExp("^/(admin|sysadmin)(/|$)");
+const ADMIN_PATH_RE = new RegExp("^/(admin|sysadmin|workorders)(/|$)");
 
 export interface HeaderUser {
   email: string;
@@ -85,6 +92,12 @@ export function Header({ user }: HeaderProps = {}) {
               <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-sudsy-blue">
                 {user.roleLabel}
               </span>
+              <Link
+                href="/change-password"
+                className="text-xs text-white/70 hover:text-white hover:underline"
+              >
+                Change password
+              </Link>
             </div>
           ) : null}
           <div className="flex items-center gap-3">
@@ -93,12 +106,6 @@ export function Header({ user }: HeaderProps = {}) {
               className="rounded-splash-sm border border-white/30 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-white/10"
             >
               Dashboard
-            </Link>
-            <Link
-              href="/change-password"
-              className="rounded-splash-sm border border-white/30 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-white/10"
-            >
-              Change Password
             </Link>
             <SignOutButton />
           </div>
