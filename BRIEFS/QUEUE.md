@@ -52,6 +52,8 @@
 
 # brief-073-workorders-due-date-pill-and-age-under-priority.md  (completed 2026-05-07)
 
+# brief-074-workorders-new-request-tab-and-priority-pill-fixes.md  (completed 2026-05-08)
+
 
 
 

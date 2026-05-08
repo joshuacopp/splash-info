@@ -43,6 +43,21 @@ export interface WorkOrdersBucket {
   groups: WorkOrdersGroup[];
 }
 
+/** Brief 74 — surfaced to apps/web alongside the read response so the
+ *  New Request tab's Location dropdown has data without a second fetch.
+ *  The form filters to entries with `maintainx_id !== null` (a request
+ *  can't post to an unmapped location). */
+export interface AccessibleLocation {
+  maintainx_id: number | null;
+  location_address: string | null;
+  location_name: string | null;
+}
+
+export interface WorkOrdersCurrentUser {
+  email: string;
+  full_name: string | null;
+}
+
 export interface WorkOrdersListResponse {
   reactive: WorkOrdersBucket;
   preventive: WorkOrdersBucket;
@@ -54,6 +69,9 @@ export interface WorkOrdersListResponse {
   accessibleLocationCount: number;
   mappedLocationCount: number;
   email: string;
+  /** Brief 74 additions — populated for the New Request tab. */
+  accessibleLocations: AccessibleLocation[];
+  currentUser: WorkOrdersCurrentUser;
 }
 
 export type WorkOrdersListResult =

@@ -309,3 +309,243 @@ export async function fetchMaintainXWorkOrders(input: FetchInput): Promise<Fetch
     status: lastStatus
   };
 }
+
+/* ============================================================
+ * Brief 74 — Work Request create + photo-upload helpers.
+ *
+ * MaintainX distinguishes "work requests" (informal, anyone-can-file
+ * intake; the `/v1/workrequests` resource) from "work orders" (the
+ * formal record, `/v1/workorders`). The /workorders New Request tab
+ * surfaces a request form, so we POST to /workrequests; MaintainX
+ * staff promote the request to a work order on their side.
+ *
+ * Fail-soft posture (matches the read path): helpers never throw;
+ * fetch errors / non-2xx / non-JSON all collapse to a result with
+ * `ok: false`. Caller decides what to map onto HTTP status codes
+ * (the worker's `POST /workorders/api/request` handler 303-redirects
+ * with a query-string error message on failure).
+ * ============================================================ */
+
+/** MaintainX `/v1/workrequests` POST body fields we populate. Optional
+ *  fields (`assetId`, `approverTeamId`, `extraFields`) are omitted in
+ *  v1 — staff route assets / approvers MX-side after the request lands. */
+export interface CreateWorkRequestInput {
+  title: string;
+  description: string;
+  priority: "HIGH" | "MEDIUM" | "LOW";
+  locationId: number;
+  /** MaintainX expects this field as the requester contact identifier
+   *  (string; an email is the canonical shape). */
+  creatorContactInfo: string;
+  apiKey: string;
+  baseUrl: string;
+  signal?: AbortSignal;
+}
+
+export interface CreateWorkRequestResult {
+  ok: boolean;
+  /** MaintainX work-request ID on success; null on failure. The downstream
+   *  upload calls key on this. */
+  requestId: number | null;
+  error: string | null;
+  status: number;
+}
+
+function extractWorkRequestId(body: unknown): number | null {
+  if (!body || typeof body !== "object") return null;
+  const obj = body as Record<string, unknown>;
+  // MaintainX docs aren't fully formal in this repo; try the common
+  // envelope shapes. Same defensive posture as Brief 42's WO-create
+  // helper on damage-worker.
+  const candidates: unknown[] = [
+    obj.id,
+    (obj.workRequest as Record<string, unknown> | undefined)?.id,
+    (obj.data as Record<string, unknown> | undefined)?.id
+  ];
+  for (const c of candidates) {
+    if (typeof c === "number" && Number.isFinite(c)) return c;
+    if (typeof c === "string") {
+      const parsed = Number.parseInt(c, 10);
+      if (Number.isFinite(parsed)) return parsed;
+    }
+  }
+  return null;
+}
+
+export async function createMaintainXWorkRequest(
+  input: CreateWorkRequestInput
+): Promise<CreateWorkRequestResult> {
+  const base = input.baseUrl.replace(/\/$/, "");
+  const url = `${base}/workrequests`;
+  const body = {
+    title: input.title,
+    description: input.description,
+    priority: input.priority,
+    locationId: input.locationId,
+    creatorContactInfo: input.creatorContactInfo
+  };
+
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${input.apiKey}`,
+        "Content-Type": "application/json",
+        Accept: "application/json"
+      },
+      body: JSON.stringify(body),
+      signal: input.signal
+    });
+  } catch (e) {
+    return {
+      ok: false,
+      requestId: null,
+      error: e instanceof Error ? e.message : String(e),
+      status: 0
+    };
+  }
+
+  if (!res.ok) {
+    let errText = "";
+    try {
+      errText = await res.text();
+    } catch {
+      // ignore
+    }
+    return {
+      ok: false,
+      requestId: null,
+      error: `MX ${res.status}: ${errText.slice(0, ERROR_BODY_MAX_BYTES)}`,
+      status: res.status
+    };
+  }
+
+  let parsed: unknown = null;
+  try {
+    parsed = await res.json();
+  } catch {
+    return {
+      ok: false,
+      requestId: null,
+      error: `MX ${res.status}: response was not valid JSON`,
+      status: res.status
+    };
+  }
+
+  const requestId = extractWorkRequestId(parsed);
+  if (requestId == null) {
+    return {
+      ok: false,
+      requestId: null,
+      error: `MX ${res.status}: response missing work-request id`,
+      status: res.status
+    };
+  }
+  return { ok: true, requestId, error: null, status: res.status };
+}
+
+export interface UploadWorkRequestFileInput {
+  requestId: number;
+  /** Sanitized filename; extension preserved. The helper URL-encodes it
+   *  when building the PUT URL. */
+  filename: string;
+  body: ArrayBuffer;
+  apiKey: string;
+  baseUrl: string;
+  /** "thumbnail" routes to PUT /workrequests/{id}/thumbnail/{filename}
+   *  (first photo per request); "attachment" routes to the sibling
+   *  /attachment endpoint (additional photos). */
+  endpoint: "thumbnail" | "attachment";
+  signal?: AbortSignal;
+}
+
+export interface UploadWorkRequestFileResult {
+  ok: boolean;
+  publicUrl: string | null;
+  filename: string | null;
+  fileKey: string | null;
+  error: string | null;
+  status: number;
+}
+
+export async function uploadMaintainXWorkRequestFile(
+  input: UploadWorkRequestFileInput
+): Promise<UploadWorkRequestFileResult> {
+  const base = input.baseUrl.replace(/\/$/, "");
+  const url = `${base}/workrequests/${input.requestId}/${input.endpoint}/${encodeURIComponent(input.filename)}`;
+
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      method: "PUT",
+      headers: {
+        Authorization: `Bearer ${input.apiKey}`,
+        "Content-Type": "application/octet-stream",
+        Accept: "application/json"
+      },
+      // Cloudflare Workers' fetch accepts ArrayBuffer / Uint8Array
+      // directly as body; let it through unchanged.
+      body: input.body,
+      signal: input.signal
+    });
+  } catch (e) {
+    return {
+      ok: false,
+      publicUrl: null,
+      filename: null,
+      fileKey: null,
+      error: e instanceof Error ? e.message : String(e),
+      status: 0
+    };
+  }
+
+  if (!res.ok) {
+    let errText = "";
+    try {
+      errText = await res.text();
+    } catch {
+      // ignore
+    }
+    return {
+      ok: false,
+      publicUrl: null,
+      filename: null,
+      fileKey: null,
+      error: `MX ${res.status}: ${errText.slice(0, ERROR_BODY_MAX_BYTES)}`,
+      status: res.status
+    };
+  }
+
+  let parsed: unknown = null;
+  try {
+    parsed = await res.json();
+  } catch {
+    // Some MX endpoints return empty body on success — treat as ok with
+    // null metadata.
+    return {
+      ok: true,
+      publicUrl: null,
+      filename: null,
+      fileKey: null,
+      error: null,
+      status: res.status
+    };
+  }
+
+  const obj = (parsed && typeof parsed === "object" ? parsed : {}) as Record<
+    string,
+    unknown
+  >;
+  const publicUrl = typeof obj.publicUrl === "string" ? obj.publicUrl : null;
+  const filename = typeof obj.filename === "string" ? obj.filename : null;
+  const fileKey = typeof obj.fileKey === "string" ? obj.fileKey : null;
+  return {
+    ok: true,
+    publicUrl,
+    filename,
+    fileKey,
+    error: null,
+    status: res.status
+  };
+}

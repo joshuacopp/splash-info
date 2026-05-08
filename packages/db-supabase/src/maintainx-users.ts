@@ -68,6 +68,54 @@ export async function getMaintainXUsersByIds(
   return out;
 }
 
+/**
+ * Brief 74 — single-row read of a MaintainX user by email, used by the
+ * `/workorders` New Request tab to default the Requester Name input to
+ * the operator's MaintainX `full_name`.
+ *
+ * Case-insensitive `ilike` because `maintainx_users.email` is mixed-case
+ * (sourced from MX) while `session.email` is lowercased by the Brief 71
+ * gating helpers. Limit 1 — first match wins; emails are effectively
+ * unique on the MX side.
+ *
+ * Fail-soft: any throw / non-2xx / no row → null. Caller falls back to
+ * the operator's session email or an empty default.
+ */
+export async function getMaintainXUserByEmail(
+  env: { SUPABASE_URL: string; SUPABASE_SERVICE_KEY: string },
+  email: string
+): Promise<MaintainXUserRow | null> {
+  const sanitized = typeof email === "string" ? email.trim() : "";
+  if (!sanitized) return null;
+
+  const url = new URL("/rest/v1/maintainx_users", env.SUPABASE_URL);
+  url.searchParams.set("email", `ilike.${sanitized}`);
+  url.searchParams.set("select", "id,full_name,email");
+  url.searchParams.set("limit", "1");
+
+  let response: Response;
+  try {
+    response = await fetch(url.toString(), { headers: HEADERS(env) });
+  } catch (err) {
+    console.error("getMaintainXUserByEmail: fetch threw", err);
+    return null;
+  }
+  if (!response.ok) {
+    console.error("getMaintainXUserByEmail: returned", response.status);
+    return null;
+  }
+  const rows = (await response.json().catch(() => [])) as MaintainXUserRow[];
+  const row = rows[0];
+  if (!row || typeof row.id !== "number" || !Number.isFinite(row.id)) {
+    return null;
+  }
+  return {
+    id: row.id,
+    full_name: typeof row.full_name === "string" ? row.full_name : null,
+    email: typeof row.email === "string" ? row.email : null
+  };
+}
+
 /** Bulk read MaintainX team names by ID. Same fail-soft posture as users. */
 export async function getMaintainXTeamsByIds(
   env: { SUPABASE_URL: string; SUPABASE_SERVICE_KEY: string },

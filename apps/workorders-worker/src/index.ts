@@ -30,15 +30,18 @@ import { authenticate, type Session } from "@splash/auth";
 import {
   getLocationsByContactEmail,
   getMaintainXTeamsByIds,
+  getMaintainXUserByEmail,
   getMaintainXUsersByIds,
   type MaintainXTeamRow,
   type MaintainXUserRow,
   type SupabaseEnv,
   type UserAccessibleLocation
 } from "@splash/db-supabase";
-import { json, jsonError } from "@splash/http";
+import { isOriginAllowed, json, jsonError } from "@splash/http";
 import {
+  createMaintainXWorkRequest,
   fetchMaintainXWorkOrders,
+  uploadMaintainXWorkRequestFile,
   type RawWorkOrder
 } from "./maintainx.js";
 import { runMaintainXUserTeamSync, type SyncResult } from "./sync.js";
@@ -113,6 +116,27 @@ interface GroupOut {
   work_orders: WorkOrderOut[];
 }
 
+/** Brief 74 — surfaced to apps/web so the New Request tab's Location
+ *  dropdown has the data it needs without a second fetch. The shape is
+ *  the read-path's `UserAccessibleLocation` plus `location_name` (from
+ *  MX `expand=location.name` on the work-order list — null when no WO
+ *  has yet referenced this loc). The form filters to `maintainx_id !==
+ *  null` (a request can't post to an unmapped location). */
+interface AccessibleLocationOut {
+  maintainx_id: number | null;
+  location_address: string | null;
+  location_name: string | null;
+}
+
+interface CurrentUserOut {
+  email: string;
+  /** Operator's MaintainX `full_name` (sourced from the cached
+   *  `maintainx_users` row); null when no row matches their session
+   *  email. apps/web defaults the Requester Name input to this when
+   *  rendering the New Request tab. */
+  full_name: string | null;
+}
+
 interface ListResponse {
   reactive: { groups: GroupOut[] };
   preventive: { groups: GroupOut[] };
@@ -124,6 +148,9 @@ interface ListResponse {
   accessibleLocationCount: number;
   mappedLocationCount: number;
   email: string;
+  /** Brief 74 — passed through to the New Request tab's form. */
+  accessibleLocations: AccessibleLocationOut[];
+  currentUser: CurrentUserOut;
 }
 
 /* ============================================================
@@ -151,6 +178,14 @@ export default {
         const result = await runMaintainXUserTeamSync(env);
         console.log("workorders-worker manual sync complete:", JSON.stringify(result));
         return json(result satisfies SyncResult);
+      }
+
+      if (path === "workorders/api/request" && request.method === "POST") {
+        const auth = await authenticate(request, env);
+        if (auth.status !== "authenticated") {
+          return buildRequestRedirect(request, "Sign in to file a work request.");
+        }
+        return handleCreateRequest(request, env, auth.session);
       }
 
       return new Response("Not found", { status: 404 });
@@ -198,6 +233,15 @@ async function handleList(env: Env, session: Session): Promise<Response> {
     .map((l) => l.maintainx_id)
     .filter((n): n is number => typeof n === "number" && Number.isFinite(n));
 
+  // Brief 74 — operator's MaintainX `full_name` for the New Request tab's
+  // requester-name default. Fail-soft: null when no row matches the
+  // session email; apps/web falls back to an empty default.
+  const mxUser = await getMaintainXUserByEmail(env, email).catch(() => null);
+  const currentUser: CurrentUserOut = {
+    email,
+    full_name: mxUser?.full_name ?? null
+  };
+
   const fetchedAt = new Date().toISOString();
   if (mappedMxIds.length === 0) {
     return json({
@@ -208,7 +252,9 @@ async function handleList(env: Env, session: Session): Promise<Response> {
       pageCount: 0,
       accessibleLocationCount: accessible.length,
       mappedLocationCount: 0,
-      email
+      email,
+      accessibleLocations: buildAccessibleLocations(accessible, new Map()),
+      currentUser
     } satisfies ListResponse);
   }
 
@@ -256,6 +302,17 @@ async function handleList(env: Env, session: Session): Promise<Response> {
   const reactive = groupByLocation(buckets.reactive, users, teams, accessibleByMxId);
   const preventive = groupByLocation(buckets.preventive, users, teams, accessibleByMxId);
 
+  // Brief 74 — harvest MX-side location names from the WO list so the
+  // New Request tab's Location dropdown can label entries with the
+  // human-readable name MX uses internally.
+  const mxNamesByLocId = new Map<number, string>();
+  for (const wo of result.workOrders) {
+    const id = extractRawLocationId(wo);
+    if (id == null || mxNamesByLocId.has(id)) continue;
+    const name = extractRawLocationName(wo);
+    if (name) mxNamesByLocId.set(id, name);
+  }
+
   console.log(
     `workorders-worker list: email=${email} mappedMxIds=${mappedMxIds.length} paginate=${shouldPaginate} pageCount=${result.pageCount} workOrders=${result.workOrders.length} truncated=${result.truncated}`
   );
@@ -268,8 +325,24 @@ async function handleList(env: Env, session: Session): Promise<Response> {
     pageCount: result.pageCount,
     accessibleLocationCount: accessible.length,
     mappedLocationCount: mappedMxIds.length,
-    email
+    email,
+    accessibleLocations: buildAccessibleLocations(accessible, mxNamesByLocId),
+    currentUser
   } satisfies ListResponse);
+}
+
+function buildAccessibleLocations(
+  accessible: UserAccessibleLocation[],
+  mxNamesByLocId: Map<number, string>
+): AccessibleLocationOut[] {
+  return accessible.map((loc) => ({
+    maintainx_id: loc.maintainx_id,
+    location_address: loc.location_address,
+    location_name:
+      loc.maintainx_id != null
+        ? mxNamesByLocId.get(loc.maintainx_id) ?? null
+        : null
+  }));
 }
 
 /* ============================================================
@@ -476,4 +549,328 @@ function projectWorkOrder(
     categories: projectCategories(wo.categories),
     locationId: extractRawLocationId(wo)
   };
+}
+
+/* ============================================================
+ * Brief 74 — POST /workorders/api/request: create MaintainX work
+ * request + (optionally) up to 5 photos.
+ *
+ * Posture (mirrors Brief 37/38's damage-document upload path):
+ *   - Plain HTML form posts here as multipart/form-data — bypasses
+ *     Next 15 server actions (the OpenNext-on-CF-Workers runtime
+ *     has flaky multipart-server-action behavior; the legacy plain-
+ *     form path is reliable on iPhone Safari and Chrome alike).
+ *   - Email-on-locations gate: same `getLocationsByContactEmail`
+ *     membership check as the read path. No location → 403-shaped
+ *     redirect.
+ *   - On success: 303 redirect to apps/web's /workorders?tab=new
+ *     &request_ok=<id> (with optional &warn=... if some photo
+ *     uploads failed). Failure: same redirect with request_error
+ *     query.
+ *   - Per-upload AbortController timeout: 15s. The handler can run
+ *     for up to ~90s (1 create + 5 uploads) — acceptable for a
+ *     user-driven submit.
+ * ============================================================ */
+
+const REQUEST_REDIRECT_PATH = "/workorders";
+const REQUEST_REDIRECT_TAB = "new";
+const REQUEST_ERROR_MAX_LEN = 240;
+const REQUEST_TITLE_MAX_LEN = 120;
+const REQUEST_DESCRIPTION_MAX_LEN = 4000;
+const REQUEST_REQUESTER_NAME_MAX_LEN = 80;
+const REQUEST_REQUESTER_PHONE_MAX_LEN = 30;
+const REQUEST_FILENAME_MAX_LEN = 80;
+const REQUEST_MAX_PHOTOS = 5;
+const REQUEST_PHOTO_MAX_BYTES = 15 * 1024 * 1024; // 15 MB per photo
+const REQUEST_PER_UPLOAD_TIMEOUT_MS = 15_000;
+const REQUEST_CREATE_TIMEOUT_MS = 15_000;
+const REQUEST_ALLOWED_PRIORITIES = new Set<"HIGH" | "MEDIUM" | "LOW">([
+  "HIGH",
+  "MEDIUM",
+  "LOW"
+]);
+
+function buildRequestRedirect(
+  request: Request,
+  errorMessage: string | null,
+  successId: number | null = null,
+  warning: string | null = null
+): Response {
+  const originHeader = request.headers.get("Origin");
+  const origin =
+    originHeader && /^https?:\/\//.test(originHeader)
+      ? originHeader
+      : new URL(request.url).origin;
+
+  const params = new URLSearchParams();
+  params.set("tab", REQUEST_REDIRECT_TAB);
+  if (successId != null) {
+    params.set("request_ok", String(successId));
+    if (warning) {
+      params.set(
+        "request_warn",
+        warning.slice(0, REQUEST_ERROR_MAX_LEN)
+      );
+    }
+  } else if (errorMessage) {
+    params.set(
+      "request_error",
+      errorMessage.slice(0, REQUEST_ERROR_MAX_LEN)
+    );
+  }
+  return Response.redirect(
+    `${origin}${REQUEST_REDIRECT_PATH}?${params.toString()}`,
+    303
+  );
+}
+
+function sanitizeFilename(rawName: string): string {
+  // Strip leading dots so a hidden file ("..bashrc") doesn't slip through;
+  // anything outside [a-zA-Z0-9._-] becomes "_". Lowercase the extension
+  // so "IMG.JPEG" and "img.jpeg" sort equivalently. Cap at 80 chars while
+  // preserving the extension.
+  let name = rawName.replace(/^\.+/, "");
+  if (!name) name = "photo";
+  // Split off extension (last dot only).
+  const lastDot = name.lastIndexOf(".");
+  let stem = lastDot > 0 ? name.slice(0, lastDot) : name;
+  let ext = lastDot > 0 ? name.slice(lastDot + 1).toLowerCase() : "";
+  stem = stem.replace(/[^a-zA-Z0-9._-]/g, "_");
+  ext = ext.replace(/[^a-zA-Z0-9]/g, "");
+  let combined = ext ? `${stem}.${ext}` : stem;
+  if (combined.length > REQUEST_FILENAME_MAX_LEN) {
+    const cutTo = REQUEST_FILENAME_MAX_LEN - (ext ? ext.length + 1 : 0);
+    const stemTrim = stem.slice(0, Math.max(1, cutTo));
+    combined = ext ? `${stemTrim}.${ext}` : stemTrim;
+  }
+  return combined || "photo";
+}
+
+async function handleCreateRequest(
+  request: Request,
+  env: Env,
+  session: Session
+): Promise<Response> {
+  if (!isOriginAllowed(request)) {
+    return buildRequestRedirect(request, "Bad origin.");
+  }
+
+  const email = session.email?.trim().toLowerCase() ?? "";
+  if (!email) {
+    return buildRequestRedirect(request, "Sign in to file a work request.");
+  }
+
+  if (!env.MAINTAINX_API_KEY) {
+    return buildRequestRedirect(
+      request,
+      "MaintainX integration not configured."
+    );
+  }
+
+  const ctype = request.headers.get("content-type") ?? "";
+  if (!ctype.includes("multipart/form-data")) {
+    return buildRequestRedirect(
+      request,
+      "Work request must be multipart/form-data."
+    );
+  }
+
+  // Email-on-locations gate (defense-in-depth alongside apps/web's
+  // dropdown filter). Filing a request requires at least one mapped
+  // location; super_admin / admin without their email on a locations
+  // row are rejected here, matching the read path.
+  const accessible = await getLocationsByContactEmail(env, email);
+  const accessibleMxIds = new Set<number>();
+  for (const loc of accessible) {
+    if (loc.maintainx_id != null) accessibleMxIds.add(loc.maintainx_id);
+  }
+  if (accessibleMxIds.size === 0) {
+    return buildRequestRedirect(
+      request,
+      "No MaintainX-mapped locations on your account — ask a super_admin to add your email."
+    );
+  }
+
+  let form: FormData;
+  try {
+    form = await request.formData();
+  } catch {
+    return buildRequestRedirect(request, "Could not parse form data.");
+  }
+
+  const title = String(form.get("title") ?? "").trim();
+  const descriptionRaw = String(form.get("description") ?? "").trim();
+  const priorityRaw = String(form.get("priority") ?? "").trim().toUpperCase();
+  const requesterName = String(form.get("requester_name") ?? "").trim();
+  const requesterPhone = String(form.get("requester_phone") ?? "").trim();
+  const locationIdRaw = String(form.get("location_id") ?? "").trim();
+
+  if (!title) return buildRequestRedirect(request, "Title is required.");
+  if (title.length > REQUEST_TITLE_MAX_LEN) {
+    return buildRequestRedirect(
+      request,
+      `Title is too long (max ${REQUEST_TITLE_MAX_LEN} characters).`
+    );
+  }
+  if (!descriptionRaw) {
+    return buildRequestRedirect(request, "Description is required.");
+  }
+  if (descriptionRaw.length > REQUEST_DESCRIPTION_MAX_LEN) {
+    return buildRequestRedirect(
+      request,
+      `Description is too long (max ${REQUEST_DESCRIPTION_MAX_LEN} characters).`
+    );
+  }
+  if (
+    priorityRaw !== "HIGH" &&
+    priorityRaw !== "MEDIUM" &&
+    priorityRaw !== "LOW"
+  ) {
+    return buildRequestRedirect(request, "Priority must be HIGH, MEDIUM, or LOW.");
+  }
+  const priority = priorityRaw as "HIGH" | "MEDIUM" | "LOW";
+  if (!REQUEST_ALLOWED_PRIORITIES.has(priority)) {
+    return buildRequestRedirect(request, "Priority must be HIGH, MEDIUM, or LOW.");
+  }
+  if (!requesterName) {
+    return buildRequestRedirect(request, "Requester name is required.");
+  }
+  if (requesterName.length > REQUEST_REQUESTER_NAME_MAX_LEN) {
+    return buildRequestRedirect(
+      request,
+      `Requester name is too long (max ${REQUEST_REQUESTER_NAME_MAX_LEN} characters).`
+    );
+  }
+  if (requesterPhone.length > REQUEST_REQUESTER_PHONE_MAX_LEN) {
+    return buildRequestRedirect(
+      request,
+      `Requester phone is too long (max ${REQUEST_REQUESTER_PHONE_MAX_LEN} characters).`
+    );
+  }
+  const locationId = Number.parseInt(locationIdRaw, 10);
+  if (!Number.isFinite(locationId) || locationId <= 0) {
+    return buildRequestRedirect(request, "Pick a location.");
+  }
+  if (!accessibleMxIds.has(locationId)) {
+    return buildRequestRedirect(
+      request,
+      "Location not in your accessible set."
+    );
+  }
+
+  // Photos: read all "photo" entries (multi-file inputs come through as
+  // repeated entries with the same name). Cap at REQUEST_MAX_PHOTOS.
+  const allPhotoEntries = form.getAll("photo");
+  const photoFiles: File[] = [];
+  for (const entry of allPhotoEntries) {
+    if (typeof entry === "string") continue; // empty multipart fields land as ""
+    if (!(entry instanceof File)) continue;
+    if (entry.size === 0) continue; // empty input
+    if (entry.size > REQUEST_PHOTO_MAX_BYTES) {
+      return buildRequestRedirect(
+        request,
+        `Photo "${entry.name}" is too large (max ${REQUEST_PHOTO_MAX_BYTES / (1024 * 1024)} MB).`
+      );
+    }
+    photoFiles.push(entry);
+  }
+  if (photoFiles.length > REQUEST_MAX_PHOTOS) {
+    return buildRequestRedirect(
+      request,
+      `Too many photos (max ${REQUEST_MAX_PHOTOS}).`
+    );
+  }
+
+  // Compose description footer with requester attribution.
+  const description = `${descriptionRaw}\n\n---\nRequested by: ${requesterName}\nPhone: ${requesterPhone || "—"}\nSubmitted via: Splash /workorders`;
+
+  // Phase 1 — create the work request.
+  const createCtl = new AbortController();
+  const createTimeout = setTimeout(
+    () => createCtl.abort(),
+    REQUEST_CREATE_TIMEOUT_MS
+  );
+  let createResult;
+  try {
+    createResult = await createMaintainXWorkRequest({
+      title,
+      description,
+      priority,
+      locationId,
+      creatorContactInfo: email,
+      apiKey: env.MAINTAINX_API_KEY,
+      baseUrl: env.MAINTAINX_BASE_URL,
+      signal: createCtl.signal
+    });
+  } finally {
+    clearTimeout(createTimeout);
+  }
+
+  if (!createResult.ok || createResult.requestId == null) {
+    console.error(
+      `workorders-worker request create failed: status=${createResult.status} error=${createResult.error}`
+    );
+    return buildRequestRedirect(
+      request,
+      `Could not create the request: ${createResult.error ?? "upstream error"}`
+    );
+  }
+  const requestId = createResult.requestId;
+
+  // Phase 2 — upload photos. First photo → /thumbnail, rest → /attachment.
+  // Failures are non-fatal (the request exists; partial uploads are an
+  // acceptable degraded outcome). Counted so the success banner can warn.
+  let photoFailures = 0;
+  for (let i = 0; i < photoFiles.length; i += 1) {
+    const file = photoFiles[i];
+    if (!file) continue;
+    const endpoint: "thumbnail" | "attachment" = i === 0 ? "thumbnail" : "attachment";
+    const filename = sanitizeFilename(file.name);
+    let body: ArrayBuffer;
+    try {
+      body = await file.arrayBuffer();
+    } catch (err) {
+      console.error(
+        `workorders-worker request ${requestId} photo ${i} read failed:`,
+        err
+      );
+      photoFailures += 1;
+      continue;
+    }
+    const uploadCtl = new AbortController();
+    const uploadTimeout = setTimeout(
+      () => uploadCtl.abort(),
+      REQUEST_PER_UPLOAD_TIMEOUT_MS
+    );
+    let uploadResult;
+    try {
+      uploadResult = await uploadMaintainXWorkRequestFile({
+        requestId,
+        filename,
+        body,
+        apiKey: env.MAINTAINX_API_KEY,
+        baseUrl: env.MAINTAINX_BASE_URL,
+        endpoint,
+        signal: uploadCtl.signal
+      });
+    } finally {
+      clearTimeout(uploadTimeout);
+    }
+    if (!uploadResult.ok) {
+      console.error(
+        `workorders-worker request ${requestId} photo ${i} (${endpoint}) failed: status=${uploadResult.status} error=${uploadResult.error}`
+      );
+      photoFailures += 1;
+    }
+  }
+
+  console.log(
+    `workorders-worker request ${requestId} created by ${email} with ${photoFiles.length} photo(s); ${photoFailures} upload failure(s)`
+  );
+
+  const warn =
+    photoFailures > 0
+      ? `${photoFailures}-of-${photoFiles.length}-photos-failed`
+      : null;
+  return buildRequestRedirect(request, null, requestId, warn);
 }

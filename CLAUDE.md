@@ -297,8 +297,9 @@ When given a new task:
   earlier version that joined on `locations.site` and silently
   returned null for every slug — same bug class Brief 49 fixed for
   `getLocationContactInfo`.
-- **Workorders-worker endpoints** (Brief 70 / Brief 71):
-  `GET /workorders/api/list` and (Brief 71) `POST /workorders/api/sync-maintainx-users`.
+- **Workorders-worker endpoints** (Brief 70 / Brief 71 / Brief 74):
+  `GET /workorders/api/list`, (Brief 71) `POST /workorders/api/sync-maintainx-users`,
+  (Brief 74) `POST /workorders/api/request`.
   Permission domain (Brief 71): pure email-on-locations match against
   `locations.am_email` / `rm_email` / `site_email` — super_admin and
   admin do NOT have a global override. The Brief 70 dc_role gate and
@@ -322,6 +323,33 @@ When given a new task:
   `expand=location.name` and fall back to `locations.location`
   (postal address). `getMaintainXLocationId` (Brief 42 / 62 forward
   helper used by damage-worker's WO-create path) is unchanged.
+  Brief 74 adds `POST /workorders/api/request` — multipart/form-data
+  endpoint that creates a MaintainX work request via
+  `POST /v1/workrequests` then per-photo (max 5)
+  `PUT /v1/workrequests/{id}/{thumbnail|attachment}/{filename}`. First
+  photo lands as the WO thumbnail; photos 2–5 as attachments. Photo
+  upload failures are non-fatal — the request exists in MaintainX
+  either way; partial failures surface to the operator via a
+  `request_warn=N-of-M-photos-failed` query param on the success
+  redirect. Email-on-locations gate (same as the read path) +
+  `isOriginAllowed` CSRF gate. Per-upload AbortController timeout 15s;
+  request-create timeout 15s; total endpoint upper bound ~90s. The
+  worker 303-redirects back to apps/web's `/workorders?tab=new&request_ok=N`
+  on success or `/workorders?tab=new&request_error=<msg>` on failure
+  (URL params drive a banner in `WorkOrdersTabsClient`). Plain HTML
+  form bypasses Next 15 server actions per the Brief 37 / 38 pattern.
+  `creatorContactInfo` = operator's session email; requester name +
+  phone get appended to description as a structured footer.
+  Description footer block: `Requested by: {name}\nPhone: {phone or
+  "—"}\nSubmitted via: Splash /workorders`. The Location dropdown has
+  no default — operators must explicitly pick to avoid accidental
+  cross-site submissions. Location options are sourced from the
+  read-path response's new `accessibleLocations` field (filtered to
+  `maintainx_id !== null`), so apps/web doesn't need a second fetch.
+  `currentUser.full_name` (also new on the read response) defaults
+  the Requester Name input to the operator's MaintainX `full_name`
+  via the new `getMaintainXUserByEmail` helper in
+  `@splash/db-supabase`.
 
 ---
 
@@ -567,6 +595,20 @@ URL-based — service bindings don't apply to those.
   Reactive rows do not (MaintainX auto-sets reactive dueDate to
   same-day, not operationally meaningful). Both tabs show muted
   age text "Nd" beneath the priority pill in the collapsed row.
+  Brief 74: third tab "New Request" renders a form (no list)
+  posting to `POST /workorders/api/request` (multipart/form-data,
+  plain HTML form bypassing Next 15 server actions per Brief 37/38
+  pattern); worker calls MaintainX `POST /v1/workrequests` then
+  per-photo `PUT /v1/workrequests/{id}/{thumbnail|attachment}/
+  {filename}`. Up to 5 photos: first → thumbnail, rest →
+  attachments. Requester attribution: `creatorContactInfo` =
+  operator's session email; requester name + phone appended to
+  description footer. Location dropdown has no default — operator
+  must explicitly pick. PriorityPill MEDIUM swapped from
+  yellow-100 → `bg-gray-light text-splash-navy/80` so the tier
+  doesn't read as plain text; age text under the priority pill
+  gains matching `px-2` so it aligns under the pill's text, not
+  its left edge.
 - **`age_days`** (Brief 68) - Server-computed days-since-submission
   field on the `/manage/api/claims` list response. Lives in the
   `listClaims` SELECT projection in `packages/db-d1/src/claims.ts` as

@@ -60,6 +60,8 @@ function Body({ data }: { data: WorkOrdersListResponse }) {
       truncated={data.truncated}
       accessibleLocationCount={data.accessibleLocationCount}
       mappedLocationCount={data.mappedLocationCount}
+      accessibleLocations={data.accessibleLocations}
+      currentUser={data.currentUser}
     />
   );
 }

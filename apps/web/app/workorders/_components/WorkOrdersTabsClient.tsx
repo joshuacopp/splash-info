@@ -3,7 +3,7 @@
 // Brief 71 — Reactive / Preventive tabbed view of MaintainX work orders.
 //
 // Server hands two pre-grouped buckets (one per type); this client tracks:
-//   • which tab is active (useState<"reactive"|"preventive">)
+//   • which tab is active (useState<"reactive"|"preventive"|"new">)
 //   • which WO IDs are expanded (useState<Set<string>>) — flipping tabs
 //     does NOT clear the expansion set; keys are unique across both
 //     buckets.
@@ -16,17 +16,27 @@
 // (Reactive dueDate is auto-set to same-day by MaintainX and not
 // operationally meaningful for Splash). The expanded-row Age field was
 // removed because it now duplicates the collapsed-row label.
+//
+// Brief 74 — third tab "New Request" renders a form (NewRequestForm.tsx)
+// that POSTs to /workorders/api/request as multipart/form-data, bypassing
+// Next 15 server actions per Brief 37/38 pattern. URL search params
+// (?tab=new&request_ok=N | ?tab=new&request_error=...) drive a banner
+// above the form on the next render — the worker's 303 redirect lands
+// the operator back on this page with those params set.
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { PriorityPill } from "./PriorityPill";
 import { StatusPill } from "./StatusPill";
 import { DueDatePill } from "./DueDatePill";
+import { NewRequestForm } from "./NewRequestForm";
 import type {
+  AccessibleLocation,
   WorkOrderItem,
+  WorkOrdersCurrentUser,
   WorkOrdersGroup
 } from "../_lib/worker-fetch";
 
-type TabKey = "reactive" | "preventive";
+type TabKey = "reactive" | "preventive" | "new";
 
 interface Props {
   reactive: WorkOrdersGroup[];
@@ -35,6 +45,9 @@ interface Props {
   truncated: boolean;
   accessibleLocationCount: number;
   mappedLocationCount: number;
+  /** Brief 74 — passed through to the New Request tab. */
+  accessibleLocations: AccessibleLocation[];
+  currentUser: WorkOrdersCurrentUser;
 }
 
 function bucketCount(groups: WorkOrdersGroup[]): number {
@@ -43,9 +56,59 @@ function bucketCount(groups: WorkOrdersGroup[]): number {
   return total;
 }
 
+interface RequestResultBanner {
+  kind: "ok" | "error" | "warn";
+  message: string;
+  requestId: number | null;
+}
+
+function readResultBannerFromUrl(): { tab: TabKey | null; banner: RequestResultBanner | null } {
+  if (typeof window === "undefined") return { tab: null, banner: null };
+  const params = new URLSearchParams(window.location.search);
+  const tabParam = params.get("tab");
+  const okParam = params.get("request_ok");
+  const errorParam = params.get("request_error");
+  const warnParam = params.get("request_warn");
+  let tab: TabKey | null = null;
+  if (tabParam === "new" || tabParam === "reactive" || tabParam === "preventive") {
+    tab = tabParam;
+  }
+  let banner: RequestResultBanner | null = null;
+  if (okParam) {
+    const id = Number.parseInt(okParam, 10);
+    banner = {
+      kind: warnParam ? "warn" : "ok",
+      message: warnParam ?? "",
+      requestId: Number.isFinite(id) ? id : null
+    };
+  } else if (errorParam) {
+    banner = { kind: "error", message: errorParam, requestId: null };
+  }
+  return { tab, banner };
+}
+
 export function WorkOrdersTabsClient(props: Props) {
   const [tab, setTab] = useState<TabKey>("reactive");
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
+  const [banner, setBanner] = useState<RequestResultBanner | null>(null);
+
+  // Worker 303-redirects back to /workorders?tab=new&request_ok=N (or
+  // &request_error=...) after a New Request submit. Read those once on
+  // mount, force the tab to "new" so the operator lands back on the
+  // form, and clear the params from the URL bar so a refresh doesn't
+  // resurrect a stale banner.
+  useEffect(() => {
+    const { tab: tabFromUrl, banner: bannerFromUrl } = readResultBannerFromUrl();
+    if (tabFromUrl) setTab(tabFromUrl);
+    if (bannerFromUrl) {
+      setBanner(bannerFromUrl);
+      const url = new URL(window.location.href);
+      url.searchParams.delete("request_ok");
+      url.searchParams.delete("request_error");
+      url.searchParams.delete("request_warn");
+      window.history.replaceState({}, "", url.toString());
+    }
+  }, []);
 
   const toggle = (id: number) => {
     const key = String(id);
@@ -62,14 +125,19 @@ export function WorkOrdersTabsClient(props: Props) {
   const activeGroups = tab === "reactive" ? props.reactive : props.preventive;
 
   const totalAcrossBuckets = reactiveCount + preventiveCount;
+  const isListTab = tab === "reactive" || tab === "preventive";
   const showEmpty =
-    totalAcrossBuckets === 0 && props.mappedLocationCount === 0;
+    isListTab && totalAcrossBuckets === 0 && props.mappedLocationCount === 0;
 
   return (
     <>
       <FetchedAtBanner fetchedAt={props.fetchedAt} />
 
-      {props.truncated ? <TruncatedNotice /> : null}
+      {props.truncated && isListTab ? <TruncatedNotice /> : null}
+
+      {tab === "new" && banner ? (
+        <RequestResultBannerView banner={banner} />
+      ) : null}
 
       {showEmpty ? (
         <NoAccessEmptyState
@@ -79,12 +147,22 @@ export function WorkOrdersTabsClient(props: Props) {
         <>
           <TabNav
             active={tab}
-            onChange={setTab}
+            onChange={(next) => {
+              setTab(next);
+              // Switching tabs clears any stale banner so the next visit
+              // to "new" starts blank.
+              if (next !== "new") setBanner(null);
+            }}
             reactiveCount={reactiveCount}
             preventiveCount={preventiveCount}
           />
 
-          {activeGroups.length === 0 ? (
+          {tab === "new" ? (
+            <NewRequestForm
+              accessibleLocations={props.accessibleLocations}
+              currentUser={props.currentUser}
+            />
+          ) : activeGroups.length === 0 ? (
             <BucketEmptyState tab={tab} />
           ) : (
             activeGroups.map((group) => (
@@ -100,6 +178,52 @@ export function WorkOrdersTabsClient(props: Props) {
         </>
       )}
     </>
+  );
+}
+
+function RequestResultBannerView({ banner }: { banner: RequestResultBanner }) {
+  if (banner.kind === "error") {
+    return (
+      <div
+        role="alert"
+        className="mb-5 rounded-md border border-splash-deny/50 bg-splash-deny/10 px-4 py-3 text-sm text-splash-deny"
+      >
+        Couldn&apos;t create the request: {banner.message}
+      </div>
+    );
+  }
+  if (banner.kind === "warn") {
+    return (
+      <div
+        role="status"
+        className="mb-5 rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900"
+      >
+        Request{banner.requestId != null ? ` #${banner.requestId}` : ""} created — but{" "}
+        {banner.message.replace(/-/g, " ")}. You can re-add the missing photos
+        directly in MaintainX.
+      </div>
+    );
+  }
+  return (
+    <div
+      role="status"
+      className="mb-5 rounded-md border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-900"
+    >
+      Request{banner.requestId != null ? ` #${banner.requestId}` : ""} created.
+      {banner.requestId != null ? (
+        <>
+          {" "}
+          <a
+            href={`https://app.getmaintainx.com/workrequests/${banner.requestId}`}
+            target="_blank"
+            rel="noreferrer"
+            className="font-semibold text-splash-blue hover:underline"
+          >
+            View in MaintainX ↗
+          </a>
+        </>
+      ) : null}
+    </div>
   );
 }
 
@@ -139,6 +263,11 @@ function TabNav({
         label="Preventive"
         count={preventiveCount}
       />
+      <TabButton
+        active={active === "new"}
+        onClick={() => onChange("new")}
+        label="New Request"
+      />
     </div>
   );
 }
@@ -152,7 +281,7 @@ function TabButton({
   active: boolean;
   onClick: () => void;
   label: string;
-  count: number;
+  count?: number;
 }) {
   return (
     <button
@@ -166,14 +295,19 @@ function TabButton({
           : "text-splash-navy/70 hover:bg-gray-light/40"
       }`}
     >
-      {label}{" "}
-      <span
-        className={`ml-1 inline-block rounded-full px-1.5 text-[11px] ${
-          active ? "bg-white/20 text-white" : "bg-gray-light text-splash-navy/70"
-        }`}
-      >
-        {count}
-      </span>
+      {label}
+      {typeof count === "number" ? (
+        <>
+          {" "}
+          <span
+            className={`ml-1 inline-block rounded-full px-1.5 text-[11px] ${
+              active ? "bg-white/20 text-white" : "bg-gray-light text-splash-navy/70"
+            }`}
+          >
+            {count}
+          </span>
+        </>
+      ) : null}
     </button>
   );
 }
@@ -217,7 +351,7 @@ function NoAccessEmptyState({
   );
 }
 
-function BucketEmptyState({ tab }: { tab: TabKey }) {
+function BucketEmptyState({ tab }: { tab: "reactive" | "preventive" }) {
   const label = tab === "reactive" ? "Reactive" : "Preventive";
   return (
     <div className="rounded-splash-lg border border-gray-light bg-white px-6 py-10 text-center">
@@ -240,7 +374,7 @@ function GroupSection({
   group: WorkOrdersGroup;
   expanded: Set<string>;
   onToggle: (id: number) => void;
-  tab: TabKey;
+  tab: "reactive" | "preventive";
 }) {
   const showDueColumn = tab === "preventive";
   const colSpan = showDueColumn ? 8 : 7;
@@ -308,7 +442,10 @@ function WorkOrderRow({
         </td>
         <td className="px-3 py-2.5 whitespace-nowrap">
           <PriorityPill priority={wo.priority} />
-          <div className="mt-0.5 text-xs text-gray-500">
+          {/* Brief 74 — px-2 matches the pill's horizontal padding so the
+              age text sits under the pill's text content, not its left
+              edge. */}
+          <div className="mt-0.5 px-2 text-xs text-gray-500">
             {wo.createdAt ? ageLabel(wo.createdAt) : "—"}
           </div>
         </td>
