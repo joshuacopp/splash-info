@@ -73,3 +73,5 @@
 - 2026-05-07 19:57:50 brief-072-workorders-conditional-pagination.md (success)
 - 2026-05-07 20:26:12 brief-073-workorders-due-date-pill-and-age-under-priority.md (success)
 - 2026-05-08 08:52:45 brief-074-workorders-new-request-tab-and-priority-pill-fixes.md (success)
+- 2026-05-08 09:22:32 brief-075-workorders-new-request-single-photo-and-required-phone.md (success)
+- 2026-05-08 09:38:37 brief-076-workorders-restore-multi-photo-with-correct-attachments-path.md (success)

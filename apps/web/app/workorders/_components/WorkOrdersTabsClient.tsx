@@ -57,7 +57,13 @@ function bucketCount(groups: WorkOrdersGroup[]): number {
 }
 
 interface RequestResultBanner {
-  kind: "ok" | "error" | "warn";
+  /** "ok": green success only (no photo failures). "ok-warn": green
+   *  success banner stacked over an amber photo-warn banner (some
+   *  photos failed but the request itself was created). "error": red
+   *  banner only (request creation itself failed). */
+  kind: "ok" | "ok-warn" | "error";
+  /** For "error": the worker's error string. For "ok-warn": the
+   *  `photo_warn` value (e.g. "2-of-5-photos-failed"). For "ok": "". */
   message: string;
   requestId: number | null;
 }
@@ -68,7 +74,10 @@ function readResultBannerFromUrl(): { tab: TabKey | null; banner: RequestResultB
   const tabParam = params.get("tab");
   const okParam = params.get("request_ok");
   const errorParam = params.get("request_error");
-  const warnParam = params.get("request_warn");
+  // Brief 76 uses `photo_warn`; Brief 75 used `request_warn` for the
+  // same purpose. Read both for backwards compatibility with any
+  // in-flight tab that landed on the old shape.
+  const warnParam = params.get("photo_warn") ?? params.get("request_warn");
   let tab: TabKey | null = null;
   if (tabParam === "new" || tabParam === "reactive" || tabParam === "preventive") {
     tab = tabParam;
@@ -77,7 +86,7 @@ function readResultBannerFromUrl(): { tab: TabKey | null; banner: RequestResultB
   if (okParam) {
     const id = Number.parseInt(okParam, 10);
     banner = {
-      kind: warnParam ? "warn" : "ok",
+      kind: warnParam ? "ok-warn" : "ok",
       message: warnParam ?? "",
       requestId: Number.isFinite(id) ? id : null
     };
@@ -106,6 +115,7 @@ export function WorkOrdersTabsClient(props: Props) {
       url.searchParams.delete("request_ok");
       url.searchParams.delete("request_error");
       url.searchParams.delete("request_warn");
+      url.searchParams.delete("photo_warn");
       window.history.replaceState({}, "", url.toString());
     }
   }, []);
@@ -181,50 +191,78 @@ export function WorkOrdersTabsClient(props: Props) {
   );
 }
 
+// Brief 75 — known machine-readable codes from the worker. Free-form
+// human strings still come through the same query param and render as-is.
+const REQUEST_ERROR_MESSAGES: Record<string, string> = {
+  requester_phone_required: "Requester phone is required."
+};
+
 function RequestResultBannerView({ banner }: { banner: RequestResultBanner }) {
   if (banner.kind === "error") {
+    const friendly = REQUEST_ERROR_MESSAGES[banner.message] ?? banner.message;
     return (
       <div
         role="alert"
         className="mb-5 rounded-md border border-splash-deny/50 bg-splash-deny/10 px-4 py-3 text-sm text-splash-deny"
       >
-        Couldn&apos;t create the request: {banner.message}
+        Couldn&apos;t create the request: {friendly}
       </div>
     );
   }
-  if (banner.kind === "warn") {
-    return (
+  // "ok" or "ok-warn": render the green success banner; for "ok-warn",
+  // stack a secondary amber banner underneath surfacing the photo
+  // failure count. Brief 76 split these — request creation succeeded;
+  // some photos didn't.
+  return (
+    <>
       <div
         role="status"
-        className="mb-5 rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900"
+        className="mb-2 rounded-md border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-900"
       >
-        Request{banner.requestId != null ? ` #${banner.requestId}` : ""} created — but{" "}
-        {banner.message.replace(/-/g, " ")}. You can re-add the missing photos
-        directly in MaintainX.
+        Request{banner.requestId != null ? ` #${banner.requestId}` : ""} created.
+        {banner.requestId != null ? (
+          <>
+            {" "}
+            <a
+              href={`https://app.getmaintainx.com/workrequests/${banner.requestId}`}
+              target="_blank"
+              rel="noreferrer"
+              className="font-semibold text-splash-blue hover:underline"
+            >
+              View in MaintainX ↗
+            </a>
+          </>
+        ) : null}
       </div>
-    );
-  }
-  return (
-    <div
-      role="status"
-      className="mb-5 rounded-md border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-900"
-    >
-      Request{banner.requestId != null ? ` #${banner.requestId}` : ""} created.
-      {banner.requestId != null ? (
-        <>
-          {" "}
-          <a
-            href={`https://app.getmaintainx.com/workrequests/${banner.requestId}`}
-            target="_blank"
-            rel="noreferrer"
-            className="font-semibold text-splash-blue hover:underline"
-          >
-            View in MaintainX ↗
-          </a>
-        </>
-      ) : null}
-    </div>
+      {banner.kind === "ok-warn" ? (
+        <div
+          role="status"
+          className="mb-5 rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900"
+        >
+          {photoWarnFriendly(banner.message)} The request itself was
+          created — re-add the missing photos in MaintainX.
+        </div>
+      ) : (
+        <div className="mb-5" />
+      )}
+    </>
   );
+}
+
+/** Translate the worker's `photo_warn` value into a human sentence.
+ *  - "thumbnail_failed" — Brief 75's single-photo shape (stale).
+ *  - "{N}-of-{M}-photos-failed" — Brief 76 multi-photo shape. */
+function photoWarnFriendly(message: string): string {
+  if (message === "thumbnail_failed") {
+    return "The photo couldn't be uploaded as the request thumbnail.";
+  }
+  const match = /^(\d+)-of-(\d+)-photos-failed$/.exec(message);
+  if (match) {
+    const n = match[1];
+    const m = match[2];
+    return `${n} of ${m} photos failed to upload.`;
+  }
+  return message.replace(/-/g, " ");
 }
 
 function FetchedAtBanner({ fetchedAt }: { fetchedAt: string }) {

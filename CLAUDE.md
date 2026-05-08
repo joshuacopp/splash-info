@@ -609,6 +609,20 @@ URL-based — service bindings don't apply to those.
   doesn't read as plain text; age text under the priority pill
   gains matching `px-2` so it aligns under the pill's text, not
   its left edge.
+  Brief 76 (correcting Brief 75): Work-request multi-photo upload
+  was broken in Brief 74 due to a wrong URL path
+  (`/v1/workrequests/{id}/attachment/{filename}` singular). The
+  correct path is `/attachments/` (plural). Brief 76 restored
+  multi-photo: form accepts up to 5 photos, first → thumbnail
+  endpoint, remaining → attachments (plural) endpoint. Phone is
+  required (Brief 75's other change retained). Worker emits
+  `?request_ok={id}&photo_warn={N}-of-{M}-photos-failed` on partial
+  upload failure (request creation itself succeeded); apps/web
+  stacks an amber banner under the green success banner when both
+  params are present. `uploadMaintainXWorkRequestFile`'s
+  discriminator type stays `"thumbnail" | "attachment"` (singular,
+  matching the doc heading); a small `REQUEST_FILE_URL_SEGMENT`
+  lookup maps it to the plural URL segment internally.
 - **`age_days`** (Brief 68) - Server-computed days-since-submission
   field on the `/manage/api/claims` list response. Lives in the
   `listClaims` SELECT projection in `packages/db-d1/src/claims.ts` as

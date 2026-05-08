@@ -454,11 +454,23 @@ export interface UploadWorkRequestFileInput {
   apiKey: string;
   baseUrl: string;
   /** "thumbnail" routes to PUT /workrequests/{id}/thumbnail/{filename}
-   *  (first photo per request); "attachment" routes to the sibling
-   *  /attachment endpoint (additional photos). */
+   *  (first photo per request); "attachment" routes to PUT
+   *  /workrequests/{id}/attachments/{filename} — note plural URL segment
+   *  (the MaintainX doc heading reads "Update work request attachment"
+   *  singular but the actual URL path is plural; Brief 76 fixed Brief
+   *  74's wrong-singular-path 404). */
   endpoint: "thumbnail" | "attachment";
   signal?: AbortSignal;
 }
+
+/** Discriminator → URL segment. Caller passes "attachment" (singular)
+ *  matching the doc heading; we emit "attachments" (plural) which is the
+ *  actual MaintainX URL segment. Keeping the lookup leaves caller call
+ *  sites unchanged. */
+const REQUEST_FILE_URL_SEGMENT: Record<UploadWorkRequestFileInput["endpoint"], string> = {
+  thumbnail: "thumbnail",
+  attachment: "attachments"
+};
 
 export interface UploadWorkRequestFileResult {
   ok: boolean;
@@ -473,7 +485,8 @@ export async function uploadMaintainXWorkRequestFile(
   input: UploadWorkRequestFileInput
 ): Promise<UploadWorkRequestFileResult> {
   const base = input.baseUrl.replace(/\/$/, "");
-  const url = `${base}/workrequests/${input.requestId}/${input.endpoint}/${encodeURIComponent(input.filename)}`;
+  const segment = REQUEST_FILE_URL_SEGMENT[input.endpoint];
+  const url = `${base}/workrequests/${input.requestId}/${segment}/${encodeURIComponent(input.filename)}`;
 
   let res: Response;
   try {

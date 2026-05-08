@@ -552,8 +552,9 @@ function projectWorkOrder(
 }
 
 /* ============================================================
- * Brief 74 — POST /workorders/api/request: create MaintainX work
- * request + (optionally) up to 5 photos.
+ * Brief 74 / Brief 75 / Brief 76 — POST /workorders/api/request:
+ * create MaintainX work request + up to 5 photos (1 thumbnail + 4
+ * attachments).
  *
  * Posture (mirrors Brief 37/38's damage-document upload path):
  *   - Plain HTML form posts here as multipart/form-data — bypasses
@@ -564,12 +565,21 @@ function projectWorkOrder(
  *     membership check as the read path. No location → 403-shaped
  *     redirect.
  *   - On success: 303 redirect to apps/web's /workorders?tab=new
- *     &request_ok=<id> (with optional &warn=... if some photo
- *     uploads failed). Failure: same redirect with request_error
- *     query.
+ *     &request_ok=<id> (with optional &request_warn=N-of-M-photos-failed
+ *     when some uploads failed post-create). Failure: same redirect
+ *     with request_error query.
  *   - Per-upload AbortController timeout: 15s. The handler can run
- *     for up to ~90s (1 create + 5 uploads) — acceptable for a
- *     user-driven submit.
+ *     for up to ~90s (1 create × 15s + 5 uploads × 15s) — acceptable
+ *     for a user-driven submit.
+ *
+ * Brief 75 (2026-05-08): retired Brief 74's multi-photo path on the
+ * (wrong) assumption that work requests only support a thumbnail.
+ *
+ * Brief 76 (2026-05-08): the actual MaintainX URL is
+ * /v1/workrequests/{id}/attachments/{filename} — plural. Brief 74
+ * built it singular based on the doc heading text. Multi-photo
+ * restored: photo[0] → thumbnail, photo[1..4] → attachments.
+ * Phone-required from Brief 75 is preserved.
  * ============================================================ */
 
 const REQUEST_REDIRECT_PATH = "/workorders";
@@ -580,8 +590,8 @@ const REQUEST_DESCRIPTION_MAX_LEN = 4000;
 const REQUEST_REQUESTER_NAME_MAX_LEN = 80;
 const REQUEST_REQUESTER_PHONE_MAX_LEN = 30;
 const REQUEST_FILENAME_MAX_LEN = 80;
+const REQUEST_PHOTO_MAX_BYTES = 15 * 1024 * 1024; // 15 MB
 const REQUEST_MAX_PHOTOS = 5;
-const REQUEST_PHOTO_MAX_BYTES = 15 * 1024 * 1024; // 15 MB per photo
 const REQUEST_PER_UPLOAD_TIMEOUT_MS = 15_000;
 const REQUEST_CREATE_TIMEOUT_MS = 15_000;
 const REQUEST_ALLOWED_PRIORITIES = new Set<"HIGH" | "MEDIUM" | "LOW">([
@@ -607,8 +617,13 @@ function buildRequestRedirect(
   if (successId != null) {
     params.set("request_ok", String(successId));
     if (warning) {
+      // Brief 76: `photo_warn=N-of-M-photos-failed` stacks under the
+      // success banner client-side. Brief 75 used `request_warn` for the
+      // same purpose; rename matches the brief's spec and avoids
+      // overloading "request_*" with both error- and photo-fail
+      // semantics.
       params.set(
-        "request_warn",
+        "photo_warn",
         warning.slice(0, REQUEST_ERROR_MAX_LEN)
       );
     }
@@ -636,12 +651,20 @@ function sanitizeFilename(rawName: string): string {
   let stem = lastDot > 0 ? name.slice(0, lastDot) : name;
   let ext = lastDot > 0 ? name.slice(lastDot + 1).toLowerCase() : "";
   stem = stem.replace(/[^a-zA-Z0-9._-]/g, "_");
+  // Brief 76: collapse runs of consecutive underscores so "download (2).jpg"
+  // → "download_2_.jpg" → "download_2_.jpg" instead of the awkward
+  // "download__2_.jpg".
+  stem = stem.replace(/_+/g, "_");
   ext = ext.replace(/[^a-zA-Z0-9]/g, "");
   let combined = ext ? `${stem}.${ext}` : stem;
+  // Brief 76: trim a trailing "_" right before the extension —
+  // "download_2_.jpg" → "download_2.jpg".
+  if (ext) combined = combined.replace(/_+(\.[^.]+)$/, "$1");
   if (combined.length > REQUEST_FILENAME_MAX_LEN) {
     const cutTo = REQUEST_FILENAME_MAX_LEN - (ext ? ext.length + 1 : 0);
     const stemTrim = stem.slice(0, Math.max(1, cutTo));
     combined = ext ? `${stemTrim}.${ext}` : stemTrim;
+    if (ext) combined = combined.replace(/_+(\.[^.]+)$/, "$1");
   }
   return combined || "photo";
 }
@@ -741,6 +764,12 @@ async function handleCreateRequest(
       `Requester name is too long (max ${REQUEST_REQUESTER_NAME_MAX_LEN} characters).`
     );
   }
+  // Brief 75: phone is required. No format validation (operators may
+  // legitimately enter international formats, extensions, etc.); just
+  // non-empty.
+  if (!requesterPhone) {
+    return buildRequestRedirect(request, "requester_phone_required");
+  }
   if (requesterPhone.length > REQUEST_REQUESTER_PHONE_MAX_LEN) {
     return buildRequestRedirect(
       request,
@@ -758,8 +787,9 @@ async function handleCreateRequest(
     );
   }
 
-  // Photos: read all "photo" entries (multi-file inputs come through as
-  // repeated entries with the same name). Cap at REQUEST_MAX_PHOTOS.
+  // Brief 76: up to 5 photos — photo[0] → thumbnail endpoint,
+  // photo[1..4] → attachments (plural) endpoint. Worker-side cap is
+  // defense-in-depth alongside the form's client-side check.
   const allPhotoEntries = form.getAll("photo");
   const photoFiles: File[] = [];
   for (const entry of allPhotoEntries) {
@@ -775,14 +805,12 @@ async function handleCreateRequest(
     photoFiles.push(entry);
   }
   if (photoFiles.length > REQUEST_MAX_PHOTOS) {
-    return buildRequestRedirect(
-      request,
-      `Too many photos (max ${REQUEST_MAX_PHOTOS}).`
-    );
+    return buildRequestRedirect(request, "too_many_photos");
   }
 
-  // Compose description footer with requester attribution.
-  const description = `${descriptionRaw}\n\n---\nRequested by: ${requesterName}\nPhone: ${requesterPhone || "—"}\nSubmitted via: Splash /workorders`;
+  // Compose description footer with requester attribution. Phone is now
+  // required (Brief 75) so the placeholder fallback ("—") is gone.
+  const description = `${descriptionRaw}\n\n---\nRequested by: ${requesterName}\nPhone: ${requesterPhone}\nSubmitted via: Splash /workorders`;
 
   // Phase 1 — create the work request.
   const createCtl = new AbortController();
@@ -817,24 +845,26 @@ async function handleCreateRequest(
   }
   const requestId = createResult.requestId;
 
-  // Phase 2 — upload photos. First photo → /thumbnail, rest → /attachment.
-  // Failures are non-fatal (the request exists; partial uploads are an
-  // acceptable degraded outcome). Counted so the success banner can warn.
-  let photoFailures = 0;
+  // Phase 2 — upload up to 5 photos. photo[0] → thumbnail endpoint;
+  // photo[1..4] → attachments (plural) endpoint. Failures are
+  // non-fatal: the request exists in MaintainX either way. Per-photo
+  // failures collect into a count surfaced via `request_warn=
+  // {N}-of-{M}-photos-failed` on the success redirect.
+  let photosFailed = 0;
   for (let i = 0; i < photoFiles.length; i += 1) {
     const file = photoFiles[i];
-    if (!file) continue;
+    if (!file) continue; // narrows tsconfig's noUncheckedIndexedAccess
     const endpoint: "thumbnail" | "attachment" = i === 0 ? "thumbnail" : "attachment";
     const filename = sanitizeFilename(file.name);
-    let body: ArrayBuffer;
+    let body: ArrayBuffer | null = null;
     try {
       body = await file.arrayBuffer();
     } catch (err) {
       console.error(
-        `workorders-worker request ${requestId} photo ${i} read failed:`,
+        `workorders-worker request ${requestId} photo ${i} (${endpoint}) read failed:`,
         err
       );
-      photoFailures += 1;
+      photosFailed += 1;
       continue;
     }
     const uploadCtl = new AbortController();
@@ -860,17 +890,17 @@ async function handleCreateRequest(
       console.error(
         `workorders-worker request ${requestId} photo ${i} (${endpoint}) failed: status=${uploadResult.status} error=${uploadResult.error}`
       );
-      photoFailures += 1;
+      photosFailed += 1;
     }
   }
 
   console.log(
-    `workorders-worker request ${requestId} created by ${email} with ${photoFiles.length} photo(s); ${photoFailures} upload failure(s)`
+    `workorders-worker request ${requestId} created by ${email} (photos=${photoFiles.length}, photos_failed=${photosFailed})`
   );
 
   const warn =
-    photoFailures > 0
-      ? `${photoFailures}-of-${photoFiles.length}-photos-failed`
+    photosFailed > 0
+      ? `${photosFailed}-of-${photoFiles.length}-photos-failed`
       : null;
   return buildRequestRedirect(request, null, requestId, warn);
 }

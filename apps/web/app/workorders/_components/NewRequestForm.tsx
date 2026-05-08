@@ -13,7 +13,6 @@
 // `WorkOrdersTabsClient` reads those params and renders a banner above
 // this form on the next page render.
 
-import { useState } from "react";
 import type { AccessibleLocation, WorkOrdersCurrentUser } from "../_lib/worker-fetch";
 
 interface Props {
@@ -21,13 +20,10 @@ interface Props {
   currentUser: WorkOrdersCurrentUser;
 }
 
-const MAX_PHOTOS = 5;
-
 export function NewRequestForm({ accessibleLocations, currentUser }: Props) {
   const mappable = accessibleLocations.filter(
     (l) => typeof l.maintainx_id === "number" && Number.isFinite(l.maintainx_id)
   );
-  const [photoCount, setPhotoCount] = useState(0);
 
   if (mappable.length === 0) {
     return (
@@ -121,41 +117,35 @@ export function NewRequestForm({ accessibleLocations, currentUser }: Props) {
         />
       </FieldRow>
 
-      <FieldRow label="Requester Phone" htmlFor="nr-requester-phone">
+      <FieldRow label="Requester Phone" htmlFor="nr-requester-phone" required>
         <input
           id="nr-requester-phone"
           name="requester_phone"
           type="tel"
+          required
           maxLength={30}
           className="w-full rounded-splash-md border border-gray-light bg-white px-3 py-2 text-sm text-splash-navy focus:border-splash-blue focus:outline-none focus:ring-1 focus:ring-splash-blue"
-          placeholder="Optional"
         />
       </FieldRow>
 
-      <FieldRow label={`Photos (up to ${MAX_PHOTOS})`} htmlFor="nr-photos">
+      {/* Brief 76: multi-photo restored. The MaintainX work-request
+          attachment URL is /v1/workrequests/{id}/attachments/{filename}
+          (plural) — Brief 74 inferred singular from the doc heading and
+          Brief 75 retired multi-photo on the wrong diagnosis. With the
+          plural path, photo[0] uploads as the thumbnail and photo[1..4]
+          attach to the request. Worker enforces the 5-cap server-side. */}
+      <FieldRow label="Photo(s) (optional)" htmlFor="nr-photos">
         <input
           id="nr-photos"
           name="photo"
           type="file"
           accept="image/*"
           multiple
-          onChange={(e) => {
-            const files = e.target.files;
-            const count = files ? files.length : 0;
-            if (count > MAX_PHOTOS) {
-              alert(`You can attach at most ${MAX_PHOTOS} photos. Trim the selection and try again.`);
-              e.target.value = "";
-              setPhotoCount(0);
-              return;
-            }
-            setPhotoCount(count);
-          }}
           className="block w-full text-sm text-splash-navy file:mr-3 file:rounded-splash-md file:border-0 file:bg-splash-navy file:px-3 file:py-2 file:text-sm file:font-semibold file:text-white hover:file:bg-splash-blue-dark"
         />
         <p className="mt-1 text-xs text-splash-navy/60">
-          {photoCount > 0
-            ? `${photoCount} selected. First photo becomes the work order's thumbnail.`
-            : `First photo becomes the work order's thumbnail.`}
+          Photo(s) (optional, max 5). First photo becomes the thumbnail;
+          additional photos attach to the request.
         </p>
       </FieldRow>
 
