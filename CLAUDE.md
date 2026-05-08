@@ -562,6 +562,11 @@ URL-based — service bindings don't apply to those.
   banner when the 1000 cap is hit. The `pageCount` field on
   `GET /workorders/api/list`'s response surfaces the actual call
   count for observability.
+  Brief 73: Preventive rows surface a due-date pill (red "Overdue
+  Nd" / amber "Due today" / muted "Due MMM D" / em-dash null);
+  Reactive rows do not (MaintainX auto-sets reactive dueDate to
+  same-day, not operationally meaningful). Both tabs show muted
+  age text "Nd" beneath the priority pill in the collapsed row.
 - **`age_days`** (Brief 68) - Server-computed days-since-submission
   field on the `/manage/api/claims` list response. Lives in the
   `listClaims` SELECT projection in `packages/db-d1/src/claims.ts` as

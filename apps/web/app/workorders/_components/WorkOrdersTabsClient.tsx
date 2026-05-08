@@ -8,12 +8,19 @@
 //     does NOT clear the expansion set; keys are unique across both
 //     buckets.
 //
-// Expanded rows surface full description, created date (YYYY-MM-DD), age
-// in days, the assignee list, and category badges.
+// Expanded rows surface full description, created date (YYYY-MM-DD), the
+// assignee list, and category badges.
+//
+// Brief 73 — collapsed-row additions: muted age label "Nd" beneath the
+// priority pill on both tabs, and a Due column on the Preventive tab only
+// (Reactive dueDate is auto-set to same-day by MaintainX and not
+// operationally meaningful for Splash). The expanded-row Age field was
+// removed because it now duplicates the collapsed-row label.
 
 import { useState } from "react";
 import { PriorityPill } from "./PriorityPill";
 import { StatusPill } from "./StatusPill";
+import { DueDatePill } from "./DueDatePill";
 import type {
   WorkOrderItem,
   WorkOrdersGroup
@@ -86,6 +93,7 @@ export function WorkOrdersTabsClient(props: Props) {
                 group={group}
                 expanded={expanded}
                 onToggle={toggle}
+                tab={tab}
               />
             ))
           )}
@@ -226,12 +234,16 @@ function BucketEmptyState({ tab }: { tab: TabKey }) {
 function GroupSection({
   group,
   expanded,
-  onToggle
+  onToggle,
+  tab
 }: {
   group: WorkOrdersGroup;
   expanded: Set<string>;
   onToggle: (id: number) => void;
+  tab: TabKey;
 }) {
+  const showDueColumn = tab === "preventive";
+  const colSpan = showDueColumn ? 8 : 7;
   return (
     <section className="mb-7">
       <h2 className="mb-2 text-lg font-bold text-splash-navy">
@@ -248,6 +260,7 @@ function GroupSection({
               <th className="px-3 py-2">Priority</th>
               <th className="px-3 py-2">Title</th>
               <th className="px-3 py-2">Status</th>
+              {showDueColumn ? <th className="px-3 py-2">Due</th> : null}
               <th className="px-3 py-2">Assignees</th>
               <th className="px-3 py-2">Updated</th>
               <th className="px-3 py-2 text-right">MaintainX</th>
@@ -260,6 +273,8 @@ function GroupSection({
                 wo={wo}
                 isExpanded={expanded.has(String(wo.id))}
                 onToggle={onToggle}
+                showDueColumn={showDueColumn}
+                colSpan={colSpan}
               />
             ))}
           </tbody>
@@ -272,11 +287,15 @@ function GroupSection({
 function WorkOrderRow({
   wo,
   isExpanded,
-  onToggle
+  onToggle,
+  showDueColumn,
+  colSpan
 }: {
   wo: WorkOrderItem;
   isExpanded: boolean;
   onToggle: (id: number) => void;
+  showDueColumn: boolean;
+  colSpan: number;
 }) {
   return (
     <>
@@ -289,6 +308,9 @@ function WorkOrderRow({
         </td>
         <td className="px-3 py-2.5 whitespace-nowrap">
           <PriorityPill priority={wo.priority} />
+          <div className="mt-0.5 text-xs text-gray-500">
+            {wo.createdAt ? ageLabel(wo.createdAt) : "—"}
+          </div>
         </td>
         <td className="px-3 py-2.5">
           <div className="font-medium text-splash-navy">
@@ -303,6 +325,14 @@ function WorkOrderRow({
         <td className="px-3 py-2.5 whitespace-nowrap">
           <StatusPill status={wo.status} />
         </td>
+        {showDueColumn ? (
+          <td
+            className="px-3 py-2.5 whitespace-nowrap"
+            title={wo.dueDate ?? undefined}
+          >
+            <DueDatePill dueDate={wo.dueDate} />
+          </td>
+        ) : null}
         <td className="px-3 py-2.5 text-sm text-splash-navy">
           {wo.assignees.length === 0
             ? "—"
@@ -326,9 +356,18 @@ function WorkOrderRow({
           </a>
         </td>
       </tr>
-      {isExpanded ? <ExpandedRow wo={wo} /> : null}
+      {isExpanded ? <ExpandedRow wo={wo} colSpan={colSpan} /> : null}
     </>
   );
+}
+
+// Brief 73 — collapsed-row age label under the priority pill on both tabs.
+// `<1d` floor matches the AgePill convention from Briefs 68/69.
+function ageLabel(iso: string): string {
+  const t = Date.parse(iso);
+  if (Number.isNaN(t)) return "—";
+  const days = Math.floor((Date.now() - t) / 86_400_000);
+  return days < 1 ? "<1d" : `${days}d`;
 }
 
 function Chevron({ expanded }: { expanded: boolean }) {
@@ -344,24 +383,17 @@ function Chevron({ expanded }: { expanded: boolean }) {
   );
 }
 
-function ExpandedRow({ wo }: { wo: WorkOrderItem }) {
+function ExpandedRow({ wo, colSpan }: { wo: WorkOrderItem; colSpan: number }) {
   const created = wo.createdAt ? formatYmd(wo.createdAt) : "—";
-  const ageDays = wo.createdAt ? daysSince(wo.createdAt) : null;
   return (
     <tr className="border-t border-gray-light/30 bg-gray-light/10">
-      <td colSpan={7} className="px-6 py-4 text-sm text-splash-navy/90">
-        <dl className="grid grid-cols-1 gap-x-8 gap-y-2 sm:grid-cols-3">
+      <td colSpan={colSpan} className="px-6 py-4 text-sm text-splash-navy/90">
+        <dl className="grid grid-cols-1 gap-x-8 gap-y-2 sm:grid-cols-2">
           <div>
             <dt className="text-[11px] font-semibold uppercase tracking-wide text-splash-navy/60">
               Created
             </dt>
             <dd>{created}</dd>
-          </div>
-          <div>
-            <dt className="text-[11px] font-semibold uppercase tracking-wide text-splash-navy/60">
-              Age
-            </dt>
-            <dd>{ageDays != null ? `${ageDays}d` : "—"}</dd>
           </div>
           <div>
             <dt className="text-[11px] font-semibold uppercase tracking-wide text-splash-navy/60">
@@ -412,12 +444,6 @@ function formatYmd(iso: string): string {
   const mm = String(d.getUTCMonth() + 1).padStart(2, "0");
   const dd = String(d.getUTCDate()).padStart(2, "0");
   return `${yyyy}-${mm}-${dd}`;
-}
-
-function daysSince(iso: string): number | null {
-  const t = Date.parse(iso);
-  if (Number.isNaN(t)) return null;
-  return Math.max(0, Math.floor((Date.now() - t) / 86_400_000));
 }
 
 function formatRelativeTime(iso: string): string {
