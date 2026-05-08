@@ -35,8 +35,8 @@ interface Tile {
 const TILES: ReadonlyArray<Tile> = [
   {
     href: "/admin/pricing",
-    eyebrow: "Signup admin",
-    title: "Signup Admin",
+    eyebrow: "Signup form",
+    title: "MaxPass Admin",
     description:
       "Manage MaxPass pricing and review recent signups across your locations.",
     icon: (
@@ -49,8 +49,10 @@ const TILES: ReadonlyArray<Tile> = [
         strokeLinejoin="round"
         aria-hidden="true"
       >
-        <line x1="12" y1="1" x2="12" y2="23" />
-        <path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6" />
+        <path d="M2 9a3 3 0 0 1 0 6v2a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-2a3 3 0 0 1 0-6V7a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2Z" />
+        <path d="M13 5v2" />
+        <path d="M13 11v2" />
+        <path d="M13 17v2" />
       </svg>
     )
   },
@@ -98,7 +100,7 @@ const TILES: ReadonlyArray<Tile> = [
   {
     href: "/admin/sysadmin",
     eyebrow: "Admin",
-    title: "System Admin",
+    title: "Database Admin",
     description: "Manage user accounts, role assignments, and tool grants.",
     icon: (
       <svg
@@ -117,8 +119,8 @@ const TILES: ReadonlyArray<Tile> = [
   },
   {
     href: "/workorders",
-    eyebrow: "MaintainX",
-    title: "Work Orders",
+    eyebrow: "Maintenance",
+    title: "MaintainX",
     description: "Open MaintainX work orders for your locations.",
     icon: (
       <svg

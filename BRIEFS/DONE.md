@@ -76,3 +76,4 @@
 - 2026-05-08 09:22:32 brief-075-workorders-new-request-single-photo-and-required-phone.md (success)
 - 2026-05-08 09:38:37 brief-076-workorders-restore-multi-photo-with-correct-attachments-path.md (success)
 - 2026-05-08 10:55:37 brief-077-header-mobile-fit-and-workorders-pathname-gate.md (success)
+- 2026-05-08 11:23:30 brief-078-dashboard-tile-rename-signup-sysadmin-workorders.md (success)

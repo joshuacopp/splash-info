@@ -56,6 +56,8 @@
 
 # brief-077-header-mobile-fit-and-workorders-pathname-gate.md  (completed 2026-05-08)
 
+# brief-078-dashboard-tile-rename-signup-sysadmin-workorders.md  (completed 2026-05-08)
+
 
 
 
