@@ -224,7 +224,7 @@ function RequestResultBannerView({ banner }: { banner: RequestResultBanner }) {
           <>
             {" "}
             <a
-              href={`https://app.getmaintainx.com/workrequests/${banner.requestId}`}
+              href={`https://app.getmaintainx.com/requests/${banner.requestId}`}
               target="_blank"
               rel="noreferrer"
               className="font-semibold text-splash-blue hover:underline"

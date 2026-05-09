@@ -638,6 +638,16 @@ URL-based — service bindings don't apply to those.
   `dueDate` — `PREVENTATIVE_MAX_OVERDUE_DAYS = 90` constant in
   `apps/workorders-worker/src/index.ts`. NULL / malformed dueDate
   preventives are kept.
+  MaintainX UI URLs: work orders are at
+  `app.getmaintainx.com/workorders/{id}`; work requests are at
+  `app.getmaintainx.com/requests/{id}` (NO `work` prefix —
+  segments aren't symmetric). REST API paths are also asymmetric
+  (`/v1/workorders/{id}` for orders; `/v1/workrequests/{id}/...`
+  plural for requests, with `/thumbnail/` singular but
+  `/attachments/` plural underneath). Probe before inferring —
+  Briefs 76, 80, 62 all closed bugs caused by inferring a path
+  by analogy from a sibling resource (Brief 80 was the
+  work-request UI URL caught on first post-deploy submit).
 - **`age_days`** (Brief 68) - Server-computed days-since-submission
   field on the `/manage/api/claims` list response. Lives in the
   `listClaims` SELECT projection in `packages/db-d1/src/claims.ts` as
