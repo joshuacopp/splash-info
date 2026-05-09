@@ -64,6 +64,9 @@
 # brief-083-fleet-submissions-admin-viewer.md  (completed 2026-05-09)
 # brief-084-signups-viewer-date-range-and-csv.md  (completed 2026-05-09)
 # brief-086-fleet-admin-fix-submitted-at-column.md  (completed 2026-05-09)
+# brief-087-fleet-detail-splash-notes-editor.md  (completed 2026-05-09)
+
+
 
 
 

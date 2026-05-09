@@ -263,20 +263,22 @@ Code brief — see section 6.
 
 ---
 
-## 4.6. Admin endpoints (Brief 83)
+## 4.6. Admin endpoints (Brief 83 / Brief 87)
 
-Brief 83 introduced three cookie-gated `/admin/api/*` routes for the
+Brief 83 introduced cookie-gated `/admin/api/*` routes for the
 new apps/web Fleet Inquiries viewer (`/admin/fleet` +
 `/admin/fleet/[id]`). These are the worker's first authenticated
 endpoints; the public form routes (`POST /api/find-locations` /
 `/api/fleet-packages` / `/api/fleet-submit`) are unchanged and still
-anonymous.
+anonymous. Brief 87 added the PATCH endpoint for editing
+`splash_notes`.
 
 | Path | Method | Purpose |
 |---|---|---|
 | `/admin/api/submissions?from=&to=&limit=` | GET | JSON list of `fleet_submissions` rows in the date range. Defaults: from = 30 days ago, to = today (UTC, inclusive). Limit default 200, max 200. |
 | `/admin/api/submissions/{id}` | GET | JSON detail for a single row. 404 on missing. |
-| `/admin/api/submissions.csv?from=&to=` | GET | RFC 4180 CSV with `Content-Disposition: attachment; filename="fleet-submissions-YYYY-MM-DD-to-YYYY-MM-DD.csv"`. No row cap besides a 10000 safety ceiling — exceeded → 416 with a "narrow the date range" hint. |
+| `/admin/api/submissions/{id}` | PATCH | Brief 87. Update `splash_notes` on a single row. Body: `{ splash_notes: string }`. Trims whitespace, caps at 10000 chars, empty string allowed. Returns `{ ok: true, row: <updated_row> }`. 400 on non-string / over-cap; 404 if no row matched the id. Same admin gate as the GETs. CSRF: `isOriginAllowed` enforced (service-binding callers pass via matching `Origin` header). |
+| `/admin/api/submissions.csv?from=&to=` | GET | RFC 4180 CSV with `Content-Disposition: attachment; filename="fleet-submissions-YYYY-MM-DD-to-YYYY-MM-DD.csv"`. No row cap besides a 10000 safety ceiling — exceeded → 416 with a "narrow the date range" hint. CSV column inventory now includes `splash_notes` (Brief 87). |
 
 **Auth posture.** Cookie session via `@splash/auth`'s `authenticate()`.
 Allowed when:
@@ -313,25 +315,37 @@ unbound, the admin endpoints return **503** with
 **Service binding from apps/web.** apps/web SSR-fetches the JSON
 endpoints via the `FLEET_INQUIRY_WORKER` service binding declared in
 `apps/web/wrangler.toml` (Brief 17 pattern — same posture as
-`SIGNUP_WORKER`, `DAMAGE_WORKER`, etc). The CSV endpoint is consumed
-directly by the user's browser (the apps/web page emits a styled
-`<a download>` whose href is built by `getFleetCsvUrl`). When apps/web
-and `splash-fleet-inquiry` are on the same origin (post-cutover, both
-under `splashcarwashes.info`), a same-origin relative URL works. When
-they're on different origins (today's staging — apps/web on
-`staging.splashcarwashes.info`, fleet on
-`fleet.staging.splashcarwashes.info`), set
-`NEXT_PUBLIC_FLEET_INQUIRY_WORKER_URL` on apps/web's CF Workers Builds
-config so the CSV link is absolute. The `sb-access-token` cookie's
-domain scope must include both origins for the browser to forward it
-on the CSV download — confirm cookie `Domain=splashcarwashes.info`
-(zone-scoped) before enabling staging CSV exports.
+`SIGNUP_WORKER`, `DAMAGE_WORKER`, etc).
 
-**CSRF.** GET-only endpoints; `isOriginAllowed` is enforced as
-defense-in-depth. Service-binding callers from apps/web pass because
-the helper sets `Origin` to the request URL origin (matching the
-worker's expected origin). Localhost-shaped origins are accepted for
-dev.
+**CSV proxy route (Brief 88).** The CSV endpoint is consumed directly
+by the user's browser (`<a download>` triggers the native download
+flow), but the `<a href>` does NOT point at the fleet worker — it
+points at apps/web's proxy route at `/admin/fleet/export.csv`
+(`apps/web/app/admin/fleet/export.csv/route.ts`). The proxy forwards
+the request via the `FLEET_INQUIRY_WORKER` service binding, then
+streams the upstream CSV body back with the original `Content-Type`
++ `Content-Disposition` preserved (so the browser still saves with
+the correct filename).
+
+This proxy exists because Brief 82 chose a subdomain pattern
+(`fleet.staging.splashcarwashes.info`) for fleet's staging route,
+which means a same-origin relative URL on the CSV button doesn't
+reach the fleet worker — it resolves to apps/web's hostname instead.
+The proxy route closes the gap without requiring cookie-domain
+widening or fleet-side path-carving. `getFleetCsvUrl` in
+`apps/web/app/admin/fleet/_lib/worker-fetch.ts` returns the proxy
+path (`/admin/fleet/export.csv?...`), NOT a fleet-worker URL.
+`NEXT_PUBLIC_FLEET_INQUIRY_WORKER_URL` is no longer consumed for the
+CSV link itself — only by the proxy route's URL fallback in `next dev`
+and by the JSON helper's URL fallback. Future workers using a
+subdomain pattern + needing a browser-direct download should follow
+the same proxy convention.
+
+**CSRF.** GET endpoints + the Brief 87 PATCH endpoint enforce
+`isOriginAllowed` as defense-in-depth. Service-binding callers from
+apps/web pass because the helper sets `Origin` to the request URL
+origin (matching the worker's expected origin). Localhost-shaped
+origins are accepted for dev.
 
 **Smoke test.** After deploying the worker AND apps/web with the
 new binding:
@@ -345,6 +359,13 @@ new binding:
    "no access" card (worker returned 403 → fleetGetJson collapses
    to null → page shows the "no access" sign-in prompt).
 6. Direct curl to `/admin/api/submissions` without a cookie → 401.
+7. (Brief 87) Click "View" on any row → top of detail page renders
+   "Splash Notes" section. Type a note ("called, voicemail left"),
+   click Save Notes. Inline success banner ("Notes saved.") via
+   `<ActionForm>`; key/value grid below shows the same value (proves
+   the round-trip + `router.refresh()` work). Reload from scratch —
+   note still there. Re-export CSV — new `splash_notes` column
+   populated.
 
 ---
 

@@ -32,6 +32,7 @@ export interface FleetSubmissionRow {
   ip_address: string | null;
   user_agent: string | null;
   status: string | null;
+  splash_notes: string | null;
 }
 
 export interface FleetSubmissionsListResponse {
@@ -146,14 +147,88 @@ export async function getFleetSubmission(
 /**
  * Build the CSV download URL with the current filter params. Used by the
  * `<CsvExportButton>` — the URL is consumed by the user's browser, not the
- * apps/web Worker, so it must be reachable from the public internet (no
- * service-binding shortcut available here). Prefers the explicit env var
- * when set; falls back to a same-origin relative URL so production
- * (workers + apps/web on the same zone) just works without env config.
+ * apps/web Worker.
+ *
+ * Brief 88: points at the apps/web proxy route at
+ * `/admin/fleet/export.csv`, NOT at the fleet worker directly. The fleet
+ * worker lives on a separate subdomain
+ * (`fleet.staging.splashcarwashes.info` per Brief 82) so a same-origin
+ * relative URL on this button doesn't reach it — apps/web has no route
+ * at `/admin/api/submissions.csv` and Next renders 404 HTML the browser
+ * saves as `submissions.txt`. The proxy route forwards the request via
+ * the `FLEET_INQUIRY_WORKER` service binding internally and streams the
+ * upstream CSV body back with `Content-Disposition` preserved (correct
+ * filename) — zero cross-domain cookie / CORS issues. The
+ * `NEXT_PUBLIC_FLEET_INQUIRY_WORKER_URL` env var is no longer consumed
+ * here; the proxy route's URL fallback uses it for `next dev`.
  */
 export function getFleetCsvUrl(params: FleetSubmissionsListParams = {}): string {
-  const path = `/admin/api/submissions.csv${buildQuery(params)}`;
-  const base = process.env.NEXT_PUBLIC_FLEET_INQUIRY_WORKER_URL;
-  if (base) return `${base}${path}`;
-  return path;
+  return `/admin/fleet/export.csv${buildQuery(params)}`;
+}
+
+/**
+ * PATCH /admin/api/submissions/{id} with a `splash_notes` body. Brief 87.
+ * Mirrors the binding-first / URL-fallback shape of `fleetGetJson` —
+ * service binding for prod (apps/web Worker → fleet-inquiry-worker on the
+ * same zone), URL fetch for `next dev` where bindings aren't available.
+ * Throws on non-2xx so the calling server action can surface a typed
+ * ActionResult error.
+ */
+export async function updateFleetSubmissionNotes(
+  id: string,
+  notes: string
+): Promise<void> {
+  const cookieStore = await cookies();
+  const cookieHeader = cookieStore.toString();
+  const path = `/admin/api/submissions/${encodeURIComponent(id)}`;
+  const bodyJson = JSON.stringify({ splash_notes: notes });
+
+  let resp: Response;
+  try {
+    const { env } = await getCloudflareContext({ async: true });
+    if (env.FLEET_INQUIRY_WORKER) {
+      const url = `https://internal${path}`;
+      const req = new Request(url, {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+          Cookie: cookieHeader,
+          Origin: new URL(url).origin
+        },
+        body: bodyJson
+      });
+      resp = await env.FLEET_INQUIRY_WORKER.fetch(req);
+    } else {
+      const url = await workerUrl(path);
+      resp = await fetch(url, {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+          Cookie: cookieHeader,
+          Origin: new URL(url).origin
+        },
+        body: bodyJson,
+        cache: "no-store"
+      });
+    }
+  } catch {
+    const url = await workerUrl(path);
+    resp = await fetch(url, {
+      method: "PATCH",
+      headers: {
+        "Content-Type": "application/json",
+        Cookie: cookieHeader,
+        Origin: new URL(url).origin
+      },
+      body: bodyJson,
+      cache: "no-store"
+    });
+  }
+
+  if (!resp.ok) {
+    const txt = await resp.text().catch(() => "");
+    throw new Error(
+      `Fleet worker PATCH failed: ${resp.status}${txt ? ` — ${txt}` : ""}`
+    );
+  }
 }

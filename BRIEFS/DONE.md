@@ -85,3 +85,5 @@
 - 2026-05-09 13:13:08 brief-084-signups-viewer-date-range-and-csv.md (success)
 - 2026-05-09 13:21:38 brief-085-fleet-fill-again-button.md (success)
 - 2026-05-09 16:33:29 brief-086-fleet-admin-fix-submitted-at-column.md (success)
+- 2026-05-09 17:04:03 brief-087-fleet-detail-splash-notes-editor.md (success)
+- 2026-05-09 17:12:24 brief-088-fleet-csv-export-proxy-route.md (success)

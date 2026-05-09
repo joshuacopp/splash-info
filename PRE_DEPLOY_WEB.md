@@ -164,11 +164,24 @@ section 4.
 | `SYSADMIN_WORKER` | `splash-sysadmin` | `apps/web/app/admin/sysadmin/_lib/worker-fetch.ts` |
 | `DAMAGE_WORKER` | `splash-damage` | `apps/web/app/admin/damage/_lib/worker-fetch.ts` |
 | `WORKORDERS_WORKER` | `splash-workorders` | `apps/web/app/workorders/_lib/worker-fetch.ts` |
-| `FLEET_INQUIRY_WORKER` | `splash-fleet-inquiry` | `apps/web/app/admin/fleet/_lib/worker-fetch.ts` (Brief 83) |
+| `FLEET_INQUIRY_WORKER` | `splash-fleet-inquiry` | `apps/web/app/admin/fleet/_lib/worker-fetch.ts` (Brief 83) + `apps/web/app/admin/fleet/export.csv/route.ts` (Brief 88 proxy) |
 
 `/admin/fleet*` is admin-gated (super_admin or dc_role admin/super_admin
 only) and depends on `splash-fleet-inquiry` being deployed AND having
 `SUPABASE_SERVICE_KEY` bound — see PRE_DEPLOY_FLEET.md section 4.6.
+
+**Brief 88 — apps/web fleet CSV proxy route.** The "Export CSV" button
+on `/admin/fleet` links to `/admin/fleet/export.csv`, an apps/web
+Route Handler that proxies the request via the `FLEET_INQUIRY_WORKER`
+binding (forwarding Cookie + Origin) and streams the upstream CSV body
+back with `Content-Type` + `Content-Disposition` preserved. This is
+the only fleet surface that needs a proxy — JSON list / detail / PATCH
+are all SSR'd from the apps/web Worker (browser never calls the fleet
+worker directly for those). The proxy exists because Brief 82 chose a
+subdomain pattern for fleet's staging route, so a same-origin relative
+URL on the CSV button wouldn't reach the fleet worker. Convention:
+future workers using a subdomain pattern AND needing a browser-direct
+download should follow the same proxy convention.
 
 ### 4.2 Why service bindings, not URL fetches
 

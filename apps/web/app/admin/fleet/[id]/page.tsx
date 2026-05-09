@@ -1,10 +1,13 @@
 // Fleet inquiry detail (Brief 83). Server component. Fetches one
 // fleet_submissions row via the FLEET_INQUIRY_WORKER service binding and
-// renders every column in a 2-column key/value grid.
+// renders every column in a 2-column key/value grid. Brief 87 added the
+// editable Splash Notes textarea at the top of the page.
 
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { getFleetSubmission } from "../_lib/worker-fetch";
+import { ActionForm } from "../../_components/ActionForm";
+import { updateSplashNotesAction } from "./actions";
 
 interface PageProps {
   params: Promise<{ id: string }>;
@@ -83,9 +86,21 @@ export default async function FleetSubmissionDetailPage({ params }: PageProps) {
       value: row.anticipated_washes_per_month ?? em()
     },
     { label: "Status", value: row.status ?? em() },
+    {
+      label: "Splash notes",
+      value: row.splash_notes ? (
+        <pre className="whitespace-pre-wrap font-sans text-sm text-splash-navy">
+          {row.splash_notes}
+        </pre>
+      ) : (
+        em()
+      )
+    },
     { label: "IP address", value: row.ip_address ?? em() },
     { label: "User agent", value: row.user_agent ?? em() }
   ];
+
+  const saveNotes = updateSplashNotesAction.bind(null, id);
 
   return (
     <section className="mx-auto w-full max-w-[820px] px-5 py-9">
@@ -101,6 +116,31 @@ export default async function FleetSubmissionDetailPage({ params }: PageProps) {
         Submitted {formatRelative(row.created_at)} ·{" "}
         {row.name ?? "(no contact name)"}
       </p>
+
+      <section className="mb-6 rounded-md border border-gray-light bg-white p-5">
+        <h2 className="mb-2 text-lg font-semibold text-splash-navy">
+          Splash Notes
+        </h2>
+        <p className="mb-3 text-xs text-splash-navy/60">
+          Internal notes from whoever contacts this lead. Visible to all
+          admin / super_admin users.
+        </p>
+        <ActionForm action={saveNotes} resetOnSuccess={false}>
+          <textarea
+            name="splash_notes"
+            defaultValue={row.splash_notes ?? ""}
+            rows={6}
+            maxLength={10000}
+            className="block w-full rounded-splash-md border border-gray-light bg-white px-3 py-2 text-sm text-splash-navy focus:border-splash-blue focus:outline-none focus:ring-1 focus:ring-splash-blue"
+          />
+          <button
+            type="submit"
+            className="mt-2 rounded-splash-md bg-splash-navy px-4 py-2 text-sm font-semibold text-white hover:bg-splash-blue-dark"
+          >
+            Save Notes
+          </button>
+        </ActionForm>
+      </section>
 
       <div className="overflow-hidden rounded-splash-md border border-gray-light bg-white">
         <dl className="divide-y divide-gray-light">

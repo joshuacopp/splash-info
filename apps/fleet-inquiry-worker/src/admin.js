@@ -1,12 +1,16 @@
-// Admin-gated submissions viewer endpoints (Brief 83).
+// Admin-gated submissions viewer endpoints (Brief 83 + Brief 87).
 //
-// Three routes, mounted via the early-router branch in src/index.js:
+// Four routes, mounted via the early-router branch in src/index.js:
 //
 //   GET /admin/api/submissions?from=&to=&limit=
 //     JSON list of fleet_submissions in the date range, capped at 200.
 //
 //   GET /admin/api/submissions/{id}
 //     JSON detail for a single fleet_submissions row, or 404.
+//
+//   PATCH /admin/api/submissions/{id}     (Brief 87)
+//     Update `splash_notes` on a single row. Body: { splash_notes: string }.
+//     Trims whitespace, caps at 10000 chars. Empty string allowed.
 //
 //   GET /admin/api/submissions.csv?from=&to=
 //     RFC 4180 CSV with Content-Disposition: attachment. Same date filter as
@@ -43,6 +47,7 @@ import { isOriginAllowed, json, jsonError } from "@splash/http";
 const ROW_LIMIT = 200;
 const CSV_SAFETY_CAP = 10_000;
 const DEFAULT_WINDOW_DAYS = 30;
+const SPLASH_NOTES_MAX_LEN = 10_000;
 
 /**
  * CSV column inventory. `key` reads the column directly from the row;
@@ -73,7 +78,8 @@ const CSV_COLUMNS = [
   { key: "anticipated_washes_per_month", label: "anticipated_washes_per_month" },
   { key: "ip_address", label: "ip_address" },
   { key: "user_agent", label: "user_agent" },
-  { key: "status", label: "status" }
+  { key: "status", label: "status" },
+  { key: "splash_notes", label: "splash_notes" }
 ];
 
 /* ============================================================
@@ -85,13 +91,13 @@ export async function handleAdminApi(request, env, _ctx) {
     return new Response(null, {
       headers: {
         "Access-Control-Allow-Origin": "*",
-        "Access-Control-Allow-Methods": "GET, OPTIONS",
+        "Access-Control-Allow-Methods": "GET, PATCH, OPTIONS",
         "Access-Control-Allow-Headers": "Content-Type, Cookie"
       }
     });
   }
 
-  if (request.method !== "GET") {
+  if (request.method !== "GET" && request.method !== "PATCH") {
     return jsonError(405, "method not allowed");
   }
 
@@ -106,13 +112,18 @@ export async function handleAdminApi(request, env, _ctx) {
   const path = url.pathname;
 
   if (path === "/admin/api/submissions") {
+    if (request.method !== "GET") return jsonError(405, "method not allowed");
     return handleListSubmissions(request, env);
   }
   if (path === "/admin/api/submissions.csv") {
+    if (request.method !== "GET") return jsonError(405, "method not allowed");
     return handleCsvExport(request, env);
   }
   const detailMatch = path.match(/^\/admin\/api\/submissions\/([A-Za-z0-9_-]+)$/);
   if (detailMatch) {
+    if (request.method === "PATCH") {
+      return handleUpdateSubmission(request, env, detailMatch[1]);
+    }
     return handleGetSubmission(request, env, detailMatch[1]);
   }
 
@@ -307,6 +318,62 @@ async function handleGetSubmission(request, env, id) {
     return jsonError(404, "submission not found");
   }
   return json({ row: arr[0] });
+}
+
+async function handleUpdateSubmission(request, env, id) {
+  const gate = await authenticateAdmin(request, env);
+  if (!gate.ok) return gate.response;
+
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return jsonError(400, "Invalid JSON body");
+  }
+  if (body == null || typeof body !== "object") {
+    return jsonError(400, "Invalid request body");
+  }
+  if (typeof body.splash_notes !== "string") {
+    return jsonError(400, "splash_notes must be a string");
+  }
+  const trimmedNotes = body.splash_notes.trim();
+  if (trimmedNotes.length > SPLASH_NOTES_MAX_LEN) {
+    return jsonError(
+      400,
+      `splash_notes exceeds maximum length (${SPLASH_NOTES_MAX_LEN} chars)`
+    );
+  }
+
+  const u = new URL(`${env.SUPABASE_URL}/rest/v1/fleet_submissions`);
+  u.searchParams.set("id", `eq.${id}`);
+  u.searchParams.set("select", "*");
+
+  let resp;
+  try {
+    resp = await fetch(u.toString(), {
+      method: "PATCH",
+      headers: {
+        apikey: env.SUPABASE_SERVICE_KEY,
+        Authorization: `Bearer ${env.SUPABASE_SERVICE_KEY}`,
+        "Content-Type": "application/json",
+        Prefer: "return=representation"
+      },
+      body: JSON.stringify({ splash_notes: trimmedNotes })
+    });
+  } catch (err) {
+    console.error("fleet admin update fetch error:", err);
+    return jsonError(500, "Submission update failed");
+  }
+  if (!resp.ok) {
+    const errText = await resp.text().catch(() => "");
+    console.error("fleet admin update non-2xx:", resp.status, errText);
+    return jsonError(500, `Submission update failed: ${resp.status}`);
+  }
+  const arr = (await resp.json().catch(() => [])) || [];
+  if (!Array.isArray(arr) || arr.length === 0) {
+    return jsonError(404, "submission not found");
+  }
+  return json({ ok: true, row: arr[0] });
 }
 
 async function handleCsvExport(request, env) {

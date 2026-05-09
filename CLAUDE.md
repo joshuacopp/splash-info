@@ -656,17 +656,25 @@ URL-based — service bindings don't apply to those.
   The relative-URL convention is the right pattern for any client-side
   redirect in a public-form worker that has both staging and
   production hostnames.
-- **Fleet inquiries admin** (Brief 83) - Cookie-gated viewer for the
-  `fleet_submissions` table. Three new endpoints on
+- **Fleet inquiries admin** (Brief 83 / Brief 87) - Cookie-gated
+  viewer + editor for the `fleet_submissions` table. Endpoints on
   `splash-fleet-inquiry` (the worker's first authenticated routes —
   see fleet-inquiry-worker entry above for how the public form mode
   remains unchanged): `GET /admin/api/submissions?from=&to=&limit=`
   (JSON list, default last-30-days, max 200 rows),
   `GET /admin/api/submissions/{id}` (JSON detail; 404 on missing),
+  (Brief 87) `PATCH /admin/api/submissions/{id}` (updates
+  `splash_notes` only; body `{ splash_notes: string }`; trims +
+  caps at 10000 chars; same admin gate as the GETs),
   `GET /admin/api/submissions.csv?from=&to=` (RFC 4180 CSV with
   `Content-Disposition: attachment; filename="fleet-submissions-
   YYYY-MM-DD-to-YYYY-MM-DD.csv"`, no row cap besides a 10000 safety
-  ceiling that returns 416 on overflow). Auth: `@splash/auth`
+  ceiling that returns 416 on overflow; CSV column inventory now
+  includes `splash_notes` per Brief 87). Detail page
+  (`/admin/fleet/[id]`) renders an editable Splash Notes textarea
+  at the top (Brief 87) wired to that PATCH via the Brief 19
+  `<ActionForm>` pattern; the value also displays read-only in the
+  key/value grid below. Auth: `@splash/auth`
   `authenticate()` + role check — allows
   `session.role === "super_admin"` OR `session.dcRole === "admin"` OR
   `session.dcRole === "super_admin"`. location_admin and gm/rm are
@@ -686,7 +694,24 @@ URL-based — service bindings don't apply to those.
   browser's native download flow from `Content-Disposition`, not a
   client-side route transition). Filtering is on
   `fleet_submissions.created_at` (Supabase row default `now()`), NOT
-  the JS-written `submitted_at` field.
+  the JS-written `submitted_at` field. Brief 88 (2026-05-09): the
+  CSV "Export CSV" button on `/admin/fleet` links to an apps/web
+  Route Handler at `apps/web/app/admin/fleet/export.csv/route.ts`,
+  NOT directly to the fleet worker. The route handler proxies the
+  request via the `FLEET_INQUIRY_WORKER` service binding internally
+  and streams the upstream CSV body back with `Content-Type` +
+  `Content-Disposition` preserved (so the browser still saves with
+  the right filename). Reason: Brief 82 chose a subdomain pattern
+  for fleet's staging route (`fleet.staging.splashcarwashes.info`),
+  so a same-origin relative URL on the CSV button wouldn't reach the
+  fleet worker — apps/web has no route at `/admin/api/submissions.csv`
+  and Next renders 404 HTML the browser saves as `submissions.txt`.
+  The proxy closes the gap with zero cookie-domain coordination,
+  zero CORS work, and zero changes to the fleet worker. JSON list /
+  detail / PATCH are unaffected — they're SSR'd from the apps/web
+  Worker, browser never calls the fleet worker directly for them.
+  Future workers using a subdomain pattern + needing a browser-direct
+  download should follow the same proxy convention.
 - **Work Orders** (Brief 70 / Brief 71) - Read-only MaintainX
   integration. Surfaces open / in-progress / on-hold work orders to
   operators on `/workorders` (top-level apps/web page, NOT under
