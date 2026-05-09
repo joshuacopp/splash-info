@@ -79,3 +79,4 @@
 - 2026-05-08 11:23:30 brief-078-dashboard-tile-rename-signup-sysadmin-workorders.md (success)
 - 2026-05-09 09:21:45 brief-079-workorders-preventative-rename-and-90-day-filter.md (success)
 - 2026-05-09 10:20:10 brief-080-workorders-new-request-success-link-url-fix.md (success)
+- 2026-05-09 11:33:19 brief-081-fleet-inquiry-worker-lift-and-shift.md (success)

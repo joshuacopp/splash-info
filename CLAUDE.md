@@ -11,32 +11,39 @@ that next, then the brief you've been asked to execute (under `BRIEFS/`).
 
 ## What this project is
 
-Splash Car Wash's MaxPass internal tooling monorepo. Six Cloudflare
+Splash Car Wash's MaxPass internal tooling monorepo. Seven Cloudflare
 Workers (apps/) — five ported from a single legacy worker
-(`info-signup-worker`) plus the new workorders-worker (Brief 70) — plus
-a Next.js apps/web that consumes their JSON APIs. Seven shared packages
-(packages/) provide auth, http, database, types, UI, storage, and
-config. Build orchestration via Turbo (`turbo.json`) and pnpm
-workspaces (`pnpm-workspace.yaml`).
+(`info-signup-worker`), the workorders-worker (Brief 70), and the
+fleet-inquiry-worker lift-and-shift (Brief 81 — workers.dev only until
+operator-driven cutover) — plus a Next.js apps/web that consumes their
+JSON APIs. Seven shared packages (packages/) provide auth, http,
+database, types, UI, storage, and config. Build orchestration via
+Turbo (`turbo.json`) and pnpm workspaces (`pnpm-workspace.yaml`).
 
 ```
 apps/
-  apps/dashboard-worker     SSO entry: /api/login, /api/logout, /api/forced-reset
-  apps/signup-worker        Customer signup + Signup Admin JSON API
-                            (pricing + per-location recent signups viewer;
-                            worker name on Cloudflare: splash-signup-next,
-                            renames to splash-signup at cutover)
-  apps/performance-worker   Performance tracker API at /pertrack/*
-  apps/sysadmin-worker      User management JSON API at /sysadmin/api/*
-  apps/damage-worker        Damage claims API + R2 photos + D1 records +
-                            Power Automate webhooks + Check Request PDF gen
-                            + MaintainX WO create path (Brief 42 / 43)
-  apps/workorders-worker    Work Orders read API at /workorders/api/*
-                            (MaintainX integration; sibling of damage-worker
-                            — Brief 70)
-  apps/web                  Next.js (App Router), deploys via OpenNext to
-                            Cloudflare Workers. Consumer of all six
-                            workers' JSON APIs.
+  apps/dashboard-worker      SSO entry: /api/login, /api/logout, /api/forced-reset
+  apps/signup-worker         Customer signup + Signup Admin JSON API
+                             (pricing + per-location recent signups viewer;
+                             worker name on Cloudflare: splash-signup-next,
+                             renames to splash-signup at cutover)
+  apps/performance-worker    Performance tracker API at /pertrack/*
+  apps/sysadmin-worker       User management JSON API at /sysadmin/api/*
+  apps/damage-worker         Damage claims API + R2 photos + D1 records +
+                             Power Automate webhooks + Check Request PDF gen
+                             + MaintainX WO create path (Brief 42 / 43)
+  apps/workorders-worker     Work Orders read API at /workorders/api/*
+                             (MaintainX integration; sibling of damage-worker
+                             — Brief 70)
+  apps/fleet-inquiry-worker  Public fleet-inquiry form (live at
+                             fleet.splashcarwashes.info via the legacy
+                             `broad-shape-38b8` worker; this monorepo copy
+                             is `splash-fleet-inquiry` on workers.dev only,
+                             pending operator-driven cutover) — Supabase +
+                             Google Maps Geocoding + Turnstile. Brief 81.
+  apps/web                   Next.js (App Router), deploys via OpenNext to
+                             Cloudflare Workers. Consumer of the workers'
+                             JSON APIs.
 
 packages/
   auth, config, db-d1, db-supabase, http, storage-r2, types, ui
@@ -52,10 +59,13 @@ packages/
 3. `CUTOVER_PLAN.md` - declared "build phase complete" but was incomplete
    (apps/web was not audited before declaration). Read for context, not
    as authoritative on current state.
-4. `PRE_DEPLOY_*.md` - six files (DAMAGE, DASHBOARD, PERFORMANCE,
-   SIGNUP, SYSADMIN, WEB). Per-deployable deploy notes.
+4. `PRE_DEPLOY_*.md` - seven files (DAMAGE, DASHBOARD, FLEET,
+   PERFORMANCE, SIGNUP, SYSADMIN, WEB). Per-deployable deploy notes.
    PRE_DEPLOY_WEB.md (Brief 51) consolidates every apps/web-specific
-   deploy-time gotcha learned across Briefs 1-50.
+   deploy-time gotcha learned across Briefs 1-50. PRE_DEPLOY_FLEET.md
+   (Brief 81) covers the workers.dev-only monorepo copy of
+   `fleet-inquiry-worker` and the operator-driven cutover from the
+   legacy `broad-shape-38b8` worker.
 5. The brief in `BRIEFS/` you've been asked to execute.
 
 If any of these are missing, stop and report it instead of guessing.
@@ -126,6 +136,22 @@ If any of these are missing, stop and report it instead of guessing.
    endpoint). Manual SQL edits to these tables get overwritten on
    the next sync. To change a user's metadata, change it in
    MaintainX itself; the next sync (within 24h) propagates.
+
+9. **The legacy `broad-shape-38b8` worker and the
+   `fleet.splashcarwashes.info` route are off-limits to Claude Code
+   edits.** Brief 81 lifted-and-shifted the fleet-inquiry-worker source
+   into `apps/fleet-inquiry-worker/` as a parallel monorepo copy
+   (`splash-fleet-inquiry`, workers.dev only). The legacy
+   `broad-shape-38b8` worker continues to serve all real fleet customer
+   traffic at `fleet.splashcarwashes.info`. Do NOT delete, rename, or
+   modify `broad-shape-38b8`. Do NOT bind `fleet.splashcarwashes.info`
+   as a route on `splash-fleet-inquiry`. The cutover (route flip from
+   legacy to monorepo) is operator-driven and explicitly out of scope
+   for any Claude Code brief unless the operator asks. Same posture as
+   constraint #6 but specific to fleet — the production deployment
+   (legacy worker bound to the custom domain) and the repo's intent
+   (monorepo worker on workers.dev only) are both intentional snapshots
+   of an in-progress migration.
 
 ---
 
@@ -215,9 +241,20 @@ When given a new task:
 
 - Worker code lives in `apps/<worker-name>/src/`. Wrangler config is
   `apps/<worker-name>/wrangler.toml`.
-- All six workers are deployed to `*.workers.dev` only. Production
+- All seven workers are deployed to `*.workers.dev` only. Production
   routes are commented in every wrangler.toml. Don't uncomment without
-  explicit instruction.
+  explicit instruction. (Caveat: `splash-fleet-inquiry` from Brief 81
+  is workers.dev only because the legacy `broad-shape-38b8` worker
+  still owns the production custom domain `fleet.splashcarwashes.info`
+  — see constraint #9.)
+- **fleet-inquiry-worker is the only monorepo worker with paid
+  third-party API usage.** Google Maps Geocoding
+  (`maps.googleapis.com/maps/api/geocode/json`) is billed per request
+  beyond the free tier (~$5/1000 calls). 7-day cache TTL on geocode
+  results materially lowers volume. See PRE_DEPLOY_FLEET.md section 3
+  for the per-key restriction recommendation and quota dashboard
+  pointers. Other workers' external HTTP — Supabase, Power Automate,
+  MaintainX — is either flat-fee subscription or free.
 - Secrets are bound via `wrangler secret put`, scoped per worker. The
   command must be invoked inside the worker's directory or via
   `pnpm --filter @splash/<worker> exec wrangler secret put NAME`.
@@ -563,6 +600,42 @@ URL-based — service bindings don't apply to those.
 
 ## Glossary
 
+- **fleet-inquiry-worker** (Brief 81) - Public fleet-inquiry form +
+  three JSON endpoints. The seventh worker in the monorepo and the
+  most recent addition. Lift-and-shifted into `apps/fleet-inquiry-
+  worker/` from an external single-file repo
+  (`C:\Users\Coppsrv\Documents\Projects\fleet-inquiry-worker`); the
+  ~1900-LOC `src/index.js` is carried VERBATIM (zero npm runtime
+  deps, plain JS, inline ~1250-line HTML form — no TS conversion, no
+  `@splash/db-supabase` helper migration, no render extraction in
+  Brief 81; deferred to future briefs). Endpoints: `GET /` and
+  `GET /fleet` render the form; `POST /api/find-locations` (body
+  `{address?, lat?, lng?}`) returns nearest five locations sorted by
+  Google Maps distance when `GOOGLE_MAPS_API_KEY` is bound, falling
+  back to alphabetical otherwise; `POST /api/fleet-packages` (body
+  `{location_code}`) returns the `pricing_simple_resolved` rows for
+  that location; `POST /api/fleet-submit` validates Turnstile (when
+  `TURNSTILE_SECRET_KEY` is bound) and INSERTs to Supabase
+  `fleet_submissions`. Worker name on Cloudflare:
+  `splash-fleet-inquiry`. **Production custom domain
+  `fleet.splashcarwashes.info` is NOT bound on this worker** — the
+  legacy `broad-shape-38b8` worker continues to own that route. The
+  monorepo copy is parallel deploy on workers.dev only until the
+  operator-driven cutover (constraint #9; PRE_DEPLOY_FLEET.md
+  section 6). Bindings: non-secret `[vars]` `SUPABASE_URL` +
+  `TURNSTILE_SITE_KEY`; secrets `SUPABASE_ANON_KEY` (NOT
+  `SUPABASE_SERVICE_KEY` — the legacy worker reads anon, monorepo
+  mirrors that posture; flip to service key is a deferred decision
+  per CLAUDE.md constraint #3) + `TURNSTILE_SECRET_KEY` + optional
+  `GOOGLE_MAPS_API_KEY`. Fleet is THE ONLY monorepo worker with paid
+  third-party API usage — Google Maps Geocoding bills per request
+  beyond Google's free tier (~$5/1000 calls). 7-day cache TTL on
+  geocode results materially lowers volume; PRE_DEPLOY_FLEET.md
+  section 3 recommends a separate restricted key for
+  `splash-fleet-inquiry` to avoid quota crosstalk with the legacy
+  worker during transition. `tsconfig.json` enables
+  `allowJs: true / checkJs: false` so root `pnpm typecheck` passes
+  without converting the JS to TS.
 - **Work Orders** (Brief 70 / Brief 71) - Read-only MaintainX
   integration. Surfaces open / in-progress / on-hold work orders to
   operators on `/workorders` (top-level apps/web page, NOT under

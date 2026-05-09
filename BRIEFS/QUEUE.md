@@ -59,6 +59,7 @@
 # brief-078-dashboard-tile-rename-signup-sysadmin-workorders.md  (completed 2026-05-08)
 
 # brief-080-workorders-new-request-success-link-url-fix.md  (completed 2026-05-09)
+# brief-081-fleet-inquiry-worker-lift-and-shift.md  (completed 2026-05-09)
 
 
 

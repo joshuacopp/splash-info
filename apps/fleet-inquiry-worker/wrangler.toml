@@ -1,0 +1,80 @@
+# Splash Fleet Inquiry Worker — Brief 81 (lift-and-shift).
+#
+# Public fleet-inquiry form. Surfaces a multi-step form for prospective
+# fleet customers, computes nearest-five locations (Google Maps Geocoding
+# when configured; alphabetical fallback otherwise), and writes
+# submissions to Supabase `fleet_submissions`. Pricing data sourced from
+# `pricing_simple` / `pricing_simple_resolved`. Turnstile-gated when
+# bound; skipped silently when not.
+#
+# This is the monorepo lift-and-shift of the legacy worker
+# `broad-shape-38b8` that lives at `fleet.splashcarwashes.info`. Source
+# `src/index.js` is carried over verbatim from
+# `C:\Users\Coppsrv\Documents\Projects\fleet-inquiry-worker` and has NOT
+# been converted to TypeScript or refactored to use `@splash/db-supabase`
+# helpers — those are deferred to future briefs.
+#
+# DEPLOY STRATEGY: workers.dev fallback only. The legacy
+# `broad-shape-38b8` worker continues to own the production custom
+# domain `fleet.splashcarwashes.info`; this monorepo copy is a parallel
+# deploy on `splash-fleet-inquiry.<account>.workers.dev` for smoke
+# testing and future development. Cutover (route flip from legacy to
+# new worker) is operator-driven and explicitly out of scope for any
+# Claude Code brief unless the operator asks. See PRE_DEPLOY_FLEET.md.
+#
+# Bindings required (set via `pnpm --filter @splash/fleet-inquiry-worker
+# exec wrangler secret put NAME` per CLAUDE.md):
+#   SUPABASE_URL          — non-secret var (in [vars] below). Same
+#                           Supabase project URL as the rest of the
+#                           monorepo.
+#   SUPABASE_ANON_KEY     — secret. Read-only PostgREST access. The
+#                           legacy worker uses the anon key today; the
+#                           new worker mirrors that posture. Migration
+#                           to `SUPABASE_SERVICE_KEY` per CLAUDE.md
+#                           constraint #3 is a deferred decision —
+#                           DO NOT bind under the legacy
+#                           `SUPABASE_SERVICE_ROLE_KEY` name.
+#   TURNSTILE_SECRET_KEY  — secret. Optional in code (worker silently
+#                           skips Turnstile verification when unbound).
+#                           `TURNSTILE_SITE_KEY` is the public sibling
+#                           and lives in [vars] below.
+#   GOOGLE_MAPS_API_KEY   — secret. Optional in code (worker falls back
+#                           to alphabetical sort when unbound). FLEET
+#                           IS THE ONLY MONOREPO WORKER WITH PAID
+#                           THIRD-PARTY API USAGE — Google Maps
+#                           Geocoding bills per request beyond the free
+#                           tier. See PRE_DEPLOY_FLEET.md for the
+#                           billing/quota discussion and the
+#                           recommendation to provision a SEPARATE
+#                           restricted key for `splash-fleet-inquiry`
+#                           rather than reusing the legacy worker's key
+#                           during transition.
+
+name = "splash-fleet-inquiry"
+main = "src/index.js"
+compatibility_date = "2026-05-01"
+compatibility_flags = ["nodejs_compat"]
+upload_source_maps = true
+
+workers_dev = true
+
+# Production custom-domain route stays bound to the legacy worker
+# `broad-shape-38b8`. DO NOT uncomment without operator-driven cutover.
+# routes = [
+#   { pattern = "fleet.splashcarwashes.info", custom_domain = true }
+# ]
+
+[vars]
+SUPABASE_URL       = "https://rewokyofschtvqgxrxwl.supabase.co"
+TURNSTILE_SITE_KEY = "0x4AAAAAADBV7fdfR67Jt-ab"
+
+[limits]
+cpu_ms = 30000
+
+# Brief 63 (2026-05-07): keeps Workers Logs sticky across deploys. Without
+# this, CF Builds re-provisions the worker on every push and the dashboard
+# "Logs → Enabled" toggle reverts to off. New workers must include this
+# block from day one.
+[observability.logs]
+enabled = true
+invocation_logs = true
