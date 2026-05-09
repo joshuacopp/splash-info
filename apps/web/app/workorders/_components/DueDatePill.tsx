@@ -1,6 +1,6 @@
 "use client";
 
-// Brief 73 — Preventive-tab due-date indicator. Three render tiers plus a
+// Brief 73 — Preventative-tab due-date indicator. Three render tiers plus a
 // null/em-dash fallback:
 //   • dueDate < today          → red pill "Overdue Nd"
 //   • dueDate falls within today → amber pill "Due today"

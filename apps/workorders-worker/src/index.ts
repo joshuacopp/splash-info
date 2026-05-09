@@ -314,7 +314,7 @@ async function handleList(env: Env, session: Session): Promise<Response> {
   }
 
   console.log(
-    `workorders-worker list: email=${email} mappedMxIds=${mappedMxIds.length} paginate=${shouldPaginate} pageCount=${result.pageCount} workOrders=${result.workOrders.length} truncated=${result.truncated}`
+    `workorders-worker list: email=${email} mappedMxIds=${mappedMxIds.length} paginate=${shouldPaginate} pageCount=${result.pageCount} workOrders=${result.workOrders.length} truncated=${result.truncated} droppedOverduePreventive=${buckets.droppedOverduePreventive}`
   );
 
   return json({
@@ -355,21 +355,42 @@ function buildAccessibleLocations(
  * — operators day-to-day work the reactive queue. If MaintainX adds new
  * preventive-flavored types (e.g. "PREVENTIVE_DAILY"), widen this rule
  * to `type?.startsWith("PREVENT")` after operator confirmation.
+ *
+ * Brief 79: Preventive WOs whose `dueDate` is more than
+ * `PREVENTATIVE_MAX_OVERDUE_DAYS` past today (UTC day-floor) are
+ * dropped — they don't land in either bucket. NULL / malformed
+ * dueDate Preventive WOs are kept. `droppedOverduePreventive` returns
+ * the count for observability logging at the call site.
  */
 function bucketByType(workOrders: RawWorkOrder[]): {
   reactive: RawWorkOrder[];
   preventive: RawWorkOrder[];
+  droppedOverduePreventive: number;
 } {
   const reactive: RawWorkOrder[] = [];
   const preventive: RawWorkOrder[] = [];
+  let droppedOverduePreventive = 0;
+  const nowMs = Date.now();
+  const todayUtc = Math.floor(nowMs / 86_400_000);
   for (const wo of workOrders) {
     if (typeof wo.type === "string" && wo.type === "PREVENTIVE") {
+      // Brief 79 — drop preventives more than 90 days overdue.
+      if (typeof wo.dueDate === "string" && wo.dueDate.length > 0) {
+        const dueMs = Date.parse(wo.dueDate);
+        if (Number.isFinite(dueMs)) {
+          const dueUtc = Math.floor(dueMs / 86_400_000);
+          if (todayUtc - dueUtc > PREVENTATIVE_MAX_OVERDUE_DAYS) {
+            droppedOverduePreventive += 1;
+            continue;
+          }
+        }
+      }
       preventive.push(wo);
     } else {
       reactive.push(wo);
     }
   }
-  return { reactive, preventive };
+  return { reactive, preventive, droppedOverduePreventive };
 }
 
 function collectAssigneeIdsByType(workOrders: RawWorkOrder[], type: "USER" | "TEAM"): number[] {
@@ -386,6 +407,19 @@ function collectAssigneeIdsByType(workOrders: RawWorkOrder[], type: "USER" | "TE
   }
   return [...out];
 }
+
+/**
+ * Brief 79 — Preventive WOs whose `dueDate` is more than this many
+ * days in the past are dropped from the response. The Preventative
+ * tab on /workorders accumulates a long tail of stale auto-spawned
+ * MaintainX preventive cycles; this trim keeps the tab focused on
+ * what an operator can act on. NULL dueDate / unparseable dueDate
+ * Preventive WOs are KEPT — only dated rows past the threshold
+ * drop. Reactive WOs are never filtered (their dueDate is
+ * MaintainX-auto-set to creation-day and not operationally
+ * meaningful).
+ */
+const PREVENTATIVE_MAX_OVERDUE_DAYS = 90;
 
 const PRIORITY_NONE_RANK = 3;
 const PRIORITY_ORDER: Record<string, number> = {

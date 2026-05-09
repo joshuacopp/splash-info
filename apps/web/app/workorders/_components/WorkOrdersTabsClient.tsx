@@ -1,6 +1,6 @@
 "use client";
 
-// Brief 71 — Reactive / Preventive tabbed view of MaintainX work orders.
+// Brief 71 — Reactive / Preventative tabbed view of MaintainX work orders.
 //
 // Server hands two pre-grouped buckets (one per type); this client tracks:
 //   • which tab is active (useState<"reactive"|"preventive"|"new">)
@@ -12,7 +12,7 @@
 // assignee list, and category badges.
 //
 // Brief 73 — collapsed-row additions: muted age label "Nd" beneath the
-// priority pill on both tabs, and a Due column on the Preventive tab only
+// priority pill on both tabs, and a Due column on the Preventative tab only
 // (Reactive dueDate is auto-set to same-day by MaintainX and not
 // operationally meaningful for Splash). The expanded-row Age field was
 // removed because it now duplicates the collapsed-row label.
@@ -298,7 +298,7 @@ function TabNav({
       <TabButton
         active={active === "preventive"}
         onClick={() => onChange("preventive")}
-        label="Preventive"
+        label="Preventative"
         count={preventiveCount}
       />
       <TabButton
@@ -390,7 +390,7 @@ function NoAccessEmptyState({
 }
 
 function BucketEmptyState({ tab }: { tab: "reactive" | "preventive" }) {
-  const label = tab === "reactive" ? "Reactive" : "Preventive";
+  const label = tab === "reactive" ? "Reactive" : "Preventative";
   return (
     <div className="rounded-splash-lg border border-gray-light bg-white px-6 py-10 text-center">
       <p className="text-base font-semibold text-splash-navy">

@@ -631,6 +631,13 @@ URL-based — service bindings don't apply to those.
   discriminator type stays `"thumbnail" | "attachment"` (singular,
   matching the doc heading); a small `REQUEST_FILE_URL_SEGMENT`
   lookup maps it to the plural URL segment internally.
+  Brief 79: Preventative tab spelling preferred over "Preventive"
+  on user-facing labels (internal state literals stay
+  `"preventive"` to match MaintainX's `PREVENTIVE` enum).
+  Worker-side filter drops Preventive WOs more than 90 days past
+  `dueDate` — `PREVENTATIVE_MAX_OVERDUE_DAYS = 90` constant in
+  `apps/workorders-worker/src/index.ts`. NULL / malformed dueDate
+  preventives are kept.
 - **`age_days`** (Brief 68) - Server-computed days-since-submission
   field on the `/manage/api/claims` list response. Lives in the
   `listClaims` SELECT projection in `packages/db-d1/src/claims.ts` as
