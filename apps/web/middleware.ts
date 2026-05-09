@@ -63,6 +63,7 @@ const LEGACY_REDIRECTS: Readonly<Record<string, string>> = {
 const ADMIN_KNOWN_SUBPATHS = new Set<string>([
   "dashboard",
   "damage",
+  "fleet",
   "performance",
   "pricing",
   "signups",

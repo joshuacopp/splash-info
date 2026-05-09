@@ -1,19 +1,24 @@
-// Per-location signups viewer (Brief 56). Read-only.
+// Per-location signups viewer (Brief 56 + Brief 84). Read-only.
 //
-// Server component — fetches /admin/api/locations/{loc}/signups?days=N
-// on signup-worker. Pattern mirrors /admin/pricing/[location]/page.tsx
+// Server component — fetches /admin/api/locations/{loc}/signups on
+// signup-worker. Pattern mirrors /admin/pricing/[location]/page.tsx
 // for sign-in-required and access-denied surfaces.
 //
-// Day filter (1 / 7 / 30) lives in URL searchParams; flipping the filter
-// re-renders the page server-side. No client interactivity in this page.
+// Brief 84 swapped the 1/7/30 dropdown for the shared <DateRangePicker>
+// component (introduced for /admin/fleet in Brief 83) and added a CSV
+// export button. The legacy `?days=N` URL param continues to work for
+// any old bookmarks — see worker-side parseDateRange in admin-signups.ts.
 
 import Link from "next/link";
 import {
   getSignupsForLocation,
+  getSignupsCsvUrl,
   type SignupDays,
   type SignupsResponse
 } from "../../pricing/_lib/worker-fetch";
 import { SignupAdminTabs } from "../../_components/SignupAdminTabs";
+import { DateRangePicker } from "../../../_components/DateRangePicker";
+import { CsvExportButton } from "../../../_components/CsvExportButton";
 
 interface PageProps {
   params: Promise<{ location: string }>;
@@ -21,14 +26,42 @@ interface PageProps {
 }
 
 const LOCATION_CODE_RE = /^[a-z0-9_]+$/;
-const DEFAULT_DAYS: SignupDays = 7;
+const DEFAULT_WINDOW_DAYS = 30;
 const ALLOWED_DAYS: ReadonlyArray<SignupDays> = [1, 7, 30];
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
-function parseDays(raw: string | string[] | undefined): SignupDays {
-  if (typeof raw !== "string" || raw === "") return DEFAULT_DAYS;
+function readStringParam(
+  raw: string | string[] | undefined
+): string | undefined {
+  if (typeof raw !== "string") return undefined;
+  if (raw === "") return undefined;
+  return raw;
+}
+
+function parseLegacyDays(raw: string | string[] | undefined): SignupDays | null {
+  if (typeof raw !== "string" || raw === "") return null;
   const n = Number.parseInt(raw, 10);
   if (n === 1 || n === 7 || n === 30) return n;
-  return DEFAULT_DAYS;
+  return null;
+}
+
+function ymdUtc(d: Date): string {
+  return d.toISOString().slice(0, 10);
+}
+
+function todayYmd(): string {
+  const n = new Date();
+  return ymdUtc(
+    new Date(Date.UTC(n.getUTCFullYear(), n.getUTCMonth(), n.getUTCDate()))
+  );
+}
+
+function defaultFromYmd(): string {
+  const n = new Date();
+  const today = new Date(
+    Date.UTC(n.getUTCFullYear(), n.getUTCMonth(), n.getUTCDate())
+  );
+  return ymdUtc(new Date(today.getTime() - DEFAULT_WINDOW_DAYS * 86_400_000));
 }
 
 export default async function LocationSignupsPage({
@@ -62,14 +95,30 @@ export default async function LocationSignupsPage({
     );
   }
 
-  const days = parseDays(sp.days);
+  // Resolve URL params. `from`/`to` (Brief 84) take precedence; `days`
+  // (Brief 56) is honored when from/to aren't both present.
+  const fromRaw = readStringParam(sp.from);
+  const toRaw = readStringParam(sp.to);
+  const validFrom = fromRaw && DATE_RE.test(fromRaw) ? fromRaw : undefined;
+  const validTo = toRaw && DATE_RE.test(toRaw) ? toRaw : undefined;
+  const legacyDays = parseLegacyDays(sp.days);
+  const usingDateRange = validFrom != null && validTo != null;
 
   let data: SignupsResponse | null;
   try {
-    data = await getSignupsForLocation(locationLower, days);
+    if (usingDateRange) {
+      data = await getSignupsForLocation(locationLower, {
+        from: validFrom,
+        to: validTo
+      });
+    } else if (legacyDays != null) {
+      data = await getSignupsForLocation(locationLower, { days: legacyDays });
+    } else {
+      data = await getSignupsForLocation(locationLower, {});
+    }
   } catch (err) {
     return (
-      <section className="mx-auto w-full max-w-[820px] px-5 py-9">
+      <section className="mx-auto w-full max-w-[1000px] px-5 py-9">
         <SignupAdminTabs locationCode={locationLower} active="signups" />
         <h1 className="mb-3 text-2xl font-bold text-splash-navy">
           Signups · {capitalize(locationLower)}
@@ -110,6 +159,11 @@ export default async function LocationSignupsPage({
     );
   }
 
+  const csvUrl = getSignupsCsvUrl(locationLower, {
+    from: validFrom,
+    to: validTo
+  });
+
   return (
     <section className="mx-auto w-full max-w-[1000px] px-5 py-9">
       <SignupAdminTabs locationCode={locationLower} active="signups" />
@@ -124,19 +178,32 @@ export default async function LocationSignupsPage({
         Signups · {capitalize(locationLower)}
       </h1>
 
-      <DayFilter activeDays={data.days as SignupDays} location={locationLower} />
+      <div className="mb-4 flex flex-wrap items-end justify-between gap-3">
+        <DateRangePicker
+          defaultFromYmd={defaultFromYmd()}
+          defaultToYmd={todayYmd()}
+        />
+        <CsvExportButton href={csvUrl} />
+      </div>
+
+      {legacyDays != null && !usingDateRange ? (
+        <LegacyDayFilter activeDays={legacyDays} location={locationLower} />
+      ) : null}
 
       <p className="mb-4 mt-3 text-sm text-splash-navy/70">
-        {data.count} signup{data.count === 1 ? "" : "s"} since{" "}
-        {formatRelative(data.since)} ({formatAbsolute(data.since)})
+        {data.count} signup{data.count === 1 ? "" : "s"} between{" "}
+        {formatRangeLabel(data.from)} and {formatRangeLabel(data.to)}
+        {data.days != null
+          ? ` (last ${data.days} day${data.days === 1 ? "" : "s"})`
+          : ""}
       </p>
 
-      <SignupsTable rows={data.rows} days={data.days} />
+      <SignupsTable rows={data.rows} />
 
       {data.limit_hit ? (
         <p className="mt-3 text-xs text-splash-navy/60">
-          Showing the most recent 200. Use a shorter window to see all
-          entries in that range.
+          Showing the most recent {data.limit}. Narrow the date range to see
+          all entries within a window, or use Export CSV for the complete set.
         </p>
       ) : null}
     </section>
@@ -144,10 +211,16 @@ export default async function LocationSignupsPage({
 }
 
 /* ============================================================
- * Day filter
- * ============================================================ */
+ * Legacy day filter (Brief 56 back-compat)
+ * ============================================================
+ *
+ * Renders only when an old bookmark URL with `?days=N` lands on the page.
+ * The shared <DateRangePicker> is the primary surface; this is a tiny
+ * affordance so legacy URLs render a sensible UI rather than silently
+ * ignoring the parameter.
+ */
 
-function DayFilter({
+function LegacyDayFilter({
   activeDays,
   location
 }: {
@@ -155,7 +228,7 @@ function DayFilter({
   location: string;
 }) {
   return (
-    <nav aria-label="Day filter" className="flex gap-2">
+    <nav aria-label="Day filter (legacy)" className="mt-2 flex gap-2">
       {ALLOWED_DAYS.map((d) => {
         const active = d === activeDays;
         const cls = active
@@ -190,7 +263,7 @@ interface RowShape {
   region: string | null;
 }
 
-function SignupsTable({ rows, days }: { rows: RowShape[]; days: number }) {
+function SignupsTable({ rows }: { rows: RowShape[] }) {
   return (
     <div className="overflow-x-auto rounded-splash-md border border-gray-light">
       <table className="w-full border-collapse text-sm">
@@ -210,7 +283,7 @@ function SignupsTable({ rows, days }: { rows: RowShape[]; days: number }) {
                 colSpan={5}
                 className="px-3 py-4 text-center italic text-splash-navy/60"
               >
-                No signups in the last {days} day{days === 1 ? "" : "s"}.
+                No signups in this date range.
               </td>
             </tr>
           ) : (
@@ -252,6 +325,16 @@ function SignupsTable({ rows, days }: { rows: RowShape[]; days: number }) {
 function capitalize(s: string): string {
   if (s.length === 0) return s;
   return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+function formatRangeLabel(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric"
+  });
 }
 
 function formatAbsolute(iso: string): string {

@@ -47,13 +47,15 @@ unless the operator asks. See section 6 for the operator runbook.
 
 ```powershell
 pnpm --filter @splash/fleet-inquiry-worker exec wrangler secret put SUPABASE_ANON_KEY
+pnpm --filter @splash/fleet-inquiry-worker exec wrangler secret put SUPABASE_SERVICE_KEY
 pnpm --filter @splash/fleet-inquiry-worker exec wrangler secret put TURNSTILE_SECRET_KEY
 pnpm --filter @splash/fleet-inquiry-worker exec wrangler secret put GOOGLE_MAPS_API_KEY
 ```
 
 | Name | Type | Required? | Purpose |
 |---|---|---|---|
-| `SUPABASE_ANON_KEY` | secret | yes | Read-only PostgREST access to `pricing_simple` / `pricing_simple_resolved` / `locations` and INSERT to `fleet_submissions`. Mirrors the legacy worker's posture. |
+| `SUPABASE_ANON_KEY` | secret | yes | Read-only PostgREST access to `pricing_simple` / `pricing_simple_resolved` / `locations` and INSERT to `fleet_submissions`. Used by the **public** form routes. Mirrors the legacy worker's posture. |
+| `SUPABASE_SERVICE_KEY` | secret | required for **admin endpoints** (Brief 83) | Service-role PostgREST access used by `/admin/api/submissions*`. The public form routes do NOT use this key (they continue on `SUPABASE_ANON_KEY`). When unbound the admin endpoints return 503; the public form is unaffected. NOT `SUPABASE_SERVICE_ROLE_KEY` (CLAUDE.md constraint #3). |
 | `TURNSTILE_SECRET_KEY` | secret | optional in code, **bind in any prod-equivalent env** | Verifies Cloudflare Turnstile tokens on `POST /api/fleet-submit`. When unbound the worker silently skips verification — fine for workers.dev smoke tests, NOT fine for the real fleet form. |
 | `GOOGLE_MAPS_API_KEY` | secret | optional in code | Geocodes user-provided addresses for nearest-five sorting. When unbound the worker falls back to alphabetical sort. **See section 3 for billing implications.** |
 
@@ -67,17 +69,25 @@ pnpm --filter @splash/fleet-inquiry-worker exec wrangler secret put GOOGLE_MAPS_
 ### CLAUDE.md constraint #3 — anon vs. service key
 
 The legacy worker reads `SUPABASE_ANON_KEY` (not the service key). The
-monorepo lift-and-shift mirrors that posture intentionally. CLAUDE.md
-constraint #3 standardizes the rest of the monorepo on
-`SUPABASE_SERVICE_KEY` (note: NOT `SUPABASE_SERVICE_ROLE_KEY`); fleet
-is a documented exception until a future brief converts the inline
-PostgREST fetches to `@splash/db-supabase` helpers and flips the
-binding.
+monorepo lift-and-shift mirrors that posture intentionally for the
+public form routes. CLAUDE.md constraint #3 standardizes the rest of
+the monorepo on `SUPABASE_SERVICE_KEY` (note: NOT
+`SUPABASE_SERVICE_ROLE_KEY`).
 
-**Do not bind `SUPABASE_SERVICE_KEY` or `SUPABASE_SERVICE_ROLE_KEY` on
-this worker today** — the source code only reads `SUPABASE_ANON_KEY`,
-so binding either name is dormant noise that risks confusing a future
-reader.
+**Brief 83 update — both keys now required.** The public form routes
+continue to use `SUPABASE_ANON_KEY`. The admin endpoints
+(`/admin/api/submissions*`) use `SUPABASE_SERVICE_KEY` because
+`@splash/auth`'s `authenticate()` helper constructs a service-role
+client to read the `auth_unified` view. After Brief 83, **both keys
+must be bound** on `splash-fleet-inquiry`. Operators bringing up a
+fresh deploy: bind both in section 2 above. Operators who deployed
+the worker pre-Brief-83: add `SUPABASE_SERVICE_KEY`; the public form
+mode keeps working either way.
+
+**Do NOT bind `SUPABASE_SERVICE_ROLE_KEY`** — the standardized
+binding name is `SUPABASE_SERVICE_KEY` per CLAUDE.md constraint #3.
+The legacy worker name is reserved by other tooling and binding
+under it on the monorepo worker risks confusing a future reader.
 
 ---
 
@@ -181,6 +191,160 @@ curl -i -X POST "$WORKER/api/fleet-submit" \
 - [ ] Workers Logs in CF dashboard show invocations with
       `eventType: fetch` (Brief 63's `[observability.logs]` block
       is in `wrangler.toml`).
+
+---
+
+## 4.5. Staging custom domain (Brief 82)
+
+**Status:** active. `splash-fleet-inquiry` is bound to
+`fleet.staging.splashcarwashes.info` via the `routes = [{ pattern =
+"fleet.staging.splashcarwashes.info", custom_domain = true }]` block
+in `apps/fleet-inquiry-worker/wrangler.toml`. The `workers_dev = true`
+URL continues to resolve to the same worker; both URLs are valid for
+smoke testing.
+
+**Why a subdomain rather than a path-carve.** Other monorepo workers
+stage on `staging.splashcarwashes.info/<feature>/api/*` (Brief 16
+pattern — workorders-worker uses `/workorders/api/*`). Fleet's source
+code (lifted verbatim in Brief 81) exposes endpoints at bare
+`/api/find-locations`, `/api/fleet-packages`, `/api/fleet-submit` —
+which would collide with apps/web staging's `/api/login` / `/api/me`
+if path-carved. Subdomain isolation is cheaper than refactoring the
+verbatim-lifted JS to namespaced paths. The subdomain also mirrors
+production's `fleet.splashcarwashes.info` pattern.
+
+### Operator deploy steps
+
+1. **Deploy the worker.**
+   ```powershell
+   pnpm --filter @splash/fleet-inquiry-worker exec wrangler deploy
+   ```
+   (Or push to GH if CF Builds is wired and the watch path includes
+   `apps/fleet-inquiry-worker/wrangler.toml`.) On first deploy with
+   the new `routes` block, Cloudflare auto-provisions the DNS record
+   for `fleet.staging.splashcarwashes.info` (the parent zone
+   `splashcarwashes.info` is on CF) and issues a TLS cert via
+   Universal SSL within a minute or two. No external DNS edit needed.
+
+2. **Add the staging hostname to the Turnstile widget allow-list.**
+   The Turnstile widget rendered on the form needs
+   `fleet.staging.splashcarwashes.info` added to the site key's
+   allowed hostnames or its POSTs to `challenges.cloudflare.com` will
+   400 — the same failure pattern hit on the workers.dev URL during
+   Brief 81 smoke testing.
+
+   - Cloudflare dashboard → Turnstile → click on widget
+     `0x4AAAAAADBV7fdfR67Jt-ab` → Settings → Hostname management →
+     add `fleet.staging.splashcarwashes.info` → Save.
+
+   This is a CF dashboard action, not a wrangler config file, so
+   Brief 82 did not auto-update the allow-list.
+
+3. **Verify.**
+   ```bash
+   curl -I https://fleet.staging.splashcarwashes.info/fleet
+   # → 200 with cf-ray header
+   ```
+   Browser open should render the form. DevTools Network tab should
+   show Turnstile POSTs to `challenges.cloudflare.com` returning 200
+   (not 400). Workers Logs on `splash-fleet-inquiry` should show
+   invocations with the staging hostname.
+
+4. **Rollback (if needed).** Comment out the `routes = [...]` block
+   in `apps/fleet-inquiry-worker/wrangler.toml` and redeploy. The
+   custom domain unbinds cleanly. The `workers_dev = true` URL stays
+   live and unaffected.
+
+The legacy `broad-shape-38b8` worker continues to own
+`fleet.splashcarwashes.info` (production custom domain). Only the
+`staging` subdomain lands on `splash-fleet-inquiry`. Production
+cutover is operator-driven and remains out of scope for any Claude
+Code brief — see section 6.
+
+---
+
+## 4.6. Admin endpoints (Brief 83)
+
+Brief 83 introduced three cookie-gated `/admin/api/*` routes for the
+new apps/web Fleet Inquiries viewer (`/admin/fleet` +
+`/admin/fleet/[id]`). These are the worker's first authenticated
+endpoints; the public form routes (`POST /api/find-locations` /
+`/api/fleet-packages` / `/api/fleet-submit`) are unchanged and still
+anonymous.
+
+| Path | Method | Purpose |
+|---|---|---|
+| `/admin/api/submissions?from=&to=&limit=` | GET | JSON list of `fleet_submissions` rows in the date range. Defaults: from = 30 days ago, to = today (UTC, inclusive). Limit default 200, max 200. |
+| `/admin/api/submissions/{id}` | GET | JSON detail for a single row. 404 on missing. |
+| `/admin/api/submissions.csv?from=&to=` | GET | RFC 4180 CSV with `Content-Disposition: attachment; filename="fleet-submissions-YYYY-MM-DD-to-YYYY-MM-DD.csv"`. No row cap besides a 10000 safety ceiling — exceeded → 416 with a "narrow the date range" hint. |
+
+**Auth posture.** Cookie session via `@splash/auth`'s `authenticate()`.
+Allowed when:
+- `session.role === "super_admin"`, OR
+- `session.dcRole === "admin"`, OR
+- `session.dcRole === "super_admin"`
+
+`location_admin` and `gm`/`rm` are rejected with 403. Per-location
+scoping is NOT applied — admins see every submission in the range.
+That's a v1 simplification; if non-admin staff need access in the
+future, see Brief 83's "Out of scope" section for the per-location
+deferred work.
+
+**`SUPABASE_SERVICE_KEY` binding requirement (NEW).** The admin
+endpoints call `@splash/auth`'s session helper, which constructs a
+service-role Supabase client via `createServiceClient(env)` — that
+reads `env.SUPABASE_SERVICE_KEY`. The public form routes continue to
+use `SUPABASE_ANON_KEY` (mirrors the legacy `broad-shape-38b8`
+posture; see CLAUDE.md constraint #3 and section 2 above). For the
+admin surface to function, **`splash-fleet-inquiry` must have BOTH
+`SUPABASE_ANON_KEY` AND `SUPABASE_SERVICE_KEY` bound**:
+
+```powershell
+pnpm --filter @splash/fleet-inquiry-worker exec wrangler secret put SUPABASE_SERVICE_KEY
+# Paste the project's service-role key. Same value used by every
+# other monorepo worker.
+```
+
+Confirm via `wrangler secret list`. If `SUPABASE_SERVICE_KEY` is
+unbound, the admin endpoints return **503** with
+`{"error":"admin endpoints not configured (SUPABASE_SERVICE_KEY unbound)"}`
+— the public form mode is unaffected.
+
+**Service binding from apps/web.** apps/web SSR-fetches the JSON
+endpoints via the `FLEET_INQUIRY_WORKER` service binding declared in
+`apps/web/wrangler.toml` (Brief 17 pattern — same posture as
+`SIGNUP_WORKER`, `DAMAGE_WORKER`, etc). The CSV endpoint is consumed
+directly by the user's browser (the apps/web page emits a styled
+`<a download>` whose href is built by `getFleetCsvUrl`). When apps/web
+and `splash-fleet-inquiry` are on the same origin (post-cutover, both
+under `splashcarwashes.info`), a same-origin relative URL works. When
+they're on different origins (today's staging — apps/web on
+`staging.splashcarwashes.info`, fleet on
+`fleet.staging.splashcarwashes.info`), set
+`NEXT_PUBLIC_FLEET_INQUIRY_WORKER_URL` on apps/web's CF Workers Builds
+config so the CSV link is absolute. The `sb-access-token` cookie's
+domain scope must include both origins for the browser to forward it
+on the CSV download — confirm cookie `Domain=splashcarwashes.info`
+(zone-scoped) before enabling staging CSV exports.
+
+**CSRF.** GET-only endpoints; `isOriginAllowed` is enforced as
+defense-in-depth. Service-binding callers from apps/web pass because
+the helper sets `Origin` to the request URL origin (matching the
+worker's expected origin). Localhost-shaped origins are accepted for
+dev.
+
+**Smoke test.** After deploying the worker AND apps/web with the
+new binding:
+1. As super_admin: hit `/admin/fleet` from apps/web. Expect last-30-
+   days of `fleet_submissions` rendered.
+2. Adjust date range — list updates.
+3. Click "Export CSV" — browser downloads
+   `fleet-submissions-YYYY-MM-DD-to-YYYY-MM-DD.csv`.
+4. Click "View" on a row — detail page renders all columns.
+5. As `location_admin` or `gm`: `/admin/fleet` should render the
+   "no access" card (worker returned 403 → fleetGetJson collapses
+   to null → page shows the "no access" sign-in prompt).
+6. Direct curl to `/admin/api/submissions` without a cookie → 401.
 
 ---
 
@@ -290,10 +454,10 @@ here so they don't get lost.
   `src/render/fleet-form.ts`** (matching signup-worker's pattern).
   Improves maintainability of the form; precondition for any
   apps/web admin surface that wants to render the same HTML.
-- **Admin viewer for `fleet_submissions` in apps/web** (analogous to
-  Brief 56's signup admin viewer at `/admin/signups`). Operator hasn't
-  asked yet, but is the obvious next operational lift once submission
-  volume picks up.
+- **Admin viewer for `fleet_submissions` in apps/web** — landed in
+  Brief 83 (`/admin/fleet`, `/admin/fleet/[id]`). See section 4.6
+  below for the new admin endpoints, auth posture, and the
+  `SUPABASE_SERVICE_KEY` binding requirement.
 - **Cache invalidation alignment with signup-worker.** Fleet uses
   CF's `caches.default`; signup-worker uses an in-worker `Map`
   cache. Brief 28's open `pricing_simple_resolved` cache-buster

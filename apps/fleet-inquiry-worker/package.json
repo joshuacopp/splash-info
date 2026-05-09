@@ -11,7 +11,11 @@
     "lint": "echo 'no lint yet'",
     "clean": "rm -rf dist .turbo .wrangler"
   },
-  "dependencies": {},
+  "dependencies": {
+    "@splash/auth": "workspace:*",
+    "@splash/db-supabase": "workspace:*",
+    "@splash/http": "workspace:*"
+  },
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "^0.12.4",
     "@cloudflare/workers-types": "^4.20250101.0",

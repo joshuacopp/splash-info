@@ -4,6 +4,8 @@
 // - Google Maps API for nearest location search (when key is configured)
 // - Writes submissions to fleet_submissions table
 
+import { handleAdminApi } from "./admin.js";
+
 const TABLE_LOCATIONS = "pricing_simple";
 const TABLE_PACKAGES = "pricing_simple_resolved";
 const TABLE_LOCATIONS_META = "locations";
@@ -19,6 +21,14 @@ export default {
 
 async function handle(request, env, ctx) {
   const url = new URL(request.url);
+
+  // Brief 83 — admin-gated submissions viewer endpoints. Delegates the entire
+  // /admin/api/* surface to the admin module so the verbatim-lifted public
+  // routes below stay untouched.
+  if (url.pathname.startsWith("/admin/api/")) {
+    return handleAdminApi(request, env, ctx);
+  }
+
   const path = url.pathname.replace(/^\/+/, "").replace(/\/+$/, "");
 
   // CORS headers for API routes
@@ -1361,6 +1371,13 @@ function renderFleetForm(env) {
             <div class="success-message">
                 Thank you for your interest in Splash Car Wash fleet services. You will receive an email with your personalized quote, and a representative will contact you shortly to answer any questions you may have.
             </div>
+            <!-- Brief 85 — Fill Again button. Relative URL redirect works
+                 on workers.dev, staging, and production without per-env
+                 hardcoding. -->
+            <button type="button" class="btn-submit" id="fillAgainBtn"
+                    style="margin-top: 24px;">
+                Fill Again
+            </button>
         </div>
     </div>
 
@@ -1791,6 +1808,14 @@ function renderFleetForm(env) {
                 locationValid && packagesValid && vehiclesValid && washesValid && turnstileValid;
             submitBtn.disabled = !formValid;
             return formValid;
+        }
+
+        // Brief 85 — Fill Again button on success modal.
+        var fillAgainBtn = document.getElementById('fillAgainBtn');
+        if (fillAgainBtn) {
+            fillAgainBtn.addEventListener('click', function() {
+                window.location.href = '/';
+            });
         }
 
         // Submit

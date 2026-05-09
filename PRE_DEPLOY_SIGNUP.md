@@ -89,6 +89,49 @@ curl -i -X POST "$WORKER/admin/api/locations/binghamton/flip" \
 #    a) GET /signup/binghamton (reads cached pricing).
 #    b) POST /admin/api/locations/binghamton/flip (invalidates cache).
 #    c) GET /signup/binghamton again — should reflect the new mode within 5min.
+
+# === Admin signups viewer (Brief 56 + Brief 84) ===
+
+# 10. JSON list — legacy Brief 56 shape (back-compat):
+curl -i "$WORKER/admin/api/locations/binghamton/signups?days=7" \
+  -H "Origin: $WORKER" \
+  -H "Cookie: sb-access-token=<token>"
+# → 200 { rows, count, since, from, to, days: 7, limit: 200, limit_hit }
+
+# 11. JSON list — Brief 84 from/to shape:
+curl -i "$WORKER/admin/api/locations/binghamton/signups?from=2026-04-01&to=2026-04-30" \
+  -H "Origin: $WORKER" \
+  -H "Cookie: sb-access-token=<token>"
+# → 200 { rows, count, since, from, to, days: null, limit: 200, limit_hit }
+
+# 12. JSON list — invalid `from` returns 400:
+curl -i "$WORKER/admin/api/locations/binghamton/signups?from=not-a-date&to=2026-04-30" \
+  -H "Origin: $WORKER" \
+  -H "Cookie: sb-access-token=<token>"
+# → 400 "Invalid 'from' (expected YYYY-MM-DD)"
+
+# 13. CSV export — Brief 84:
+curl -i "$WORKER/admin/api/locations/binghamton/signups.csv?from=2026-04-01&to=2026-04-30" \
+  -H "Origin: $WORKER" \
+  -H "Cookie: sb-access-token=<token>" \
+  -o /tmp/signups.csv
+# → 200 text/csv
+# → Content-Disposition: attachment; filename="signups-binghamton-2026-04-01-to-2026-04-30.csv"
+# Confirm header row contains: id,submitted_at,name,email,phone,phone_formatted,
+#   location_code,location_pretty,package,package_pretty,today_price,monthly_price,
+#   terms_text,country,city,region,user_agent,confirmation_token
+
+# 14. CSV bad origin → 403 (CSRF defense-in-depth even on GET):
+curl -i "$WORKER/admin/api/locations/binghamton/signups.csv?from=2026-04-01&to=2026-04-30" \
+  -H "Origin: https://malicious.example.com" \
+  -H "Cookie: sb-access-token=<token>"
+# → 403 "bad origin"
+
+# 15. Per-location scope — non-super_admin user with no grant for binghamton:
+curl -i "$WORKER/admin/api/locations/binghamton/signups.csv?from=2026-04-01&to=2026-04-30" \
+  -H "Origin: $WORKER" \
+  -H "Cookie: sb-access-token=<token-for-other-location-admin>"
+# → 403 "forbidden"
 ```
 
 **Manual checks:**

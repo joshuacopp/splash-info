@@ -58,6 +58,20 @@ upload_source_maps = true
 
 workers_dev = true
 
+# Brief 82 (2026-05-09): staging custom domain. Mirrors production's
+# subdomain pattern (legacy worker `broad-shape-38b8` is bound to
+# `fleet.splashcarwashes.info`; this monorepo worker stages on the
+# `staging` subdomain of the same zone). Subdomain chosen over a
+# path-carve on `staging.splashcarwashes.info/<feature>/api/*` (the
+# pattern other workers use) because fleet's source code (lifted
+# verbatim in Brief 81) exposes endpoints at bare `/api/find-locations`
+# / `/api/fleet-packages` / `/api/fleet-submit`, which would collide
+# with apps/web staging's `/api/login` / `/api/me`. Production route
+# stays unbound until cutover — see CLAUDE.md constraint #9.
+routes = [
+  { pattern = "fleet.staging.splashcarwashes.info", custom_domain = true }
+]
+
 # Production custom-domain route stays bound to the legacy worker
 # `broad-shape-38b8`. DO NOT uncomment without operator-driven cutover.
 # routes = [

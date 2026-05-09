@@ -21,6 +21,7 @@ declare global {
     SYSADMIN_WORKER: Fetcher;
     DAMAGE_WORKER: Fetcher;
     WORKORDERS_WORKER: Fetcher;
+    FLEET_INQUIRY_WORKER: Fetcher;
   }
 }
 

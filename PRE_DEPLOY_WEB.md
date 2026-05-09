@@ -152,7 +152,7 @@ section 4.
 
 ## 4. Runtime configuration (service bindings)
 
-### 4.1 The five [[services]] entries in apps/web/wrangler.toml
+### 4.1 The seven [[services]] entries in apps/web/wrangler.toml
 
 [apps/web/wrangler.toml](apps/web/wrangler.toml) declares:
 
@@ -163,6 +163,12 @@ section 4.
 | `PERFORMANCE_WORKER` | `splash-performance` | `apps/web/app/admin/performance/_lib/worker-fetch.ts` |
 | `SYSADMIN_WORKER` | `splash-sysadmin` | `apps/web/app/admin/sysadmin/_lib/worker-fetch.ts` |
 | `DAMAGE_WORKER` | `splash-damage` | `apps/web/app/admin/damage/_lib/worker-fetch.ts` |
+| `WORKORDERS_WORKER` | `splash-workorders` | `apps/web/app/workorders/_lib/worker-fetch.ts` |
+| `FLEET_INQUIRY_WORKER` | `splash-fleet-inquiry` | `apps/web/app/admin/fleet/_lib/worker-fetch.ts` (Brief 83) |
+
+`/admin/fleet*` is admin-gated (super_admin or dc_role admin/super_admin
+only) and depends on `splash-fleet-inquiry` being deployed AND having
+`SUPABASE_SERVICE_KEY` bound — see PRE_DEPLOY_FLEET.md section 4.6.
 
 ### 4.2 Why service bindings, not URL fetches
 

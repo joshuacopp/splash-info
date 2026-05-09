@@ -71,6 +71,13 @@ service = "splash-damage"
 binding = "WORKORDERS_WORKER"
 service = "splash-workorders"
 
+# Brief 83 — fleet-inquiry-worker admin endpoints (submissions viewer + CSV).
+# Worker name on Cloudflare: `splash-fleet-inquiry`. Public form routes on
+# this worker stay anonymous; the /admin/api/* surface is cookie-gated.
+[[services]]
+binding = "FLEET_INQUIRY_WORKER"
+service = "splash-fleet-inquiry"
+
 # OpenNext static asset binding (CSS/JS/public/).
 [assets]
 directory = ".open-next/assets"

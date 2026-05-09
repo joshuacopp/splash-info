@@ -247,6 +247,16 @@ When given a new task:
   is workers.dev only because the legacy `broad-shape-38b8` worker
   still owns the production custom domain `fleet.splashcarwashes.info`
   — see constraint #9.)
+- **Staging hostnames.** Most workers carve a path on
+  `staging.splashcarwashes.info/<feature>/api/*` (Brief 16 pattern —
+  e.g., workorders-worker uses `/workorders/api/*`). Brief 82 (2026-05-09)
+  bound `splash-fleet-inquiry` to a subdomain instead —
+  `fleet.staging.splashcarwashes.info` — mirroring production's
+  `fleet.splashcarwashes.info` subdomain pattern. The subdomain was
+  chosen over a path-carve because fleet's verbatim-lifted JS exposes
+  bare `/api/*` paths that would collide with apps/web staging's
+  `/api/login` / `/api/me`. Other workers continue to use
+  `staging.splashcarwashes.info/<feature>/api/*`.
 - **fleet-inquiry-worker is the only monorepo worker with paid
   third-party API usage.** Google Maps Geocoding
   (`maps.googleapis.com/maps/api/geocode/json`) is billed per request
@@ -398,6 +408,7 @@ When given a new task:
   (Brief 56), `/admin/signups/[location]` (Brief 56), `/admin/sysadmin`,
   `/admin/damage`, `/admin/damage/[id]`,
   `/admin/damage/reporting` (Brief 59),
+  `/admin/fleet` (Brief 83), `/admin/fleet/[id]` (Brief 83),
   `/workorders` (Brief 70 — top-level, NOT under /admin/*),
   `/logout` (route handler).
 - Placeholder pages: `/admin/performance`.
@@ -532,9 +543,10 @@ after `<ActionForm>` remounts the form on success.
 ### Service bindings (Brief 17)
 
 When apps/web SSR-fetches another worker, prefer the service binding
-over a URL-based fetch. apps/web's `wrangler.toml` declares 5
+over a URL-based fetch. apps/web's `wrangler.toml` declares 7
 `[[services]]` entries (`DASHBOARD_WORKER`, `SIGNUP_WORKER`,
-`PERFORMANCE_WORKER`, `SYSADMIN_WORKER`, `DAMAGE_WORKER`). Each helper
+`PERFORMANCE_WORKER`, `SYSADMIN_WORKER`, `DAMAGE_WORKER`,
+`WORKORDERS_WORKER`, `FLEET_INQUIRY_WORKER`). Each helper
 under `apps/web/app/**/_lib/worker-fetch.ts` (and `_lib/me.ts`) tries
 the binding first via `getCloudflareContext({ async: true })` and falls
 back to a URL-based fetch when `getCloudflareContext()` throws or the
@@ -636,6 +648,45 @@ URL-based — service bindings don't apply to those.
   worker during transition. `tsconfig.json` enables
   `allowJs: true / checkJs: false` so root `pnpm typecheck` passes
   without converting the JS to TS.
+  Brief 83 added an admin-gated submissions viewer surface — see
+  **Fleet inquiries admin** below for the endpoint inventory and
+  apps/web page set. Brief 85 (2026-05-09): success modal includes a
+  "Fill Again" button that redirects to `/` via relative URL — works
+  on workers.dev / staging / production with no per-env hardcoding.
+  The relative-URL convention is the right pattern for any client-side
+  redirect in a public-form worker that has both staging and
+  production hostnames.
+- **Fleet inquiries admin** (Brief 83) - Cookie-gated viewer for the
+  `fleet_submissions` table. Three new endpoints on
+  `splash-fleet-inquiry` (the worker's first authenticated routes —
+  see fleet-inquiry-worker entry above for how the public form mode
+  remains unchanged): `GET /admin/api/submissions?from=&to=&limit=`
+  (JSON list, default last-30-days, max 200 rows),
+  `GET /admin/api/submissions/{id}` (JSON detail; 404 on missing),
+  `GET /admin/api/submissions.csv?from=&to=` (RFC 4180 CSV with
+  `Content-Disposition: attachment; filename="fleet-submissions-
+  YYYY-MM-DD-to-YYYY-MM-DD.csv"`, no row cap besides a 10000 safety
+  ceiling that returns 416 on overflow). Auth: `@splash/auth`
+  `authenticate()` + role check — allows
+  `session.role === "super_admin"` OR `session.dcRole === "admin"` OR
+  `session.dcRole === "super_admin"`. location_admin and gm/rm are
+  rejected with 403. **Requires `SUPABASE_SERVICE_KEY` to be bound on
+  `splash-fleet-inquiry`** — the public form continues to read via
+  `SUPABASE_ANON_KEY`, but the admin reads use the service key for
+  unfiltered visibility. When `SUPABASE_SERVICE_KEY` is unbound the
+  admin endpoints return 503 (the public form mode is unaffected).
+  Apps/web surfaces: `/admin/fleet` (list + date-range picker + CSV
+  link), `/admin/fleet/[id]` (detail). Service binding
+  `FLEET_INQUIRY_WORKER` in apps/web/wrangler.toml. Shared apps/web
+  components introduced here for reuse (Brief 84 will reuse on
+  `/admin/signups`): `apps/web/app/_components/DateRangePicker.tsx`
+  (client component, URL-search-param-driven) and
+  `apps/web/app/_components/CsvExportButton.tsx` (plain `<a download>`
+  styled as a button — NOT a Next.js `<Link>` because we want the
+  browser's native download flow from `Content-Disposition`, not a
+  client-side route transition). Filtering is on
+  `fleet_submissions.created_at` (Supabase row default `now()`), NOT
+  the JS-written `submitted_at` field.
 - **Work Orders** (Brief 70 / Brief 71) - Read-only MaintainX
   integration. Surfaces open / in-progress / on-hold work orders to
   operators on `/workorders` (top-level apps/web page, NOT under
@@ -779,11 +830,26 @@ URL-based — service bindings don't apply to those.
   (1) **Pricing** at `/admin/pricing` + `/admin/pricing/{loc}` — set
   per-location pricing modes. (2) **Signups** at `/admin/signups` +
   `/admin/signups/{loc}` — read-only viewer of recent customer
-  submissions in `maxpass_signups` (1 / 7 / 30 day filter, max 200
-  rows). Same auth gate as the existing per-location pricing endpoint
-  via the new `GET /admin/api/locations/{loc}/signups?days=N` worker
-  endpoint. Dashboard tile relabels to "Signup Admin"; URL
-  `/admin/pricing/*` is intentionally unchanged (operator bookmarks).
+  submissions in `maxpass_signups` (default last-30-days, max 200 rows
+  per view; arbitrary date-range filter via the shared
+  `<DateRangePicker>`). Same auth gate as the existing per-location
+  pricing endpoint via `GET /admin/api/locations/{loc}/signups`. Brief
+  84 (2026-05-09) extended the endpoint to accept `from=YYYY-MM-DD&to=YYYY-MM-DD&limit=N`
+  alongside the legacy Brief 56 `days=N` shape (1 / 7 / 30 — kept
+  working for old bookmark URLs; resolution precedence is `from`+`to`
+  → `days` → default last-30-days). Brief 84 also added the sibling
+  `GET /admin/api/locations/{loc}/signups.csv?from=&to=` endpoint —
+  worker-rendered CSV with `Content-Disposition: attachment;
+  filename="signups-{loc}-{from}-to-{to}.csv"`, RFC 4180 quoting,
+  same `adminGate` + `userCanAccessLocation` gate as the JSON list,
+  10000-row safety cap (416 on overflow). The CSV export uses a
+  `select=*` so it captures every user-facing column on
+  `maxpass_signups` including `phone` (raw 10-digit), `terms_text`,
+  `confirmation_token`, country/city/region. Filter column for both
+  endpoints is `maxpass_signups.submitted_at` (NOT `created_at` like
+  fleet — signups was always indexed on submitted_at). Dashboard tile
+  is labeled "Signup Admin"; URL `/admin/pricing/*` is intentionally
+  unchanged (operator bookmarks).
 - **admin** - Pricing administration. Lives in signup-worker
   (`/admin/api/*`) + apps/web (`/admin/pricing/*`). Used by area
   managers and location admins to set per-location pricing modes.

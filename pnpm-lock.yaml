@@ -81,6 +81,16 @@ importers:
         version: 4.87.0(@cloudflare/workers-types@4.20260502.1)
 
   apps/fleet-inquiry-worker:
+    dependencies:
+      '@splash/auth':
+        specifier: workspace:*
+        version: link:../../packages/auth
+      '@splash/db-supabase':
+        specifier: workspace:*
+        version: link:../../packages/db-supabase
+      '@splash/http':
+        specifier: workspace:*
+        version: link:../../packages/http
     devDependencies:
       '@cloudflare/vitest-pool-workers':
         specifier: ^0.12.4

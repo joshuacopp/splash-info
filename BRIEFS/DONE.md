@@ -80,3 +80,7 @@
 - 2026-05-09 09:21:45 brief-079-workorders-preventative-rename-and-90-day-filter.md (success)
 - 2026-05-09 10:20:10 brief-080-workorders-new-request-success-link-url-fix.md (success)
 - 2026-05-09 11:33:19 brief-081-fleet-inquiry-worker-lift-and-shift.md (success)
+- 2026-05-09 12:41:29 brief-082-fleet-inquiry-staging-custom-domain.md (success)
+- 2026-05-09 13:01:11 brief-083-fleet-submissions-admin-viewer.md (success)
+- 2026-05-09 13:13:08 brief-084-signups-viewer-date-range-and-csv.md (success)
+- 2026-05-09 13:21:38 brief-085-fleet-fill-again-button.md (success)
