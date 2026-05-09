@@ -84,3 +84,4 @@
 - 2026-05-09 13:01:11 brief-083-fleet-submissions-admin-viewer.md (success)
 - 2026-05-09 13:13:08 brief-084-signups-viewer-date-range-and-csv.md (success)
 - 2026-05-09 13:21:38 brief-085-fleet-fill-again-button.md (success)
+- 2026-05-09 16:33:29 brief-086-fleet-admin-fix-submitted-at-column.md (success)

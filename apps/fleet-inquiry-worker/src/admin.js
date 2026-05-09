@@ -22,10 +22,10 @@
 //   - session.dcRole === "super_admin"    (covered by role check usually but
 //                                          included for defense-in-depth)
 //
-// Filtering: server-side gte/lte on `fleet_submissions.created_at` via
-// PostgREST query params. created_at is the Supabase row-creation timestamp
-// (default `now()`); the worker also writes `submitted_at` from JS, but the
-// brief explicitly specifies `created_at` for filtering.
+// Filtering: server-side gte/lte on `fleet_submissions.submitted_at` via
+// PostgREST query params. `submitted_at` is the only timestamp column on the
+// table — written by the public submit handler in `src/index.js` (see the
+// `submitted_at: new Date().toISOString()` line).
 //
 // CSRF: GET-only handlers; isOriginAllowed is enforced as defense-in-depth
 // even though GETs aren't traditionally CSRFable. Service-binding callers
@@ -48,11 +48,10 @@ const DEFAULT_WINDOW_DAYS = 30;
  * CSV column inventory. `key` reads the column directly from the row;
  * `get` is a derived value (used for packages_detail JSON pretty-printing).
  * Columns mirror the user-facing fields written by the public submit
- * handler in `src/index.js` plus the implicit `id` and `created_at`.
+ * handler in `src/index.js` plus the implicit `id` and `submitted_at`.
  */
 const CSV_COLUMNS = [
   { key: "id", label: "id" },
-  { key: "created_at", label: "created_at" },
   { key: "submitted_at", label: "submitted_at" },
   { key: "company", label: "company" },
   { key: "name", label: "name" },
@@ -237,9 +236,9 @@ async function handleListSubmissions(request, env) {
 
   const u = new URL(`${env.SUPABASE_URL}/rest/v1/fleet_submissions`);
   u.searchParams.set("select", "*");
-  u.searchParams.append("created_at", `gte.${range.fromIso}`);
-  u.searchParams.append("created_at", `lte.${range.toIso}`);
-  u.searchParams.set("order", "created_at.desc");
+  u.searchParams.append("submitted_at", `gte.${range.fromIso}`);
+  u.searchParams.append("submitted_at", `lte.${range.toIso}`);
+  u.searchParams.set("order", "submitted_at.desc");
   u.searchParams.set("limit", String(limit));
 
   let resp;
@@ -320,9 +319,9 @@ async function handleCsvExport(request, env) {
 
   const u = new URL(`${env.SUPABASE_URL}/rest/v1/fleet_submissions`);
   u.searchParams.set("select", "*");
-  u.searchParams.append("created_at", `gte.${range.fromIso}`);
-  u.searchParams.append("created_at", `lte.${range.toIso}`);
-  u.searchParams.set("order", "created_at.desc");
+  u.searchParams.append("submitted_at", `gte.${range.fromIso}`);
+  u.searchParams.append("submitted_at", `lte.${range.toIso}`);
+  u.searchParams.set("order", "submitted_at.desc");
   // Request one row above the cap so we can detect overflow without fetching
   // the full count.
   u.searchParams.set("limit", String(CSV_SAFETY_CAP + 1));

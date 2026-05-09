@@ -769,9 +769,16 @@ URL-based — service bindings don't apply to those.
   (`/v1/workorders/{id}` for orders; `/v1/workrequests/{id}/...`
   plural for requests, with `/thumbnail/` singular but
   `/attachments/` plural underneath). Probe before inferring —
-  Briefs 76, 80, 62 all closed bugs caused by inferring a path
-  by analogy from a sibling resource (Brief 80 was the
-  work-request UI URL caught on first post-deploy submit).
+  Briefs 76, 80, 62, 86 all closed bugs caused by inferring a
+  path / column / join key by analogy from a sibling resource
+  (Brief 80 was the work-request UI URL caught on first
+  post-deploy submit; Brief 86 was the same bug class on a
+  Supabase column name — `fleet_submissions` has only
+  `submitted_at`, not the conventional `created_at`, written
+  by the worker on insert; `maxpass_signups` from Brief 56
+  uses `submitted_at` too — Brief 84 grounded correctly on it).
+  Tables don't universally have `created_at`; probe Supabase
+  column schemas before inferring.
 - **`age_days`** (Brief 68) - Server-computed days-since-submission
   field on the `/manage/api/claims` list response. Lives in the
   `listClaims` SELECT projection in `packages/db-d1/src/claims.ts` as
