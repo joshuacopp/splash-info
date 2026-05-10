@@ -21,3 +21,4 @@ export * from "./maintainx-users.js";
 export * from "./performance.js";
 export * from "./audit.js";
 export * from "./summary.js";
+export * from "./lookup.js";

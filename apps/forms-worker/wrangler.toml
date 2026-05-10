@@ -1,0 +1,120 @@
+# Splash Forms Worker — Brief 89.
+#
+# Hosts the public form-render surface and the admin builder API for the
+# form-builder feature. See Briefs 89–98 for the complete feature scope.
+#
+# DEPLOY STRATEGY: workers.dev only until cutover (CLAUDE.md constraint
+# #6). Production routes (`splashcarwashes.info/forms/*`) stay commented.
+# Staging route (Brief 16 pattern, path-carved) is bound below — single
+# carve covers both public form pages (`/forms/{slug}`) and the admin
+# JSON API (`/forms/admin/api/*`).
+#
+# Path-carve choice (planning Decision 2): chosen over subdomain for
+# three reasons: (1) cookie domain works automatically — internal forms
+# need apps/web's `sb-access-token` cookie to identify the submitter,
+# and same-origin requires zero cookie-domain widening (CLAUDE.md
+# constraint #6); (2) CSV exports stay simple — no Brief 88-style proxy
+# route needed because direct same-origin downloads just work; (3) URL
+# aesthetics are a wash. Fleet went subdomain (Brief 82) only because
+# its verbatim-lifted JS had bare `/api/*` collisions with apps/web
+# staging's `/api/login` / `/api/me`. This worker is greenfield — no
+# such constraint, paths namespace cleanly under `/forms/*`.
+#
+# Bindings required (set via `pnpm --filter @splash/forms-worker exec
+# wrangler secret put NAME` per CLAUDE.md):
+#   SUPABASE_URL                     — non-secret var (in [vars] below).
+#                                       Same Supabase project URL as
+#                                       the rest of the monorepo.
+#   SUPABASE_SERVICE_KEY             — secret. Service-key (NOT the
+#                                       legacy `_SERVICE_ROLE_KEY`
+#                                       name — see CLAUDE.md
+#                                       constraint #3). Required for
+#                                       form_versions / form_submissions
+#                                       writes.
+#   SUPABASE_ANON_KEY                — secret. Required by `authenticate()`
+#                                       in @splash/auth (the /auth/v1/user
+#                                       round-trip uses the anon key).
+#                                       Brief 91 (internal-audience submit)
+#                                       is the first consumer; Brief 90's
+#                                       render-time check only inspected
+#                                       the cookie's presence so the anon
+#                                       key wasn't needed yet. Operator must
+#                                       bind before internal-audience submits
+#                                       work — `pnpm --filter @splash/forms-
+#                                       worker exec wrangler secret put
+#                                       SUPABASE_ANON_KEY`.
+#   TURNSTILE_SITE_KEY               — non-secret var. Public-form
+#                                       Turnstile widget. Same value
+#                                       as fleet's binding. Optional
+#                                       at v1 — public-audience forms
+#                                       skip Turnstile silently when
+#                                       unbound (matches fleet's
+#                                       posture per CLAUDE.md).
+#   TURNSTILE_SECRET_KEY             — secret. Optional in code.
+#   FORMS_SUBMISSION_WEBHOOK_URL     — secret. Optional. POSTed on
+#                                       every successful submission
+#                                       when bound; payload includes
+#                                       form metadata for PA routing
+#                                       (planning Decision 6). Forms
+#                                       opt out per-form via
+#                                       `forms.notify_webhook = false`.
+
+name = "splash-forms"
+main = "src/index.ts"
+compatibility_date = "2026-05-01"
+compatibility_flags = ["nodejs_compat"]
+upload_source_maps = true
+
+workers_dev = true
+
+# Staging route — path-carved on apps/web's staging hostname. CF's
+# most-specific-match-wins routing means this carve outranks apps/web's
+# catch-all `staging.splashcarwashes.info/*`. Brief 16 pattern.
+routes = [
+  { pattern = "staging.splashcarwashes.info/forms/*", zone_name = "splashcarwashes.info" }
+]
+
+# Production routes stay commented until operator-driven cutover.
+# routes = [
+#   { pattern = "splashcarwashes.info/forms/*", zone_name = "splashcarwashes.info" }
+# ]
+
+[vars]
+SUPABASE_URL       = "https://rewokyofschtvqgxrxwl.supabase.co"
+TURNSTILE_SITE_KEY = "0x4AAAAAADBV7fdfR67Jt-ab"
+
+# R2 bucket binding — owns both `form-assets/` and `form-submission-files/`
+# namespaces. Single bucket, two prefixes (planning Decision 1's X-shape).
+# Operator must create the bucket via `wrangler r2 bucket create
+# splash-forms-files` before first deploy (or via the CF dashboard).
+[[r2_buckets]]
+binding     = "FORMS_FILES"
+bucket_name = "splash-forms-files"
+
+# Brief 92 — bundle vendored static .js files (signature_pad.min.js,
+# forms-public.js) under `static/` as default-exported strings. The
+# worker imports them and serves them via /forms/api/static/{filename}.
+# Standard wrangler bundling pattern; no separate operator step.
+[[rules]]
+type = "Text"
+globs = ["**/static/*.js"]
+fallthrough = false
+
+[limits]
+cpu_ms = 30000
+
+# Brief 63 — Workers Logs sticky across deploys.
+[observability.logs]
+enabled = true
+invocation_logs = true
+
+# Brief 97 — daily R2 cleanup cron. 11:00 UTC chosen to avoid colliding
+# with damage-worker daily summary at 13:00 UTC (Brief 65) and
+# workorders-worker MaintainX sync at 11:30 UTC (Brief 71). Two passes:
+# (1) orphan submission files (>24h, no matching form_submissions.id)
+# and (2) orphan form assets (>1h grace, no matching form_assets.r2_key
+# row). Hard pagination caps (50 pages × 1000 = 50K submission files;
+# 20 pages × 1000 = 20K assets) prevent runaway. Worker default export
+# now exposes { fetch, scheduled }.
+[triggers]
+crons = ["0 11 * * *"]

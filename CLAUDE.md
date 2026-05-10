@@ -153,6 +153,18 @@ If any of these are missing, stop and report it instead of guessing.
    (monorepo worker on workers.dev only) are both intentional snapshots
    of an in-progress migration.
 
+10. **The `forms` / `form_versions` / `form_assets` / `form_submissions` /
+    `form_submission_files` tables are owned by `splash-forms` worker
+    (Briefs 89–98).** Manual SQL edits to these tables are allowed only
+    via the operator's Supabase SQL editor (no migration framework in
+    this repo). Direct edits to `form_versions.schema` (the published
+    schema JSONB) outside of the Brief 95 admin builder will diverge the
+    live form from what the builder shows; if you need to hand-edit a
+    schema, do it via the builder's draft-then-publish flow instead.
+    Past submissions reference `form_versions.id` directly, so editing
+    a published schema row also rewrites history for existing submissions —
+    don't.
+
 ---
 
 ## Operator preferences
@@ -612,6 +624,268 @@ URL-based — service bindings don't apply to those.
 
 ## Glossary
 
+- **forms-worker** (Brief 89) - Public form-render surface + admin
+  builder API for the form-builder feature. The eighth worker in the
+  monorepo. Path-carved on `splashcarwashes.info/forms/*` (planning
+  Decision 2 — chosen over subdomain for cookie + CSV simplicity;
+  fleet's subdomain choice in Brief 82 was specific to its
+  verbatim-lifted `/api/*` collisions). Worker name on Cloudflare:
+  `splash-forms`. Bindings: `SUPABASE_URL` + `SUPABASE_SERVICE_KEY`
+  (writes to forms tables — service key required); `TURNSTILE_SITE_KEY`
+  + `TURNSTILE_SECRET_KEY` (public-audience forms only);
+  `FORMS_SUBMISSION_WEBHOOK_URL` (PA notification, fail-soft when
+  unbound); `FORMS_FILES` R2 bucket (`splash-forms-files` — owns both
+  `form-assets/` and `form-submission-files/` namespaces). Service
+  binding `FORMS_WORKER` from apps/web. Brief 97 wires the daily
+  cleanup cron (orphan R2 objects, 11:00 UTC — picked to not collide
+  with damage 13:00 / workorders 11:30). The `[observability.logs]`
+  block from Brief 63 is included from day one. Brief 89 lands the
+  scaffolding (schema + worker skeleton + `@splash/forms-schema`
+  package + service binding + `resolveLookup` stub); user-visible
+  endpoints land in Brief 90+.
+  Brief 90 wired the public render path (`GET /forms/{slug}`).
+  Per-field-type renderers live under
+  `apps/forms-worker/src/render/fields/` (one module per type, 16
+  total) with a discriminator `switch` in `render/fields/index.ts`.
+  Adding a 17th field type means: (1) new interface in
+  `packages/forms-schema/src/types.ts` extending `FieldBase` and
+  added to the `Field` discriminated union; (2) new Zod schema in
+  `packages/forms-schema/src/validators/field-config.ts` added to
+  `fieldSchema`'s discriminated union; (3) new render module in
+  `apps/forms-worker/src/render/fields/`; (4) new dispatch case in
+  `render/fields/index.ts` (TypeScript catches forgotten branches);
+  (5) corresponding builder-side renderer + inspector in
+  `apps/web/app/admin/forms/[id]/_field-types/` (Brief 95). Audience
+  gating at render time per planning Decision 8: `public` skips auth
+  and renders Turnstile (verification deferred to submit time),
+  `internal` does a render-time cookie-presence check on
+  `sb-access-token` and 302s to `/login?next=...` on miss (full
+  session validation deferred to submit time per Decision 8b),
+  `link-only` treats the slug as the gate. The render path reads
+  `forms` + `form_versions` per request via direct PostgREST `fetch()`
+  with `SUPABASE_SERVICE_KEY` (matches the Brief 71
+  `maintainx-users.ts` helper pattern — no `@supabase/supabase-js`
+  client in worker code); `formSchemaSchema.safeParse` is the
+  runtime boundary check that prevents a hand-edited
+  `form_versions.schema` JSONB from breaking the render path. No
+  edge caching at v1 — every render reads fresh so re-publishing a
+  form takes effect immediately. Test-form fixtures at
+  `supabase/forms-test-data.sql` (one form per audience) — operator
+  runs after `forms-tables.sql` and before smoke testing.
+  Brief 92 wired file + signature uploads. Out-of-band upload pattern
+  per planning Decision 1's X-shape: client uploads each file/signature
+  immediately on change/stroke (POST `/forms/api/upload/{slug}` or
+  `/forms/api/signature/{slug}`); the worker writes to R2 at
+  `form-submission-files/{form_id}/{pending_submission_id}/{field_key}/{filename}`
+  and returns `{r2_key, mime, size_bytes, original_filename}` (file)
+  or `{r2_key, format, size_bytes}` (signature). The renderer's hidden
+  input carries the r2_key forward; at submit time the form body
+  contains only references, not the file bytes. Submit handler HEADs
+  every reference against R2 to confirm existence + authoritative
+  size/mime, enforces per-submission ceilings (HARD_LIMITS in
+  `apps/forms-worker/src/limits.ts`: 25 MB per file, 100 MB per
+  submission, 20 files per submission, 1 MB per signature), enriches
+  the payload before validation, then inserts `form_submission_files`
+  rows after the canonical `form_submissions` row lands (best-effort —
+  failure leaves R2 objects without DB rows for Brief 97's orphan
+  cleanup to sweep). MIME sniffing via `file-type@^19.6.0` (~12 KB,
+  MIT) — first ~4 KB of every upload is read; client `Content-Type`
+  is ignored. The `pending_submission_id` (from Brief 90's renderer
+  hidden input) becomes `form_submissions.id` on submit, lining up
+  R2 paths with the submission row's id automatically.
+  `signature_pad@4.2.0` (~12 KB, MIT) is vendored as a checked-in
+  static asset (`apps/forms-worker/static/signature-pad.min.js`,
+  SHA-256 `49050fd4c2a4c66eff11a54f2552af743bb0681cde745760667c61e9c690b3e0`)
+  and bundled into the worker via wrangler `[[rules]] type = "Text"
+  globs = ["**/static/*.js"]` — the `**/` prefix is required (a bare
+  `static/*.js` glob does NOT match against the worker's source
+  resolution and the default ESM rule wins). NOT loaded from CDN per
+  CLAUDE.md supply-chain posture. The companion client-side wiring
+  (`forms-public.js`) is bundled the same way; both serve from
+  `/forms/api/static/{filename}` with `public, max-age=86400`. Admin
+  serve route at `/forms/admin/api/files/{r2_key}` is super_admin /
+  admin only (`@splash/auth authenticate()`, mirrors Brief 83's fleet
+  admin gate); inline-displays images and force-downloads everything
+  else. Daily cron in Brief 97 cleans orphaned R2 objects (>24h, no
+  matching `form_submissions.id`).
+  Brief 93 wired the lookup mechanism. `resolveLookup()` in
+  `@splash/db-supabase/lookup.ts` is the single source of truth for
+  resolution; both `POST /forms/api/lookup/{slug}` (render-time
+  client-driven, used by `forms-public.js` to populate dependent
+  fields when the key field changes) and the submit handler's
+  re-resolve loop (canonical server-side per planning Decision 5a.ii)
+  call it. The two-hop join — `pricing_simple → locations` via
+  `pricing_simple.location_code → pricing_simple.site →
+  locations.site_number` — is hidden inside the helper; callers
+  specify `sourceTable: 'locations'` and `keyColumn:
+  'pricing_simple.location_code'` and the helper does the rest. The
+  Brief 62 fix (the `getMaintainXLocationId` join-key correction)
+  applies here too: `locations.site_number` is the right join column,
+  NOT `locations.site` (which is the location name). Server
+  re-resolves at submit even when the client supplied a value —
+  defense against tampering AND handles mid-fill data drift. Drift
+  is logged with `[forms.lookup] drift detected at submit` for
+  auditability. Three render shapes per Decision 5a:
+  `prefill_hidden` → `<input type="hidden">` (no UI, value
+  round-trips silently); `prefill_visible` → disabled `<input
+  type="text">` populated visibly when the key changes;
+  `display_only` → styled `<div>` callout, no input, no payload
+  entry (submit drops the key). `nullBehavior === "block_submit"`
+  + required + null fresh value returns 422
+  `{error: "lookup_failed", fields: {...}}` and rejects the
+  submission. Caching: none — sub-10ms point reads on indexed columns.
+  Brief 94 wired the admin API. Endpoint inventory at
+  `/forms/admin/api/*`: `GET /forms` (list w/ status + search),
+  `POST /forms` (create), `GET /forms/{id}` (detail incl. draft schema
+  + version history), `PATCH /forms/{id}/draft` (save draft, Zod-
+  validated against `formSchemaSchema`), `POST /forms/{id}/publish`,
+  `POST /forms/{id}/unpublish` (→ archived), `POST /forms/{id}/republish`
+  (→ published from archived), `POST /forms/{id}/assets` (upload in-form
+  display image; multipart, JPEG/PNG/GIF/WebP only, 10 MB cap),
+  `DELETE /forms/{id}/assets/{assetId}`, `GET /lookup-sources` (returns
+  Brief 89's LOOKUP_SOURCES registry). Auth gate (in
+  `apps/forms-worker/src/admin/auth.ts`): `session.role ===
+  "super_admin"` OR `session.dcRole === "admin"|"super_admin"` — same
+  posture as fleet (Brief 83). Per-location scoping deferred to v2
+  (planning Decision 7). Service-key-unbound returns 503 uniformly;
+  CSRF defense via `isOriginAllowed` on every POST/PATCH/DELETE.
+  Lifecycle (B-classic, planning Decision 1): draft (mutable) →
+  published (immutable, current_version_id pinned) → archived (no
+  public render, submissions retained). **Publish creates a new
+  immutable version row AND spawns a fresh editable draft (clone of
+  just-published)** — operator can immediately start editing v(N+1)
+  without losing v(N) as the public-facing version. Atomicity: 3-call
+  create + 4-call publish are sequential PostgREST writes (no
+  transaction wrapper); rely on Brief 89's DEFERRABLE FKs from forms
+  → form_versions. Partial-failure recovery is via SQL only — flagged
+  on the next admin GET (orphan form with NULL draft_version_id, or
+  dangling current_version_id pointing at a non-draft with no new
+  draft spawned). No Delete endpoint — destructive ops via SQL only
+  (planning Decision 7); CASCADE FKs on form_versions / form_assets /
+  form_submissions / form_submission_files mean a `DELETE FROM forms
+  WHERE id = ...` is safe. The `apps/web/app/admin/forms/_lib/worker-
+  fetch.ts` helper centralizes all SSR calls into `splash-forms` via
+  the `FORMS_WORKER` service binding with URL fallback for `next dev`
+  (Brief 17 pattern). `@splash/forms-schema` was added as an apps/web
+  dep here (workspace ref) so future builder UI in Brief 95 has the
+  full type contract.
+  Brief 95 wired the admin builder UI on apps/web. Pages:
+  `/admin/forms` (list), `/admin/forms/new` (create), and
+  `/admin/forms/[id]` (3-column builder — palette / canvas / inspector).
+  State via `useReducer` in
+  `apps/web/app/admin/forms/[id]/_builder/reducer.ts` (9 actions:
+  add_field, remove_field, duplicate_field, reorder_field,
+  update_field_config, update_form_meta, select_field, clear_selection,
+  mark_clean). Drag-to-reorder via `@dnd-kit/core` +
+  `@dnd-kit/sortable`. Field IDs and key suffixes via `nanoid(8)` /
+  `nanoid(6)`. Per-field-type folder structure under
+  `apps/web/app/admin/forms/[id]/_field-types/{type}/{Renderer.tsx,
+  Inspector.tsx, index.ts}` — adding a 17th type means: (1) new folder
+  under `_field-types`, (2) re-export + entry in `FIELD_TYPE_REGISTRY`
+  in `_field-types/index.ts`, (3) interface in
+  `@splash/forms-schema/src/types.ts`, (4) Zod schema in
+  `validators/field-config.ts`, (5) Zod payload schema in
+  `validators/payload.ts`, (6) public renderer in
+  `apps/forms-worker/src/render/fields/` (Brief 90 dispatcher).
+  TypeScript catches forgotten registry branches via
+  `defaultConfigFor(type)` throwing on unknown. Save Draft + Publish
+  are server actions (`apps/web/app/admin/forms/[id]/actions.ts`) that
+  wrap the SSR `worker-fetch.ts` helpers because BuilderClient is a
+  client component and can't import `next/headers` directly.
+  KeyEditor enforces the snake_case regex `^[a-z][a-z0-9_]*$` by
+  sanitizing on every keystroke (lowercase + strip non-alphanumeric +
+  drop leading non-letters). Beforeunload warning when dirty.
+  FormsAdminTabs at `apps/web/app/admin/forms/_components/` mirrors
+  SignupAdminTabs (Brief 56). NoAccessCard sibling component covers
+  signin + forbidden states. Same admin gate as fleet (Brief 83):
+  `session.role === "super_admin"` OR `session.dcRole === "admin"` OR
+  `session.dcRole === "super_admin"` — gates page, worker re-validates
+  on PATCH/POST. Form-meta editing in the right-panel inspector is
+  client-only at v1; only `schema.fields` is persisted by the
+  PATCH /draft endpoint Brief 94 exposed. Title/audience/webhook
+  toggles in the inspector and TopBar title input are visible but
+  non-persistent until a future brief widens the admin endpoint. New
+  apps/web deps introduced here: `@dnd-kit/core@^6.1.0`,
+  `@dnd-kit/sortable@^8.0.0`, `nanoid@^5.0.0`. Bundle: route-specific
+  chunk 25.8 kB / First-Load 131 kB on `/admin/forms/[id]` —
+  comfortably under the 150 kB target.
+  Brief 96 wired the submissions admin surface. Three apps/web pages —
+  `/admin/forms/[id]/submissions` (DateRangePicker + status filter +
+  submitter-kind filter + CSV export button — meta-only columns:
+  Submitted at / Status / Submitter / Splash Notes preview / Version /
+  View →), `/admin/forms/[id]/submissions/[subId]` (ActionForm with
+  Status dropdown + Splash Notes textarea + Save submitting both via
+  the Brief 19 pattern; payload renders against the submission's
+  specific version's schema; metadata grid below), and
+  `/admin/forms/[id]/versions` (audit-trail table — Version / Status
+  pill / Published at / Published by / Field count / Submission count;
+  no diff renderer at v1 per planning Decision 7). Worker endpoints
+  under `/forms/admin/api/forms/{id}/submissions{,.csv,/{subId}}` and
+  `/versions`; CSRF defense on PATCH via `isOriginAllowed`; 403/404
+  scoping via `(form_id, submission_id)` tuple — admin can't update a
+  submission belonging to a different form by guessing the UUID. CSV
+  export is **schema-union across all versions in the date range** —
+  header is the union of every field key ever used (display-only
+  `heading` / `image` skipped), rows have empty cells where a key
+  doesn't exist on a given submission's version. Same-origin URL
+  works because forms is path-carved (Brief 89 / Decision 2) — no
+  Brief 88-style proxy route needed. Status enum (`new` /
+  `in_progress` / `closed`) + splash_notes mirror fleet Brief 87
+  (last-write-wins; the `status_updated_{at,by}` /
+  `splash_notes_updated_{at,by}` columns from the Brief 89 schema get
+  stamped automatically on each PATCH). Past submissions render
+  against THEIR version's schema, NOT the form's current — versioning
+  protects historical data. PayloadRenderer dispatches per field type:
+  text/email/phone/etc render plain; multi-line strings render in a
+  `<pre>` block; dropdown/multi map values to labels; lookup gets a
+  `(resolved from <key field label>)` annotation; file/signature
+  entries thumbnail-display image MIME inline (via
+  `/forms/admin/api/files/{r2_key}` Brief 92 serve route) and link
+  for non-image MIME; "Other payload entries" appendix renders any
+  payload key not present in the version's schema (defense against
+  schema drift / hand-edited JSONB). PostgREST list embed is
+  `version:form_versions!inner(version_number)` (one-to-many FK
+  embeds as a single nested object, not array — confirmed against
+  the actual response shape).
+  Brief 97 wired the submission webhook + daily R2 cleanup cron.
+  Webhook secret: `FORMS_SUBMISSION_WEBHOOK_URL` (worker-level,
+  optional, fail-soft when unbound — same posture as damage-worker's
+  `CUSTOMER_CLAIM_WEBHOOK_URL` per Brief 32 / 48). Per-form opt-out
+  via `forms.notify_webhook = false`. Files-by-URL in payload (NOT
+  base64 — planning Decision 6): each file/signature entry carries
+  `download_url` pointing at `/forms/admin/api/files/{r2_key}`
+  (Brief 92 admin-gated serve route). PA fetches via the URL when
+  needed. 15s `AbortController` timeout; non-2xx logs `[forms.webhook]
+  non-2xx response: <status>`; thrown errors log `[forms.webhook]
+  fire failed (fail-soft)`. Fired via `ctx.waitUntil` after
+  submission insert succeeds (does NOT block the response). Skipped
+  on idempotent re-submits — only `inserted.wasNew === true` fires
+  the hook (so a network retry never delivers duplicate PA
+  notifications). Worker default export now `{ fetch, scheduled }`;
+  the scheduled handler runs `runDailyCleanup` at 11:00 UTC
+  (`[triggers] crons = ["0 11 * * *"]` in
+  `apps/forms-worker/wrangler.toml`), picked to NOT collide with
+  damage-worker's daily summary at 13:00 UTC (Brief 65) or
+  workorders-worker's MaintainX sync at 11:30 UTC (Brief 71). Two
+  passes: orphan submission files
+  (`form-submission-files/{form_id}/{pending_submission_id}/...`,
+  >24h, no matching `form_submissions.id`) and orphan form assets
+  (`form-assets/...`, >1h grace, no matching `form_assets.r2_key`
+  row). Hard pagination caps (50 pages × 1000 = 50K submission
+  files; 20 pages × 1000 = 20K assets) prevent runaway in
+  pathological cases — surviving orphans get swept on the next
+  day's run. Logs `[forms.cleanup] complete` with
+  `submissionFilesDeleted` / `assetsDeleted` /
+  `submissionPagesScanned` / `assetPagesScanned` / `errorCount` on
+  every run. Workers Logs's `[observability.logs]` block from
+  Brief 89 covers scheduled invocations automatically (eventType:
+  scheduled in CF dashboard). The `inferAdminBase` helper inside
+  `submit/webhook.ts` rewrites `*.workers.dev` request origins to
+  `https://splashcarwashes.info` so the `splash_admin_url` link in
+  the PA payload always points at production apps/web (operators
+  click these from email — staging/workers.dev URLs would 404 for
+  recipients). Staging hostname (`staging.splashcarwashes.info`)
+  passes through unchanged.
 - **fleet-inquiry-worker** (Brief 81) - Public fleet-inquiry form +
   three JSON endpoints. The seventh worker in the monorepo and the
   most recent addition. Lift-and-shifted into `apps/fleet-inquiry-

@@ -1,0 +1,29 @@
+{
+  "name": "@splash/forms-worker",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "typecheck": "tsc --noEmit",
+    "lint": "echo 'no lint yet'",
+    "deploy": "wrangler deploy",
+    "deploy:dry-run": "wrangler deploy --dry-run",
+    "clean": "rm -rf dist .turbo .wrangler"
+  },
+  "dependencies": {
+    "@splash/auth": "workspace:*",
+    "@splash/db-supabase": "workspace:*",
+    "@splash/forms-schema": "workspace:*",
+    "@splash/http": "workspace:*",
+    "@splash/storage-r2": "workspace:*",
+    "@splash/types": "workspace:*",
+    "file-type": "^19.6.0"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20250101.0",
+    "@splash/config": "workspace:*",
+    "typescript": "^5.6.0",
+    "wrangler": "^4.86.0"
+  }
+}

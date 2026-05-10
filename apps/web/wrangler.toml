@@ -78,6 +78,17 @@ service = "splash-workorders"
 binding = "FLEET_INQUIRY_WORKER"
 service = "splash-fleet-inquiry"
 
+# Brief 89 — forms-worker (form-builder feature). Worker name on
+# Cloudflare: `splash-forms`. Path-carved on apps/web's hostname per
+# planning Decision 2 (cookie + CSV simplicity). apps/web's admin
+# pages (/admin/forms/*) call this worker via the binding for SSR;
+# the public form pages (/forms/{slug}) are served directly by the
+# worker via the path-carved staging/production route — no apps/web
+# involvement on the public surface.
+[[services]]
+binding = "FORMS_WORKER"
+service = "splash-forms"
+
 # OpenNext static asset binding (CSS/JS/public/).
 [assets]
 directory = ".open-next/assets"

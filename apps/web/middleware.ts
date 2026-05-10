@@ -64,6 +64,7 @@ const ADMIN_KNOWN_SUBPATHS = new Set<string>([
   "dashboard",
   "damage",
   "fleet",
+  "forms",
   "performance",
   "pricing",
   "signups",
