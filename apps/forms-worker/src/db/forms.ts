@@ -364,8 +364,18 @@ interface PricingSimpleRow {
 
 /**
  * Pre-bake the option list for any Location-type field in the form. Reads
- * `pricing_simple` rows where `pricing IN ('full','partial')` (skips
- * retired/inactive locations) and de-duplicates on `location_code`.
+ * every distinct `location_code` from `pricing_simple` and de-duplicates in
+ * JS. No pricing-mode filter — matches signup-worker's admin-pricing
+ * `listDistinctLocations` behavior. The operator is the source of truth on
+ * which locations exist; if a location should be hidden from forms, its
+ * pricing_simple rows should be removed via sysadmin.
+ *
+ * Brief 90 originally filtered `pricing IN ('full','partial')` — `'partial'`
+ * is not a valid mode (canonical set per sysadmin's VALID_PRICING_MODES is
+ * `full | same | flash5 | flash2 | special`), so the filter silently dropped
+ * every non-`full` location. Removed entirely rather than enumerating the
+ * valid set: matches signup admin, future-proof against new modes, and
+ * defers the "is this location active?" question to the operator's data.
  *
  * Why we don't use PostgREST `distinct` — PostgREST's `distinct` requires
  * column ordering coordination and doesn't compose well with multiple
@@ -375,7 +385,6 @@ export async function getLocationOptionsFromPricingSimple(
   env: SupabaseEnv
 ): Promise<LocationOption[]> {
   const url = new URL("/rest/v1/pricing_simple", env.SUPABASE_URL);
-  url.searchParams.set("pricing", "in.(full,partial)");
   url.searchParams.set("select", "location_code,location_pretty,address,site");
   url.searchParams.set("order", "location_code.asc,sort.asc");
   url.searchParams.set("limit", "5000");
