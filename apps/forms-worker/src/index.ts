@@ -10,6 +10,7 @@
 //   POST   /forms/api/signature/{slug}                — Brief 92: signature upload
 //   POST   /forms/api/lookup/{slug}                   — Brief 93: on-demand lookup resolve
 //   GET    /forms/api/static/*                        — Brief 92: vendored client JS
+//   GET    /forms/api/asset/{form_id}/{asset_id}      — Brief 90 followup: public in-form image asset
 //   GET    /forms/admin/api/files/*                   — Brief 92: admin-gated R2 serve
 //   GET    /forms/admin/api/lookup-sources            — Brief 94: lookup registry
 //   GET    /forms/admin/api/forms                     — Brief 94: list forms
@@ -51,6 +52,7 @@ import { handleSubmit } from "./submit/index.js";
 import { handleFileUpload } from "./uploads/file.js";
 import { handleSignatureUpload } from "./uploads/signature.js";
 import { handleFileServe } from "./uploads/serve.js";
+import { handlePublicAssetServe } from "./uploads/asset-serve.js";
 import { handleStaticAsset } from "./uploads/static.js";
 import { handleLookupResolve } from "./lookup/resolve.js";
 import {
@@ -127,6 +129,17 @@ export default {
       const asset = handleStaticAsset(env, req, url.pathname);
       if (asset) return asset;
       return notFoundPage();
+    }
+
+    // GET /forms/api/asset/{form_id}/{asset_id} — public in-form image asset.
+    // Backs the image renderer's <img> URL. Public (no auth) because the
+    // form itself is the entitlement gate; scoped (form_id, asset_id) tuple
+    // so cross-form URL guesses 404.
+    const assetMatch = url.pathname.match(
+      /^\/forms\/api\/asset\/([^/]+)\/([^/]+)$/
+    );
+    if (assetMatch && assetMatch[1] && assetMatch[2] && req.method === "GET") {
+      return handlePublicAssetServe(env, req, assetMatch[1], assetMatch[2]);
     }
 
     // GET /forms/admin/api/files/{r2_key} — admin-gated R2 serve (Brief 92).
