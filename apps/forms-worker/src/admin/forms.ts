@@ -14,18 +14,24 @@
 // service-key-unbound 503 is returned uniformly. Mutations also gate on
 // `isOriginAllowed` (CSRF defense-in-depth).
 //
-// Schema validation on PATCH /draft uses `formSchemaSchema.safeParse` from
-// @splash/forms-schema — same Zod boundary that protects the public render
-// path in `db/forms.ts:getCurrentVersion`. Operators can't save a draft
-// the public renderer would reject.
+// Schema validation is split per planning Decision 1 (B-classic draft/published
+// lifecycle). Drafts are saved against the lenient `draftFormSchemaSchema`
+// from @splash/forms-schema (allows work-in-progress Lookup/Image fields whose
+// default config seeds empty strings the strict schema would reject). Publish
+// re-validates the same draft against the strict `formSchemaSchema` — same
+// Zod boundary that protects the public render path in
+// `db/forms.ts:getCurrentVersion` — and refuses to promote anything the
+// renderer would reject. Net: operators can save drafts mid-build; the
+// rendered public form is always strictly valid.
 
 import { isOriginAllowed, jsonError } from "@splash/http";
-import { formSchemaSchema } from "@splash/forms-schema";
+import { draftFormSchemaSchema, formSchemaSchema } from "@splash/forms-schema";
 import { adminGate, adminGateResponse, requireServiceKey } from "./auth.js";
 import {
   listForms,
   createForm,
   getFormDetail,
+  getDraftSchema,
   updateDraft,
   publishDraft,
   setFormStatus,
@@ -182,7 +188,7 @@ export async function handleUpdateDraft(
     return jsonError(400, "bad_json");
   }
 
-  const result = formSchemaSchema.safeParse(body.schema);
+  const result = draftFormSchemaSchema.safeParse(body.schema);
   if (!result.success) {
     return new Response(
       JSON.stringify({ error: "schema_invalid", issues: result.error.issues }),
@@ -221,6 +227,32 @@ export async function handlePublish(
 
   if (!FORM_ID_RE.test(formId)) {
     return jsonError(400, "bad_id");
+  }
+
+  // Strict re-validation gate. Drafts pass through `draftFormSchemaSchema`
+  // (lenient — allows incomplete Lookup / Image fields). Public render uses
+  // `formSchemaSchema` (strict). Publish must enforce the strict contract,
+  // otherwise a half-configured field promoted to current_version_id would
+  // 500 the renderer's `formSchemaSchema.safeParse` boundary check.
+  let draftSchema: unknown;
+  try {
+    draftSchema = await getDraftSchema(env, formId);
+  } catch (err) {
+    console.error("[forms.admin] publish: draft schema fetch failed", err);
+    return jsonError(500, "publish_failed");
+  }
+  if (draftSchema === null) {
+    return jsonError(404, "no_draft");
+  }
+  const strictResult = formSchemaSchema.safeParse(draftSchema);
+  if (!strictResult.success) {
+    return new Response(
+      JSON.stringify({ error: "schema_invalid", issues: strictResult.error.issues }),
+      {
+        status: 422,
+        headers: { "Content-Type": "application/json" }
+      }
+    );
   }
 
   try {

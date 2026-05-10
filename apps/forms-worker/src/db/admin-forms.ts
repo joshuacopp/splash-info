@@ -495,6 +495,48 @@ export async function updateDraft(
 }
 
 // =============================================================================
+// getDraftSchema — used by handlePublish to strict-validate before promoting
+// =============================================================================
+
+/**
+ * Fetch the raw draft schema JSONB for a form. Returns null when the form
+ * has no draft (operator hit publish on a brand-new form before saving any
+ * fields, which shouldn't happen via the UI but might via direct API call).
+ *
+ * Used by handlePublish's pre-promote strict-validation step: drafts are
+ * saved against the lenient `draftFormSchemaSchema` (allows in-progress
+ * Lookup / Image fields), but publish must re-check against the strict
+ * `formSchemaSchema` so a half-configured field can't reach public render.
+ */
+export async function getDraftSchema(
+  env: SupabaseEnv,
+  formId: string
+): Promise<unknown | null> {
+  const formUrl = new URL("/rest/v1/forms", env.SUPABASE_URL);
+  formUrl.searchParams.set("id", `eq.${formId}`);
+  formUrl.searchParams.set("select", "draft_version_id");
+  formUrl.searchParams.set("limit", "1");
+  const formResp = await fetch(formUrl.toString(), { headers: headers(env) });
+  if (!formResp.ok) {
+    throw new Error(`getDraftSchema: form fetch ${formResp.status}`);
+  }
+  const formRows = (await formResp.json().catch(() => [])) as Array<{ draft_version_id: string | null }>;
+  const draftVersionId = formRows[0]?.draft_version_id;
+  if (!draftVersionId) return null;
+
+  const draftUrl = new URL("/rest/v1/form_versions", env.SUPABASE_URL);
+  draftUrl.searchParams.set("id", `eq.${draftVersionId}`);
+  draftUrl.searchParams.set("select", "schema");
+  draftUrl.searchParams.set("limit", "1");
+  const draftResp = await fetch(draftUrl.toString(), { headers: headers(env) });
+  if (!draftResp.ok) {
+    throw new Error(`getDraftSchema: draft fetch ${draftResp.status}`);
+  }
+  const draftRows = (await draftResp.json().catch(() => [])) as Array<{ schema: unknown }>;
+  return draftRows[0]?.schema ?? null;
+}
+
+// =============================================================================
 // publishDraft
 // =============================================================================
 
