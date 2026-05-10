@@ -3,11 +3,20 @@
 // Per planning Decision 3, no auto-save: dirty flag drives Save Draft button
 // state and the beforeunload warning. Per Decision 4, field IDs and key
 // suffixes use nanoid(8 / 6) for stability across renames.
+//
+// IMPORTANT: keys MUST match /^[a-z][a-z0-9_]*$/ (validated by KeyEditor +
+// the worker-side Zod schema). Default `nanoid()` uses a mixed-case alphabet
+// (A-Za-z0-9_-) — using it directly produces keys like `name_qeZpLN` that
+// FAIL the regex. We use `customAlphabet` with lowercase-alphanum only for
+// the suffix. Field `id` can stay mixed-case (it's an internal handle, not
+// a payload key — never validated against the snake_case rule).
 
-import { nanoid } from "nanoid";
+import { customAlphabet, nanoid } from "nanoid";
 import type { Field, FieldType } from "@splash/forms-schema";
 
 import { defaultConfigFor } from "../_field-types";
+
+const lowerNanoid = customAlphabet("abcdefghijklmnopqrstuvwxyz0123456789", 6);
 
 export interface FormMetaState {
   title: string;
@@ -77,7 +86,7 @@ export function reducer(
       const newField = {
         ...config,
         id: nanoid(8),
-        key: `${action.fieldType}_${nanoid(6)}`
+        key: `${action.fieldType}_${lowerNanoid()}`
       } as Field;
       return {
         ...state,
