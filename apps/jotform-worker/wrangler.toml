@@ -71,13 +71,15 @@ upload_source_maps = true
 
 workers_dev = true
 
-# Routes: intentionally unset for v1 (workers.dev only). Operator binds
-# staging.splashcarwashes.info routes via the dashboard post-deploy. See
-# PRE_DEPLOY_JOTFORM.md. Production routes follow operator-driven cutover.
-# routes = [
-#   { pattern = "staging.splashcarwashes.info/jotform/*", zone_name = "splashcarwashes.info" },
-#   { pattern = "staging.splashcarwashes.info/admin/jotform/api/*", zone_name = "splashcarwashes.info" }
-# ]
+# Routes: staging-bound on staging.splashcarwashes.info per operator 2026-05-11.
+# Matches the project-wide staging-first posture. Kept in wrangler.toml (not
+# UI-only) so future pushes don't strip the bindings — CF Builds reads routes
+# from this file on every deploy and would unbind anything UI-only on the
+# next push. Production routes follow operator-driven cutover.
+routes = [
+  { pattern = "staging.splashcarwashes.info/jotform/*", zone_name = "splashcarwashes.info" },
+  { pattern = "staging.splashcarwashes.info/admin/jotform/api/*", zone_name = "splashcarwashes.info" }
+]
 
 [vars]
 SUPABASE_URL    = "https://rewokyofschtvqgxrxwl.supabase.co"
