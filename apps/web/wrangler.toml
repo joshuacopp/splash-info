@@ -89,6 +89,16 @@ service = "splash-fleet-inquiry"
 binding = "FORMS_WORKER"
 service = "splash-forms"
 
+# Brief 107 — jotform-worker (JotForm submission ingest + admin viewer
+# API). Worker name on Cloudflare: `splash-jotform`. Path-carved on
+# `/jotform/*` (webhook) and `/admin/jotform/api/*` (admin reads).
+# apps/web's admin pages (Brief 108 will wire `/admin/jotform/*`) call
+# this worker via the binding for SSR. Workers.dev only at brief land;
+# production routes operator-driven post-cutover.
+[[services]]
+binding = "JOTFORM_WORKER"
+service = "splash-jotform"
+
 # OpenNext static asset binding (CSS/JS/public/).
 [assets]
 directory = ".open-next/assets"

@@ -1,0 +1,25 @@
+{
+  "name": "@splash/jotform-worker",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "deploy:dry-run": "wrangler deploy --dry-run",
+    "typecheck": "tsc --noEmit",
+    "lint": "echo 'no lint yet'",
+    "clean": "rm -rf dist .turbo .wrangler"
+  },
+  "dependencies": {
+    "@splash/auth": "workspace:*",
+    "@splash/db-supabase": "workspace:*",
+    "@splash/http": "workspace:*"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20250101.0",
+    "@splash/config": "workspace:*",
+    "typescript": "^5.6.0",
+    "wrangler": "^4.86.0"
+  }
+}

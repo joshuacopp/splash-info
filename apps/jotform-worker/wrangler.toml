@@ -1,0 +1,94 @@
+# Splash JotForm Worker — Brief 107 (new worker).
+#
+# Ingests JotForm submissions into Supabase for downstream apps/web viewing
+# and CSV export. Four forms onboarded at v1:
+#   - rewash          (250165655616055)
+#   - salt-log        (243523811897060)
+#   - retention       (250855287972067)
+#   - time-card-edit  (250193775451056)
+# Form registry lives in Supabase table `jotform_forms`; new forms (#5 / #6
+# per operator) onboard by adding a row + running a backfill + configuring
+# the JotForm webhook. No code change required to onboard.
+#
+# ARCHITECTURE: Supabase-as-source-of-truth (not direct JotForm API per
+# query). JotForm's filter API only supports top-level fields (created_at,
+# id, workflowStatus, status); filtering on answer fields (site, employee,
+# reason, etc.) — the dominant use case — would require client-side
+# filtering across every submission. Single Supabase table
+# `jotform_submissions` with common filterable fields promoted to columns
+# and the rest of the payload in JSONB `answers`. ~50K rows lifetime
+# across all four forms (rewash ~30K, others smaller).
+#
+# SYNC: webhook + one-time backfill.
+#   - Webhook: JotForm Enterprise POSTs to /jotform/webhook/{token}/{form_id}
+#     on every submission; worker fetches full submission via API and upserts.
+#   - Backfill: super_admin-only POST /admin/jotform/api/{form_id}/backfill
+#     paginates JotForm API one 1000-row page at a time via ?after_id=. The
+#     operator runs the loop once per form during onboarding.
+#
+# WEBHOOK AUTH: URL secrecy via a path-segment token matched against
+# JOTFORM_WEBHOOK_TOKEN. JotForm Enterprise webhook UI does NOT expose a
+# signing secret (operator-confirmed). Operator generates a random ~32-char
+# token, binds the secret, then configures JotForm to POST to a URL
+# containing that token. Anyone hitting /jotform/webhook/<wrong-token>/...
+# gets 403.
+#
+# DEPLOY STRATEGY: workers.dev fallback only at v1. The operator binds
+# staging.splashcarwashes.info routes (/jotform/* and /admin/jotform/api/*)
+# via the dashboard post-deploy. Production routes stay unbound until
+# operator-driven cutover — see PRE_DEPLOY_JOTFORM.md.
+#
+# Bindings required (set via `pnpm --filter @splash/jotform-worker exec
+# wrangler secret put NAME`):
+#   SUPABASE_URL          — non-secret var (in [vars] below). Same Supabase
+#                           project URL as the rest of the monorepo.
+#   SUPABASE_SERVICE_KEY  — secret. Required for both the writes
+#                           (jotform_submissions upserts) and the admin
+#                           reads (permission gate against pricing_simple
+#                           + jotform_submissions filtered reads). DO NOT
+#                           bind under the legacy SUPABASE_SERVICE_ROLE_KEY
+#                           name (CLAUDE.md constraint #3).
+#   SUPABASE_ANON_KEY     — secret. Required by @splash/auth authenticate()
+#                           for the /auth/v1/user round-trip (same posture
+#                           as forms-worker per Brief 91).
+#   JOTFORM_API_KEY       — secret. JotForm Enterprise API key. Used for
+#                           backfill + per-webhook submission re-fetch
+#                           (webhook payload is flat; the API returns the
+#                           richer "content" shape with full answer types).
+#   JOTFORM_WEBHOOK_TOKEN — secret. Random URL-path token matched against
+#                           the {token} segment in /jotform/webhook/{token}/{form_id}.
+#                           Operator generates with e.g.
+#                           `node -e "console.log(crypto.randomBytes(24).toString('hex'))"`
+#                           or similar, binds, then configures each JotForm
+#                           form's Integrations panel with a webhook URL
+#                           containing this token.
+
+name = "splash-jotform"
+main = "src/index.js"
+compatibility_date = "2026-05-01"
+compatibility_flags = ["nodejs_compat"]
+upload_source_maps = true
+
+workers_dev = true
+
+# Routes: intentionally unset for v1 (workers.dev only). Operator binds
+# staging.splashcarwashes.info routes via the dashboard post-deploy. See
+# PRE_DEPLOY_JOTFORM.md. Production routes follow operator-driven cutover.
+# routes = [
+#   { pattern = "staging.splashcarwashes.info/jotform/*", zone_name = "splashcarwashes.info" },
+#   { pattern = "staging.splashcarwashes.info/admin/jotform/api/*", zone_name = "splashcarwashes.info" }
+# ]
+
+[vars]
+SUPABASE_URL    = "https://rewokyofschtvqgxrxwl.supabase.co"
+JOTFORM_BASE_URL = "https://splashcarwashes.jotform.com"
+
+[limits]
+cpu_ms = 30000
+
+# Brief 63 — keeps Workers Logs sticky across deploys. Without this, CF
+# Builds re-provisions the worker on every push and the dashboard "Logs →
+# Enabled" toggle reverts to off. New workers must include this block.
+[observability.logs]
+enabled = true
+invocation_logs = true

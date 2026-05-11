@@ -11,12 +11,13 @@ that next, then the brief you've been asked to execute (under `BRIEFS/`).
 
 ## What this project is
 
-Splash Car Wash's MaxPass internal tooling monorepo. Seven Cloudflare
+Splash Car Wash's MaxPass internal tooling monorepo. Nine Cloudflare
 Workers (apps/) — five ported from a single legacy worker
-(`info-signup-worker`), the workorders-worker (Brief 70), and the
+(`info-signup-worker`), the workorders-worker (Brief 70), the
 fleet-inquiry-worker lift-and-shift (Brief 81 — workers.dev only until
-operator-driven cutover) — plus a Next.js apps/web that consumes their
-JSON APIs. Seven shared packages (packages/) provide auth, http,
+operator-driven cutover), the forms-worker (Briefs 89–100), and the
+jotform-worker (Brief 107) — plus a Next.js apps/web that consumes
+their JSON APIs. Seven shared packages (packages/) provide auth, http,
 database, types, UI, storage, and config. Build orchestration via
 Turbo (`turbo.json`) and pnpm workspaces (`pnpm-workspace.yaml`).
 
@@ -41,6 +42,12 @@ apps/
                              is `splash-fleet-inquiry` on workers.dev only,
                              pending operator-driven cutover) — Supabase +
                              Google Maps Geocoding + Turnstile. Brief 81.
+  apps/jotform-worker        JotForm Enterprise submission ingest + admin
+                             read API. Worker name on Cloudflare:
+                             `splash-jotform`. Webhook receiver +
+                             super_admin-only backfill endpoint; reads
+                             scoped by RM/RD/GM email-on-locations match.
+                             Brief 107.
   apps/web                   Next.js (App Router), deploys via OpenNext to
                              Cloudflare Workers. Consumer of the workers'
                              JSON APIs.
@@ -638,6 +645,76 @@ URL-based — service bindings don't apply to those.
 ---
 
 ## Glossary
+
+- **jotform-worker** (Brief 107) - JotForm Enterprise submission ingest
+  + admin read API. The ninth worker in the monorepo (JS not TS;
+  mirrors fleet-inquiry-worker shape per Brief 81). Worker name on
+  Cloudflare: `splash-jotform`. Path-carved on
+  `splashcarwashes.info/jotform/*` (webhook) +
+  `splashcarwashes.info/admin/jotform/api/*` (admin reads). Workers.dev
+  only at Brief 107; production routes operator-driven. Ingests four
+  JotForm forms registered in Supabase `jotform_forms` table (rewash
+  `250165655616055`, salt-log `243523811897060`, retention
+  `250855287972067`, time-card-edit `250193775451056`); ~50K rows
+  lifetime stored in `jotform_submissions` with common filterable
+  fields (`site_number` / `site` / `site_email` / `jotform_created_at`
+  / `jotform_status`) promoted to columns and the rest in JSONB
+  `answers`. Sync mechanism: webhook + one-time backfill. Webhook auth
+  is URL-path token via `JOTFORM_WEBHOOK_TOKEN` secret (constant-time
+  compare; JotForm Enterprise UI doesn't expose a signing secret per
+  operator screenshot — URL secrecy is the entire auth posture). The
+  webhook handler re-fetches the rich submission payload via JotForm
+  API (`fetchSubmissionById`) because JotForm's webhook payload is
+  flat URL-encoded; the API call has a 15s `AbortSignal.timeout`.
+  Status code policy is 2xx for accepted / 5xx for retry — unknown
+  form_id returns 200 to halt JotForm retries, transient upstream
+  failure returns 500 to invite a retry. Submissions are upserted via
+  PostgREST `?on_conflict=id` + `Prefer: resolution=merge-duplicates`
+  so backfill + webhook are both idempotent. Backfill endpoint
+  (`POST /admin/jotform/api/{form_id}/backfill?after_id=`) is
+  super_admin-only and paginates one 1000-row JotForm API page per
+  call; the operator drives the loop externally with the returned
+  `last_id` until `has_more: false`. Admin read API at
+  `/admin/jotform/api/*`: `GET /forms` is admin-tier (super_admin /
+  admin / dcRole-admin / dcRole-super_admin) and returns enabled forms
+  + COUNT-via-`Content-Range` per form; `GET /{form_id}/submissions`
+  + `GET /{form_id}/submissions/{id}` + `GET /{form_id}/submissions.csv`
+  accept any authenticated session and apply per-site scope via
+  `accessibleSiteNumbersForSession`. super_admin / admin sees all;
+  RM / RD / GM scopes by email-on-locations match against
+  `locations.am_email` / `rm_email` / `site_email` via
+  `getLocationsByContactEmail`. Each integer `site_number` is
+  converted to BOTH zero-padded 3-digit AND unpadded string forms
+  because the JotForm `typeA` widget returns site numbers as strings
+  sometimes padded ("090" for Milford) and sometimes not ("127" for
+  Elmira Heights). Detail endpoint anti-leak: out-of-scope row
+  returns 404, not 403. CSV uses the Brief 96 schema-union pattern
+  — header is the union of every `answers` key across the date range
+  as `answers__{key}__answer` columns; 10000-row safety cap, 416 on
+  overflow. Service binding `JOTFORM_WORKER` from apps/web. Bindings
+  required: `SUPABASE_URL` + `JOTFORM_BASE_URL` (vars);
+  `SUPABASE_SERVICE_KEY` + `SUPABASE_ANON_KEY` + `JOTFORM_API_KEY` +
+  `JOTFORM_WEBHOOK_TOKEN` (secrets). See PRE_DEPLOY_JOTFORM.md for
+  the per-form backfill loop sample + JotForm webhook URL pattern.
+
+- **JotForm submissions** (Brief 107) - The four onboarded JotForm
+  forms (rewash, salt-log, retention, time-card-edit) all share a
+  common subset of answer field names that the worker promotes to
+  `jotform_submissions` columns: `name === "typeA"` → `site_number`
+  (widget; returns string sometimes padded "090" / sometimes
+  unpadded "127" — both forms accepted in the permission gate),
+  `name === "site"` → `site` (textbox), `name === "siteEmail"` |
+  `name === "siteEmail56"` → `site_email` (retention has both —
+  email-typed `control_email` preferred when present, fall back to
+  text). Noise types stripped at ingest before storing the JSONB
+  `answers` payload: `control_head`, `control_pagebreak`,
+  `control_button`, `control_text` — these are form-definition
+  metadata (headings, page breaks, button labels, text blocks)
+  carrying no `answer` property. Retention's full payload drops from
+  ~20 KB raw to ~3-5 KB stripped. Onboarding a new form (#5 / #6 per
+  operator-confirmed cap): `INSERT INTO jotform_forms` + run a
+  backfill + configure the webhook in JotForm's Integrations panel.
+  No code change required.
 
 - **forms-worker** (Brief 89) - Public form-render surface + admin
   builder API for the form-builder feature. The eighth worker in the

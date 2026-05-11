@@ -23,6 +23,7 @@ declare global {
     WORKORDERS_WORKER: Fetcher;
     FLEET_INQUIRY_WORKER: Fetcher;
     FORMS_WORKER: Fetcher;
+    JOTFORM_WORKER: Fetcher;
   }
 }
 
