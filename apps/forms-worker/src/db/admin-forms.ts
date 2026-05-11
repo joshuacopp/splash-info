@@ -94,6 +94,7 @@ interface VersionPublishedAtRow {
 export interface ListFormsFilter {
   status?: string;
   search?: string;
+  audience?: string;
 }
 
 /**
@@ -119,6 +120,9 @@ export async function listForms(
 
   if (filter?.status && filter.status !== "all") {
     url.searchParams.set("status", `eq.${filter.status}`);
+  }
+  if (filter?.audience && filter.audience !== "all") {
+    url.searchParams.set("audience", `eq.${filter.audience}`);
   }
   if (filter?.search) {
     // PostgREST `or` syntax with ilike — escape % and _ in the user input

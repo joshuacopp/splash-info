@@ -4,12 +4,16 @@
 // rendered on EVERY page from the root layout.
 //
 // Path-aware admin controls:
-//   - On /admin/*, /sysadmin/*, and /workorders/* the header additionally
-//     renders a user identity row (email + role label, with a small
-//     "Change password" text link beneath the role badge) plus Dashboard +
-//     Sign Out buttons. /workorders was added to the gate in Brief 77 —
-//     Brief 70 introduced it as a top-level route (intentionally outside
-//     /admin/*) and the gate hadn't been updated.
+//   - On /admin/*, /sysadmin/*, /workorders/*, and /forms (the apps/web
+//     index added in Brief 99) the header additionally renders a user
+//     identity row (email + role label, with a small "Change password"
+//     text link beneath the role badge) plus Dashboard + Sign Out
+//     buttons. /workorders was added to the gate in Brief 77 — Brief 70
+//     introduced it as a top-level route (intentionally outside
+//     /admin/*) and the gate hadn't been updated. /forms was added in
+//     Brief 99 as the credentialed-user discovery surface for internal
+//     forms; /forms/{slug} (the public render) is served by splash-forms
+//     worker and never sees this Header.
 //   - "Change Password" is intentionally a small text link rather than a
 //     third button (Brief 77): it's a low-frequency action (once per ~90
 //     days or after a forced reset) and the third button was crushing the
@@ -45,15 +49,20 @@ import { ASSETS } from "@splash/storage-r2/assets";
 import { SignOutButton } from "./SignOutButton";
 
 // Match /admin, /admin/..., /sysadmin, /sysadmin/..., /workorders,
-// /workorders/... - the three admin-context path families. Public surfaces
-// (/, /login, /signup/*, /q/*, /join/*, /claims/*, /change-password) all
-// fall through to logo-only chrome.
+// /workorders/..., /forms, /forms/... - the four admin-context path
+// families. Public surfaces (/, /login, /signup/*, /q/*, /join/*,
+// /claims/*, /change-password) all fall through to logo-only chrome.
+//
+// Note: /forms/{slug} (the public form render) is served by splash-forms
+// worker, not apps/web — this regex only ever runs on apps/web-rendered
+// pages, so including `forms` here is safe and only affects the apps/web
+// `/forms` index page added in Brief 99.
 //
 // `new RegExp(...)` rather than a regex literal - avoids TS-transpile-mode
 // parser ambiguity in .tsx files where `/<...` looks like a JSX closing
 // tag prefix to lightweight parsers. Real Next.js builds handle either
 // form; the constructor form is unambiguous everywhere.
-const ADMIN_PATH_RE = new RegExp("^/(admin|sysadmin|workorders)(/|$)");
+const ADMIN_PATH_RE = new RegExp("^/(admin|sysadmin|workorders|forms)(/|$)");
 
 export interface HeaderUser {
   email: string;

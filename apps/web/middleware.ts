@@ -9,9 +9,17 @@
 //      This is the per-location pricing bookmark fall-through (legacy URL was
 //      /admin/binghamton; canonical is /admin/pricing/binghamton).
 //   3. Auth gate — runs after redirects.
-//      /admin/*, /sysadmin/*, /workorders/*  — require sb-access-token cookie
+//      /admin/*, /sysadmin/*, /workorders/*, /forms (incl. /forms/*)
+//                                            — require sb-access-token cookie
 //      /change-password?required=true        — same
 //      /login                                — bounce authenticated users to /admin/dashboard
+//
+// Note on /forms/*: the apps/web matcher includes the prefix for
+// simplicity (Brief 99 Phase 5 option B), but only `/forms` itself is
+// actually served by apps/web. /forms/{slug} is owned by the splash-forms
+// worker via path-carved CF route — those requests never reach apps/web's
+// edge, so the prefix matcher is effectively a no-op for /forms/{slug}
+// while keeping a single rule to maintain on the apps/web side.
 //
 // Does NOT run on:
 //   /, /signup/*, /q/*, /join/*, /claims/*  — public customer-facing
@@ -136,7 +144,7 @@ export function middleware(request: NextRequest) {
     return NextResponse.next();
   }
 
-  // /admin/*, /sysadmin/*, /workorders/* — always gated.
+  // /admin/*, /sysadmin/*, /workorders/*, /forms (and /forms/*) — always gated.
   if (!hasCookie) {
     return redirectToLogin(request);
   }
@@ -174,6 +182,7 @@ export const config = {
     "/admin/:path*",
     "/sysadmin/:path*",
     "/workorders/:path*",
+    "/forms/:path*",
     "/change-password",
     "/login",
     "/logout"

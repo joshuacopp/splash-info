@@ -12,6 +12,7 @@ import { getMe } from "../../_lib/me";
 import { listFormsAdmin, type FormListItem } from "./_lib/worker-fetch";
 import FormsAdminTabs from "./_components/FormsAdminTabs";
 import NoAccessCard from "./_components/NoAccessCard";
+import CopyLinkButton from "./_components/CopyLinkButton";
 
 export const dynamic = "force-dynamic";
 
@@ -29,6 +30,7 @@ export default async function FormsListPage({ searchParams }: PageProps) {
   const sp = await searchParams;
   const status = readStringParam(sp.status);
   const search = readStringParam(sp.search);
+  const audience = readStringParam(sp.audience);
 
   const session = await getMe().catch(() => null);
   if (!session) {
@@ -49,7 +51,8 @@ export default async function FormsListPage({ searchParams }: PageProps) {
   try {
     const res = await listFormsAdmin({
       status: status && status !== "all" ? status : undefined,
-      search
+      search,
+      audience: audience && audience !== "all" ? audience : undefined
     });
     if (res === null) {
       return <NoAccessCard reason="forbidden" />;
@@ -97,6 +100,21 @@ export default async function FormsListPage({ searchParams }: PageProps) {
               <option value="draft">Draft</option>
               <option value="published">Published</option>
               <option value="archived">Archived</option>
+            </select>
+          </div>
+          <div>
+            <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-splash-navy/70">
+              Audience
+            </label>
+            <select
+              name="audience"
+              defaultValue={audience ?? "all"}
+              className="rounded-splash-sm border border-gray-light bg-white px-3 py-1.5 text-sm text-splash-navy"
+            >
+              <option value="all">All</option>
+              <option value="public">Public</option>
+              <option value="internal">Internal</option>
+              <option value="link-only">Link-only</option>
             </select>
           </div>
           <div>
@@ -158,6 +176,7 @@ function FormsTable({ items }: { items: FormListItem[] }) {
             <th className="px-3 py-2 font-semibold">Versions</th>
             <th className="px-3 py-2 font-semibold">Submissions</th>
             <th className="px-3 py-2 font-semibold">Last edited</th>
+            <th className="px-3 py-2 font-semibold">Public link</th>
           </tr>
         </thead>
         <tbody>
@@ -186,6 +205,13 @@ function FormsTable({ items }: { items: FormListItem[] }) {
                 <span title={f.lastEditedAt}>
                   {new Date(f.lastEditedAt).toLocaleString()}
                 </span>
+              </td>
+              <td className="px-3 py-2 align-top">
+                {f.status === "published" ? (
+                  <CopyLinkButton slug={f.slug} />
+                ) : (
+                  <span className="text-xs text-splash-navy/40">—</span>
+                )}
               </td>
             </tr>
           ))}

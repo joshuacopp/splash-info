@@ -422,6 +422,9 @@ When given a new task:
   `/admin/damage/reporting` (Brief 59),
   `/admin/fleet` (Brief 83), `/admin/fleet/[id]` (Brief 83),
   `/workorders` (Brief 70 — top-level, NOT under /admin/*),
+  `/forms` (Brief 99 — top-level credentialed-user index, NOT under
+  /admin/*; pairs with `/forms/{slug}` public render on splash-forms
+  worker),
   `/logout` (route handler).
 - Placeholder pages: `/admin/performance`.
 - Redirect-only pages: `/` (Brief 50: redirects to `/login` or
@@ -886,6 +889,26 @@ URL-based — service bindings don't apply to those.
   click these from email — staging/workers.dev URLs would 404 for
   recipients). Staging hostname (`staging.splashcarwashes.info`)
   passes through unchanged.
+  Brief 99 added `GET /forms/api/visible-to-me` — credentialed-user
+  discovery endpoint backing the apps/web `/forms` index page. Any
+  valid session can call it; v1 returns `status='published' AND
+  audience='internal'` rows only. Endpoint name is intentionally
+  semantic ("visible to me") so a future per-role / per-location
+  visibility model is an additive filter inside the handler with no
+  contract change. Pairs with the apps/web `/forms` top-level page
+  (server-rendered cards grid, alphabetical by title) gated by
+  middleware on `sb-access-token` cookie presence; per-form audience
+  re-checks happen at click-through on the worker render path
+  (Brief 90).
+  Brief 100 added `?audience=public|internal|link-only|all` to the
+  list endpoint (worker-side validation enforces the allow-list; bad
+  values return 400 `bad_audience`). The `/admin/forms` page exposes
+  it as a third dropdown alongside Status and Search. Each published
+  row also gets a "Copy link" button (`CopyLinkButton` client island)
+  that copies the public form URL to clipboard using
+  `navigator.clipboard.writeText` with a `window.prompt()` fallback
+  for locked-down browsers. Unpublished rows show an em-dash — only
+  published forms have a working `/forms/{slug}` URL.
 - **fleet-inquiry-worker** (Brief 81) - Public fleet-inquiry form +
   three JSON endpoints. The seventh worker in the monorepo and the
   most recent addition. Lift-and-shifted into `apps/fleet-inquiry-

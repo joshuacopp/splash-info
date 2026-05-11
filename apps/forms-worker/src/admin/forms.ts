@@ -53,8 +53,16 @@ export async function handleListForms(env: Env, req: Request): Promise<Response>
   const filter: ListFormsFilter = {};
   const status = url.searchParams.get("status");
   const search = url.searchParams.get("search");
+  const audience = url.searchParams.get("audience");
   if (status) filter.status = status;
   if (search) filter.search = search;
+  const ALLOWED_AUDIENCE = ["public", "internal", "link-only", "all"];
+  if (audience) {
+    if (!ALLOWED_AUDIENCE.includes(audience)) {
+      return jsonError(400, "bad_audience");
+    }
+    if (audience !== "all") filter.audience = audience;
+  }
 
   try {
     const items = await listForms(env, filter);

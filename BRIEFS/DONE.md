@@ -97,3 +97,5 @@
 - 2026-05-10 01:17:21 brief-096-forms-submissions-admin-ui.md (success)
 - 2026-05-10 01:31:43 brief-097-forms-webhook-cron-cleanup.md (success)
 - 2026-05-10 01:43:51 brief-098-forms-polish-and-smoke-tests.md (success)
+- 2026-05-10 11:05:43 brief-099-forms-visible-to-me-index.md (success)
+- 2026-05-10 11:14:20 brief-100-forms-admin-list-audience-filter-and-copy-link.md (success)

@@ -80,8 +80,22 @@ Cutover steps (operator-driven, not Claude Code):
    ```
    Push to GitHub. CF Builds redeploys.
 
+   **Brief 99 routing note.** The bare `/forms` URL (no slug, no trailing
+   slash) is the apps/web credentialed-user index page added in Brief 99.
+   CF route patterns for `/forms/*` typically do NOT match the bare prefix
+   without a trailing slash, so `splashcarwashes.info/forms` should
+   continue to route through the apps/web catch-all (like every other
+   apps/web page). After binding the production route on `splash-forms`,
+   verify that `https://splashcarwashes.info/forms` (no slug) reaches
+   apps/web's `/forms` page — not the worker's 404 page. If it accidentally
+   matches the worker pattern, the workaround is to add `/forms` (literal,
+   no glob) to apps/web's `routes` block in `apps/web/wrangler.toml` so
+   CF's most-specific-match-wins routing forces apps/web to win on the
+   bare path.
+
 3. **Smoke test in production.** Run all 10 briefs' smoke tests against
-   `splashcarwashes.info/forms/*`. Confirm no regressions vs. staging.
+   `splashcarwashes.info/forms/*` plus the Brief 99 smoke tests for the
+   `/forms` index page. Confirm no regressions vs. staging.
 
 4. **Distribute first form URL.** Operator picks a real form to launch
    (likely a small internal form first). Build via `/admin/forms/new`,
@@ -705,6 +719,53 @@ Brief 97 wires two surfaces:
    default block response). Wait 10 minutes for the action duration
    to expire; the next POST succeeds again.
 
+### Brief 99 — visible-to-me index
+
+1. **Endpoint auth gate.** `curl -i https://splash-forms.<account>.workers.dev/forms/api/visible-to-me`
+   (no cookie) returns 401.
+2. **Endpoint auth pass.** Re-run with `Cookie: sb-access-token=...`
+   from a logged-in session — returns 200 with `{forms: [...]}`. Verify
+   all returned forms have `audience: "internal"` and `status:
+   "published"` (the latter is implicit, not surfaced in the response).
+3. **Page renders for logged-in user.** Visit `/forms` while signed in —
+   see the cards grid. Click a card → lands on `/forms/{slug}` and the
+   form renders.
+4. **Page redirects when signed out.** Visit `/forms` with cleared
+   cookies — middleware 302s to `/login?return=/forms`.
+5. **Empty state.** Temporarily flip every internal form to
+   `status='draft'` (one test form is enough) — visit `/forms`, see the
+   empty-state card. Restore.
+6. **Audience filter (forward compat).** Manually flip a form's
+   `audience` to `"public"`, refresh `/forms` — the form disappears
+   from the list (only `internal` is surfaced at v1). Restore.
+7. **Header gate.** On `/forms`, confirm the admin Header chrome
+   renders (Dashboard button, Sign Out button, role badge, Change
+   Password text link).
+
+### Brief 100 smoke (audience filter + copy link)
+
+1. **Audience filter — All.** `/admin/forms?audience=all` returns the
+   same row count as `/admin/forms` (no audience param).
+2. **Audience filter — Internal.** `/admin/forms?audience=internal`
+   returns only forms where the Audience column reads "internal".
+3. **Audience filter — Public.** `/admin/forms?audience=public` returns
+   only public forms.
+4. **Audience filter — Link-only.** `/admin/forms?audience=link-only`
+   returns only link-only forms.
+5. **Audience filter — bad value.** `curl
+   https://splash-forms.<account>.workers.dev/forms/admin/api/forms?audience=evil`
+   (with admin cookie) returns 400 `bad_audience`.
+6. **Copy link — published.** On a published form's row, click "Copy
+   link" — toast flips to "Copied ✓" for ~2 sec, clipboard contains
+   `https://<origin>/forms/<slug>`. Paste into a new tab — the public
+   form renders.
+7. **Copy link — unpublished.** Draft and archived rows show an em-dash
+   where the button would be (no public URL exists).
+8. **Copy link — clipboard-unavailable fallback.** In a browser context
+   where `navigator.clipboard.writeText` rejects (e.g. Safari with
+   strict permissions), the button falls back to `window.prompt()`
+   showing the URL for manual copy.
+
 ## 6. Known limitations (v2 candidates)
 
 - **Per-form custom webhook URLs.** v1 ships with a single
@@ -742,6 +803,26 @@ Brief 97 wires two surfaces:
   but Save Draft only persists `schema.fields`. Form-level metadata
   edits stay client-side until a future brief widens the
   PATCH /draft endpoint or adds a sibling endpoint.
+- **Per-role / per-location form visibility (option 3).** v1's
+  `/forms/api/visible-to-me` returns every published internal form to
+  every credentialed user. Option 3 adds a `visibility` JSONB column on
+  `forms` (additive migration), a builder-side inspector panel for
+  configuring visibility, and an intersected filter inside the
+  visible-to-me handler. The endpoint contract and the page don't change
+  — option 3 is a strictly additive layer.
+- **Dashboard tile for end users.** The `/admin/dashboard` tile from
+  Brief 98 points at `/admin/forms` (the builder, admin-gated). End users
+  who land on the dashboard would benefit from a separate tile pointing
+  at `/forms` (the index, any-credentialed-user). Deferred — the
+  dashboard's own gating is admin-only today, so end users don't see it.
+- **Recently-used / favorites.** The index is alphabetical by title; no
+  per-user "recently filled" or "starred" model. v2 candidate if the form
+  count grows beyond ~20.
+- **Link-only on the index.** v1 excludes link-only audience forms from
+  the index because there's no per-user entitlement model in v1 — the
+  slug is the gate. Option 3's visibility model would let an operator
+  explicitly grant a link-only form to a set of users, at which point
+  surfacing it on `/forms` makes sense.
 
 ## 7. Production rate limit on `POST /forms/api/submit/*`
 

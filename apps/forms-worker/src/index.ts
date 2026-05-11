@@ -9,6 +9,7 @@
 //   POST   /forms/api/upload/{slug}                   — Brief 92: file upload
 //   POST   /forms/api/signature/{slug}                — Brief 92: signature upload
 //   POST   /forms/api/lookup/{slug}                   — Brief 93: on-demand lookup resolve
+//   GET    /forms/api/visible-to-me                   — Brief 99: credentialed-user index
 //   GET    /forms/api/static/*                        — Brief 92: vendored client JS
 //   GET    /forms/api/asset/{form_id}/{asset_id}      — Brief 90 followup: public in-form image asset
 //   GET    /forms/admin/api/files/*                   — Brief 92: admin-gated R2 serve
@@ -55,6 +56,7 @@ import { handleFileServe } from "./uploads/serve.js";
 import { handlePublicAssetServe } from "./uploads/asset-serve.js";
 import { handleStaticAsset } from "./uploads/static.js";
 import { handleLookupResolve } from "./lookup/resolve.js";
+import { handleVisibleToMe } from "./visible-to-me.js";
 import {
   handleListForms,
   handleCreateForm,
@@ -122,6 +124,12 @@ export default {
     const lookupMatch = url.pathname.match(/^\/forms\/api\/lookup\/([^/]+)$/);
     if (lookupMatch && lookupMatch[1] && req.method === "POST") {
       return handleLookupResolve(env, req, lookupMatch[1]);
+    }
+
+    // GET /forms/api/visible-to-me — credentialed-user index endpoint
+    // (Brief 99). Returns forms the caller can see; v1 = published+internal.
+    if (url.pathname === "/forms/api/visible-to-me" && req.method === "GET") {
+      return handleVisibleToMe(env, req);
     }
 
     // GET /forms/api/static/* — vendored client JS (Brief 92).

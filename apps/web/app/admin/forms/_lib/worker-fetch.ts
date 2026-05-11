@@ -246,6 +246,7 @@ async function readJson<T>(resp: Response, label: string): Promise<T> {
 export interface ListFormsParams {
   status?: string;
   search?: string;
+  audience?: string;
 }
 
 export async function listFormsAdmin(
@@ -254,6 +255,7 @@ export async function listFormsAdmin(
   const qs = new URLSearchParams();
   if (params.status) qs.set("status", params.status);
   if (params.search) qs.set("search", params.search);
+  if (params.audience) qs.set("audience", params.audience);
   const path = `/forms/admin/api/forms${qs.toString() ? `?${qs}` : ""}`;
   const resp = await callForms(path);
   if (resp.status === 401 || resp.status === 403) return null;
