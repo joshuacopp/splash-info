@@ -124,6 +124,17 @@ import {
   findTransition
 } from "./transitions.js";
 import {
+  STATUS_NOTIFIES_NEXT,
+  fireClaimUpdateWebhook,
+  resolveRecipients,
+  type ClaimUpdateChangeType,
+  type ClaimUpdateWebhookPayload,
+  fireInternalNewClaimWebhook,
+  resolveInternalRecipients,
+  type ClaimPhotoForWebhook,
+  type InternalNewClaimPayload
+} from "./notifications.js";
+import {
   buildCheckRequestFields,
   generateCheckRequestPdf,
   runCheckRequestPdfStep
@@ -184,6 +195,26 @@ interface Env extends SupabaseEnv {
    *  when unbound the cron logs and exits cleanly. Bind via
    *  `wrangler secret put DAILY_SUMMARY_WEBHOOK_URL`. */
   DAILY_SUMMARY_WEBHOOK_URL?: string;
+  /** Brief 101 — manage-page update notifications. Fires on note adds
+   *  (both rm_email + site_email) and on status changes whose `to` is
+   *  in `STATUS_NOTIFIES_NEXT`. Optional; when unbound the webhook is
+   *  silently skipped. Bind via
+   *  `wrangler secret put CLAIM_UPDATE_WEBHOOK_URL`. */
+  CLAIM_UPDATE_WEBHOOK_URL?: string;
+  /** Brief 102 — internal new-claim notification. Fires after every
+   *  successful customer claim submission, parallel to the Brief 32
+   *  customer-email webhook. Recipients: location's rm_email +
+   *  site_email + am_email + INCIDENTS_EMAIL (below). Optional; when
+   *  unbound the internal-notification path is silently skipped (the
+   *  customer-email path is unaffected). Bind via
+   *  `wrangler secret put INTERNAL_NEW_CLAIM_WEBHOOK_URL`. */
+  INTERNAL_NEW_CLAIM_WEBHOOK_URL?: string;
+  /** Brief 102 — incidents inbox copied on every customer claim
+   *  submission. Non-secret `[vars]` entry; edit in wrangler.toml to
+   *  change the address. When unbound or blank the incidents recipient
+   *  drops out of `recipients[]` and PA emails only the location's
+   *  three contact addresses. */
+  INCIDENTS_EMAIL?: string;
 }
 
 /** R2 key for the brand logo embedded in the claim summary PDF header band
@@ -1376,6 +1407,22 @@ async function handleAddNote(
     console.error("handleAddNote failed:", err);
     return jsonError(500, "Failed to save note.");
   }
+
+  // Brief 101 — fire-and-forget manage-page update notification. Both
+  // rm_email and site_email are notified (minus the actor's own email).
+  // Fail-soft: helper swallows all errors so the note response is never
+  // blocked on the webhook round-trip.
+  if (env.CLAIM_UPDATE_WEBHOOK_URL) {
+    void notifyClaimUpdate({
+      env,
+      changeType: "note",
+      claim: guard.claim,
+      actorEmail: session.email,
+      actorRole: session.dcRole ?? null,
+      noteText
+    });
+  }
+
   return json({ ok: true });
 }
 
@@ -1656,6 +1703,26 @@ async function handleStatusTransition(
   } catch (err) {
     console.error("handleStatusTransition failed:", err);
     return jsonError(500, "Failed to apply status change.");
+  }
+
+  // Brief 101 — fire-and-forget manage-page update notification. The
+  // helper checks STATUS_NOTIFIES_NEXT[finalTo] internally and exits
+  // cleanly when the destination is a non-notifying status (admin /
+  // finance / closed / vestigial). Placed AFTER the batch commits so a
+  // notification can't fire for a write that rolled back, and BEFORE
+  // the MaintainX block so the two side-effects don't serialize on
+  // each other.
+  if (env.CLAIM_UPDATE_WEBHOOK_URL) {
+    void notifyClaimUpdate({
+      env,
+      changeType: "status",
+      claim,
+      actorEmail: session.email,
+      actorRole: session.dcRole ?? null,
+      fromStatus: claim.claim_status,
+      toStatus: finalTo,
+      noteText: noteText || undefined
+    });
   }
 
   // Brief 43 — fire the existing createMaintainXWorkOrder helper when the
@@ -2742,6 +2809,29 @@ async function handleClaimSubmission(request: Request, env: Env): Promise<Respon
             siteEmail
           );
         }
+        // Brief 102 — parallel internal new-claim notification. Fans out to
+        // the location's rm_email / site_email / am_email plus the
+        // operator-configured INCIDENTS_EMAIL via a separate PA flow. Reuses
+        // pdfBytes + summaryPdfUrl above so there's no second PDF generation.
+        // Wrapped in its own try/catch as defense-in-depth even though the
+        // inner helper swallows its own errors; the outer Brief 32 try/catch
+        // is the final net.
+        if (env.INTERNAL_NEW_CLAIM_WEBHOOK_URL) {
+          try {
+            await fireInternalNewClaimNotification({
+              env,
+              pdfBytes,
+              summaryPdfUrl,
+              claimData,
+              baseOrigin
+            });
+          } catch (notifyErr) {
+            console.error(
+              `[internal-new-claim] pipeline failed for ${claimData.claimId}:`,
+              notifyErr
+            );
+          }
+        }
       }
     } catch (pdfErr) {
       console.error(
@@ -3250,6 +3340,227 @@ async function fireCustomerClaimWebhook(
   } catch (err) {
     console.error(
       `CUSTOMER_CLAIM_WEBHOOK_URL POST error for ${claimData.claimId}:`,
+      err
+    );
+  }
+}
+
+/* ============================================================
+ * Brief 102 — internal new-claim notification pipeline
+ * ============================================================
+ *
+ * Fired by `handleClaimSubmission` after the customer webhook, when
+ * `INTERNAL_NEW_CLAIM_WEBHOOK_URL` is bound. Recipients are the
+ * location's rm_email / site_email / am_email (resolved via the
+ * widened `getLocationContactInfo`) plus the operator-configured
+ * `INCIDENTS_EMAIL` [vars] entry. Same fail-soft posture as the
+ * customer webhook: every external touch (contact lookup, photo list,
+ * fetch) is wrapped in try/catch and degrades to nulls / empty.
+ *
+ * Reuses pdfBytes + summaryPdfUrl from the Brief 32 block so there's no
+ * duplicate PDF generation; photos are listed from D1 immediately after
+ * the claim insert.
+ */
+async function fireInternalNewClaimNotification(args: {
+  env: Env;
+  pdfBytes: Uint8Array;
+  summaryPdfUrl: string;
+  claimData: ClaimSubmissionPayload;
+  baseOrigin: string;
+}): Promise<void> {
+  const { env, pdfBytes, summaryPdfUrl, claimData, baseOrigin } = args;
+  if (!env.INTERNAL_NEW_CLAIM_WEBHOOK_URL) return;
+
+  // Contacts. Fail-soft: any throw collapses to all-nulls; the webhook
+  // still fires with only the incidents inbox as a recipient (if set).
+  let contacts: {
+    site_email: string | null;
+    rm_email: string | null;
+    am_email: string | null;
+  } = { site_email: null, rm_email: null, am_email: null };
+  try {
+    contacts = await getLocationContactInfo(env, claimData.location);
+  } catch (err) {
+    console.warn(
+      `[internal-new-claim] contact lookup threw for ${claimData.location}`,
+      err
+    );
+  }
+
+  const incidents = (env.INCIDENTS_EMAIL ?? "").trim();
+  const recipients = resolveInternalRecipients(
+    contacts,
+    incidents || null
+  );
+
+  // Photos. Fail-soft: lookup throw → photos: []. At submission time only
+  // 'Damage' photos exist (Quote / Receipt come from the manage page later);
+  // querying claim_photos unfiltered means future expansions are no-effort.
+  let photos: ClaimPhotoForWebhook[] = [];
+  try {
+    const rows = await listPhotosForClaim(env.DB, claimData.claimId);
+    photos = rows
+      .filter((p) => !p.deleted_at && p.r2_key)
+      .map((p) => ({
+        url: `${baseOrigin}/claims-api/photo/${p.r2_key}`,
+        mime: p.content_type ?? null,
+        original_filename: p.filename ?? null,
+        photo_type: p.photo_type ?? null,
+        // claim_photos has no per-row upload timestamp; at submit time
+        // every photo lands with the claim, so the claim's submission
+        // timestamp is the authoritative upload time.
+        uploaded_at: claimData.submittedAt
+      }));
+  } catch (err) {
+    console.warn(
+      `[internal-new-claim] photo list threw for ${claimData.claimId}`,
+      err
+    );
+  }
+
+  const vehicleParts = [
+    claimData.vehicleYear,
+    claimData.vehicleMake,
+    claimData.vehicleModel
+  ].filter((p) => (p ?? "").toString().trim());
+  let vehicle = vehicleParts.join(" ");
+  if (claimData.vehicleColor && claimData.vehicleColor.trim()) {
+    vehicle = vehicle
+      ? `${vehicle} - ${claimData.vehicleColor.trim()}`
+      : claimData.vehicleColor.trim();
+  }
+
+  const baseUrl = env.APPS_WEB_BASE_URL ?? "https://splashcarwashes.info";
+  const adminUrl = `${baseUrl}/admin/damage/${encodeURIComponent(
+    claimData.claimId
+  )}`;
+
+  const includeBase64 = pdfBytes.byteLength <= CUSTOMER_WEBHOOK_BASE64_MAX_BYTES;
+
+  const payload: InternalNewClaimPayload = {
+    claim_id: claimData.claimId,
+    submitted_at: claimData.submittedAt,
+    location_code: claimData.location,
+    location_pretty: claimData.locationPretty || null,
+    admin_url: adminUrl,
+    customer_name: claimData.customerName,
+    customer_email: claimData.customerEmail,
+    customer_phone: claimData.customerPhone || null,
+    vehicle: vehicle || "—",
+    damage_type: claimData.damageType,
+    damage_other: claimData.damageOther || null,
+    issue_description: claimData.issueDescription || null,
+    recipients,
+    candidates: {
+      rm_email: contacts.rm_email,
+      site_email: contacts.site_email,
+      am_email: contacts.am_email,
+      incidents_email: incidents || null
+    },
+    summary_pdf_url: summaryPdfUrl,
+    ...(includeBase64 ? { summary_pdf_base64: bytesToBase64(pdfBytes) } : {}),
+    photos
+  };
+
+  await fireInternalNewClaimWebhook(
+    env.INTERNAL_NEW_CLAIM_WEBHOOK_URL,
+    payload
+  );
+}
+
+/* ============================================================
+ * Brief 101 — manage-page update notifications
+ * ============================================================
+ *
+ * Fired by handleAddNote (every note add) and handleStatusTransition
+ * (every status change whose `to` is in STATUS_NOTIFIES_NEXT). Both
+ * call sites guard on env.CLAIM_UPDATE_WEBHOOK_URL being bound before
+ * invoking; this helper additionally defends against unbound state.
+ * Fail-soft: never throws, all errors logged + swallowed. The status
+ * change / note write is already committed by the time we get here; a
+ * notification failure cannot roll it back. Spawned with `void` so the
+ * handler response is not blocked on the webhook round-trip.
+ */
+async function notifyClaimUpdate(args: {
+  env: Env;
+  changeType: ClaimUpdateChangeType;
+  claim: ClaimRow;
+  actorEmail: string;
+  actorRole: string | null;
+  fromStatus?: ClaimStatus;
+  toStatus?: ClaimStatus;
+  noteText?: string;
+}): Promise<void> {
+  const {
+    env,
+    changeType,
+    claim,
+    actorEmail,
+    actorRole,
+    fromStatus,
+    toStatus,
+    noteText
+  } = args;
+  try {
+    if (!env.CLAIM_UPDATE_WEBHOOK_URL) return;
+
+    // Decide who gets notified.
+    let notifies: "gm" | "rm" | "both";
+    if (changeType === "note") {
+      notifies = "both";
+    } else if (toStatus && STATUS_NOTIFIES_NEXT[toStatus]) {
+      notifies = STATUS_NOTIFIES_NEXT[toStatus]!;
+    } else {
+      // Status change landed on a non-notifying status (admin / finance /
+      // closed / vestigial) — exit cleanly with no webhook fired.
+      return;
+    }
+
+    // Resolve the location's contact addresses. Fail-soft: any throw
+    // collapses to nulls; the webhook still fires with an empty
+    // recipients array (PA no-ops cleanly).
+    let contacts: { rm_email: string | null; site_email: string | null } = {
+      rm_email: null,
+      site_email: null
+    };
+    try {
+      contacts = await getLocationContactInfo(env, claim.location_code);
+    } catch (err) {
+      console.warn(
+        `[claim-update] getLocationContactInfo threw for ${claim.location_code}; treating as null contacts`,
+        err
+      );
+    }
+
+    const recipients = resolveRecipients(notifies, contacts, actorEmail);
+
+    const baseUrl =
+      env.APPS_WEB_BASE_URL ?? "https://splashcarwashes.info";
+    const adminUrl = `${baseUrl}/admin/damage/${encodeURIComponent(
+      claim.claim_id
+    )}`;
+
+    const payload: ClaimUpdateWebhookPayload = {
+      change_type: changeType,
+      claim_id: claim.claim_id,
+      customer_name: claim.customer_name ?? null,
+      location_code: claim.location_code,
+      location_pretty: claim.location_pretty ?? null,
+      admin_url: adminUrl,
+      actor: { email: actorEmail, dc_role: actorRole },
+      recipients,
+      candidates: contacts,
+      ...(fromStatus ? { from_status: fromStatus } : {}),
+      ...(toStatus ? { to_status: toStatus } : {}),
+      ...(noteText ? { note_text: noteText.slice(0, 5000) } : {})
+    };
+
+    await fireClaimUpdateWebhook(env.CLAIM_UPDATE_WEBHOOK_URL, payload);
+  } catch (err) {
+    // Defense-in-depth: nothing reaches here unless one of the inner
+    // helpers throws unexpectedly. Logged and swallowed.
+    console.error(
+      `[claim-update] notifyClaimUpdate failed for ${claim.claim_id}:`,
       err
     );
   }

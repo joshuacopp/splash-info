@@ -163,32 +163,53 @@ export async function getMaintainXLocationId(
  * `CUSTOMER_CLAIM_WEBHOOK_URL` payload so Power Automate can wire customer
  * confirmation-email replies to the per-location inbox via a Reply-To header.
  *
- * Single-query lookup against `pricing_simple.site_email`. The value is
- * trigger-synced from `locations.site_email` by `trg_sync_pricing_simple`
- * (one-direction: locations → pricing_simple), so the read is eventually
- * consistent with the locations row. Brief 26's package update endpoint
- * REJECTS direct PATCHes to `pricing_simple.site_email` with HTTP 400
+ * Brief 101 widened the return shape to include `rm_email` alongside
+ * `site_email`. Both come from the same `pricing_simple` row in a single
+ * query; the manage-page update webhook (`CLAIM_UPDATE_WEBHOOK_URL`)
+ * needs both addresses to decide who to notify when a note is added or
+ * a status changes. Existing callers that only read `site_email`
+ * continue to compile unchanged.
+ *
+ * Brief 102 widened the return shape once more to include `am_email`
+ * (the Regional Director's address per CLAUDE.md label-vs-data
+ * divergence). Used by damage-worker's `INTERNAL_NEW_CLAIM_WEBHOOK_URL`
+ * fan-out so PA can email the RD alongside the RM and on-site inbox on
+ * every customer claim submission. Existing Brief 32 / 101 call sites
+ * keep working — `am_email` is silently ignored by callers that don't
+ * consume it.
+ *
+ * Single-query lookup against `pricing_simple.site_email`/`rm_email`/
+ * `am_email`. The values are trigger-synced from `locations` by
+ * `trg_sync_pricing_simple` (one-direction: locations → pricing_simple),
+ * so the read is eventually consistent with the locations row. Brief 26's
+ * package update endpoint REJECTS direct PATCHes to
+ * `pricing_simple.site_email` / `rm_email` / `am_email` with HTTP 400
  * specifically because of this trigger — direct edits would be silently
  * reverted on the next locations-side update, so pricing_simple's value
  * is always the locations-sourced value.
  *
- * Fail-soft: returns null on bad-shape slug, missing pricing_simple row,
- * missing/null `site_email`, fetch throw, or any non-2xx response. Caller
- * (damage-worker) emits `site_email: null` in the webhook payload on null;
- * PA gracefully no-ops the Reply-To header for those locations.
+ * Fail-soft: returns nulls on bad-shape slug, missing pricing_simple row,
+ * missing/null fields, fetch throw, or any non-2xx response. Caller
+ * (damage-worker) emits nulls in the webhook payload on null; PA
+ * gracefully no-ops the Reply-To header / recipient line for those
+ * locations.
  */
 export async function getLocationContactInfo(
   env: { SUPABASE_URL: string; SUPABASE_SERVICE_KEY: string },
   locationCode: string
-): Promise<{ site_email: string | null }> {
-  // Brief 49 — single-query against pricing_simple.site_email; the prior
-  // two-step join through locations.site was broken (pricing_simple.site
-  // didn't match locations.site for at least the Oswego location). The
-  // trg_sync_pricing_simple trigger keeps pricing_simple.site_email
-  // eventually consistent with the locations row, so this is equivalent.
+): Promise<{
+  site_email: string | null;
+  rm_email: string | null;
+  am_email: string | null;
+}> {
+  // Brief 49 — single-query against pricing_simple; the prior two-step
+  // join through locations.site was broken (pricing_simple.site didn't
+  // match locations.site for at least the Oswego location). The
+  // trg_sync_pricing_simple trigger keeps pricing_simple eventually
+  // consistent with the locations row, so this is equivalent.
   const sanitized = locationCode.trim().toLowerCase();
   if (!sanitized || !/^[a-z0-9_]+$/.test(sanitized)) {
-    return { site_email: null };
+    return { site_email: null, rm_email: null, am_email: null };
   }
 
   const headers = {
@@ -198,7 +219,7 @@ export async function getLocationContactInfo(
 
   const url = new URL("/rest/v1/pricing_simple", env.SUPABASE_URL);
   url.searchParams.set("location_code", `eq.${sanitized}`);
-  url.searchParams.set("select", "site_email");
+  url.searchParams.set("select", "site_email,rm_email,am_email");
   url.searchParams.set("limit", "1");
 
   let response: Response;
@@ -206,22 +227,32 @@ export async function getLocationContactInfo(
     response = await fetch(url.toString(), { headers });
   } catch (err) {
     console.error("getLocationContactInfo: pricing_simple fetch threw", err);
-    return { site_email: null };
+    return { site_email: null, rm_email: null, am_email: null };
   }
   if (!response.ok) {
     console.error(
       "getLocationContactInfo: pricing_simple returned",
       response.status
     );
-    return { site_email: null };
+    return { site_email: null, rm_email: null, am_email: null };
   }
 
   const rows = (await response.json().catch(() => [])) as Array<{
     site_email: string | null;
+    rm_email: string | null;
+    am_email: string | null;
   }>;
-  const raw = rows[0]?.site_email;
-  const trimmed = typeof raw === "string" ? raw.trim() : "";
-  return { site_email: trimmed ? trimmed : null };
+  const rawSite = rows[0]?.site_email;
+  const rawRm = rows[0]?.rm_email;
+  const rawAm = rows[0]?.am_email;
+  const trimmedSite = typeof rawSite === "string" ? rawSite.trim() : "";
+  const trimmedRm = typeof rawRm === "string" ? rawRm.trim() : "";
+  const trimmedAm = typeof rawAm === "string" ? rawAm.trim() : "";
+  return {
+    site_email: trimmedSite ? trimmedSite : null,
+    rm_email: trimmedRm ? trimmedRm : null,
+    am_email: trimmedAm ? trimmedAm : null
+  };
 }
 
 /**

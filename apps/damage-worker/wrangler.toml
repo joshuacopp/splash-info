@@ -91,6 +91,27 @@ routes = [
 #                         and the post-submit outcome card surfaces a
 #                         "Download a copy" link so the customer can save it
 #                         without waiting for an email.)
+# CLAIM_UPDATE_WEBHOOK_URL — secret (Brief 101; fired on note add and on
+#                         status changes whose `to` is in
+#                         STATUS_NOTIFIES_NEXT — PA fans out emails to the
+#                         location's rm_email + site_email (notes) or to the
+#                         single next-actor address (status changes). Set
+#                         with `wrangler secret put CLAIM_UPDATE_WEBHOOK_URL`.
+#                         Fail-soft: when unbound the webhook is silently
+#                         skipped, the note / transition itself is
+#                         unaffected. Actor's own email is excluded from
+#                         recipients server-side (case-insensitive).)
+# INTERNAL_NEW_CLAIM_WEBHOOK_URL — secret (Brief 102; fired after every
+#                         successful customer claim submission, parallel to
+#                         CUSTOMER_CLAIM_WEBHOOK_URL. PA fans out an internal
+#                         heads-up email with the claim summary PDF + photo
+#                         URLs to the location's rm_email / site_email /
+#                         am_email plus the INCIDENTS_EMAIL [vars] entry
+#                         below. Set with
+#                         `wrangler secret put INTERNAL_NEW_CLAIM_WEBHOOK_URL`.
+#                         Fail-soft: when unbound the internal-notification
+#                         path is silently skipped — the customer-email path,
+#                         the PDF, and the claim write are all unaffected.)
 #
 # OPERATOR PREREQUISITE: the Check Request AcroForm template MUST be uploaded
 # to R2 at key "templates/check-request.pdf" before any transition that
@@ -118,6 +139,13 @@ routes = [
 MAINTAINX_MODE = "test"
 MAINTAINX_BASE_URL = "https://api.getmaintainx.com/v1"
 APPS_WEB_BASE_URL = "https://splashcarwashes.info"
+# Brief 102 (2026-05-11): incidents inbox copied on every customer claim
+# submission via INTERNAL_NEW_CLAIM_WEBHOOK_URL. Edit this value to change the
+# recipient; no secret rotation required because it's not sensitive. Drop the
+# line (or set to empty string) to drop incidents from the recipient list —
+# the rm_email / site_email / am_email recipients keep working. Operator to
+# confirm or amend this placeholder before push.
+INCIDENTS_EMAIL = "incidents@splashcarwashes.com"
 
 [[d1_databases]]
 binding = "DB"

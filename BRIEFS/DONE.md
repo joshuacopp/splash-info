@@ -99,3 +99,5 @@
 - 2026-05-10 01:43:51 brief-098-forms-polish-and-smoke-tests.md (success)
 - 2026-05-10 11:05:43 brief-099-forms-visible-to-me-index.md (success)
 - 2026-05-10 11:14:20 brief-100-forms-admin-list-audience-filter-and-copy-link.md (success)
+- 2026-05-11 08:55:50 brief-101-damage-manage-update-notifications.md (success)
+- 2026-05-11 09:09:50 brief-102-damage-new-claim-internal-alert.md (success)

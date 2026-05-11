@@ -65,6 +65,7 @@ import { DocumentEditDetails } from "../_components/DocumentEditDetails";
 import { EquipmentOverrideSubmit } from "../_components/EquipmentOverrideModal";
 import { LifecycleBadge } from "../_components/LifecycleBadge";
 import { PhotoLightbox } from "../_components/PhotoLightbox";
+import { StatusActionPill } from "../_components/StatusActionPill";
 import { UploadDocumentCard } from "../_components/UploadDocumentCard";
 import { canMutateDocument } from "../_lib/permissions";
 import { transitionsFrom, type UITransition } from "../_lib/transitions";
@@ -399,6 +400,7 @@ function SummaryCard({
             <span className="inline-flex items-center rounded-full bg-sudsy-blue-soft px-2.5 py-0.5 text-xs font-semibold text-splash-navy">
               {claim.claim_status}
             </span>
+            <StatusActionPill status={claim.claim_status} />
             {/*
              * Brief 21 — contact_status was originally meant to track
              * customer-contact lifecycle (call left voicemail, scheduled

@@ -18,6 +18,7 @@ import { damageGetJson } from "./_lib/worker-fetch";
 import { LifecycleBadge } from "./_components/LifecycleBadge";
 import { AgePill } from "./_components/AgePill";
 import { DamageTabs } from "./_components/DamageTabs";
+import { StatusActionPill } from "./_components/StatusActionPill";
 import type { ClaimRow, ClaimStatus, LifecycleState } from "@splash/types/claims";
 
 // Brief 59 — shape returned from /manage/api/contact-roster.
@@ -421,7 +422,10 @@ export default async function DamageClaimsListPage({ searchParams }: PageProps) 
                       </div>
                     </td>
                     <td className="px-4 py-3 text-splash-navy/80">
-                      {c.claim_status}
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span>{c.claim_status}</span>
+                        <StatusActionPill status={c.claim_status} />
+                      </div>
                     </td>
                     <td className="px-4 py-3">
                       <LifecycleBadge state={c.lifecycle_state} />

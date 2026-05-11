@@ -319,6 +319,13 @@ When given a new task:
   breakdowns; cost = sum of approved-quote + receipt amounts —
   `claim_photos.amount` for `Quote`/`Receipt` rows on Approved-family
   claims).
+  Brief 101 (2026-05-11) wired the optional `CLAIM_UPDATE_WEBHOOK_URL`
+  secret into the note + transition handlers — fail-soft per-event
+  notifications to the location's rm_email / site_email keyed by the
+  destination status (see glossary entry). Future notification
+  surfaces on damage-worker should reuse
+  `apps/damage-worker/src/notifications.ts` rather than spawning a
+  new module per feature.
 - **`MAINTAINX_API_KEY` is bound on TWO workers** (Brief 70):
   damage-worker for the WO-create path (Brief 42 / 43), and
   workorders-worker for the WO-read path (`GET /workorders/api/list`).
@@ -1308,6 +1315,67 @@ URL-based — service bindings don't apply to those.
   card surfaces the "Download a copy" link. The `site_email` lookup is
   also fail-soft: any throw from the `getLocationContactInfo` helper
   collapses to null and the webhook still fires.
+- **CLAIM_UPDATE_WEBHOOK_URL** - Optional damage-worker secret
+  (Brief 101) fired per-event on the manage-page write surface. Two
+  intercept points: (a) every successful note add via
+  `POST /manage/api/claim/{id}/note` — recipients are the location's
+  `rm_email` AND `site_email`; (b) every successful status change via
+  `POST /manage/api/claim/{id}/transition` whose destination status is
+  in `STATUS_NOTIFIES_NEXT` (`Pending GM Review` /
+  `No Responsibility — Pending Review` / `Approved — Pending Quotes`
+  → `site_email`; `Pending RM Review` / `Pending RM Quote Approval`
+  → `rm_email`; every other destination is no-notify). The map is
+  keyed by `to` status (not transition pair), so Brief 66 RM-revert
+  paths fire too — bounce-backs ARE the field-side event. Actor
+  exclusion: the actor's own email is stripped from the recipient
+  list server-side (case-insensitive); the `recipients` array PA
+  loops over may be empty (PA no-ops cleanly). Payload includes
+  `change_type` (`"note"`/`"status"`), `claim_id`, `customer_name`,
+  `location_code`/`pretty`, `admin_url`, `actor: {email, dc_role}`,
+  optional `from_status`/`to_status`/`note_text`, plus a `candidates`
+  audit object with both addresses pre-exclusion. Helper module is
+  `apps/damage-worker/src/notifications.ts` (sibling to
+  `transitions.ts` — the two policy tables live together). Same
+  fail-soft + `ctx.waitUntil`-style fire-and-forget posture as
+  Brief 32 / 65. Future notification surfaces should reuse this
+  module rather than spawning a new one per feature.
+- **INTERNAL_NEW_CLAIM_WEBHOOK_URL** - Optional damage-worker secret
+  (Brief 102) fired after every successful customer claim submission,
+  parallel to `CUSTOMER_CLAIM_WEBHOOK_URL` in the same Brief 32
+  post-submit block (after the customer-webhook fire, inside the same
+  PDF try/catch). Recipients are the location's `rm_email` +
+  `site_email` + `am_email` (resolved via `getLocationContactInfo` —
+  widened by Brief 102 to return all three from one `pricing_simple`
+  query) plus the operator-configured `INCIDENTS_EMAIL` `[vars]` entry.
+  No actor exclusion (the customer submitter is not a location
+  contact). Payload reuses Brief 32's `pdfBytes` + `summaryPdfUrl` —
+  no duplicate PDF generation — and ships the same ~3 MB raw
+  `CUSTOMER_WEBHOOK_BASE64_MAX_BYTES` base64 ceiling. Also includes a
+  `photos[]` array of `/claims-api/photo/{r2_key}` URLs (every active
+  `claim_photos` row for the freshly-inserted claim — at submit time
+  these are `Damage` photos only; the query is unfiltered so future
+  expansions are no-effort) with `{url, mime, original_filename,
+  photo_type, uploaded_at}`. `uploaded_at` is the claim's
+  `submitted_at` because D1 doesn't carry a per-photo timestamp. The
+  `admin_url` field points at apps/web via `APPS_WEB_BASE_URL` (same
+  pattern as Brief 101). Fail-soft: when unbound, the internal-
+  notification path silently skips and the customer-email + PDF paths
+  continue to work. Helper module is the same
+  `apps/damage-worker/src/notifications.ts` Brief 101 introduced
+  (`fireInternalNewClaimWebhook`, `resolveInternalRecipients`,
+  `ClaimPhotoForWebhook`, `InternalNewClaimPayload`). The
+  `fireInternalNewClaimNotification` private function in `index.ts`
+  composes the payload and lives next to `fireCustomerClaimWebhook`.
+- **INCIDENTS_EMAIL** - Non-secret damage-worker `[vars]` entry
+  (Brief 102) added to the `INTERNAL_NEW_CLAIM_WEBHOOK_URL`
+  `recipients[]` array on every customer claim submission. Same value
+  across all locations; lives in `apps/damage-worker/wrangler.toml`
+  (placeholder `incidents@splashcarwashes.com` — operator confirms or
+  amends before push; edits are diff-able and don't require secret
+  rotation because the value isn't sensitive). Blank / unset → drops
+  out of the recipient list; the three location addresses still
+  receive. Splitting incidents into per-RM-group inboxes is a v2
+  candidate (out of scope for Brief 102).
 - **maxpass_signups** - Customer signup table. 18 columns including
   `confirmation_token` (UUID), `terms_text` (exact string customer
   saw), country/city/region from `request.cf`.
