@@ -57,7 +57,6 @@ export default async function FleetSubmissionDetailPage({ params }: PageProps) {
   const row = detail!.row;
   const fields: Array<{ label: string; value: React.ReactNode }> = [
     { label: "ID", value: <code className="text-xs">{row.id}</code> },
-    { label: "Created at", value: formatAbsolute(row.created_at) },
     { label: "Submitted at", value: formatAbsolute(row.submitted_at) },
     { label: "Company", value: row.company ?? em() },
     { label: "Contact name", value: row.name ?? em() },
@@ -120,7 +119,7 @@ export default async function FleetSubmissionDetailPage({ params }: PageProps) {
         {row.company ?? "Fleet Inquiry"}
       </h1>
       <p className="mb-5 text-sm text-splash-navy/70">
-        Submitted {formatRelative(row.created_at)} ·{" "}
+        Submitted {formatRelative(row.submitted_at)} ·{" "}
         {row.name ?? "(no contact name)"}
       </p>
 

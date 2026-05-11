@@ -169,8 +169,8 @@ function SubmissionsTable({ rows }: { rows: FleetSubmissionRow[] }) {
           {rows.map((r) => (
             <tr key={r.id} className="border-t border-gray-light">
               <td className="px-3 py-2 align-top text-splash-navy">
-                <span title={formatAbsolute(r.created_at)}>
-                  {formatRelative(r.created_at)}
+                <span title={formatAbsolute(r.submitted_at)}>
+                  {formatRelative(r.submitted_at)}
                 </span>
               </td>
               <td className="px-3 py-2 align-top text-splash-navy">

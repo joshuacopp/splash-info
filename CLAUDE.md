@@ -1035,7 +1035,16 @@ URL-based — service bindings don't apply to those.
   detail / PATCH are unaffected — they're SSR'd from the apps/web
   Worker, browser never calls the fleet worker directly for them.
   Future workers using a subdomain pattern + needing a browser-direct
-  download should follow the same proxy convention.
+  download should follow the same proxy convention. Brief 106
+  (2026-05-11): apps/web's list-row Submitted cell and detail-page
+  caption now read `row.submitted_at` (matching the worker-side
+  authoritative timestamp post-Brief-86); the always-blank "Created
+  at" row was dropped from the detail key/value grid.
+  `fleet_submissions.created_at` is unpopulated on every row — the
+  worker writes `submitted_at` explicitly on insert. The Brief 86 +
+  Brief 88 paragraphs above pre-date this correction; treat
+  `submitted_at` as the single timestamp surface anywhere fleet
+  submissions are rendered.
 - **Work Orders** (Brief 70 / Brief 71) - Read-only MaintainX
   integration. Surfaces open / in-progress / on-hold work orders to
   operators on `/workorders` (top-level apps/web page, NOT under

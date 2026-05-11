@@ -23,25 +23,22 @@ item by submission `id`; updates the changed fields.
 
 ```json
 {
-  "id": "8c4f2b1a-d3e7-4a91-b652-2f9e7d1a8c3b",
+  "id": 21,
   "change_type": "both",
   "changed_fields": ["status", "notes"],
   "actor": {
     "email": "noah@splashcarwashes.com"
   },
   "row": {
-    "id": "8c4f2b1a-d3e7-4a91-b652-2f9e7d1a8c3b",
-    "company_name": "Acme Trucking",
-    "contact_name": "Jane Driver",
-    "contact_email": "jane@acmetrucking.com",
-    "contact_phone": "555-867-5309",
-    "fleet_size": 24,
+    "id": 21,
+    "company": "Acme Trucking",
+    "name": "Jane Driver",
+    "email": "jane@acmetrucking.com",
+    "phone": "555-867-5309",
+    "number_of_vehicles": 24,
     "location_code": "milford",
     "location_pretty": "Milford",
-    "package_code": "BASIC",
-    "address": "123 Main St",
     "submitted_at": "2026-05-11T14:19:06.000Z",
-    "created_at": "2026-05-11T14:19:06.000Z",
     "status": "contacted",
     "splash_notes": "Spoke with Jane on 5/11, will call back Friday.",
     "status_updated_at": "2026-05-11T15:42:00.000Z",
@@ -51,6 +48,12 @@ item by submission `id`; updates the changed fields.
   }
 }
 ```
+
+**Note:** `id` is an **integer** (Postgres bigserial / int identity),
+not a UUID. PA's schema-from-sample inference uses the value type
+verbatim — keep `21` as a number in the sample, don't quote it,
+or PA generates a string-typed schema that rejects the real
+integer payload with 400.
 
 Two variant samples (for reference — you don't need to add them to
 PA, the above schema covers both):
@@ -98,7 +101,10 @@ with that exact column's internal name.
 - **Get items** (SharePoint connector):
   - Site Address: same site your ingest flow writes to
   - List Name: same list your ingest flow writes to
-  - Filter Query: `[submission_id] eq '@{triggerBody()?['id']}'`
+  - Filter Query: `[submission_id] eq @{triggerBody()?['id']}` (no
+    single quotes — `id` is an integer in this payload; quoting it
+    coerces to string-comparison and won't match against a Number
+    column in SharePoint)
   - Top Count: `1`
 
 This returns an array. If the dashboard edit fires within the 30
