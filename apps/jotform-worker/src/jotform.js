@@ -60,34 +60,41 @@ export async function fetchSubmissionById(env, submissionId) {
 
 /**
  * Fetch one page of submissions for a form via the JotForm API. Returns
- * `{ rows, hasMore, lastId }`:
+ * `{ rows, hasMore, nextOffset, lastId }`:
  *
- *   - `rows`     — array of full submission payloads (same shape as
- *                  `fetchSubmissionById` content).
- *   - `hasMore`  — `rows.length === BACKFILL_PAGE_SIZE`; conservatively
- *                  signals "another page may exist".
- *   - `lastId`   — string id of the last row; passed as `afterId` on the
- *                  next call to advance through history.
+ *   - `rows`       — array of full submission payloads (same shape as
+ *                    `fetchSubmissionById` content).
+ *   - `hasMore`    — `rows.length > 0`; caller keeps going until JotForm
+ *                    returns an empty page. We do NOT compare against
+ *                    BACKFILL_PAGE_SIZE because JotForm Enterprise has
+ *                    been observed returning fewer rows than the
+ *                    requested `limit` even when more pages exist.
+ *   - `nextOffset` — `offset + rows.length`; pass back as `opts.offset`
+ *                    on the next call to advance through history.
+ *   - `lastId`     — string id of the last row (for logging / sanity
+ *                    only; the canonical cursor is `nextOffset`).
  *
- * Sort order is ascending by `id` so the cursor advances monotonically.
+ * Pagination strategy: `offset` + `limit` (JotForm's documented page
+ * controls). Earlier versions used `filter={"id:gt": lastId}` as a
+ * cursor; this was observed silently returning overlapping rows across
+ * pages on JotForm Enterprise for salt-log backfills 2026-05-11, with
+ * page N returning the same data as page 1 despite `lastId` advancing.
+ * Switching to offset removed the overlap.
  */
 export async function fetchFormSubmissions(env, formId, opts = {}) {
   if (!formId) throw new Error("formId required");
   if (!env.JOTFORM_API_KEY) {
     throw new Error("JOTFORM_API_KEY unbound");
   }
+  const offset = Number.isFinite(opts.offset) ? Math.max(0, Math.floor(opts.offset)) : 0;
   const url = new URL(
     `/API/form/${encodeURIComponent(formId)}/submissions`,
     env.JOTFORM_BASE_URL
   );
   url.searchParams.set("apikey", env.JOTFORM_API_KEY);
   url.searchParams.set("limit", String(BACKFILL_PAGE_SIZE));
-  // JotForm filter param is JSON-stringified; orderby ASC by id so the
-  // cursor (afterId) advances toward the most recent.
+  url.searchParams.set("offset", String(offset));
   url.searchParams.set("orderby", "id");
-  if (opts.afterId) {
-    url.searchParams.set("filter", JSON.stringify({ "id:gt": String(opts.afterId) }));
-  }
 
   const resp = await fetch(url.toString(), {
     headers: { Accept: "application/json" },
@@ -112,7 +119,8 @@ export async function fetchFormSubmissions(env, formId, opts = {}) {
       : null;
   return {
     rows,
-    hasMore: rows.length === BACKFILL_PAGE_SIZE,
+    hasMore: rows.length > 0,
+    nextOffset: offset + rows.length,
     lastId
   };
 }

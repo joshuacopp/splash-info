@@ -301,11 +301,12 @@ async function handleBackfill(request, env, formId) {
   }
 
   const url = new URL(request.url);
-  const afterId = url.searchParams.get("after_id");
+  const offsetRaw = url.searchParams.get("offset");
+  const offset = offsetRaw && /^\d+$/.test(offsetRaw) ? Number.parseInt(offsetRaw, 10) : 0;
 
   let page;
   try {
-    page = await fetchFormSubmissions(env, formId, { afterId: afterId ?? undefined });
+    page = await fetchFormSubmissions(env, formId, { offset });
   } catch (err) {
     console.error("[jotform.backfill] fetchFormSubmissions failed:", err);
     return jsonError(502, "JotForm upstream fetch failed");
@@ -333,6 +334,8 @@ async function handleBackfill(request, env, formId) {
   return jsonOk({
     ok: true,
     inserted,
+    offset,
+    next_offset: page.nextOffset,
     last_id: page.lastId,
     has_more: page.hasMore,
     page_size: JOTFORM_BACKFILL_PAGE_SIZE
