@@ -3401,16 +3401,25 @@ async function fireInternalNewClaimNotification(args: {
     const rows = await listPhotosForClaim(env.DB, claimData.claimId);
     photos = rows
       .filter((p) => !p.deleted_at && p.r2_key)
-      .map((p) => ({
-        url: `${baseOrigin}/claims-api/photo/${p.r2_key}`,
-        mime: p.content_type ?? null,
-        original_filename: p.filename ?? null,
-        photo_type: p.photo_type ?? null,
-        // claim_photos has no per-row upload timestamp; at submit time
-        // every photo lands with the claim, so the claim's submission
-        // timestamp is the authoritative upload time.
-        uploaded_at: claimData.submittedAt
-      }));
+      .map((p) => {
+        // serveClaimPhoto prepends "claims/" before the R2 .get(), so the
+        // URL path must NOT include the prefix already baked into r2_key.
+        // Mirrors damagePhotoUrl in apps/web (Brief 104 fix to Brief 102).
+        const stripped = p.r2_key.startsWith("claims/")
+          ? p.r2_key.slice("claims/".length)
+          : p.r2_key;
+        const segments = stripped.split("/").map(encodeURIComponent).join("/");
+        return {
+          url: `${baseOrigin}/claims-api/photo/${segments}`,
+          mime: p.content_type ?? null,
+          original_filename: p.filename ?? null,
+          photo_type: p.photo_type ?? null,
+          // claim_photos has no per-row upload timestamp; at submit time
+          // every photo lands with the claim, so the claim's submission
+          // timestamp is the authoritative upload time.
+          uploaded_at: claimData.submittedAt
+        };
+      });
   } catch (err) {
     console.warn(
       `[internal-new-claim] photo list threw for ${claimData.claimId}`,

@@ -112,9 +112,13 @@ export function NewRequestForm({ accessibleLocations, currentUser }: Props) {
           type="text"
           required
           maxLength={80}
-          defaultValue={currentUser.full_name ?? ""}
+          defaultValue=""
+          placeholder="Your name"
           className="w-full rounded-splash-md border border-gray-light bg-white px-3 py-2 text-sm text-splash-navy focus:border-splash-blue focus:outline-none focus:ring-1 focus:ring-splash-blue"
         />
+        <p className="mt-1 text-xs text-splash-navy/60">
+          Enter the name of the person submitting this request — even when using a shared location account.
+        </p>
       </FieldRow>
 
       <FieldRow label="Requester Phone" htmlFor="nr-requester-phone" required>

@@ -101,3 +101,5 @@
 - 2026-05-10 11:14:20 brief-100-forms-admin-list-audience-filter-and-copy-link.md (success)
 - 2026-05-11 08:55:50 brief-101-damage-manage-update-notifications.md (success)
 - 2026-05-11 09:09:50 brief-102-damage-new-claim-internal-alert.md (success)
+- 2026-05-11 11:03:01 brief-103-workorders-request-no-prefill-requester-name.md (success)
+- 2026-05-11 11:07:36 brief-104-internal-claim-webhook-photo-url-strip-claims-prefix.md (success)

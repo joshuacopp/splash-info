@@ -412,10 +412,15 @@ When given a new task:
   cross-site submissions. Location options are sourced from the
   read-path response's new `accessibleLocations` field (filtered to
   `maintainx_id !== null`), so apps/web doesn't need a second fetch.
-  `currentUser.full_name` (also new on the read response) defaults
-  the Requester Name input to the operator's MaintainX `full_name`
-  via the new `getMaintainXUserByEmail` helper in
-  `@splash/db-supabase`.
+  Requester Name defaults to empty; operator types the actual
+  submitter on every request. Brief 103 (2026-05-11) dropped the
+  auto-pre-fill from `maintainx_users.full_name` because shared
+  per-location accounts (e.g., `binghamtonwash@splashcarwashes.com`
+  → full_name 'Binghamton Wash') were silently degrading attribution.
+  `currentUser.full_name` (sourced via `getMaintainXUserByEmail` in
+  `@splash/db-supabase`) still ships on the `/workorders/api/list`
+  response shape — harmless, ignored by the form now; v2 cleanup
+  candidate if no future surface picks it up.
 
 ---
 
@@ -1366,6 +1371,17 @@ URL-based — service bindings don't apply to those.
   `ClaimPhotoForWebhook`, `InternalNewClaimPayload`). The
   `fireInternalNewClaimNotification` private function in `index.ts`
   composes the payload and lives next to `fireCustomerClaimWebhook`.
+  Brief 104 (2026-05-11) fixed the photo URL build inside
+  `fireInternalNewClaimNotification`: strip the leading `claims/`
+  from `r2_key` and URL-encode path segments before assembling the
+  `/claims-api/photo/{suffix}` URL. Mirrors the existing
+  `damagePhotoUrl` helper in apps/web
+  (`apps/web/app/admin/damage/_lib/worker-fetch.ts`). The Brief 102
+  build was `${baseOrigin}/claims-api/photo/${r2_key}` verbatim,
+  which double-prefixed because `serveClaimPhoto`
+  (packages/storage-r2) prepends another `claims/` before the R2
+  `.get()`. Future readers modifying any `/claims-api/photo/...`
+  URL-build site should follow the strip-and-encode pattern.
 - **INCIDENTS_EMAIL** - Non-secret damage-worker `[vars]` entry
   (Brief 102) added to the `INTERNAL_NEW_CLAIM_WEBHOOK_URL`
   `recipients[]` array on every customer claim submission. Same value
