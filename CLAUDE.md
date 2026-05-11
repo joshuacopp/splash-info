@@ -1122,6 +1122,18 @@ URL-based — service bindings don't apply to those.
   Brief 88 paragraphs above pre-date this correction; treat
   `submitted_at` as the single timestamp surface anywhere fleet
   submissions are rendered.
+  Brief 108 (2026-05-11): the per-edit update-webhook payload's
+  top-level `id` field is sourced from the PostgREST response row
+  (`arr[0].id`), NOT the URL-path param. The column type switched
+  from UUID to bigint identity after Brief 105 landed; PA's
+  HTTP-trigger schema (correctly typed `integer`) started 400-ing
+  on every dashboard PATCH because the worker was still shipping
+  the URL-path string. Reading from `arr[0].id` keeps the wire
+  type aligned with the underlying column type and guarantees
+  top-level `id` agrees with `row.id` (which is also from the same
+  PostgREST row). Latent reminder for future workers: when a
+  Supabase column changes type, audit any worker code that passes
+  URL-path params as that column's value in downstream payloads.
 - **Work Orders** (Brief 70 / Brief 71) - Read-only MaintainX
   integration. Surfaces open / in-progress / on-hold work orders to
   operators on `/workorders` (top-level apps/web page, NOT under

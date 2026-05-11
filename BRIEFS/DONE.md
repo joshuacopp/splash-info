@@ -106,3 +106,4 @@
 - 2026-05-11 13:50:50 brief-105-fleet-submissions-status-editor-and-update-webhook.md (success)
 - 2026-05-11 14:52:29 brief-106-fleet-admin-use-submitted-at-not-created-at.md (success)
 - 2026-05-11 15:41:57 brief-107-jotform-worker-storage-backfill-webhook.md (success)
+- 2026-05-11 16:06:49 brief-108-fleet-update-webhook-coerce-id-to-integer.md (success)

@@ -441,7 +441,7 @@ async function handleUpdateSubmission(request, env, id) {
         ? "notes"
         : "status";
   await fireFleetSubmissionUpdateWebhook(env, {
-    id,
+    id: arr[0].id,
     change_type: changeType,
     changed_fields: changedFields,
     actor: { email: actorEmail },
