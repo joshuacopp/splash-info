@@ -369,6 +369,181 @@ new binding:
 
 ---
 
+## 4.7. Dashboard status editor + per-edit webhook (Brief 105)
+
+Brief 105 made Supabase authoritative for both `status` and
+`splash_notes` and added a per-edit webhook to Power Automate so
+SharePoint can mirror dashboard edits in near-realtime. The existing
+30-minute PA flow that ingests *new* submissions stays untouched; this
+brief adds a parallel *update* channel.
+
+### Operator follow-up (in order)
+
+1. **Run the Phase 1 SQL once** in Supabase SQL Editor:
+
+   ```sql
+   ALTER TABLE fleet_submissions
+     ADD COLUMN IF NOT EXISTS status_updated_at timestamptz,
+     ADD COLUMN IF NOT EXISTS status_updated_by text,
+     ADD COLUMN IF NOT EXISTS splash_notes_updated_at timestamptz,
+     ADD COLUMN IF NOT EXISTS splash_notes_updated_by text;
+   ```
+
+   Existing rows get NULL in the new columns; audit data starts
+   accruing from the next PATCH (acceptable v1 — see "Out of scope"
+   in the brief).
+
+2. **Build a new Power Automate flow** that receives the dashboard
+   edits:
+
+   - **Trigger**: "When an HTTP request is received".
+   - **Sample payload** (paste into the trigger's "Use sample
+     payload to generate schema" field):
+
+     ```json
+     {
+       "id": "00000000-0000-0000-0000-000000000000",
+       "change_type": "both",
+       "changed_fields": ["status", "notes"],
+       "actor": { "email": "operator@splashcarwashes.com" },
+       "row": {
+         "id": "00000000-0000-0000-0000-000000000000",
+         "created_at": "2026-05-11T12:00:00.000Z",
+         "submitted_at": "2026-05-11T12:00:00.000Z",
+         "company": "Acme",
+         "name": "Sam",
+         "phone": "5551234567",
+         "email": "sam@acme.com",
+         "address": "123 Main",
+         "location_code": "binghamton",
+         "location_pretty": "Binghamton",
+         "service_type": "monthly",
+         "packages": "package_1",
+         "packages_detail": null,
+         "detailing_requested": false,
+         "detailing_location_code": null,
+         "detailing_location_pretty": null,
+         "number_of_vehicles": 5,
+         "anticipated_washes_per_month": 20,
+         "ip_address": "1.2.3.4",
+         "user_agent": "Mozilla/...",
+         "status": "contacted",
+         "splash_notes": "Called back; left voicemail.",
+         "status_updated_at": "2026-05-11T14:30:00.000Z",
+         "status_updated_by": "operator@splashcarwashes.com",
+         "splash_notes_updated_at": "2026-05-11T14:30:00.000Z",
+         "splash_notes_updated_by": "operator@splashcarwashes.com"
+       }
+     }
+     ```
+
+   - **Logic**: PATCH the matching SharePoint list item by submission
+     `id`. Update `status` + `splash_notes` (and the four audit
+     columns if SharePoint is mirroring them; ignore them if not —
+     SharePoint isn't authoritative for audit, Supabase is).
+   - **Save** the flow. Copy the resulting HTTP-trigger URL.
+
+3. **Bind the webhook secret** on `splash-fleet-inquiry`:
+
+   ```powershell
+   pnpm --filter @splash/fleet-inquiry-worker exec wrangler secret put FLEET_SUBMISSION_UPDATE_WEBHOOK_URL
+   # Paste the PA HTTP-trigger URL.
+   ```
+
+   Confirm via `wrangler secret list`. Until this secret is bound the
+   PATCH still works — the webhook helper short-circuits silently
+   (fail-soft posture matches `CUSTOMER_CLAIM_WEBHOOK_URL`).
+
+4. **Verify the 30-min ingest flow is unaffected.** It should be
+   INSERT-only or upsert-by-id on new rows. The new update channel
+   only fires on dashboard edits, so both flows can run side-by-side
+   without conflict (worst case: 30-min flow re-upserts existing
+   rows, but Supabase is authoritative so SharePoint converges
+   either way).
+
+### Sample payloads (one per edit shape)
+
+Notes-only edit:
+
+```json
+{
+  "id": "00000000-0000-0000-0000-000000000000",
+  "change_type": "notes",
+  "changed_fields": ["notes"],
+  "actor": { "email": "operator@splashcarwashes.com" },
+  "row": { "id": "00000000-...", "status": "new", "splash_notes": "Left voicemail.", "splash_notes_updated_at": "2026-05-11T14:30:00.000Z", "splash_notes_updated_by": "operator@splashcarwashes.com", "status_updated_at": null, "status_updated_by": null, "_": "remaining columns elided" }
+}
+```
+
+Status-only edit:
+
+```json
+{
+  "id": "00000000-0000-0000-0000-000000000000",
+  "change_type": "status",
+  "changed_fields": ["status"],
+  "actor": { "email": "operator@splashcarwashes.com" },
+  "row": { "id": "00000000-...", "status": "contacted", "splash_notes": null, "status_updated_at": "2026-05-11T14:30:00.000Z", "status_updated_by": "operator@splashcarwashes.com", "splash_notes_updated_at": null, "splash_notes_updated_by": null, "_": "remaining columns elided" }
+}
+```
+
+Combined edit:
+
+```json
+{
+  "id": "00000000-0000-0000-0000-000000000000",
+  "change_type": "both",
+  "changed_fields": ["notes", "status"],
+  "actor": { "email": "operator@splashcarwashes.com" },
+  "row": { "id": "00000000-...", "status": "closed", "splash_notes": "Booked.", "status_updated_at": "2026-05-11T14:30:00.000Z", "status_updated_by": "operator@splashcarwashes.com", "splash_notes_updated_at": "2026-05-11T14:30:00.000Z", "splash_notes_updated_by": "operator@splashcarwashes.com", "_": "remaining columns elided" }
+}
+```
+
+Note: `changed_fields` order is `["notes", "status"]` when both
+fields ride the same PATCH (deterministic; mirrors the push order
+in the worker). PA can use either `change_type` or `changed_fields`
+as the discriminator.
+
+### Smoke test (post-deploy, post-secret-bind)
+
+1. Open any `/admin/fleet/{id}` page as super_admin.
+2. Change the Status dropdown from `new` to `reviewed`, leave the
+   Splash Notes textarea unchanged, click Save. Inline success
+   banner via `<ActionForm>`; the read-only key/value grid below
+   shows `Status: reviewed`. The list page's `StatusPill` for this
+   row now renders with the sudsy-blue tone.
+3. Open the Supabase Table Editor → `fleet_submissions` → find the
+   row by id. Confirm `status` flipped, `status_updated_at` is
+   now-ish, and `status_updated_by` is the operator's email.
+   `splash_notes_updated_*` should be unchanged.
+4. Check the PA flow's run history — a fresh run should appear with
+   the status-only payload (`change_type: "status"`,
+   `changed_fields: ["status"]`).
+5. Confirm SharePoint reflects the status flip within ~PA-flow-run
+   latency (seconds, typically).
+6. Edit notes only → repeat. `change_type: "notes"`,
+   `splash_notes_updated_*` updated, `status_updated_*` unchanged.
+7. Edit notes AND status in one save → `change_type: "both"`,
+   both audit pairs updated, PA receives one POST not two.
+8. With `FLEET_SUBMISSION_UPDATE_WEBHOOK_URL` unbound temporarily:
+   PATCH still 200s, dashboard banner still says "Saved.",
+   Workers Logs shows no `[fleet-submission-update]` lines (the
+   helper short-circuits before the fetch). Re-bind to restore
+   sync.
+
+### Failure modes & observability
+
+| Failure | Behavior |
+|---|---|
+| Webhook secret unbound | Helper returns immediately. PATCH succeeds. SharePoint diverges until secret is bound. |
+| PA flow returns 4xx/5xx | Worker logs `[fleet-submission-update] POST failed for {id}: status N` and swallows. PATCH still returned 200 to the operator. |
+| PA flow unreachable / 15s timeout | Worker logs `[fleet-submission-update] POST error for {id}: ...` and swallows. |
+| Worker network error to Supabase (before PATCH commits) | Returns 500 to the operator; webhook does NOT fire (webhook runs AFTER successful PATCH). SharePoint stays in sync because no Supabase write happened. |
+| Unknown body key (defense-in-depth) | Worker returns 400 `Unknown body keys: ...`. ActionForm surfaces the error inline. |
+| Invalid status value | Worker returns 400 `status must be one of: new, reviewed, contacted, closed`. ActionForm surfaces inline. |
+
+---
+
 ## 5. First-deploy steps (operator runbook)
 
 1. Bind the three secrets (section 2) on `splash-fleet-inquiry` via

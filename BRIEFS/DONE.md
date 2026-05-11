@@ -103,3 +103,4 @@
 - 2026-05-11 09:09:50 brief-102-damage-new-claim-internal-alert.md (success)
 - 2026-05-11 11:03:01 brief-103-workorders-request-no-prefill-requester-name.md (success)
 - 2026-05-11 11:07:36 brief-104-internal-claim-webhook-photo-url-strip-claims-prefix.md (success)
+- 2026-05-11 13:50:50 brief-105-fleet-submissions-status-editor-and-update-webhook.md (success)

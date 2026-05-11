@@ -49,6 +49,19 @@
 #                           restricted key for `splash-fleet-inquiry`
 #                           rather than reusing the legacy worker's key
 #                           during transition.
+#
+# Brief 105 (2026-05-11): per-edit webhook fired when the dashboard PATCHes
+# status or splash_notes. Fail-soft when unbound (PATCH still succeeds,
+# SharePoint just lags until PA catches up). Bind via:
+#   FLEET_SUBMISSION_UPDATE_WEBHOOK_URL — secret. Optional. PA flow's
+#                           HTTP-trigger URL. When bound, every successful
+#                           PATCH /admin/api/submissions/{id} POSTs a
+#                           payload with the full updated row + change_type
+#                           discriminator + actor email so the PA flow can
+#                           upsert SharePoint by submission id without a
+#                           separate read. 15s timeout; fail-soft inside
+#                           the worker. Set with:
+#     pnpm --filter @splash/fleet-inquiry-worker exec wrangler secret put FLEET_SUBMISSION_UPDATE_WEBHOOK_URL
 
 name = "splash-fleet-inquiry"
 main = "src/index.js"

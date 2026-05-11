@@ -167,21 +167,46 @@ export function getFleetCsvUrl(params: FleetSubmissionsListParams = {}): string 
 }
 
 /**
- * PATCH /admin/api/submissions/{id} with a `splash_notes` body. Brief 87.
+ * PATCH /admin/api/submissions/{id} body shape (Brief 87 + Brief 105).
+ *
+ * Either or both fields must be present. The worker rejects all-absent
+ * bodies with 400, and re-validates `status` against the four-value enum
+ * server-side. Caller responsibility (here in the helper or in the calling
+ * server action) is to provide at least one field — but the helper does
+ * NOT enforce that locally; the worker's 400 is the single source of
+ * truth.
+ */
+export interface UpdateFleetSubmissionInput {
+  splashNotes?: string;
+  status?: string;
+}
+
+/**
+ * PATCH /admin/api/submissions/{id} with a `{splash_notes?, status?}` body.
+ *
+ * Brief 87 added the original notes-only PATCH; Brief 105 widened it to
+ * accept either or both `splash_notes` and `status`, stamps the
+ * per-field `*_updated_{at,by}` audit columns, and fires the
+ * `FLEET_SUBMISSION_UPDATE_WEBHOOK_URL` per-edit webhook for SharePoint
+ * sync.
+ *
  * Mirrors the binding-first / URL-fallback shape of `fleetGetJson` —
  * service binding for prod (apps/web Worker → fleet-inquiry-worker on the
  * same zone), URL fetch for `next dev` where bindings aren't available.
  * Throws on non-2xx so the calling server action can surface a typed
  * ActionResult error.
  */
-export async function updateFleetSubmissionNotes(
+export async function updateFleetSubmission(
   id: string,
-  notes: string
+  input: UpdateFleetSubmissionInput
 ): Promise<void> {
   const cookieStore = await cookies();
   const cookieHeader = cookieStore.toString();
   const path = `/admin/api/submissions/${encodeURIComponent(id)}`;
-  const bodyJson = JSON.stringify({ splash_notes: notes });
+  const body: Record<string, string> = {};
+  if (input.splashNotes !== undefined) body.splash_notes = input.splashNotes;
+  if (input.status !== undefined) body.status = input.status;
+  const bodyJson = JSON.stringify(body);
 
   let resp: Response;
   try {

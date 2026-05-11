@@ -965,25 +965,40 @@ URL-based — service bindings don't apply to those.
   The relative-URL convention is the right pattern for any client-side
   redirect in a public-form worker that has both staging and
   production hostnames.
-- **Fleet inquiries admin** (Brief 83 / Brief 87) - Cookie-gated
-  viewer + editor for the `fleet_submissions` table. Endpoints on
-  `splash-fleet-inquiry` (the worker's first authenticated routes —
-  see fleet-inquiry-worker entry above for how the public form mode
-  remains unchanged): `GET /admin/api/submissions?from=&to=&limit=`
+- **Fleet inquiries admin** (Brief 83 / Brief 87 / Brief 105) -
+  Cookie-gated viewer + editor for the `fleet_submissions` table.
+  Endpoints on `splash-fleet-inquiry` (the worker's first
+  authenticated routes — see fleet-inquiry-worker entry above for
+  how the public form mode remains unchanged):
+  `GET /admin/api/submissions?from=&to=&limit=`
   (JSON list, default last-30-days, max 200 rows),
   `GET /admin/api/submissions/{id}` (JSON detail; 404 on missing),
-  (Brief 87) `PATCH /admin/api/submissions/{id}` (updates
-  `splash_notes` only; body `{ splash_notes: string }`; trims +
-  caps at 10000 chars; same admin gate as the GETs),
+  (Brief 87 / widened in Brief 105)
+  `PATCH /admin/api/submissions/{id}` (updates either or both
+  `splash_notes` and `status`; body `{ splash_notes?: string,
+  status?: 'new'|'reviewed'|'contacted'|'closed' }`; trims +
+  caps notes at 10000 chars; status enum re-validated server-side;
+  rejects unknown body keys with 400 as defense-in-depth;
+  stamps the per-field audit columns `splash_notes_updated_{at,by}` /
+  `status_updated_{at,by}` server-side; fires the optional
+  `FLEET_SUBMISSION_UPDATE_WEBHOOK_URL` after success for
+  SharePoint sync — see glossary entry; same admin gate as the
+  GETs),
   `GET /admin/api/submissions.csv?from=&to=` (RFC 4180 CSV with
   `Content-Disposition: attachment; filename="fleet-submissions-
   YYYY-MM-DD-to-YYYY-MM-DD.csv"`, no row cap besides a 10000 safety
   ceiling that returns 416 on overflow; CSV column inventory now
   includes `splash_notes` per Brief 87). Detail page
-  (`/admin/fleet/[id]`) renders an editable Splash Notes textarea
-  at the top (Brief 87) wired to that PATCH via the Brief 19
-  `<ActionForm>` pattern; the value also displays read-only in the
-  key/value grid below. Auth: `@splash/auth`
+  (`/admin/fleet/[id]`) renders a "Status & Notes" section at the
+  top (Brief 87 textarea + Brief 105 status dropdown) wired to that
+  PATCH via the Brief 19 `<ActionForm>` pattern with a single Save
+  button driving both fields in one round-trip; the values also
+  display read-only in the key/value grid below. List page
+  `StatusPill` colors the four enum values distinctly (blue / sudsy
+  / amber / emerald). Status enum + pill color map live at
+  `apps/web/app/admin/fleet/_lib/constants.ts` so worker validator,
+  server-action defense-in-depth check, dropdown, and pill all key
+  off the same allow-list. Auth: `@splash/auth`
   `authenticate()` + role check — allows
   `session.role === "super_admin"` OR `session.dcRole === "admin"` OR
   `session.dcRole === "super_admin"`. location_admin and gm/rm are
@@ -1392,6 +1407,33 @@ URL-based — service bindings don't apply to those.
   out of the recipient list; the three location addresses still
   receive. Splitting incidents into per-RM-group inboxes is a v2
   candidate (out of scope for Brief 102).
+- **FLEET_SUBMISSION_UPDATE_WEBHOOK_URL** - Optional
+  fleet-inquiry-worker secret (Brief 105) fired per-edit when an
+  operator updates a `fleet_submissions` row from the dashboard via
+  `PATCH /admin/api/submissions/{id}`. Single intercept point; both
+  status changes and splash_notes edits ride the same fire (combined
+  edits → one POST, not two). Payload: `{id, change_type:
+  'status'|'notes'|'both', changed_fields: string[], actor:{email},
+  row: <full updated fleet_submissions row>}`. Power Automate uses
+  this to upsert SharePoint by submission id in near-realtime so
+  Supabase stays authoritative for both fields. Same fail-soft +
+  fire-and-forget posture as Brief 32 / 101 / 102: 15s `AbortSignal`
+  timeout, non-2xx + throws logged as `[fleet-submission-update]` and
+  swallowed, dashboard PATCH succeeds regardless. Helper
+  `fireFleetSubmissionUpdateWebhook` co-located at the bottom of
+  `apps/fleet-inquiry-worker/src/admin.js` (worker is verbatim-lifted
+  JS per Brief 81; separate `notifications.js` module deferred until
+  a second notification surface needs the same helper). When unbound
+  the dashboard PATCH still succeeds and SharePoint just lags until
+  the next successful fire (or a one-time operator backfill). The
+  existing 30-min PA new-submission ingest flow is untouched —
+  Brief 105 adds a parallel update channel keyed on dashboard edits
+  only. Status enum is the four-value
+  `new | reviewed | contacted | closed` worker-side allow-list.
+  Per-edit audit columns `status_updated_{at,by}` /
+  `splash_notes_updated_{at,by}` on `fleet_submissions` are stamped
+  server-side per-field on each PATCH; last-write-wins, no full
+  audit log (v2 candidate).
 - **maxpass_signups** - Customer signup table. 18 columns including
   `confirmation_token` (UUID), `terms_text` (exact string customer
   saw), country/city/region from `request.cf`.

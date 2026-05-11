@@ -1,13 +1,16 @@
 // Fleet inquiry detail (Brief 83). Server component. Fetches one
 // fleet_submissions row via the FLEET_INQUIRY_WORKER service binding and
 // renders every column in a 2-column key/value grid. Brief 87 added the
-// editable Splash Notes textarea at the top of the page.
+// editable Splash Notes textarea at the top of the page; Brief 105 added
+// the Status dropdown alongside it (both persisted via the same single
+// ActionForm submit so notes + status changes ride one PATCH).
 
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { getFleetSubmission } from "../_lib/worker-fetch";
+import { FLEET_STATUS_OPTIONS } from "../_lib/constants";
 import { ActionForm } from "../../_components/ActionForm";
-import { updateSplashNotesAction } from "./actions";
+import { updateSubmissionAction } from "./actions";
 
 interface PageProps {
   params: Promise<{ id: string }>;
@@ -100,7 +103,11 @@ export default async function FleetSubmissionDetailPage({ params }: PageProps) {
     { label: "User agent", value: row.user_agent ?? em() }
   ];
 
-  const saveNotes = updateSplashNotesAction.bind(null, id);
+  const saveSubmission = updateSubmissionAction.bind(null, id);
+  const defaultStatus =
+    row.status && FLEET_STATUS_OPTIONS.includes(row.status as (typeof FLEET_STATUS_OPTIONS)[number])
+      ? row.status
+      : "new";
 
   return (
     <section className="mx-auto w-full max-w-[820px] px-5 py-9">
@@ -119,14 +126,42 @@ export default async function FleetSubmissionDetailPage({ params }: PageProps) {
 
       <section className="mb-6 rounded-md border border-gray-light bg-white p-5">
         <h2 className="mb-2 text-lg font-semibold text-splash-navy">
-          Splash Notes
+          Status &amp; Notes
         </h2>
         <p className="mb-3 text-xs text-splash-navy/60">
-          Internal notes from whoever contacts this lead. Visible to all
-          admin / super_admin users.
+          Status and internal notes. Saving fires a sync to SharePoint via
+          Power Automate (Brief 105). Visible to all admin / super_admin
+          users.
         </p>
-        <ActionForm action={saveNotes} resetOnSuccess={false}>
+        <ActionForm action={saveSubmission} resetOnSuccess={false}>
+          <div className="mb-3">
+            <label
+              htmlFor="fleet-status"
+              className="mb-1 block text-xs font-semibold uppercase tracking-wide text-splash-navy/70"
+            >
+              Status
+            </label>
+            <select
+              id="fleet-status"
+              name="status"
+              defaultValue={defaultStatus}
+              className="block rounded-splash-md border border-gray-light bg-white px-3 py-2 text-sm text-splash-navy focus:border-splash-blue focus:outline-none focus:ring-1 focus:ring-splash-blue"
+            >
+              {FLEET_STATUS_OPTIONS.map((s) => (
+                <option key={s} value={s}>
+                  {s}
+                </option>
+              ))}
+            </select>
+          </div>
+          <label
+            htmlFor="fleet-splash-notes"
+            className="mb-1 block text-xs font-semibold uppercase tracking-wide text-splash-navy/70"
+          >
+            Splash Notes
+          </label>
           <textarea
+            id="fleet-splash-notes"
             name="splash_notes"
             defaultValue={row.splash_notes ?? ""}
             rows={6}
@@ -137,7 +172,7 @@ export default async function FleetSubmissionDetailPage({ params }: PageProps) {
             type="submit"
             className="mt-2 rounded-splash-md bg-splash-navy px-4 py-2 text-sm font-semibold text-white hover:bg-splash-blue-dark"
           >
-            Save Notes
+            Save
           </button>
         </ActionForm>
       </section>

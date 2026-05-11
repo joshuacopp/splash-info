@@ -1,4 +1,4 @@
-// Admin-gated submissions viewer endpoints (Brief 83 + Brief 87).
+// Admin-gated submissions viewer endpoints (Brief 83 + Brief 87 + Brief 105).
 //
 // Four routes, mounted via the early-router branch in src/index.js:
 //
@@ -8,9 +8,13 @@
 //   GET /admin/api/submissions/{id}
 //     JSON detail for a single fleet_submissions row, or 404.
 //
-//   PATCH /admin/api/submissions/{id}     (Brief 87)
-//     Update `splash_notes` on a single row. Body: { splash_notes: string }.
-//     Trims whitespace, caps at 10000 chars. Empty string allowed.
+//   PATCH /admin/api/submissions/{id}     (Brief 87 / widened in Brief 105)
+//     Update `splash_notes` and/or `status` on a single row. Body accepts
+//     either or both:
+//       { splash_notes?: string, status?: 'new'|'reviewed'|'contacted'|'closed' }
+//     Brief 105 stamps `splash_notes_updated_{at,by}` / `status_updated_{at,by}`
+//     audit columns per-field on each PATCH, and fires the optional
+//     `FLEET_SUBMISSION_UPDATE_WEBHOOK_URL` webhook for SharePoint sync.
 //
 //   GET /admin/api/submissions.csv?from=&to=
 //     RFC 4180 CSV with Content-Disposition: attachment. Same date filter as
@@ -48,6 +52,11 @@ const ROW_LIMIT = 200;
 const CSV_SAFETY_CAP = 10_000;
 const DEFAULT_WINDOW_DAYS = 30;
 const SPLASH_NOTES_MAX_LEN = 10_000;
+
+// Brief 105 — status enum kept in sync with the apps/web constants in
+// apps/web/app/admin/fleet/_lib/constants.ts. Worker is the authoritative
+// validator; the apps/web dropdown is a UX hint only.
+const ALLOWED_STATUSES = new Set(["new", "reviewed", "contacted", "closed"]);
 
 /**
  * CSV column inventory. `key` reads the column directly from the row;
@@ -324,6 +333,15 @@ async function handleUpdateSubmission(request, env, id) {
   const gate = await authenticateAdmin(request, env);
   if (!gate.ok) return gate.response;
 
+  // Brief 105 — gate session must have an email for the audit-column stamps
+  // and webhook actor field. authenticate() resolves email from auth_unified,
+  // so this is defense-in-depth; bail cleanly if it ever returns blank.
+  const actorEmail =
+    typeof gate.session?.email === "string" ? gate.session.email : "";
+  if (!actorEmail) {
+    return jsonError(401, "unauthorized (session has no email)");
+  }
+
   let body;
   try {
     body = await request.json();
@@ -333,15 +351,53 @@ async function handleUpdateSubmission(request, env, id) {
   if (body == null || typeof body !== "object") {
     return jsonError(400, "Invalid request body");
   }
-  if (typeof body.splash_notes !== "string") {
-    return jsonError(400, "splash_notes must be a string");
+
+  // Brief 105 — widen to accept either or both `splash_notes` and `status`.
+  // Reject unknown body keys as defense-in-depth so a typo doesn't silently
+  // skip an intended field.
+  const unknownKeys = Object.keys(body).filter(
+    (k) => k !== "splash_notes" && k !== "status"
+  );
+  if (unknownKeys.length > 0) {
+    return jsonError(400, `Unknown body keys: ${unknownKeys.join(", ")}`);
   }
-  const trimmedNotes = body.splash_notes.trim();
-  if (trimmedNotes.length > SPLASH_NOTES_MAX_LEN) {
-    return jsonError(
-      400,
-      `splash_notes exceeds maximum length (${SPLASH_NOTES_MAX_LEN} chars)`
-    );
+
+  const updates = {};
+  const changedFields = [];
+  const nowIso = new Date().toISOString();
+
+  if (body.splash_notes !== undefined) {
+    if (typeof body.splash_notes !== "string") {
+      return jsonError(400, "splash_notes must be a string");
+    }
+    const trimmedNotes = body.splash_notes.trim();
+    if (trimmedNotes.length > SPLASH_NOTES_MAX_LEN) {
+      return jsonError(
+        400,
+        `splash_notes exceeds maximum length (${SPLASH_NOTES_MAX_LEN} chars)`
+      );
+    }
+    updates.splash_notes = trimmedNotes;
+    updates.splash_notes_updated_at = nowIso;
+    updates.splash_notes_updated_by = actorEmail;
+    changedFields.push("notes");
+  }
+
+  if (body.status !== undefined) {
+    if (typeof body.status !== "string" || !ALLOWED_STATUSES.has(body.status)) {
+      return jsonError(
+        400,
+        "status must be one of: new, reviewed, contacted, closed"
+      );
+    }
+    updates.status = body.status;
+    updates.status_updated_at = nowIso;
+    updates.status_updated_by = actorEmail;
+    changedFields.push("status");
+  }
+
+  if (changedFields.length === 0) {
+    return jsonError(400, "Provide splash_notes and/or status");
   }
 
   const u = new URL(`${env.SUPABASE_URL}/rest/v1/fleet_submissions`);
@@ -358,7 +414,7 @@ async function handleUpdateSubmission(request, env, id) {
         "Content-Type": "application/json",
         Prefer: "return=representation"
       },
-      body: JSON.stringify({ splash_notes: trimmedNotes })
+      body: JSON.stringify(updates)
     });
   } catch (err) {
     console.error("fleet admin update fetch error:", err);
@@ -373,7 +429,60 @@ async function handleUpdateSubmission(request, env, id) {
   if (!Array.isArray(arr) || arr.length === 0) {
     return jsonError(404, "submission not found");
   }
+
+  // Brief 105 — fire the per-edit webhook AFTER the PATCH commits so a
+  // Supabase failure never triggers PA. Fail-soft: any throw / non-2xx is
+  // swallowed inside the helper; the dashboard response is never gated on
+  // it. Mirrors Brief 101's `notifyClaimUpdate` posture.
+  const changeType =
+    changedFields.length === 2
+      ? "both"
+      : changedFields[0] === "notes"
+        ? "notes"
+        : "status";
+  await fireFleetSubmissionUpdateWebhook(env, {
+    id,
+    change_type: changeType,
+    changed_fields: changedFields,
+    actor: { email: actorEmail },
+    row: arr[0]
+  });
+
   return json({ ok: true, row: arr[0] });
+}
+
+/**
+ * Brief 105 — fire-and-forget webhook to Power Automate so SharePoint can
+ * mirror dashboard edits in near-realtime. The PA flow's HTTP-trigger URL
+ * is bound as `FLEET_SUBMISSION_UPDATE_WEBHOOK_URL` (worker secret,
+ * optional). Fail-soft when unbound or when PA is unreachable — the
+ * dashboard PATCH succeeded already; SharePoint just lags until the next
+ * successful fire (or until the operator runs a one-time backfill).
+ *
+ * 15s AbortSignal timeout matches the Brief 101 / Brief 102 / Brief 32
+ * fail-soft webhook posture. No retry: PA flow runs are observable in PA
+ * history; a deeper retry policy belongs there, not here.
+ */
+async function fireFleetSubmissionUpdateWebhook(env, payload) {
+  if (!env.FLEET_SUBMISSION_UPDATE_WEBHOOK_URL) return;
+  try {
+    const res = await fetch(env.FLEET_SUBMISSION_UPDATE_WEBHOOK_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(15_000)
+    });
+    if (!res.ok) {
+      console.error(
+        `[fleet-submission-update] POST failed for ${payload.id}: status ${res.status}`
+      );
+    }
+  } catch (err) {
+    console.error(
+      `[fleet-submission-update] POST error for ${payload.id}:`,
+      err
+    );
+  }
 }
 
 async function handleCsvExport(request, env) {

@@ -13,6 +13,10 @@ import {
   getFleetCsvUrl,
   type FleetSubmissionRow
 } from "./_lib/worker-fetch";
+import {
+  FLEET_STATUS_PILL_CLASS,
+  isFleetStatus
+} from "./_lib/constants";
 
 const DEFAULT_WINDOW_DAYS = 30;
 
@@ -207,11 +211,13 @@ function SubmissionsTable({ rows }: { rows: FleetSubmissionRow[] }) {
 }
 
 function StatusPill({ status }: { status: string | null }) {
+  // Brief 105 widened the enum from "new" + everything-else to four discrete
+  // values; the color map lives in _lib/constants.ts so the worker, server
+  // action, dropdown, and pill all key off the same allow-list.
   const label = status ?? "new";
-  const cls =
-    label === "new"
-      ? "bg-splash-blue/10 text-splash-blue"
-      : "bg-gray-light text-splash-navy/80";
+  const cls = isFleetStatus(label)
+    ? FLEET_STATUS_PILL_CLASS[label]
+    : FLEET_STATUS_PILL_CLASS.default;
   return (
     <span
       className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-bold ${cls}`}
