@@ -696,6 +696,24 @@ URL-based — service bindings don't apply to those.
   `SUPABASE_SERVICE_KEY` + `SUPABASE_ANON_KEY` + `JOTFORM_API_KEY` +
   `JOTFORM_WEBHOOK_TOKEN` (secrets). See PRE_DEPLOY_JOTFORM.md for
   the per-form backfill loop sample + JotForm webhook URL pattern.
+  Brief 109 (2026-05-11): apps/web's `/admin/jotform/*` is the
+  credentialed viewer for this admin API surface — index page
+  (`/admin/jotform`, admin-tier gated card grid + dashboard tile),
+  per-form submissions list (`/admin/jotform/{form_id}` —
+  DateRangePicker + CsvExportButton + Prev/Next pagination + meta-only
+  columns; any-session gate, worker scopes via
+  `accessibleSiteNumbersForSession`), and per-submission detail
+  (`/admin/jotform/{form_id}/{submission_id}` — metadata grid +
+  generic alphabetical-key `<dl>` over `row.answers` with type-aware
+  renderer that prefers `prettyFormat` → `answer.text/value` → JSON
+  pre-block + bottom-of-page Raw JSON debug `<details>`). Dashboard
+  tile is the first to be visibility-gated (admin-tier only) via a
+  new optional `Tile.visibleTo` field on `AdminDashboardPage`;
+  RM/RD/GM users still navigate per-form URLs by direct link and the
+  worker scopes their rows automatically. Adding a new JotForm form
+  via SQL INSERT + backfill requires zero apps/web code changes —
+  the renderer is generic over `row.answers` keys. Form-specific
+  field ordering is a v2 candidate.
 
 - **JotForm submissions** (Brief 107) - The four onboarded JotForm
   forms (rewash, salt-log, retention, time-card-edit) all share a
