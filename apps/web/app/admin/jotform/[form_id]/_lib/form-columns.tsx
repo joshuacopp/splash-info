@@ -120,7 +120,9 @@ export function answerColumn(key: string, label: string): FormColumn {
 // row carries the JotForm builder's question text; operator/executor
 // should copy those values into the labels below.
 
-const REWASH_REASON_KEY = "TBD"; // grep this constant when a sample row lands
+// Operator-confirmed answer keys (filled in 2026-05-12 from live sample rows).
+// Labels match the JotForm builder `answers[KEY].text` values verbatim.
+const REWASH_REASON_KEY = "4"; // name: "rewashReason", text: "Rewash Reason"
 
 export const FORM_COLUMN_CONFIG: Record<string, FormColumn[]> = {
   // Rewash
@@ -133,18 +135,18 @@ export const FORM_COLUMN_CONFIG: Record<string, FormColumn[]> = {
   "243523811897060": [
     submittedColumn(),
     siteColumn(),
-    answerColumn("5", "Answer (key 5)"),
-    answerColumn("6", "Answer (key 6)"),
-    answerColumn("8", "Answer (key 8)")
+    answerColumn("5", "Pounds of Ice Melt Used"),
+    answerColumn("6", "Areas Ice Melt Applied"),
+    answerColumn("8", "Name")
   ],
   // Retention
   "250855287972067": [
     submittedColumn(),
     siteColumn(),
-    answerColumn("28", "Answer (key 28)"),
-    answerColumn("29", "Answer (key 29)"),
-    answerColumn("30", "Answer (key 30)"),
-    answerColumn("31", "Answer (key 31)")
+    answerColumn("28", "Name"),
+    answerColumn("29", "Email"),
+    answerColumn("30", "Barcode/License Plate"),
+    answerColumn("31", "Action Being Taken")
   ],
   // Time card edit (generic only — no per-form columns at v1)
   "250193775451056": [submittedColumn(), siteColumn()]
