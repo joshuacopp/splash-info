@@ -158,7 +158,7 @@ export function FilterBar({ roster }: Props) {
             <option value="">All Locations</option>
             {locationOptions.map((loc) => (
               <option key={loc.location_code || loc.site_number} value={loc.location_code}>
-                {loc.location_pretty} ({loc.site_number})
+                {locationDisplayLabel(loc)}
               </option>
             ))}
           </select>
@@ -166,4 +166,20 @@ export function FilterBar({ roster }: Props) {
       )}
     </div>
   );
+}
+
+// Brief 111 Phase 4: prefer `location_pretty` ("Binghamton"), fall back
+// to `location_code` ("binghamton") — NOT the postal address. The roster
+// worker (apps/jotform-worker/src/handlers/roster.js) falls back to
+// `locations.location` (postal address) when `pricing_simple.location_pretty`
+// is missing; this defensive client-side override detects the address
+// shape (comma or leading digit) and surfaces `location_code` instead.
+// Address is never the right surface for this dropdown.
+function locationDisplayLabel(loc: RosterLocation): string {
+  const pretty = (loc.location_pretty || "").trim();
+  const code = (loc.location_code || "").trim();
+  const site = (loc.site_number || "").trim();
+  const looksLikeAddress = pretty.includes(",") || /^\d/.test(pretty);
+  const label = !pretty || looksLikeAddress ? code || pretty || site : pretty;
+  return site ? `${label} (${site})` : label;
 }

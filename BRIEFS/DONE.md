@@ -109,3 +109,4 @@
 - 2026-05-11 16:06:49 brief-108-fleet-update-webhook-coerce-id-to-integer.md (success)
 - 2026-05-11 20:12:27 brief-109-apps-web-jotform-viewer.md (success)
 - 2026-05-11 22:41:07 brief-110-jotform-viewer-filters-and-grouping.md (success)
+- 2026-05-11 23:58:46 brief-111-jotform-viewer-per-form-columns-and-est-and-location-pretty.md (success)

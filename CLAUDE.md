@@ -740,6 +740,26 @@ URL-based — service bindings don't apply to those.
   headers carry the structure). Adding a new JotForm form still
   requires zero apps/web code changes — the renderer + filters are
   generic over the existing common-field columns.
+  Brief 111 (2026-05-11): the per-form viewer gained a per-form
+  column registry (`apps/web/app/admin/jotform/[form_id]/_lib/form-
+  columns.tsx` — `FORM_COLUMN_CONFIG: Record<string, FormColumn[]>`
+  keyed by `form_id`, `DEFAULT_COLUMNS` fallback for unregistered
+  forms, three reusable column builders: `submittedColumn` /
+  `siteColumn` / `answerColumn(key, label)`), EST-formatted
+  `Submitted (EST)` column via new `apps/web/app/admin/jotform/_lib/
+  format-est.ts` (uses `Intl.DateTimeFormat` + IANA `America/New_York`
+  for auto-DST handling), Status column dropped (every onboarded form
+  emits `"ACTIVE"` only). Adding a 5th / 6th JotForm form still needs
+  zero apps/web code unless non-generic columns are wanted (the
+  default `Submitted | Site` kicks in automatically). Numeric-answer
+  column labels in the registry are placeholder pending operator's
+  Supabase sample-row inspection — grep `REWASH_REASON_KEY` +
+  `"Answer (key "` to find the label sites. The Location dropdown
+  (FilterBar) + group-header label gained a defensive client-side
+  `location_pretty` → `location_code` fallback when the worker's
+  roster returns a postal-address-shaped value (contains comma OR
+  starts with a digit); the roster worker's `row.location` fallback
+  is untouched at this brief per Phase 5.3.
 
 - **JotForm submissions** (Brief 107) - The four onboarded JotForm
   forms (rewash, salt-log, retention, time-card-edit) all share a

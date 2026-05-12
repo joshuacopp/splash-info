@@ -75,6 +75,8 @@
 
 # brief-109-apps-web-jotform-viewer.md  (completed 2026-05-11)
 
+# brief-111-jotform-viewer-per-form-columns-and-est-and-location-pretty.md  (completed 2026-05-11)
+
 
 
 

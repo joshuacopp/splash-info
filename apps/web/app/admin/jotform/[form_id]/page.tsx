@@ -19,6 +19,7 @@ import { DateRangePicker } from "../../../_components/DateRangePicker";
 import { CsvExportButton } from "../../../_components/CsvExportButton";
 import NoAccessCard from "../_components/NoAccessCard";
 import { FilterBar } from "./_components/FilterBar";
+import { columnsFor, type FormColumn } from "./_lib/form-columns";
 import {
   csvExportUrl,
   getRoster,
@@ -237,6 +238,7 @@ export default async function JotformFormPage({
           ) : (
             <GroupedSubmissions
               formId={form_id}
+              columns={columnsFor(form_id)}
               rows={data.rows}
               roster={roster}
             />
@@ -282,10 +284,12 @@ function locationKeyForRow(row: JotformSubmissionRow): string {
 
 function GroupedSubmissions({
   formId,
+  columns,
   rows,
   roster
 }: {
   formId: string;
+  columns: FormColumn[];
   rows: JotformSubmissionRow[];
   roster: JotformRoster | null;
 }) {
@@ -329,7 +333,16 @@ function GroupedSubmissions({
       ? locByNum.get(sn) ||
         (sn.length < 3 ? locByNum.get(sn.padStart(3, "0")) : undefined)
       : undefined;
-    const pretty = rosterLoc?.location_pretty || fallbackPretty;
+    // Brief 111: skip rosterLoc.location_pretty when it looks like a
+    // postal address (the roster worker's fallback when pricing_simple
+    // is missing). Prefer location_code in that case; only fall back to
+    // the address as a last resort. Address never shows in group headers.
+    const rosterPretty = (rosterLoc?.location_pretty || "").trim();
+    const rosterLooksLikeAddress =
+      rosterPretty.includes(",") || /^\d/.test(rosterPretty);
+    const pretty = rosterLooksLikeAddress
+      ? rosterLoc?.location_code || rosterPretty || fallbackPretty
+      : rosterPretty || fallbackPretty;
     const rmEmail = rosterLoc?.rm_email || null;
     const rmName = rmEmail ? rmByEmail.get(rmEmail)?.name ?? rmEmail : null;
     locationGroups.push({
@@ -358,6 +371,7 @@ function GroupedSubmissions({
         <LocationGroup
           key={g.meta.key}
           formId={formId}
+          columns={columns}
           group={g}
           flat={singleLocation}
         />
@@ -368,10 +382,12 @@ function GroupedSubmissions({
 
 function LocationGroup({
   formId,
+  columns,
   group,
   flat
 }: {
   formId: string;
+  columns: FormColumn[];
   group: { meta: LocationGroupKey; rows: JotformSubmissionRow[] };
   flat: boolean;
 }) {
@@ -385,7 +401,7 @@ function LocationGroup({
             {d.label} ({d.rows.length} submission
             {d.rows.length === 1 ? "" : "s"})
           </h3>
-          <SubmissionsTable formId={formId} rows={d.rows} />
+          <SubmissionsTable formId={formId} columns={columns} rows={d.rows} />
         </div>
       ))}
     </div>
@@ -459,9 +475,11 @@ function labelForYmd(ymd: string): string {
 
 function SubmissionsTable({
   formId,
+  columns,
   rows
 }: {
   formId: string;
+  columns: FormColumn[];
   rows: JotformSubmissionRow[];
 }) {
   return (
@@ -469,9 +487,11 @@ function SubmissionsTable({
       <table className="w-full border-collapse text-sm">
         <thead className="bg-sudsy-blue-soft/40 text-left text-xs uppercase tracking-wide text-splash-navy/70">
           <tr>
-            <th className="px-3 py-2 font-semibold">Submitted at</th>
-            <th className="px-3 py-2 font-semibold">Site</th>
-            <th className="px-3 py-2 font-semibold">Status</th>
+            {columns.map((col) => (
+              <th key={col.key} className="px-3 py-2 font-semibold">
+                {col.label}
+              </th>
+            ))}
             <th className="px-3 py-2 font-semibold"></th>
           </tr>
         </thead>
@@ -481,23 +501,14 @@ function SubmissionsTable({
               key={r.id}
               className="border-t border-gray-light hover:bg-sudsy-blue-soft/20"
             >
-              <td className="px-3 py-2 align-top text-splash-navy">
-                {r.jotform_created_at ? (
-                  <span title={formatAbsolute(r.jotform_created_at)}>
-                    {formatRelative(r.jotform_created_at)}
-                  </span>
-                ) : (
-                  <span className="text-splash-navy/50">—</span>
-                )}
-              </td>
-              <td className="px-3 py-2 align-top text-splash-navy">
-                {r.site ?? r.site_number ?? (
-                  <span className="text-splash-navy/50">—</span>
-                )}
-              </td>
-              <td className="px-3 py-2 align-top">
-                <StatusPill status={r.jotform_status} />
-              </td>
+              {columns.map((col) => (
+                <td
+                  key={col.key}
+                  className="px-3 py-2 align-top text-splash-navy"
+                >
+                  {col.render(r)}
+                </td>
+              ))}
               <td className="px-3 py-2 align-top">
                 <Link
                   href={`/admin/jotform/${encodeURIComponent(formId)}/${encodeURIComponent(r.id)}`}
@@ -594,15 +605,6 @@ function buildHref(
   return qs ? `?${qs}` : "?";
 }
 
-function StatusPill({ status }: { status: string | null }) {
-  const label = status ?? "—";
-  return (
-    <span className="inline-flex items-center rounded-full bg-gray-light px-2.5 py-0.5 text-xs font-bold text-splash-navy/80">
-      {label}
-    </span>
-  );
-}
-
 function formatRangeLabel(iso: string): string {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return iso;
@@ -611,31 +613,4 @@ function formatRangeLabel(iso: string): string {
     day: "numeric",
     year: "numeric"
   });
-}
-
-function formatAbsolute(iso: string): string {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
-  return d.toLocaleString("en-US", {
-    month: "short",
-    day: "numeric",
-    year: "numeric",
-    hour: "numeric",
-    minute: "2-digit"
-  });
-}
-
-function formatRelative(iso: string): string {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
-  const ms = Date.now() - d.getTime();
-  const sec = Math.round(ms / 1000);
-  if (sec < 60) return `${sec}s ago`;
-  const min = Math.round(sec / 60);
-  if (min < 60) return `${min} min ago`;
-  const hr = Math.round(min / 60);
-  if (hr < 24) return `${hr} hr ago`;
-  const day = Math.round(hr / 24);
-  if (day < 30) return `${day} day${day === 1 ? "" : "s"} ago`;
-  return formatAbsolute(iso);
 }
