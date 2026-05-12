@@ -760,6 +760,28 @@ URL-based — service bindings don't apply to those.
   roster returns a postal-address-shaped value (contains comma OR
   starts with a digit); the roster worker's `row.location` fallback
   is untouched at this brief per Phase 5.3.
+  Brief 112 (2026-05-12): per-form viewer content polish. Time-card-
+  edit gains three per-form columns in the registry (`answerColumn`
+  builders for keys 4 "Employee Name" / 5 "Reason For Edit" / 28
+  "Manager Making Edits"; punch-in/out timestamp keys stay
+  detail-page-only). Detail page renderer
+  (`apps/web/app/admin/jotform/[form_id]/[submission_id]/page.tsx`)
+  rewritten — replaced the Brief 109 alphabetical-key generic loop
+  with a type-dispatched renderer in
+  `_lib/answer-renderer.tsx` (`hasContent` / `orderKey` /
+  `renderAnswerValue`). Dispatches on `answers[KEY].type`:
+  `control_signature` → inline `<img>` from the JotForm CDN URL;
+  `control_fileupload` → wrapping-link thumbnail grid;
+  `control_fullname` / `control_datetime` / `control_phone` /
+  `control_checkbox` → prefer `prettyFormat` (falls through to bare
+  `answer` rendering when missing); default → bare `answer` string
+  for textbox / textarea / radio / dropdown / email / number /
+  widget. Sorts by `answers[KEY].order` (JotForm builder display
+  order, not alphabetical key) and skips entries with empty
+  `answer` + empty `prettyFormat` entirely — eliminates the
+  em-dash spam for forms with many optional fields (time-card-edit
+  PTO Day 2-5). Detail page metadata block timestamps now use
+  `formatEst()` matching the list page.
 
 - **JotForm submissions** (Brief 107) - The four onboarded JotForm
   forms (rewash, salt-log, retention, time-card-edit) all share a

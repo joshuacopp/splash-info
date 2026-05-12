@@ -148,8 +148,14 @@ export const FORM_COLUMN_CONFIG: Record<string, FormColumn[]> = {
     answerColumn("30", "Barcode/License Plate"),
     answerColumn("31", "Action Being Taken")
   ],
-  // Time card edit (generic only — no per-form columns at v1)
-  "250193775451056": [submittedColumn(), siteColumn()]
+  // Time card edit
+  "250193775451056": [
+    submittedColumn(),
+    siteColumn(),
+    answerColumn("4", "Employee Name"),
+    answerColumn("5", "Reason For Edit"),
+    answerColumn("28", "Manager Making Edits")
+  ]
 };
 
 export const DEFAULT_COLUMNS: FormColumn[] = [submittedColumn(), siteColumn()];

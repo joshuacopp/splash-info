@@ -77,6 +77,8 @@
 
 # brief-111-jotform-viewer-per-form-columns-and-est-and-location-pretty.md  (completed 2026-05-11)
 
+# brief-112-jotform-viewer-content-polish.md  (completed 2026-05-12)
+
 
 
 

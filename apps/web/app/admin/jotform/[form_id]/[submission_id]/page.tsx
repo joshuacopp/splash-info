@@ -4,20 +4,29 @@
 // Server component. Any authenticated session; the worker enforces
 // anti-leak 404 for out-of-scope rows (Brief 107) so a null collapse from
 // getSubmission() always routes to notFound() — caller can't distinguish
-// "doesn't exist" from "exists but not yours". The payload renderer is
-// generic over `row.answers`: keys rendered alphabetically; values vary
-// per-form (rewash vs salt-log vs retention vs time-card-edit) so the v1
-// UX is intentionally schema-agnostic.
+// "doesn't exist" from "exists but not yours".
+//
+// Brief 112 rewrote the payload renderer: dispatched on
+// `answers[KEY].type` (signatures inline as images, file uploads as a
+// thumbnail grid, fullname / datetime / phone / checkbox preferring
+// `prettyFormat`); sorted by `answers[KEY].order` (JotForm builder
+// display order, not alphabetical); empty answers filtered out so
+// optional-heavy forms (time-card-edit PTO Day 2-5) don't spam empty
+// rows. Metadata timestamps use `formatEst()` matching the list page.
 
 import Link from "next/link";
 import { notFound } from "next/navigation";
 
 import { getMe } from "../../../../_lib/me";
 import NoAccessCard from "../../_components/NoAccessCard";
+import { formatEst } from "../../_lib/format-est";
+import { getSubmission } from "../../_lib/worker-fetch";
 import {
-  getSubmission,
-  type JotformSubmissionRow
-} from "../../_lib/worker-fetch";
+  hasContent,
+  orderKey,
+  renderAnswerValue,
+  type AnswerEntry
+} from "./_lib/answer-renderer";
 
 export const dynamic = "force-dynamic";
 
@@ -50,9 +59,6 @@ export default async function JotformSubmissionDetailPage({
   }
 
   if (detail === null && fetchError === null) {
-    // Worker collapses 401/403/404 to null. The anti-leak 404 for
-    // out-of-scope rows is intentional — we render the same notFound()
-    // chrome whether the row doesn't exist or the caller can't see it.
     notFound();
   }
 
@@ -71,7 +77,14 @@ export default async function JotformSubmissionDetailPage({
   }
 
   const row = detail!.row;
-  const sortedAnswerKeys = Object.keys(row.answers).sort();
+  const submittedAt = formatEst(row.jotform_created_at);
+  const updatedAt = formatEst(row.jotform_updated_at);
+
+  const answers = (row.answers ?? {}) as Record<string, AnswerEntry>;
+  const entries = Object.entries(answers)
+    .filter(([, entry]) => entry != null && hasContent(entry))
+    .map(([key, entry]) => ({ key, entry, order: orderKey(entry, key) }))
+    .sort((a, b) => a.order - b.order);
 
   return (
     <section className="mx-auto w-full max-w-[820px] px-5 py-9">
@@ -84,10 +97,10 @@ export default async function JotformSubmissionDetailPage({
         <h1 className="text-2xl font-bold text-splash-navy">Submission</h1>
         <p className="mt-1 text-sm text-splash-navy/70">
           {row.jotform_created_at ? (
-            <>
-              {formatAbsolute(row.jotform_created_at)} ·{" "}
-              {formatRelative(row.jotform_created_at)}
-            </>
+            <span title={submittedAt.absolute}>
+              {submittedAt.absolute}
+              {submittedAt.relative ? ` · ${submittedAt.relative}` : ""}
+            </span>
           ) : (
             <span className="text-splash-navy/50">— no timestamp —</span>
           )}
@@ -122,15 +135,19 @@ export default async function JotformSubmissionDetailPage({
             },
             {
               label: "Submitted at",
-              value: row.jotform_created_at
-                ? formatAbsolute(row.jotform_created_at)
-                : em()
+              value: row.jotform_created_at ? (
+                <span title={submittedAt.absolute}>{submittedAt.absolute}</span>
+              ) : (
+                em()
+              )
             },
             {
               label: "Updated at",
-              value: row.jotform_updated_at
-                ? formatAbsolute(row.jotform_updated_at)
-                : em()
+              value: row.jotform_updated_at ? (
+                <span title={updatedAt.absolute}>{updatedAt.absolute}</span>
+              ) : (
+                em()
+              )
             },
             {
               label: "JotForm status",
@@ -154,26 +171,26 @@ export default async function JotformSubmissionDetailPage({
         <h2 className="border-b border-gray-light px-5 py-3 text-lg font-semibold text-splash-navy">
           Answers
           <span className="ml-2 text-sm font-normal text-splash-navy/60">
-            ({sortedAnswerKeys.length} field
-            {sortedAnswerKeys.length === 1 ? "" : "s"}, alphabetical)
+            ({entries.length} field
+            {entries.length === 1 ? "" : "s"})
           </span>
         </h2>
-        {sortedAnswerKeys.length === 0 ? (
+        {entries.length === 0 ? (
           <p className="px-5 py-4 italic text-splash-navy/60">
             No answers recorded for this submission.
           </p>
         ) : (
           <dl className="divide-y divide-gray-light">
-            {sortedAnswerKeys.map((key) => (
+            {entries.map(({ key, entry }) => (
               <div
                 key={key}
                 className="grid grid-cols-1 gap-1 px-5 py-3 sm:grid-cols-[200px_1fr] sm:gap-4"
               >
                 <dt className="text-xs font-semibold uppercase tracking-wide text-splash-navy/60">
-                  {key}
+                  {entry.text || entry.name || `Field ${key}`}
                 </dt>
                 <dd className="text-sm text-splash-navy">
-                  <AnswerValue value={row.answers[key]} />
+                  {renderAnswerValue(entry)}
                 </dd>
               </div>
             ))}
@@ -206,75 +223,8 @@ function BackLink({ formId }: { formId: string }) {
   );
 }
 
-function AnswerValue({ value }: { value: unknown }) {
-  if (value == null || value === "") return em();
-  if (typeof value === "string") {
-    return (
-      <span className="whitespace-pre-wrap break-words">{value}</span>
-    );
-  }
-  if (typeof value === "number" || typeof value === "boolean") {
-    return <span>{String(value)}</span>;
-  }
-  // Objects / arrays — common for JotForm rich-payload entries which are
-  // typically `{answer, prettyFormat?, type, name, text}`. Try to surface
-  // a friendly form first (prefer prettyFormat, then answer.text/value),
-  // then fall back to a JSON pre-block.
-  if (typeof value === "object") {
-    const v = value as Record<string, unknown>;
-    if (typeof v.prettyFormat === "string" && v.prettyFormat) {
-      return (
-        <span className="whitespace-pre-wrap break-words">
-          {v.prettyFormat}
-        </span>
-      );
-    }
-    if (typeof v.answer === "string" && v.answer) {
-      return (
-        <span className="whitespace-pre-wrap break-words">{v.answer}</span>
-      );
-    }
-    if (typeof v.answer === "number" || typeof v.answer === "boolean") {
-      return <span>{String(v.answer)}</span>;
-    }
-    return (
-      <pre className="overflow-x-auto rounded-splash-sm bg-gray-light/40 p-2 text-xs text-splash-navy/80">
-        {stableStringify(value)}
-      </pre>
-    );
-  }
-  return <span>{String(value)}</span>;
-}
-
 function em(): React.ReactNode {
   return <span className="text-splash-navy/40">—</span>;
-}
-
-function formatAbsolute(iso: string): string {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
-  return d.toLocaleString("en-US", {
-    month: "short",
-    day: "numeric",
-    year: "numeric",
-    hour: "numeric",
-    minute: "2-digit"
-  });
-}
-
-function formatRelative(iso: string): string {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
-  const ms = Date.now() - d.getTime();
-  const sec = Math.round(ms / 1000);
-  if (sec < 60) return `${sec}s ago`;
-  const min = Math.round(sec / 60);
-  if (min < 60) return `${min} min ago`;
-  const hr = Math.round(min / 60);
-  if (hr < 24) return `${hr} hr ago`;
-  const day = Math.round(hr / 24);
-  if (day < 30) return `${day} day${day === 1 ? "" : "s"} ago`;
-  return formatAbsolute(iso);
 }
 
 function stableStringify(value: unknown): string {
