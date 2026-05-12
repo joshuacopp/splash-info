@@ -1,5 +1,7 @@
 // Brief 109 — JotForm per-form submissions list
 // (/admin/jotform/[form_id]).
+// Brief 110 — RD / RM / Location filter dropdowns + location → date
+// grouped rendering of the current page.
 //
 // Server component. Any authenticated session passes; the worker re-validates
 // scope via accessibleSiteNumbersForSession (Brief 107). Unknown `form_id`
@@ -16,13 +18,18 @@ import { getMe } from "../../../_lib/me";
 import { DateRangePicker } from "../../../_components/DateRangePicker";
 import { CsvExportButton } from "../../../_components/CsvExportButton";
 import NoAccessCard from "../_components/NoAccessCard";
+import { FilterBar } from "./_components/FilterBar";
 import {
   csvExportUrl,
+  getRoster,
   listForms,
   listSubmissions,
   type JotformForm,
+  type JotformRoster,
   type JotformSubmissionRow,
-  type JotformSubmissionsListResponse
+  type JotformSubmissionsListResponse,
+  type RosterLocation,
+  type RosterRm
 } from "../_lib/worker-fetch";
 
 export const dynamic = "force-dynamic";
@@ -89,6 +96,9 @@ export default async function JotformFormPage({
   const from = readStringParam(sp.from);
   const to = readStringParam(sp.to);
   const offset = readIntParam(sp.offset) ?? 0;
+  const amEmail = readStringParam(sp.am_email);
+  const rmEmail = readStringParam(sp.rm_email);
+  const locationCode = readStringParam(sp.location_code);
 
   const session = await getMe().catch(() => null);
   if (!session) {
@@ -122,13 +132,20 @@ export default async function JotformFormPage({
 
   let data: JotformSubmissionsListResponse | null = null;
   let fetchError: string | null = null;
+  let roster: JotformRoster | null = null;
   try {
-    data = await listSubmissions(form_id, {
-      from,
-      to,
-      offset,
-      limit: DEFAULT_LIMIT
-    });
+    [data, roster] = await Promise.all([
+      listSubmissions(form_id, {
+        from,
+        to,
+        offset,
+        limit: DEFAULT_LIMIT,
+        amEmail,
+        rmEmail,
+        locationCode
+      }),
+      getRoster()
+    ]);
   } catch (err) {
     fetchError = err instanceof Error ? err.message : String(err);
   }
@@ -143,7 +160,13 @@ export default async function JotformFormPage({
 
   const fromDefault = defaultFromYmd();
   const toDefault = todayYmd();
-  const csvUrl = csvExportUrl(form_id, { from, to });
+  const csvUrl = csvExportUrl(form_id, {
+    from,
+    to,
+    amEmail,
+    rmEmail,
+    locationCode
+  });
   const title = formMeta?.display_name ?? form_id;
   const total = data?.total ?? data?.total_estimate ?? 0;
   const limit = data?.limit ?? DEFAULT_LIMIT;
@@ -172,6 +195,12 @@ export default async function JotformFormPage({
         )}
       </div>
 
+      {roster && (
+        <div className="mb-3">
+          <FilterBar roster={roster} />
+        </div>
+      )}
+
       <div className="mb-5 flex flex-wrap items-end justify-between gap-3">
         <DateRangePicker
           defaultFromYmd={fromDefault}
@@ -193,11 +222,12 @@ export default async function JotformFormPage({
               <>No submissions in this date range.</>
             ) : (
               <>
-                Showing {currentOffset + 1}&ndash;
+                Showing rows {currentOffset + 1}&ndash;
                 {currentOffset + data.rows.length} of {total.toLocaleString()}{" "}
                 submission{total === 1 ? "" : "s"} between{" "}
                 {formatRangeLabel(data.from)} and {formatRangeLabel(data.to)}
-                {data.scope === "scoped" ? " (scoped to your locations)" : ""}
+                {data.scope === "scoped" ? " (scoped to your locations)" : ""}{" "}
+                (grouped by location &amp; date)
               </>
             )}
           </p>
@@ -205,23 +235,226 @@ export default async function JotformFormPage({
           {data.rows.length === 0 ? (
             <EmptyState scope={data.scope} />
           ) : (
-            <SubmissionsTable formId={form_id} rows={data.rows} />
+            <GroupedSubmissions
+              formId={form_id}
+              rows={data.rows}
+              roster={roster}
+            />
           )}
 
           {data.rows.length > 0 && (hasPrev || hasNext) && (
             <Pagination
-              from={from}
-              to={to}
               offset={currentOffset}
               limit={limit}
               hasPrev={hasPrev}
               hasNext={hasNext}
+              searchParams={sp}
             />
           )}
         </>
       )}
     </section>
   );
+}
+
+/* ============================================================
+ * Grouped rendering (Brief 110)
+ *
+ * Group the current page's rows by location → date. Single-location
+ * pages skip the outer group chrome (the date sub-headers are enough
+ * structure on their own).
+ * ============================================================ */
+
+interface LocationGroupKey {
+  key: string;
+  siteNumber: string;
+  pretty: string;
+  rmName: string | null;
+}
+
+function locationKeyForRow(row: JotformSubmissionRow): string {
+  const sn = (row.site_number ?? "").trim();
+  if (sn) return `sn:${sn}`;
+  const site = (row.site ?? "").trim();
+  if (site) return `site:${site}`;
+  return "site:unknown";
+}
+
+function GroupedSubmissions({
+  formId,
+  rows,
+  roster
+}: {
+  formId: string;
+  rows: JotformSubmissionRow[];
+  roster: JotformRoster | null;
+}) {
+  // Index rosters: site_number → location_pretty + rm_email; rm_email →
+  // RM display name. Used to label group headers.
+  const locByNum = new Map<string, RosterLocation>();
+  const rmByEmail = new Map<string, RosterRm>();
+  if (roster) {
+    for (const loc of roster.locations) {
+      locByNum.set(loc.site_number, loc);
+    }
+    for (const rm of roster.regional_managers) {
+      rmByEmail.set(rm.email, rm);
+    }
+  }
+
+  // Bucket rows by location key.
+  const byLocation = new Map<string, JotformSubmissionRow[]>();
+  for (const r of rows) {
+    const k = locationKeyForRow(r);
+    let bucket = byLocation.get(k);
+    if (!bucket) {
+      bucket = [];
+      byLocation.set(k, bucket);
+    }
+    bucket.push(r);
+  }
+
+  // Sort locations alphabetically by pretty (or site_number as fallback).
+  const locationGroups: Array<{
+    meta: LocationGroupKey;
+    rows: JotformSubmissionRow[];
+  }> = [];
+  for (const [key, groupRows] of byLocation.entries()) {
+    const first = groupRows[0];
+    if (!first) continue;
+    const sn = (first.site_number ?? "").trim();
+    const fallbackPretty =
+      (first.site ?? "").trim() || sn || "Unknown location";
+    const rosterLoc = sn
+      ? locByNum.get(sn) ||
+        (sn.length < 3 ? locByNum.get(sn.padStart(3, "0")) : undefined)
+      : undefined;
+    const pretty = rosterLoc?.location_pretty || fallbackPretty;
+    const rmEmail = rosterLoc?.rm_email || null;
+    const rmName = rmEmail ? rmByEmail.get(rmEmail)?.name ?? rmEmail : null;
+    locationGroups.push({
+      meta: {
+        key,
+        siteNumber: sn,
+        pretty,
+        rmName
+      },
+      rows: groupRows
+    });
+  }
+  locationGroups.sort((a, b) => {
+    const ap = a.meta.pretty || "";
+    const bp = b.meta.pretty || "";
+    const cmp = ap.localeCompare(bp);
+    if (cmp !== 0) return cmp;
+    return (a.meta.siteNumber || "").localeCompare(b.meta.siteNumber || "");
+  });
+
+  const singleLocation = locationGroups.length === 1;
+
+  return (
+    <div className="space-y-5">
+      {locationGroups.map((g) => (
+        <LocationGroup
+          key={g.meta.key}
+          formId={formId}
+          group={g}
+          flat={singleLocation}
+        />
+      ))}
+    </div>
+  );
+}
+
+function LocationGroup({
+  formId,
+  group,
+  flat
+}: {
+  formId: string;
+  group: { meta: LocationGroupKey; rows: JotformSubmissionRow[] };
+  flat: boolean;
+}) {
+  const dateBuckets = bucketByDate(group.rows);
+
+  const inner = (
+    <div className="space-y-3">
+      {dateBuckets.map((d) => (
+        <div key={d.ymd}>
+          <h3 className="mb-2 text-xs font-semibold uppercase tracking-wider text-splash-navy/60">
+            {d.label} ({d.rows.length} submission
+            {d.rows.length === 1 ? "" : "s"})
+          </h3>
+          <SubmissionsTable formId={formId} rows={d.rows} />
+        </div>
+      ))}
+    </div>
+  );
+
+  if (flat) return inner;
+
+  const headerSuffix =
+    group.meta.rmName !== null
+      ? ` — Regional Manager: ${group.meta.rmName}`
+      : "";
+  const locLabel = group.meta.siteNumber
+    ? `${group.meta.pretty} (${group.meta.siteNumber})`
+    : group.meta.pretty;
+
+  return (
+    <section className="rounded-splash-md border border-gray-light bg-white p-4">
+      <h2 className="mb-3 text-base font-bold text-splash-navy">
+        {locLabel}
+        {headerSuffix && (
+          <span className="font-normal text-splash-navy/70">
+            {headerSuffix}
+          </span>
+        )}
+      </h2>
+      {inner}
+    </section>
+  );
+}
+
+function bucketByDate(
+  rows: JotformSubmissionRow[]
+): Array<{ ymd: string; label: string; rows: JotformSubmissionRow[] }> {
+  const buckets = new Map<string, JotformSubmissionRow[]>();
+  for (const r of rows) {
+    const iso = r.jotform_created_at ?? "";
+    const ymd = iso.length >= 10 ? iso.slice(0, 10) : "unknown";
+    let b = buckets.get(ymd);
+    if (!b) {
+      b = [];
+      buckets.set(ymd, b);
+    }
+    b.push(r);
+  }
+  // Most-recent date first; rows within a day already arrived in
+  // jotform_created_at desc order from the worker.
+  const out: Array<{ ymd: string; label: string; rows: JotformSubmissionRow[] }> = [];
+  for (const [ymd, bRows] of buckets.entries()) {
+    bRows.sort((a, b) => {
+      const ai = a.jotform_created_at ?? "";
+      const bi = b.jotform_created_at ?? "";
+      return bi.localeCompare(ai);
+    });
+    out.push({ ymd, label: labelForYmd(ymd), rows: bRows });
+  }
+  out.sort((a, b) => b.ymd.localeCompare(a.ymd));
+  return out;
+}
+
+function labelForYmd(ymd: string): string {
+  if (ymd === "unknown") return "Date unknown";
+  const d = new Date(`${ymd}T00:00:00Z`);
+  if (Number.isNaN(d.getTime())) return ymd;
+  return d.toLocaleDateString("en-US", {
+    month: "long",
+    day: "numeric",
+    year: "numeric",
+    timeZone: "UTC"
+  });
 }
 
 function SubmissionsTable({
@@ -292,26 +525,24 @@ function EmptyState({ scope }: { scope: "all" | "scoped" }) {
 }
 
 function Pagination({
-  from,
-  to,
   offset,
   limit,
   hasPrev,
-  hasNext
+  hasNext,
+  searchParams
 }: {
-  from: string | undefined;
-  to: string | undefined;
   offset: number;
   limit: number;
   hasPrev: boolean;
   hasNext: boolean;
+  searchParams: Record<string, string | string[] | undefined>;
 }) {
   const prevOffset = Math.max(0, offset - limit);
   const nextOffset = offset + limit;
   return (
     <div className="mt-4 flex items-center justify-between gap-3">
       <Link
-        href={buildHref(from, to, prevOffset)}
+        href={buildHref(searchParams, prevOffset)}
         aria-disabled={!hasPrev}
         tabIndex={hasPrev ? 0 : -1}
         className={`inline-flex items-center rounded-splash-sm border border-splash-blue px-4 py-1.5 text-sm font-bold ${
@@ -326,7 +557,7 @@ function Pagination({
         Offset {offset.toLocaleString()}
       </span>
       <Link
-        href={buildHref(from, to, nextOffset)}
+        href={buildHref(searchParams, nextOffset)}
         aria-disabled={!hasNext}
         tabIndex={hasNext ? 0 : -1}
         className={`inline-flex items-center rounded-splash-sm border border-splash-blue px-4 py-1.5 text-sm font-bold ${
@@ -341,14 +572,23 @@ function Pagination({
   );
 }
 
+const PAGINATION_PASSTHROUGH_KEYS = [
+  "from",
+  "to",
+  "am_email",
+  "rm_email",
+  "location_code"
+] as const;
+
 function buildHref(
-  from: string | undefined,
-  to: string | undefined,
+  searchParams: Record<string, string | string[] | undefined>,
   offset: number
 ): string {
   const sp = new URLSearchParams();
-  if (from) sp.set("from", from);
-  if (to) sp.set("to", to);
+  for (const key of PAGINATION_PASSTHROUGH_KEYS) {
+    const raw = searchParams[key];
+    if (typeof raw === "string" && raw) sp.set(key, raw);
+  }
   if (offset > 0) sp.set("offset", String(offset));
   const qs = sp.toString();
   return qs ? `?${qs}` : "?";

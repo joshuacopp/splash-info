@@ -1,6 +1,6 @@
-// Admin-gated read endpoints (Brief 107).
+// Admin-gated read endpoints (Brief 107 / Brief 110).
 //
-// Five routes under /admin/jotform/api/*:
+// Six routes under /admin/jotform/api/*:
 //
 //   GET  /admin/jotform/api/forms
 //     Returns [{form_id, slug, display_name, enabled, submission_count}]
@@ -27,6 +27,12 @@
 //     Super_admin only. Paginates JotForm API ?after_id for one page of
 //     up to 1000, normalizes + upserts, returns `{ ok, inserted, last_id,
 //     has_more }`. Operator drives the loop externally.
+//
+//   GET  /admin/jotform/api/roster
+//     Any authenticated session. Returns regional_directors /
+//     regional_managers / locations arrays scoped to the caller's
+//     accessibleSiteNumbersForSession. Backs apps/web's RD/RM/Location
+//     filter dropdowns in one round-trip. (Brief 110)
 
 import { isOriginAllowed, jsonError } from "@splash/http";
 import {
@@ -46,6 +52,8 @@ import {
 } from "../db.js";
 import { fetchFormSubmissions, JOTFORM_BACKFILL_PAGE_SIZE } from "../jotform.js";
 import { normalizeSubmission } from "../normalize.js";
+import { resolveLocationFilters } from "../filters.js";
+import { handleRoster } from "./roster.js";
 
 const DEFAULT_LIST_LIMIT = 200;
 const MAX_LIST_LIMIT = 500;
@@ -79,6 +87,11 @@ export async function handleAdminApi(request, env, ctx) {
   if (path === "/admin/jotform/api/forms") {
     if (request.method !== "GET") return jsonError(405, "method not allowed");
     return handleListForms(request, env);
+  }
+
+  if (path === "/admin/jotform/api/roster") {
+    if (request.method !== "GET") return jsonError(405, "method not allowed");
+    return handleRoster(request, env);
   }
 
   const submissionsMatch = path.match(
@@ -162,12 +175,17 @@ async function handleListSubmissions(request, env, formId) {
   if (typeof offset === "object" && offset.error) return offset.error;
   const siteNumber = sanitizeSiteNumber(url.searchParams.get("site_number"));
 
-  const scope = await accessibleSiteNumbersForSession(env, gate.session);
-  const siteNumbersFilter = scope === "all" ? undefined : scope;
-  // Empty scope short-circuits inside listSubmissions (returns []).
+  const filters = await resolveLocationFilters(
+    env,
+    gate.session,
+    url.searchParams
+  );
+  const scopeKind = filters.siteNumbers === "all" ? "all" : "scoped";
+  const siteNumbersFilter =
+    filters.siteNumbers === "all" ? undefined : filters.siteNumbers;
 
-  // If the caller passed an explicit site_number, intersect with their
-  // accessible set so they can't probe outside scope.
+  // If the caller passed an explicit site_number, intersect with the
+  // resolved (post-filter) accessible set so they can't probe outside.
   if (siteNumber && siteNumbersFilter instanceof Set) {
     if (!siteNumbersFilter.has(siteNumber)) {
       return jsonOk({
@@ -202,7 +220,7 @@ async function handleListSubmissions(request, env, formId) {
     offset,
     from: range.fromIso,
     to: range.toIso,
-    scope: scope === "all" ? "all" : "scoped"
+    scope: scopeKind
   });
 }
 
@@ -252,8 +270,13 @@ async function handleCsvExport(request, env, formId) {
   const range = parseDateRange(url);
   if (!range.ok) return range.response;
   const siteNumber = sanitizeSiteNumber(url.searchParams.get("site_number"));
-  const scope = await accessibleSiteNumbersForSession(env, gate.session);
-  const siteNumbersFilter = scope === "all" ? undefined : scope;
+  const filters = await resolveLocationFilters(
+    env,
+    gate.session,
+    url.searchParams
+  );
+  const siteNumbersFilter =
+    filters.siteNumbers === "all" ? undefined : filters.siteNumbers;
   if (siteNumber && siteNumbersFilter instanceof Set) {
     if (!siteNumbersFilter.has(siteNumber)) {
       // Return an empty CSV (just headers) so the operator's "Export"

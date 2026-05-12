@@ -69,6 +69,40 @@ export interface JotformSubmissionsListParams {
   limit?: number;
   offset?: number;
   siteNumber?: string;
+  amEmail?: string;
+  rmEmail?: string;
+  locationCode?: string;
+}
+
+// =============================================================================
+// Brief 110 — roster response shapes
+// =============================================================================
+
+export interface RosterAm {
+  email: string;
+  name: string;
+  site_numbers: string[];
+}
+
+export interface RosterRm {
+  email: string;
+  name: string;
+  site_numbers: string[];
+}
+
+export interface RosterLocation {
+  location_code: string;
+  site_number: string;
+  location_pretty: string;
+  am_email: string | null;
+  rm_email: string | null;
+}
+
+export interface JotformRoster {
+  regional_directors: RosterAm[];
+  regional_managers: RosterRm[];
+  locations: RosterLocation[];
+  scope: "all" | "scoped";
 }
 
 // =============================================================================
@@ -154,6 +188,9 @@ function buildSubmissionsQuery(params: JotformSubmissionsListParams): string {
   if (params.limit != null) sp.set("limit", String(params.limit));
   if (params.offset != null) sp.set("offset", String(params.offset));
   if (params.siteNumber) sp.set("site_number", params.siteNumber);
+  if (params.amEmail) sp.set("am_email", params.amEmail);
+  if (params.rmEmail) sp.set("rm_email", params.rmEmail);
+  if (params.locationCode) sp.set("location_code", params.locationCode);
   const qs = sp.toString();
   return qs ? `?${qs}` : "";
 }
@@ -184,12 +221,31 @@ export async function getSubmission(
  */
 export function csvExportUrl(
   formId: string,
-  params: { from?: string; to?: string; siteNumber?: string } = {}
+  params: {
+    from?: string;
+    to?: string;
+    siteNumber?: string;
+    amEmail?: string;
+    rmEmail?: string;
+    locationCode?: string;
+  } = {}
 ): string {
   const sp = new URLSearchParams();
   if (params.from) sp.set("from", params.from);
   if (params.to) sp.set("to", params.to);
   if (params.siteNumber) sp.set("site_number", params.siteNumber);
+  if (params.amEmail) sp.set("am_email", params.amEmail);
+  if (params.rmEmail) sp.set("rm_email", params.rmEmail);
+  if (params.locationCode) sp.set("location_code", params.locationCode);
   const qs = sp.toString();
   return `/admin/jotform/api/${encodeURIComponent(formId)}/submissions.csv${qs ? `?${qs}` : ""}`;
+}
+
+/**
+ * Brief 110 — load the RD / RM / Location roster scoped to the caller.
+ * Backs the FilterBar dropdowns on /admin/jotform/[form_id]. Returns null
+ * if the caller is unauthenticated (the worker 401s without a session).
+ */
+export async function getRoster(): Promise<JotformRoster | null> {
+  return jotformGetJson<JotformRoster>("/admin/jotform/api/roster");
 }

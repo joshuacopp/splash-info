@@ -108,3 +108,4 @@
 - 2026-05-11 15:41:57 brief-107-jotform-worker-storage-backfill-webhook.md (success)
 - 2026-05-11 16:06:49 brief-108-fleet-update-webhook-coerce-id-to-integer.md (success)
 - 2026-05-11 20:12:27 brief-109-apps-web-jotform-viewer.md (success)
+- 2026-05-11 22:41:07 brief-110-jotform-viewer-filters-and-grouping.md (success)

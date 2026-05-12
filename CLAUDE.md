@@ -714,6 +714,32 @@ URL-based — service bindings don't apply to those.
   via SQL INSERT + backfill requires zero apps/web code changes —
   the renderer is generic over `row.answers` keys. Form-specific
   field ordering is a v2 candidate.
+  Brief 110 (2026-05-11): the per-form viewer gained RD / RM /
+  Location filter dropdowns (URL-driven; backed by a new
+  `GET /admin/jotform/api/roster` endpoint that returns
+  `{ regional_directors, regional_managers, locations, scope }` in
+  one round-trip, scoped to the caller's
+  `accessibleSiteNumbersForSession`) plus location → date grouped
+  rendering of the current page's rows. The list and CSV endpoints
+  accept three additional query params `am_email` / `rm_email` /
+  `location_code` resolved via a new `src/filters.js` helper
+  (`resolveLocationFilters`) — each filter resolves to a
+  `Set<string>` of `site_number` strings (both padded and unpadded
+  per the Brief 107 widget convention), and the result is the
+  intersection of all provided filter sets AND the caller's
+  accessible scope. Empty intersection short-circuits to `rows: []`
+  (same as out-of-scope `site_number`). The `am_email` filter uses
+  `UserAccessibleLocation.matched_via === "am_email"` to scope to
+  only the AM-matched rows (mirror for `rm_email`); `location_code`
+  resolves through `pricing_simple.site` → site_number. apps/web's
+  `FilterBar` (`apps/web/app/admin/jotform/[form_id]/_components/`)
+  narrows RM + Location options client-side when RD is selected
+  (UX hint; worker re-validates either way). Grouped rendering
+  buckets the current 50-row page by location → date; single-
+  location pages render flat (no outer chrome — the date sub-
+  headers carry the structure). Adding a new JotForm form still
+  requires zero apps/web code changes — the renderer + filters are
+  generic over the existing common-field columns.
 
 - **JotForm submissions** (Brief 107) - The four onboarded JotForm
   forms (rewash, salt-log, retention, time-card-edit) all share a

@@ -1,9 +1,10 @@
-// Splash JotForm Worker — entry point (Brief 107).
+// Splash JotForm Worker — entry point (Brief 107 / Brief 110).
 //
 // Routes:
 //   GET  /                                                  — health (200)
 //   POST /jotform/webhook/{token}/{form_id}                  — JotForm webhook
 //   GET  /admin/jotform/api/forms                            — list enabled forms + counts
+//   GET  /admin/jotform/api/roster                           — RD/RM/location roster (Brief 110)
 //   GET  /admin/jotform/api/{form_id}/submissions            — paginated list (per-form)
 //   GET  /admin/jotform/api/{form_id}/submissions/{id}       — single-row detail
 //   GET  /admin/jotform/api/{form_id}/submissions.csv        — CSV export (schema-union)
