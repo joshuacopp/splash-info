@@ -111,9 +111,9 @@ export function extractCommonFields(rawAnswers) {
  * table columns one-for-one; the answers JSONB is the stripped map.
  *
  * `parseJotformDate` treats JotForm's `"YYYY-MM-DD HH:MM:SS"` format as
- * UTC (no timezone offset is present in the payload; if the operator
- * later confirms the timestamps are local, that's a v2 cleanup). Returns
- * an ISO 8601 string suitable for a Supabase `timestamptz` column.
+ * America/New_York wall-clock (the Splash JotForm Enterprise account's
+ * local zone) and converts to a true UTC ISO 8601 string suitable for
+ * a Supabase `timestamptz` column. See Brief 114.
  */
 export function normalizeSubmission(raw) {
   if (!raw || typeof raw !== "object") {
@@ -142,22 +142,81 @@ export function normalizeSubmission(raw) {
 }
 
 /**
- * Parse JotForm's `"YYYY-MM-DD HH:MM:SS"` timestamp into an ISO 8601
- * string. Treats the input as UTC for v1 — the operator's sample
- * payloads carry no timezone offset and JotForm Enterprise's default is
- * to render created_at in the account's local time, which is a v2 fix.
+ * Parse JotForm's `"YYYY-MM-DD HH:MM:SS"` timestamp into a true UTC
+ * ISO 8601 string. JotForm Enterprise's API returns submission
+ * timestamps in the account's local timezone (America/New_York for
+ * Splash) WITHOUT an explicit offset; this helper attaches the
+ * correct DST-aware offset and converts to UTC.
  *
- * Falls back to the input as-is when parsing fails; Supabase will reject
- * a malformed timestamptz at insert time so a downstream error surfaces.
+ * Brief 111 originally chose option (a) (display-only conversion,
+ * treating the input as already-UTC) based on a sample row whose
+ * `+00:00` suffix was actually this function's PRIOR buggy output,
+ * not JotForm input. Brief 114 corrected this — option (b): parse
+ * as Eastern local, convert to true UTC at ingest, let
+ * `formatEst()` continue to convert back to Eastern for display.
+ *
+ * Falls back to returning the input verbatim if the shape doesn't
+ * match — Supabase will reject a malformed timestamptz at insert
+ * so downstream errors surface.
  */
 export function parseJotformDate(input) {
   if (!input) return null;
   if (typeof input !== "string") return null;
-  // JotForm format: "2026-05-11 14:40:05"  → treat as UTC.
-  const match = input.match(/^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2})/);
-  if (match) return `${match[1]}T${match[2]}Z`;
-  // Fallback for already-ISO timestamps; let Supabase validate.
-  return input;
+  const match = input.match(
+    /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})/
+  );
+  if (!match) {
+    // Already-ISO (or malformed) — pass through.
+    return input;
+  }
+  const [, yyyy, mm, dd, hh, mi, ss] = match;
+  const y = Number.parseInt(yyyy, 10);
+  const mo = Number.parseInt(mm, 10);
+  const d = Number.parseInt(dd, 10);
+  const h = Number.parseInt(hh, 10);
+  const mins = Number.parseInt(mi, 10);
+  const s = Number.parseInt(ss, 10);
+  const offsetMinutes = easternOffsetMinutesForWallClock(y, mo, d, h, mins, s);
+  // offsetMinutes is negative (e.g., -240 for EDT, -300 for EST)
+  // because America/New_York is behind UTC. To convert the wall
+  // clock to UTC we subtract the offset (i.e., add |offset|).
+  const wallAsIfUtc = Date.UTC(y, mo - 1, d, h, mins, s);
+  const realUtc = wallAsIfUtc - offsetMinutes * 60_000;
+  return new Date(realUtc).toISOString();
+}
+
+/**
+ * Return the offset (in minutes) of America/New_York at the given
+ * wall-clock moment. Negative because NY is behind UTC; -240 in
+ * EDT, -300 in EST.
+ *
+ * Approach: pretend the wall-clock components describe a UTC moment,
+ * then ask Intl what NY's offset is at that moment. For all wall-
+ * clocks outside the DST-ambiguous hour (2-3 AM on spring-forward
+ * Sundays), this matches the offset Eastern users would expect.
+ * The ambiguous hour resolves to whichever side `Intl` reports —
+ * safe enough for JotForm timestamps where ambiguity is rare and
+ * a 1-hour drift on those edge rows is acceptable.
+ */
+function easternOffsetMinutesForWallClock(y, mo, d, h, mi, s) {
+  const probe = new Date(Date.UTC(y, mo - 1, d, h, mi, s));
+  // Use Intl to format the probe Date in NY, then read the
+  // `shortOffset` token (e.g., "GMT-4" or "GMT-5"). Parse to minutes.
+  const formatter = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/New_York",
+    hour: "numeric",
+    timeZoneName: "shortOffset"
+  });
+  const parts = formatter.formatToParts(probe);
+  const tz = parts.find((p) => p.type === "timeZoneName")?.value;
+  if (!tz) return -300; // safe default: EST
+  // Match "GMT-4" / "GMT-5" / "GMT+0" / "GMT-04:30" etc.
+  const m = tz.match(/GMT([+-])(\d{1,2})(?::(\d{2}))?/);
+  if (!m) return -300;
+  const sign = m[1] === "+" ? 1 : -1;
+  const hours = Number.parseInt(m[2], 10);
+  const mins = m[3] ? Number.parseInt(m[3], 10) : 0;
+  return sign * (hours * 60 + mins);
 }
 
 /**

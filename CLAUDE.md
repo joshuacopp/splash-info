@@ -808,6 +808,23 @@ URL-based — service bindings don't apply to those.
   10s `AbortSignal.timeout`. apps/web `assetProxyUrl(jotformUrl)`
   helper in `_lib/worker-fetch.ts` builds the same-origin proxy URL
   for renderer use.
+  Brief 114 (2026-05-12): `parseJotformDate` in
+  `apps/jotform-worker/src/normalize.js` now treats JotForm's
+  `"YYYY-MM-DD HH:MM:SS"` input as `America/New_York` wall-clock and
+  emits a true UTC ISO 8601 string (DST-aware via
+  `Intl.DateTimeFormat` `shortOffset` token). Replaces the Brief 107
+  behaviour that stamped EDT/EST wall-clocks as `Z` (UTC), producing
+  4-hr / 5-hr offsets on the apps/web `formatEst()` display layer.
+  Brief 111 had picked the display-only "option (a)" path based on a
+  sample row whose `+00:00` suffix was the bug's PRIOR output, not
+  JotForm input; Brief 114 corrected the storage side at ingest.
+  Display layer (`formatEst()`) is unchanged. DST-ambiguous-hour
+  edge case (2-3 AM on spring-forward/fall-back Sundays) accepted
+  as a 1-hour drift on those rare rows per the helper docblock.
+  Existing rows fixed via operator re-running each form's backfill
+  endpoint post-deploy (`POST /admin/jotform/api/{form_id}/backfill`
+  paginated by `offset`); upsert is idempotent
+  (`on_conflict=id` + `Prefer: resolution=merge-duplicates`).
 
 - **JotForm submissions** (Brief 107) - The four onboarded JotForm
   forms (rewash, salt-log, retention, time-card-edit) all share a
