@@ -81,6 +81,8 @@
 
 # brief-113-jotform-viewer-absolute-est-and-signature-proxy.md  (completed 2026-05-12)
 
+# brief-115-jotform-viewer-comprehensive-ux-restructure.md  (completed 2026-05-12)
+
 
 
 

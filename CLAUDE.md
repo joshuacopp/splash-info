@@ -825,6 +825,42 @@ URL-based — service bindings don't apply to those.
   endpoint post-deploy (`POST /admin/jotform/api/{form_id}/backfill`
   paginated by `offset`); upsert is idempotent
   (`on_conflict=id` + `Prefer: resolution=merge-duplicates`).
+  Brief 115 (2026-05-12): JotForm viewer comprehensively
+  restructured. (1) Worker `handleListSubmissions` dispatches on two
+  new query flags: `?count_only=1` returns
+  `{ total_rows, from, to, scope }` only (single COUNT via
+  `Prefer: count=exact`); `?group=location` returns
+  `{ groups: [{site, site_number, rm_email, rm_name, count, rows}],
+  total_rows, cap_reached, from, to, scope }` with rows
+  alphabetically grouped by site (case-insensitive),
+  `GROUPING_SAFETY_CAP = 2000` rows ceiling, oldest-dropped-first on
+  overflow. RM info pre-resolved via a new `fetchRmRosterMap(env)`
+  helper that joins `locations.site_number` →
+  `regional_manager`/`rm_email`. Legacy paginated shape preserved for
+  back-compat but apps/web no longer uses it. `db.js`'s
+  `listSubmissions` gained an `exactCount` flag toggling
+  `Prefer: count=estimated` ↔ `count=exact`. (2) Worker
+  `parseDateRange` default flipped from "last 30 days UTC" to "today
+  EST" (DST-aware via new `todayInEastern()` + `easternWallClockToUtcMs()`
+  helpers mirroring Brief 114's `Intl.shortOffset` probe pattern).
+  (3) Asset proxy (`handleAssetProxy`) widened to fix Brief 113's
+  leftover signature-broken bug: host allow-list = JOTFORM_BASE_URL
+  host OR `www.jotform.com` (Enterprise sometimes serves widget
+  assets against the public host); path-prefix allow-list = `/uploads/`
+  + `/widget-uploads/` + `/server.php`; auth posture sends `APIKEY`
+  HTTP header in addition to `?apikey=` query param (documented
+  JotForm asset auth pattern). New `fetchJotformAssetFollowingRedirects()`
+  helper manually follows up to 3 redirects, validating each hop
+  stays on the allow-listed host set (Brief 113's `redirect: "manual"`
+  + 3xx-reject was dropping legitimate JotForm CDN bounces).
+  Pre-existing query params on the target are now augmented rather
+  than dropped. (4) Roster handler
+  (`apps/jotform-worker/src/handlers/roster.js`) `location_pretty`
+  resolution chain is now `pricing_simple.location_pretty` →
+  `pricing_simple.location_code` → `Site {site_number}` placeholder
+  — NEVER falls back to `locations.location` (postal address).
+  Closes the bug class Brief 111 patched with a client-side
+  address-shape heuristic in FilterBar; that heuristic is removed.
 
 - **JotForm submissions** (Brief 107) - The four onboarded JotForm
   forms (rewash, salt-log, retention, time-card-edit) all share a
@@ -854,6 +890,27 @@ URL-based — service bindings don't apply to those.
   rejects un-keyed hot-links — `<img src=jotform.com>` returned 401
   cross-origin from apps/web. See the jotform-worker glossary entry
   for the full request/response shape + SSRF guardrails.
+  Brief 115 (2026-05-12): JotForm viewer (`/admin/jotform/[form_id]`)
+  comprehensively restructured. Default date range is now today EST
+  (was last 30 days). Render model is full-scope alphabetical
+  grouped — every row in scope renders in one page load (no row
+  pagination), grouped by site case-insensitive, with accurate per-
+  site counts in headers; 2000-row safety cap with amber banner on
+  overflow. Role-aware count-only gate: admin/super_admin with no
+  filter ALWAYS sees a count-only tile (regardless of date range);
+  RM/RD/GM with today-only sees grouped view immediately; RM/RD/GM
+  with date range beyond today + no filter sees count-only with
+  "Narrow date range or apply a filter" copy. Brief 110's per-page
+  grouping (counts were lies — a 4-rewash site showed "2
+  submissions" when the other 2 were on later pages) and Brief 110's
+  per-day date sub-headers both retired — a "today only" default
+  + accurate full-scope counts make sub-bucketing unnecessary.
+  Location dropdown now uses `pricing_simple.location_pretty` →
+  `pricing_simple.location_code` → `Site {site_number}` per the
+  Brief 115 roster handler fix; Brief 111's client-side
+  address-shape heuristic in FilterBar.tsx is removed (dead code
+  post-Brief-115). Asset proxy fix lands here too — see the
+  jotform-worker glossary entry for the host/path/header widening.
 
 - **forms-worker** (Brief 89) - Public form-render surface + admin
   builder API for the form-builder feature. The eighth worker in the

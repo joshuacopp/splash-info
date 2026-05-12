@@ -74,6 +74,33 @@ export interface JotformSubmissionsListParams {
   locationCode?: string;
 }
 
+// Brief 115 — grouped + count-only response shapes for the
+// `/submissions?group=location` and `?count_only=1` worker modes.
+export interface JotformSubmissionsGroup {
+  site: string;
+  site_number: string;
+  rm_email: string | null;
+  rm_name: string | null;
+  count: number;
+  rows: JotformSubmissionRow[];
+}
+
+export interface JotformSubmissionsGroupedResponse {
+  groups: JotformSubmissionsGroup[];
+  total_rows: number;
+  cap_reached: boolean;
+  from: string;
+  to: string;
+  scope: "all" | "scoped";
+}
+
+export interface JotformSubmissionsCountOnlyResponse {
+  total_rows: number;
+  from: string;
+  to: string;
+  scope: "all" | "scoped";
+}
+
 // =============================================================================
 // Brief 110 — roster response shapes
 // =============================================================================
@@ -181,7 +208,10 @@ export async function listForms(): Promise<JotformFormsResponse | null> {
   return jotformGetJson<JotformFormsResponse>("/admin/jotform/api/forms");
 }
 
-function buildSubmissionsQuery(params: JotformSubmissionsListParams): string {
+function buildSubmissionsQuery(
+  params: JotformSubmissionsListParams,
+  extras: Record<string, string> = {}
+): string {
   const sp = new URLSearchParams();
   if (params.from) sp.set("from", params.from);
   if (params.to) sp.set("to", params.to);
@@ -191,6 +221,7 @@ function buildSubmissionsQuery(params: JotformSubmissionsListParams): string {
   if (params.amEmail) sp.set("am_email", params.amEmail);
   if (params.rmEmail) sp.set("rm_email", params.rmEmail);
   if (params.locationCode) sp.set("location_code", params.locationCode);
+  for (const [k, v] of Object.entries(extras)) sp.set(k, v);
   const qs = sp.toString();
   return qs ? `?${qs}` : "";
 }
@@ -201,6 +232,41 @@ export async function listSubmissions(
 ): Promise<JotformSubmissionsListResponse | null> {
   return jotformGetJson<JotformSubmissionsListResponse>(
     `/admin/jotform/api/${encodeURIComponent(formId)}/submissions${buildSubmissionsQuery(params)}`
+  );
+}
+
+/**
+ * Brief 115 — fetch the full grouped-by-site response for a form. The
+ * worker pulls every row in scope (up to 2000), sorts groups
+ * alphabetically by site, and returns one bucket per location with
+ * pre-resolved RM info. apps/web renders without further pagination.
+ */
+export async function listSubmissionsGrouped(
+  formId: string,
+  params: JotformSubmissionsListParams = {}
+): Promise<JotformSubmissionsGroupedResponse | null> {
+  return jotformGetJson<JotformSubmissionsGroupedResponse>(
+    `/admin/jotform/api/${encodeURIComponent(formId)}/submissions${buildSubmissionsQuery(
+      params,
+      { group: "location" }
+    )}`
+  );
+}
+
+/**
+ * Brief 115 — count-only summary for the role-aware admin-tier gate
+ * (and the "narrow your range or apply a filter" prompt for any
+ * caller asking for a date range beyond today without a filter).
+ */
+export async function listSubmissionsCount(
+  formId: string,
+  params: JotformSubmissionsListParams = {}
+): Promise<JotformSubmissionsCountOnlyResponse | null> {
+  return jotformGetJson<JotformSubmissionsCountOnlyResponse>(
+    `/admin/jotform/api/${encodeURIComponent(formId)}/submissions${buildSubmissionsQuery(
+      params,
+      { count_only: "1" }
+    )}`
   );
 }
 

@@ -190,7 +190,8 @@ export async function listSubmissions(env, filters) {
     siteNumbers,
     siteNumber,
     limit = 200,
-    offset = 0
+    offset = 0,
+    exactCount = false
   } = filters;
   if (!env.SUPABASE_URL || !env.SUPABASE_SERVICE_KEY) {
     return { rows: [], total: 0 };
@@ -224,7 +225,7 @@ export async function listSubmissions(env, filters) {
       headers: {
         apikey: env.SUPABASE_SERVICE_KEY,
         Authorization: `Bearer ${env.SUPABASE_SERVICE_KEY}`,
-        Prefer: "count=estimated"
+        Prefer: exactCount ? "count=exact" : "count=estimated"
       }
     });
   } catch (err) {

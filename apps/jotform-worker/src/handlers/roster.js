@@ -73,16 +73,23 @@ export async function handleRoster(request, env) {
     const amName = strOrEmpty(row.area_manager);
     const rmName = strOrEmpty(row.regional_manager);
 
-    // Location entry — prefer the pricing_simple location_pretty if
-    // present; fall back to the locations.location (postal address) or
-    // the site/site_number itself.
+    // Brief 115 — Location entry display name resolution:
+    //   1. pricing_simple.location_pretty (canonical "Binghamton" form)
+    //   2. pricing_simple.location_code   ("binghamton" slug fallback)
+    //   3. `Site {site_number}` placeholder
+    //
+    // Explicitly never falls back to `locations.location` (postal
+    // address). Brief 111 added a client-side address-shape heuristic
+    // to patch over the worker still emitting the address; this brief
+    // closes the bug at the source so the heuristic can be deleted.
+    const prettyResolved =
+      (meta?.location_pretty && meta.location_pretty.trim()) ||
+      (meta?.location_code && meta.location_code.trim()) ||
+      `Site ${siteStr}`;
     locations.push({
       location_code: meta?.location_code ?? "",
       site_number: siteStr,
-      location_pretty:
-        meta?.location_pretty ||
-        strOrEmpty(row.location) ||
-        siteStr,
+      location_pretty: prettyResolved,
       am_email: amEmail || null,
       rm_email: rmEmail || null
     });
