@@ -782,6 +782,32 @@ URL-based — service bindings don't apply to those.
   em-dash spam for forms with many optional fields (time-card-edit
   PTO Day 2-5). Detail page metadata block timestamps now use
   `formatEst()` matching the list page.
+  Brief 113 (2026-05-12): per-form viewer "Submitted (EST)" list
+  column flipped to render the absolute EST timestamp as the primary
+  cell value (e.g., "May 12, 2026, 7:25 AM EDT"); relative time
+  ("5 hr ago") moves to the `title` attr for hover-on-desktop. Brief
+  112's executor had left relative as the visible surface, which made
+  the column header label misleading. Signature + fileupload
+  renderers in `_lib/answer-renderer.tsx` retargeted from raw JotForm
+  CDN URLs at a new worker-side asset proxy
+  `GET /admin/jotform/api/asset?url=<encoded>` — JotForm's CDN
+  rejects un-keyed hot-links, so the inline signature `<img>` was
+  loading 401 from apps/web. The proxy gate is
+  `authenticateForAdminApi` (any authenticated session — same posture
+  as the per-form list/detail endpoints; asset URLs are opaque and
+  can only be obtained by reading a row the caller already has
+  access to), with anti-SSRF guardrails: target URL host must equal
+  `new URL(JOTFORM_BASE_URL).host`, path must start with `/uploads/`,
+  pre-existing query params on the target are dropped before the
+  worker attaches `JOTFORM_API_KEY` as the `apikey` query param.
+  `redirect: "manual"` + 3xx rejection blocks any future
+  cross-host bounce. Streams the upstream body back with
+  `Cache-Control: private, max-age=300` + `X-Content-Type-Options:
+  nosniff`. 503 when `JOTFORM_API_KEY`/`JOTFORM_BASE_URL` unbound;
+  400 on bad input; 502 on upstream error; 404 when upstream 404s;
+  10s `AbortSignal.timeout`. apps/web `assetProxyUrl(jotformUrl)`
+  helper in `_lib/worker-fetch.ts` builds the same-origin proxy URL
+  for renderer use.
 
 - **JotForm submissions** (Brief 107) - The four onboarded JotForm
   forms (rewash, salt-log, retention, time-card-edit) all share a
@@ -801,6 +827,16 @@ URL-based — service bindings don't apply to those.
   operator-confirmed cap): `INSERT INTO jotform_forms` + run a
   backfill + configure the webhook in JotForm's Integrations panel.
   No code change required.
+  Brief 113 (2026-05-12): apps/web's per-submission detail page
+  loads signature + fileupload assets via a same-origin worker proxy
+  `GET /admin/jotform/api/asset?url=<encoded>` (auth same as the
+  per-form list/detail endpoints; host-validated against
+  `JOTFORM_BASE_URL` + path-prefix-validated against `/uploads/`;
+  attaches `JOTFORM_API_KEY` as `apikey` query param; streams body
+  back with `Cache-Control: private, max-age=300`). JotForm's CDN
+  rejects un-keyed hot-links — `<img src=jotform.com>` returned 401
+  cross-origin from apps/web. See the jotform-worker glossary entry
+  for the full request/response shape + SSRF guardrails.
 
 - **forms-worker** (Brief 89) - Public form-render surface + admin
   builder API for the form-builder feature. The eighth worker in the

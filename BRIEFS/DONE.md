@@ -111,3 +111,4 @@
 - 2026-05-11 22:41:07 brief-110-jotform-viewer-filters-and-grouping.md (success)
 - 2026-05-11 23:58:46 brief-111-jotform-viewer-per-form-columns-and-est-and-location-pretty.md (success)
 - 2026-05-12 07:32:05 brief-112-jotform-viewer-content-polish.md (success)
+- 2026-05-12 08:36:37 brief-113-jotform-viewer-absolute-est-and-signature-proxy.md (success)

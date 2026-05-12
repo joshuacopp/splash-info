@@ -33,6 +33,15 @@
 //     regional_managers / locations arrays scoped to the caller's
 //     accessibleSiteNumbersForSession. Backs apps/web's RD/RM/Location
 //     filter dropdowns in one round-trip. (Brief 110)
+//
+//   GET  /admin/jotform/api/asset?url=<encoded JotForm URL>
+//     Any authenticated session. Streams a JotForm-hosted asset
+//     (signature or fileupload) back to the caller after attaching the
+//     worker's JOTFORM_API_KEY. JotForm's CDN requires the API key for
+//     hot-links — same-origin proxy lets apps/web's <img> tags load
+//     cleanly via the apps/web session cookie. Host + /uploads/ path
+//     prefix allow-list rejects anything that isn't a JotForm asset.
+//     (Brief 113)
 
 import { isOriginAllowed, jsonError } from "@splash/http";
 import {
@@ -94,6 +103,11 @@ export async function handleAdminApi(request, env, ctx) {
     return handleRoster(request, env);
   }
 
+  if (path === "/admin/jotform/api/asset") {
+    if (request.method !== "GET") return jsonError(405, "method not allowed");
+    return handleAssetProxy(request, env);
+  }
+
   const submissionsMatch = path.match(
     /^\/admin\/jotform\/api\/([A-Za-z0-9_-]+)\/submissions$/
   );
@@ -151,6 +165,88 @@ async function handleListForms(request, env) {
     });
   }
   return jsonOk({ forms: out });
+}
+
+/* ============================================================
+ * GET /admin/jotform/api/asset?url=<encoded JotForm URL>
+ * ============================================================ */
+
+async function handleAssetProxy(request, env) {
+  const gate = await authenticateForAdminApi(request, env);
+  if (!gate.ok) return gate.response;
+
+  if (!env.JOTFORM_API_KEY) {
+    return jsonError(503, "JOTFORM_API_KEY unbound");
+  }
+  if (!env.JOTFORM_BASE_URL) {
+    return jsonError(503, "JOTFORM_BASE_URL unbound");
+  }
+
+  const url = new URL(request.url);
+  const target = url.searchParams.get("url");
+  if (!target) return jsonError(400, "url required");
+
+  let targetUrl;
+  try {
+    targetUrl = new URL(target);
+  } catch {
+    return jsonError(400, "invalid url");
+  }
+  let expectedHost;
+  try {
+    expectedHost = new URL(env.JOTFORM_BASE_URL).host;
+  } catch {
+    return jsonError(503, "JOTFORM_BASE_URL malformed");
+  }
+  if (targetUrl.host !== expectedHost) {
+    return jsonError(400, "url host not allowed");
+  }
+  if (!targetUrl.pathname.startsWith("/uploads/")) {
+    return jsonError(400, "only /uploads/ paths allowed");
+  }
+
+  // Drop any pre-existing query params on the target and attach the
+  // worker's API key. JotForm asset URLs authenticate via `apikey`
+  // query param (same shape the rest of the worker uses for its API
+  // reads — see jotform.js).
+  targetUrl.search = "";
+  targetUrl.searchParams.set("apikey", env.JOTFORM_API_KEY);
+
+  let resp;
+  try {
+    resp = await fetch(targetUrl.toString(), {
+      method: "GET",
+      redirect: "manual",
+      signal: AbortSignal.timeout(10_000)
+    });
+  } catch (err) {
+    console.error("[jotform.asset-proxy] upstream fetch failed:", err);
+    return jsonError(502, "upstream fetch failed");
+  }
+
+  if (resp.status >= 300 && resp.status < 400) {
+    console.warn(
+      "[jotform.asset-proxy] upstream redirect refused:",
+      resp.status,
+      resp.headers.get("Location")
+    );
+    return jsonError(502, "upstream redirect refused");
+  }
+
+  if (!resp.ok) {
+    console.warn("[jotform.asset-proxy] upstream non-2xx:", resp.status);
+    return jsonError(resp.status === 404 ? 404 : 502, "upstream error");
+  }
+
+  const ct = resp.headers.get("Content-Type") || "application/octet-stream";
+  return new Response(resp.body, {
+    status: 200,
+    headers: {
+      "Content-Type": ct,
+      "Cache-Control": "private, max-age=300",
+      "X-Content-Type-Options": "nosniff"
+    }
+  });
 }
 
 /* ============================================================

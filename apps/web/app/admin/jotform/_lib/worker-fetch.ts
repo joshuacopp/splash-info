@@ -249,3 +249,14 @@ export function csvExportUrl(
 export async function getRoster(): Promise<JotformRoster | null> {
   return jotformGetJson<JotformRoster>("/admin/jotform/api/roster");
 }
+
+/**
+ * Brief 113 — build a same-origin proxy URL for a JotForm-hosted asset
+ * (signatures, file uploads). The browser loads the proxy URL with the
+ * apps/web session cookie; the worker validates auth, fetches the
+ * JotForm asset with the API key, and streams it back. No raw
+ * cross-origin <img src=jotform.com> loads anywhere.
+ */
+export function assetProxyUrl(jotformUrl: string): string {
+  return `/admin/jotform/api/asset?url=${encodeURIComponent(jotformUrl)}`;
+}

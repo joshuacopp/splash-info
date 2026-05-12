@@ -80,9 +80,12 @@ export function submittedColumn(): FormColumn {
       const iso = row.jotform_created_at;
       if (!iso) return muted();
       const { absolute, relative } = formatEst(iso);
+      // Brief 113 — absolute EST is the primary surface; relative time
+      // moves to the title attr (hover-on-desktop). Operators couldn't
+      // validate freshness with "5 hr ago" as the visible value.
       return (
-        <span title={absolute} className="whitespace-nowrap">
-          {relative || absolute}
+        <span title={relative || absolute} className="whitespace-nowrap">
+          {absolute}
         </span>
       );
     }

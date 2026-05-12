@@ -79,6 +79,8 @@
 
 # brief-112-jotform-viewer-content-polish.md  (completed 2026-05-12)
 
+# brief-113-jotform-viewer-absolute-est-and-signature-proxy.md  (completed 2026-05-12)
+
 
 
 

@@ -11,11 +11,19 @@
 // empty answers skipped entirely (so PTO Day 2-5 fields on
 // time-card-edit don't spam the page with em-dashes).
 //
+// Brief 113 retargeted the `control_signature` + `control_fileupload`
+// renderers at the worker-side asset proxy
+// (`/admin/jotform/api/asset?url=...`) so the browser loads JotForm
+// CDN-hosted assets same-origin via the apps/web session cookie. The
+// worker attaches the `JOTFORM_API_KEY` to the upstream fetch; without
+// that, JotForm's CDN 401s every hot-link.
+//
 // Adding a 17th answer type means extending the `switch` in
 // `renderAnswerValue` — the default branch renders the bare `answer`
 // string and is sufficient for any text-shaped type.
 
 import type React from "react";
+import { assetProxyUrl } from "../../../_lib/worker-fetch";
 
 export interface AnswerEntry {
   name?: string;
@@ -73,7 +81,7 @@ export function renderAnswerValue(entry: AnswerEntry): React.ReactNode {
       if (!url) return null;
       return (
         <img
-          src={url}
+          src={assetProxyUrl(url)}
           alt="Signature"
           className="max-w-xs border border-splash-navy/20 bg-white p-1"
         />
@@ -89,9 +97,14 @@ export function renderAnswerValue(entry: AnswerEntry): React.ReactNode {
       return (
         <div className="flex flex-wrap gap-2">
           {items.map((url) => (
-            <a key={url} href={url} target="_blank" rel="noreferrer">
+            <a
+              key={url}
+              href={assetProxyUrl(url)}
+              target="_blank"
+              rel="noreferrer"
+            >
               <img
-                src={url}
+                src={assetProxyUrl(url)}
                 alt="Upload"
                 className="h-24 w-24 border border-splash-navy/20 object-cover"
               />
