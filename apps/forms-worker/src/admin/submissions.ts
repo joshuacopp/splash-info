@@ -486,8 +486,23 @@ export async function handleTransition(
   }
 
   // Authority gate: caller must either be admin-tier (escape hatch) OR
-  // hold an email on the CURRENT stage's approver list.
+  // hold an email on the CURRENT stage's approver list. Brief 123 — a
+  // terminal stage (no approver_source) is unreachable in normal flow
+  // (no transitions defined out of it), but defensively if such a
+  // submission exists, only admin-tier can act.
   if (!isAdminTier) {
+    if (!currentStage.approver_source) {
+      return new Response(
+        JSON.stringify({
+          error: "not_approver",
+          allowed_emails: []
+        }),
+        {
+          status: 403,
+          headers: { "Content-Type": "application/json" }
+        }
+      );
+    }
     let allowed: string[];
     try {
       allowed = await resolveApproverEmails(env, currentStage.approver_source, {
@@ -542,16 +557,19 @@ export async function handleTransition(
   };
   const nextHistory = [...submission.workflow_history, historyEntry];
 
-  let nextApproverEmails: string[];
-  try {
-    nextApproverEmails = await resolveApproverEmails(
-      env,
-      destStage.approver_source,
-      { schema, payload: submission.payload }
-    );
-  } catch (err) {
-    console.error("[forms.admin] transition: dest approver resolve failed", err);
-    nextApproverEmails = [];
+  let nextApproverEmails: string[] = [];
+  // Brief 123 — terminal destination has no approver_source; emails stays [].
+  if (destStage.approver_source) {
+    try {
+      nextApproverEmails = await resolveApproverEmails(
+        env,
+        destStage.approver_source,
+        { schema, payload: submission.payload }
+      );
+    } catch (err) {
+      console.error("[forms.admin] transition: dest approver resolve failed", err);
+      nextApproverEmails = [];
+    }
   }
 
   try {

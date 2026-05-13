@@ -235,7 +235,10 @@ const workflowTransitionSchema = z.object({
 const workflowStageSchema = z.object({
   id: z.string().regex(/^[a-z][a-z0-9_]*$/, "snake_case slug, leading non-digit"),
   label: z.string().min(1),
-  approver_source: approverSourceSchema,
+  // Brief 123 — terminal stages (e.g. "approved", "denied") omit
+  // approver_source entirely; they have no outgoing transitions and no
+  // operator action is required to "act" on them.
+  approver_source: approverSourceSchema.optional(),
   transitions: z.array(workflowTransitionSchema)
 });
 
@@ -277,7 +280,7 @@ const workflowTransitionSchemaDraft = z.object({
 const workflowStageSchemaDraft = z.object({
   id: z.string().regex(/^[a-z][a-z0-9_]*$/, "snake_case slug, leading non-digit"),
   label: z.string(),
-  approver_source: approverSourceSchemaDraft,
+  approver_source: approverSourceSchemaDraft.optional(),
   transitions: z.array(workflowTransitionSchemaDraft)
 });
 
@@ -336,8 +339,18 @@ export const formSchemaSchema = z
             message: `transition.to "${transition.to}" not in stages[]`
           });
         }
+        // Brief 123 — self-transitions create infinite loops at the UX level
+        // ("approve" button just lands you back on the same stage). Reject
+        // outright at publish time.
+        if (transition.to === stage.id) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["workflow", "stages", i, "transitions", j, "to"],
+            message: `Stage "${stage.id}" has a self-referencing transition. Pick a different destination.`
+          });
+        }
       }
-      if (stage.approver_source.type === "payload_field") {
+      if (stage.approver_source && stage.approver_source.type === "payload_field") {
         if (!fieldKeys.has(stage.approver_source.field_key)) {
           ctx.addIssue({
             code: z.ZodIssueCode.custom,
@@ -345,6 +358,61 @@ export const formSchemaSchema = z
             message: `approver_source.field_key "${stage.approver_source.field_key}" does not reference a form field`
           });
         }
+      }
+      // Brief 123 — orphaned approval stages. A stage with an approver but
+      // no outgoing transitions strands submissions: the approver can't
+      // act, the submission sits in `current_approver_emails` forever.
+      // Either add a transition out or drop the approver_source so the
+      // stage becomes terminal.
+      if (stage.approver_source && stage.transitions.length === 0) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["workflow", "stages", i],
+          message: `Stage "${stage.id}" has an approver but no transitions out — submissions would be stuck. Either add a transition or remove the approver source to make it a terminal stage.`
+        });
+      }
+      // Mirror: a stage with transitions out but no approver is also broken
+      // — no one is authorized to advance the submission.
+      if (!stage.approver_source && stage.transitions.length > 0) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["workflow", "stages", i],
+          message: `Stage "${stage.id}" has outgoing transitions but no approver source. Add an approver source or remove the transitions to make it a terminal stage.`
+        });
+      }
+    }
+
+    // Brief 123 — reachability check. BFS from default_stage; require at
+    // least one terminal stage (no outgoing transitions AND no approver
+    // source) reachable. Otherwise submissions can never resolve.
+    if (stageIds.has(default_stage) && stages.length > 0) {
+      const stageById = new Map<string, (typeof stages)[number]>();
+      for (const stage of stages) if (stage) stageById.set(stage.id, stage);
+      const visited = new Set<string>([default_stage]);
+      const queue: string[] = [default_stage];
+      let reachableTerminal = false;
+      while (queue.length > 0) {
+        const id = queue.shift();
+        if (id === undefined) break;
+        const stage = stageById.get(id);
+        if (!stage) continue;
+        if (stage.transitions.length === 0 && !stage.approver_source) {
+          reachableTerminal = true;
+          break;
+        }
+        for (const transition of stage.transitions) {
+          if (!visited.has(transition.to) && stageById.has(transition.to)) {
+            visited.add(transition.to);
+            queue.push(transition.to);
+          }
+        }
+      }
+      if (!reachableTerminal) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["workflow", "default_stage"],
+          message: `Workflow has no reachable terminal stage from "${default_stage}". Add a transition path that leads to a stage with no outgoing transitions and no approver source.`
+        });
       }
     }
   });

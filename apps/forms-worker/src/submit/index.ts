@@ -360,15 +360,20 @@ export async function handleSubmit(
     );
     if (defaultStage) {
       workflowStage = defaultStageId;
-      try {
-        currentApproverEmails = await resolveApproverEmails(
-          env,
-          defaultStage.approver_source,
-          { schema: version.schema, payload }
-        );
-      } catch (err) {
-        console.error("[forms] workflow seed: approver resolve threw", err);
-        currentApproverEmails = [];
+      // Brief 123 — terminal default stage (no approver_source) seeds with
+      // an empty approver list. Rare in practice (a workflow whose default
+      // is terminal is effectively no workflow), but the type allows it.
+      if (defaultStage.approver_source) {
+        try {
+          currentApproverEmails = await resolveApproverEmails(
+            env,
+            defaultStage.approver_source,
+            { schema: version.schema, payload }
+          );
+        } catch (err) {
+          console.error("[forms] workflow seed: approver resolve threw", err);
+          currentApproverEmails = [];
+        }
       }
     } else {
       console.warn(

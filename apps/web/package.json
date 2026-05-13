@@ -24,6 +24,7 @@
     "@splash/storage-r2": "workspace:*",
     "@splash/types": "workspace:*",
     "@splash/ui": "workspace:*",
+    "mermaid": "^11.4.0",
     "nanoid": "^5.0.0",
     "next": "^15.5.15",
     "react": "^19.0.0",

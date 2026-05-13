@@ -4,15 +4,26 @@
 // stage and edits the stage list (id / label / approver_source /
 // transitions) inline.
 //
-// State lives in BuilderState.workflow and flows through Inspector → here
-// via dispatch callbacks. Save Draft includes the workflow in the
-// updateDraftAdmin payload (see actions.ts).
+// Brief 123 UX fixes:
+//   - Stage rows keyed by stable `_uiKey` (nanoid) so renaming `stage.id`
+//     no longer remounts the input → focus persists across keystrokes.
+//   - Stage id input dispatches `workflow_rename_stage` (atomic cascade
+//     into `default_stage` + every `transition.to`). Snake_case sanitized
+//     on every keystroke (KeyEditor pattern from Brief 95).
+//   - Terminal stages (no `approver_source` AND no `transitions`) render
+//     with a TERMINAL pill, muted background, hidden ApproverSource
+//     picker, and disabled "+ Add transition" button.
+//   - Transition destination dropdown disables the current stage (no
+//     self-transitions).
+//   - Below the stages list, a live Mermaid preview renders the workflow
+//     graph (lazy-loaded via `./WorkflowMermaidPreview`).
 //
 // Validator-enforced constraints (forms-schema/validators/field-config.ts):
 //   - default_stage matches some stage.id
-//   - Every transition.to matches some stage.id
+//   - Every transition.to matches some stage.id, and !== stage.id (no self)
 //   - No duplicate stage ids
 //   - approver_source.field_key (payload_field type) references a real field
+//   - No orphaned approval stages, no unreachable terminals (Brief 123)
 //
 // The strict variant runs at publish time; the lenient draft variant lets
 // the operator save mid-build. Errors surface as the worker's 422
@@ -21,6 +32,7 @@
 
 "use client";
 
+import dynamic from "next/dynamic";
 import { useMemo } from "react";
 import type {
   ApproverSource,
@@ -29,6 +41,14 @@ import type {
   WorkflowStage,
   WorkflowTransition
 } from "@splash/forms-schema";
+
+// Lazy-load Mermaid so its ~250 KB bundle only ships to operators who open
+// the builder page. The `ssr: false` flag also keeps the heavy lib out of
+// the Worker runtime entirely.
+const WorkflowMermaidPreview = dynamic(
+  () => import("./WorkflowMermaidPreview"),
+  { ssr: false }
+);
 
 interface Props {
   workflow: FormWorkflow | null;
@@ -41,6 +61,7 @@ interface Props {
   onMoveStage: (stageId: string, direction: -1 | 1) => void;
   onUpdateStage: (stageId: string, patch: Partial<WorkflowStage>) => void;
   onSetApproverSource: (stageId: string, source: ApproverSource) => void;
+  onClearApproverSource: (stageId: string) => void;
   onAddTransition: (stageId: string) => void;
   onUpdateTransition: (
     stageId: string,
@@ -48,9 +69,14 @@ interface Props {
     patch: Partial<WorkflowTransition>
   ) => void;
   onRemoveTransition: (stageId: string, index: number) => void;
+  onRenameStage: (oldId: string, newId: string) => void;
 }
 
 const STAGE_ID_RE = /^[a-z][a-z0-9_]*$/;
+
+function isTerminalStage(stage: WorkflowStage): boolean {
+  return stage.transitions.length === 0 && !stage.approver_source;
+}
 
 export default function WorkflowEditor(props: Props) {
   if (!props.workflow) {
@@ -79,6 +105,12 @@ export default function WorkflowEditor(props: Props) {
     );
   }
 
+  const workflow = props.workflow;
+  const existingIds = useMemo(
+    () => new Set(workflow.stages.map((s) => s.id)),
+    [workflow.stages]
+  );
+
   return (
     <section className="space-y-4">
       <header className="flex items-start justify-between gap-2 border-b border-gray-light pb-2">
@@ -87,8 +119,8 @@ export default function WorkflowEditor(props: Props) {
             Approval workflow
           </p>
           <p className="text-sm font-bold text-splash-navy">
-            {props.workflow.stages.length} stage
-            {props.workflow.stages.length === 1 ? "" : "s"}
+            {workflow.stages.length} stage
+            {workflow.stages.length === 1 ? "" : "s"}
           </p>
         </div>
         <button
@@ -104,12 +136,12 @@ export default function WorkflowEditor(props: Props) {
       <label className="block text-xs font-semibold text-splash-navy/80">
         Default stage (where new submissions start)
         <select
-          value={props.workflow.default_stage}
+          value={workflow.default_stage}
           onChange={(e) => props.onSetDefaultStage(e.currentTarget.value)}
           className="mt-1 w-full rounded-splash-sm border border-gray-light bg-white px-2 py-1.5 text-sm font-normal text-splash-navy"
         >
-          {props.workflow.stages.map((s) => (
-            <option key={s.id} value={s.id}>
+          {workflow.stages.map((s) => (
+            <option key={s._uiKey ?? s.id} value={s.id}>
               {s.label || s.id}
             </option>
           ))}
@@ -117,17 +149,23 @@ export default function WorkflowEditor(props: Props) {
       </label>
 
       <div className="space-y-3">
-        {props.workflow.stages.map((stage, idx) => (
+        {workflow.stages.map((stage, idx) => (
           <StageEditor
-            key={stage.id}
+            key={stage._uiKey ?? stage.id}
             stage={stage}
-            allStages={props.workflow!.stages}
+            allStages={workflow.stages}
             allFields={props.allFields}
+            existingIds={existingIds}
+            isDefaultStage={workflow.default_stage === stage.id}
             canMoveUp={idx > 0}
-            canMoveDown={idx < props.workflow!.stages.length - 1}
+            canMoveDown={idx < workflow.stages.length - 1}
             onUpdate={(patch) => props.onUpdateStage(stage.id, patch)}
+            onRename={(newId) => props.onRenameStage(stage.id, newId)}
             onSetApproverSource={(source) =>
               props.onSetApproverSource(stage.id, source)
+            }
+            onClearApproverSource={() =>
+              props.onClearApproverSource(stage.id)
             }
             onAddTransition={() => props.onAddTransition(stage.id)}
             onUpdateTransition={(index, patch) =>
@@ -142,6 +180,8 @@ export default function WorkflowEditor(props: Props) {
           />
         ))}
       </div>
+
+      <WorkflowMermaidPreview workflow={workflow} />
 
       <button
         type="button"
@@ -158,10 +198,14 @@ interface StageProps {
   stage: WorkflowStage;
   allStages: WorkflowStage[];
   allFields: Field[];
+  existingIds: Set<string>;
+  isDefaultStage: boolean;
   canMoveUp: boolean;
   canMoveDown: boolean;
   onUpdate: (patch: Partial<WorkflowStage>) => void;
+  onRename: (newId: string) => void;
   onSetApproverSource: (source: ApproverSource) => void;
+  onClearApproverSource: () => void;
   onAddTransition: () => void;
   onUpdateTransition: (
     index: number,
@@ -182,13 +226,31 @@ function StageEditor(p: StageProps) {
     [p.allFields]
   );
   const idLooksValid = STAGE_ID_RE.test(p.stage.id);
+  const terminal = isTerminalStage(p.stage);
+
+  const wrapperClass = terminal
+    ? "space-y-2 rounded-splash-md border border-gray-light bg-gray-50/60 p-3"
+    : "space-y-2 rounded-splash-md border border-gray-light bg-white p-3";
+
   return (
-    <div className="space-y-2 rounded-splash-md border border-gray-light bg-white p-3">
+    <div className={wrapperClass}>
       <div className="flex items-start justify-between gap-2">
-        <p className="text-xs font-semibold text-splash-navy">
-          Stage:{" "}
-          <code className="text-[0.7rem] font-mono">{p.stage.id}</code>
-        </p>
+        <div className="flex items-center gap-2">
+          <p className="text-xs font-semibold text-splash-navy">
+            Stage:{" "}
+            <code className="text-[0.7rem] font-mono">{p.stage.id}</code>
+          </p>
+          {terminal && (
+            <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[0.6rem] font-bold uppercase tracking-wide text-slate-600">
+              Terminal
+            </span>
+          )}
+          {p.isDefaultStage && (
+            <span className="rounded-full bg-splash-blue/10 px-2 py-0.5 text-[0.6rem] font-bold uppercase tracking-wide text-splash-blue">
+              Start
+            </span>
+          )}
+        </div>
         <div className="flex gap-1">
           <button
             type="button"
@@ -219,29 +281,12 @@ function StageEditor(p: StageProps) {
         </div>
       </div>
 
-      <label className="block text-[0.65rem] font-semibold uppercase tracking-wide text-splash-navy/70">
-        Stage id (snake_case)
-        <input
-          type="text"
-          value={p.stage.id}
-          onChange={(e) =>
-            p.onUpdate({
-              id: e.currentTarget.value
-                .toLowerCase()
-                .replace(/[^a-z0-9_]/g, "")
-                .replace(/^[^a-z]+/, "")
-            })
-          }
-          className={`mt-1 w-full rounded-splash-sm border bg-white px-2 py-1 text-sm font-mono text-splash-navy ${
-            idLooksValid ? "border-gray-light" : "border-racecar-red"
-          }`}
-        />
-        {!idLooksValid && (
-          <span className="mt-1 block text-[0.65rem] text-racecar-red">
-            Must match {STAGE_ID_RE.source}
-          </span>
-        )}
-      </label>
+      <StageIdInput
+        currentId={p.stage.id}
+        existingIds={p.existingIds}
+        idLooksValid={idLooksValid}
+        onRename={p.onRename}
+      />
 
       <label className="block text-[0.65rem] font-semibold uppercase tracking-wide text-splash-navy/70">
         Display label
@@ -253,11 +298,33 @@ function StageEditor(p: StageProps) {
         />
       </label>
 
-      <ApproverSourceEditor
-        source={p.stage.approver_source}
-        emailFieldKeys={emailFieldKeys}
-        onChange={p.onSetApproverSource}
-      />
+      {!terminal && p.stage.approver_source && (
+        <ApproverSourceEditor
+          source={p.stage.approver_source}
+          emailFieldKeys={emailFieldKeys}
+          onChange={p.onSetApproverSource}
+          onClear={p.onClearApproverSource}
+        />
+      )}
+
+      {terminal && (
+        <div className="rounded-splash-sm border border-dashed border-gray-light bg-white/60 p-2 text-[0.7rem] text-splash-navy/70">
+          Terminal stage — no approver needed, no transitions out.
+          Add an approver source below to convert this back to an
+          approval step.
+          <div className="mt-1.5">
+            <button
+              type="button"
+              onClick={() =>
+                p.onSetApproverSource({ type: "static_emails", emails: [] })
+              }
+              className="rounded-splash-sm border border-splash-navy px-2 py-0.5 text-[0.65rem] font-semibold text-splash-navy hover:bg-splash-navy hover:text-white"
+            >
+              Make approval step
+            </button>
+          </div>
+        </div>
+      )}
 
       <div className="space-y-1.5 rounded-splash-sm border border-gray-light bg-sudsy-blue/5 p-2">
         <p className="text-[0.65rem] font-semibold uppercase tracking-wide text-splash-navy/70">
@@ -265,13 +332,16 @@ function StageEditor(p: StageProps) {
         </p>
         {p.stage.transitions.length === 0 && (
           <p className="text-[0.7rem] text-splash-navy/60">
-            Terminal stage (no outgoing transitions).
+            {terminal
+              ? "Terminal — no outgoing transitions."
+              : "No transitions yet. Add one below."}
           </p>
         )}
         {p.stage.transitions.map((t, i) => (
           <TransitionEditor
             key={i}
             transition={t}
+            currentStageId={p.stage.id}
             allStages={p.allStages}
             onUpdate={(patch) => p.onUpdateTransition(i, patch)}
             onRemove={() => p.onRemoveTransition(i)}
@@ -280,7 +350,13 @@ function StageEditor(p: StageProps) {
         <button
           type="button"
           onClick={p.onAddTransition}
-          className="rounded-splash-sm border border-splash-navy px-2 py-0.5 text-[0.65rem] font-semibold text-splash-navy hover:bg-splash-navy hover:text-white"
+          disabled={terminal}
+          title={
+            terminal
+              ? "Terminal stages have no outgoing transitions. Add an approver source to convert this back to an approval step."
+              : "Add a transition out of this stage"
+          }
+          className="rounded-splash-sm border border-splash-navy px-2 py-0.5 text-[0.65rem] font-semibold text-splash-navy hover:bg-splash-navy hover:text-white disabled:cursor-not-allowed disabled:border-gray-light disabled:text-splash-navy/40 disabled:hover:bg-transparent disabled:hover:text-splash-navy/40"
         >
           + Add transition
         </button>
@@ -289,18 +365,77 @@ function StageEditor(p: StageProps) {
   );
 }
 
+interface StageIdInputProps {
+  currentId: string;
+  existingIds: Set<string>;
+  idLooksValid: boolean;
+  onRename: (sanitizedNewId: string) => void;
+}
+
+// Brief 123 — controlled stage id input with snake_case sanitization on
+// every keystroke + live collision detection. The input is bound to
+// `stage.id` (controlled). On change:
+//   - sanitize raw → newId via the KeyEditor pattern,
+//   - if newId === currentId: no-op,
+//   - if newId is empty: no-op,
+//   - if newId collides with another existing stage's id: show red
+//     border + hint, no dispatch,
+//   - otherwise: dispatch `workflow_rename_stage(currentId, newId)`,
+//     which cascades into default_stage + every transition.to.
+function StageIdInput(p: StageIdInputProps) {
+  return (
+    <label className="block text-[0.65rem] font-semibold uppercase tracking-wide text-splash-navy/70">
+      Stage id (snake_case)
+      <input
+        type="text"
+        value={p.currentId}
+        onChange={(e) => {
+          const sanitized = e.currentTarget.value
+            .toLowerCase()
+            .replace(/[^a-z0-9_]/g, "")
+            .replace(/^[^a-z]+/, "");
+          if (!sanitized || sanitized === p.currentId) return;
+          if (p.existingIds.has(sanitized)) return;
+          p.onRename(sanitized);
+        }}
+        className={`mt-1 w-full rounded-splash-sm border bg-white px-2 py-1 text-sm font-mono text-splash-navy ${
+          p.idLooksValid ? "border-gray-light" : "border-racecar-red"
+        }`}
+        spellCheck={false}
+        autoComplete="off"
+      />
+      <span className="mt-1 block font-normal text-[0.65rem] text-splash-navy/60">
+        Lowercase letters, digits, underscores; must start with a letter.
+        Renames cascade to the default stage + every transition out of /
+        into this stage.
+      </span>
+    </label>
+  );
+}
+
 interface ApproverSourceProps {
   source: ApproverSource;
   emailFieldKeys: string[];
   onChange: (next: ApproverSource) => void;
+  onClear: () => void;
 }
 
 function ApproverSourceEditor(p: ApproverSourceProps) {
   return (
     <div className="space-y-1.5 rounded-splash-sm border border-gray-light bg-sudsy-blue/5 p-2">
-      <p className="text-[0.65rem] font-semibold uppercase tracking-wide text-splash-navy/70">
-        Approver source
-      </p>
+      <div className="flex items-center justify-between gap-2">
+        <p className="text-[0.65rem] font-semibold uppercase tracking-wide text-splash-navy/70">
+          Approver source
+        </p>
+        <button
+          type="button"
+          onClick={p.onClear}
+          className="rounded-splash-sm border border-gray-light px-1.5 py-0.5 text-[0.6rem] font-semibold text-splash-navy/70 hover:bg-gray-light"
+          title="Drop the approver source to make this a terminal stage. Existing transitions remain — remove them too if this should truly be terminal."
+        >
+          Make terminal
+        </button>
+      </div>
       <div className="flex flex-wrap gap-2 text-[0.7rem] text-splash-navy">
         <label className="flex items-center gap-1">
           <input
@@ -415,6 +550,7 @@ function ApproverSourceEditor(p: ApproverSourceProps) {
 
 interface TransitionEditorProps {
   transition: WorkflowTransition;
+  currentStageId: string;
   allStages: WorkflowStage[];
   onUpdate: (patch: Partial<WorkflowTransition>) => void;
   onRemove: () => void;
@@ -422,20 +558,32 @@ interface TransitionEditorProps {
 
 function TransitionEditor(p: TransitionEditorProps) {
   const req = p.transition.requires ?? {};
+  const isSelfTransition = p.transition.to === p.currentStageId;
   return (
     <div className="space-y-1 rounded-splash-sm border border-gray-light bg-white p-2">
       <div className="flex items-start justify-between gap-2">
         <select
           value={p.transition.to}
           onChange={(e) => p.onUpdate({ to: e.currentTarget.value })}
-          className="flex-1 rounded-splash-sm border border-gray-light bg-white px-2 py-1 text-xs font-normal text-splash-navy"
+          className={`flex-1 rounded-splash-sm border bg-white px-2 py-1 text-xs font-normal text-splash-navy ${
+            isSelfTransition ? "border-racecar-red" : "border-gray-light"
+          }`}
         >
           <option value="">→ destination stage</option>
-          {p.allStages.map((s) => (
-            <option key={s.id} value={s.id}>
-              → {s.label || s.id}
-            </option>
-          ))}
+          {p.allStages.map((s) => {
+            const isCurrent = s.id === p.currentStageId;
+            return (
+              <option
+                key={s._uiKey ?? s.id}
+                value={s.id}
+                disabled={isCurrent}
+              >
+                {isCurrent
+                  ? `${s.label || s.id} (current — cannot self-transition)`
+                  : `→ ${s.label || s.id}`}
+              </option>
+            );
+          })}
         </select>
         <button
           type="button"
@@ -446,11 +594,17 @@ function TransitionEditor(p: TransitionEditorProps) {
           ×
         </button>
       </div>
+      {isSelfTransition && (
+        <p className="text-[0.65rem] text-racecar-red">
+          This transition points to the current stage. Pick a different
+          destination or remove this transition.
+        </p>
+      )}
       <input
         type="text"
         value={p.transition.label}
         onChange={(e) => p.onUpdate({ label: e.currentTarget.value })}
-        placeholder="Button label (e.g. Approve)"
+        placeholder="e.g. Approve, Decline, Send back"
         className="w-full rounded-splash-sm border border-gray-light bg-white px-2 py-1 text-xs font-normal text-splash-navy"
       />
       <div className="flex flex-wrap gap-2 text-[0.65rem] text-splash-navy">

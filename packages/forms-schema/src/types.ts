@@ -256,12 +256,24 @@ export interface WorkflowTransition {
 /**
  * A stage in the workflow. Terminal stages (e.g. "approved", "denied")
  * carry an empty `transitions` array.
+ *
+ * `_uiKey` is a Brief 123 builder-side artifact: a stable nanoid used as the
+ * React key for the stage row so the editor input does NOT remount when
+ * the semantic `stage.id` is renamed. The worker's Zod schemas don't
+ * declare this field, so it's stripped on parse before the row hits the
+ * `form_versions.schema` JSONB. Defense in depth: `apps/web` strips it in
+ * `saveDraftAction` before sending. Initial load regenerates it.
  */
 export interface WorkflowStage {
   id: string;
   label: string;
-  approver_source: ApproverSource;
+  // Brief 123 — terminal stages omit `approver_source` entirely. The
+  // strict publish-time validator pairs a missing `approver_source` with
+  // an empty `transitions` array (terminal) or flags it as broken
+  // (transitions exist but nobody can advance).
+  approver_source?: ApproverSource;
   transitions: WorkflowTransition[];
+  _uiKey?: string;
 }
 
 /**

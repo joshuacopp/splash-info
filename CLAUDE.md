@@ -460,6 +460,24 @@ When given a new task:
   `/admin/logout` -> `/logout`, plus `/admin/{slug}` ->
   `/admin/pricing/{slug}` for any single-segment slug not in the
   known-subpaths allow-list.
+- **MANDATORY: any new top-level `/admin/{subpath}` route MUST be
+  added to `ADMIN_KNOWN_SUBPATHS` in `apps/web/middleware.ts` in the
+  same brief that creates it.** The single-segment legacy redirect
+  rule (`/admin/{slug}` → `/admin/pricing/{slug}`) is a catch-all
+  for legacy per-location bookmarks — any new top-level admin route
+  not on the allow-list gets silently rewritten to a pricing URL
+  that 404s against the signup-worker. This bug class has bitten
+  three briefs so far (Brief 109 `/admin/jotform`, Brief 118
+  `/admin/forms/submissions` — multi-segment so it slipped through,
+  but the index page lived at `/admin/forms` which IS on the list,
+  Brief 121 `/admin/approvals`). Every brief that introduces a new
+  `apps/web/app/admin/{subpath}/page.tsx` (or a directory containing
+  one) MUST list "add `{subpath}` to `ADMIN_KNOWN_SUBPATHS` in
+  `apps/web/middleware.ts`" in its Scope and its Definition of Done.
+  Multi-segment paths (`/admin/{a}/{b}`) bypass the redirect rule
+  automatically, but the first segment still needs allow-listing if
+  it's a new top-level directory — otherwise `/admin/{a}` itself
+  would redirect.
 - Worker URL helper: `apps/web/app/_lib/worker-urls.ts` centralizes how
   apps/web calls workers. Same-origin in production (apps/web + workers
   share splashcarwashes.info post-cutover); falls back to env vars in
@@ -1325,6 +1343,51 @@ URL-based — service bindings don't apply to those.
   `apps/forms-worker/src/workflow-resolution.ts`; (4) add a radio +
   sub-form in `apps/web/app/admin/forms/[id]/_builder/
   WorkflowEditor.tsx`'s `ApproverSourceEditor`.
+  Brief 123 (2026-05-13) shipped a builder UX overhaul on top of
+  Brief 120's editor: stage rows now key off a stable `_uiKey`
+  (nanoid) so the Stage ID / Display Label / Transition Label inputs
+  retain focus across keystrokes (Brief 120's keying-on-`stage.id`
+  unmounted the row on every rename keystroke); new
+  `workflow_rename_stage` reducer action does the atomic cascade from
+  `stage.id` rename into `default_stage` + every `transition.to` in
+  the workflow; the Stage ID input sanitizes snake_case per the
+  Brief 95 `KeyEditor` pattern and refuses to commit a rename that
+  collides with another existing stage's id; new transitions default
+  to `"Move to {dest.label}"` (dropped Brief 120's `"Advance"`
+  literal); `workflow_enable` seeds three stages by default —
+  `approval` (default; `site_role: rm_email`; Approve → approved +
+  Decline → denied transitions) plus terminal `approved` + `denied`
+  stages — instead of a single confused self-loop stub. Terminal
+  stages render with a slate `TERMINAL` pill, muted background,
+  suppressed ApproverSource picker (replaced with a "Make approval
+  step" CTA), and a disabled "+ Add transition" button; the default
+  stage gets a `START` pill. Destination dropdowns disable the
+  current stage as an `<option disabled>` with a `"(current — cannot
+  self-transition)"` suffix; existing self-transitions surface a
+  red-bordered `<select>` + inline hint. A new
+  `WorkflowMermaidPreview` client island below the stages list
+  renders a live `flowchart LR` of the workflow graph (lazy-loaded
+  via `next/dynamic({ ssr: false })` so Mermaid's ~250 KB bundle
+  code-splits to a separate chunk that only ships to operators
+  opening `/admin/forms/[id]`; 300 ms debounce on re-renders;
+  default-stage gets a `START · ` node-label prefix; terminal nodes
+  get a muted slate fill via `classDef terminal`). Strict
+  publish-time `formSchemaSchema.superRefine` extended with new Zod
+  issues for orphaned approval stages (approver set, no transitions
+  — and the mirror: transitions exist but no approver), unreachable
+  terminals (BFS from `default_stage`), and self-transitions. The
+  draft validator stays relaxed so operators can save mid-build.
+  `WorkflowStage.approver_source` is now optional (`?:`) at both the
+  TypeScript and Zod layers — terminal stages omit it cleanly; the
+  worker (`submit/index.ts` default-stage seed; `admin/submissions.ts`
+  `handleTransition` current + destination guards) skips
+  `resolveApproverEmails` when missing and stamps
+  `current_approver_emails = []`. New `mermaid@^11.4` workspace dep
+  on `@splash/web`. New `stripBuilderArtifacts(workflow)` helper in
+  `_builder/reducer.ts` defensively drops `_uiKey` from the schema
+  before `saveDraftAction` sends to the worker (Zod's default
+  `.strip()` would handle it anyway, but the call site documents
+  intent).
   Brief 121 (2026-05-13) added the Pending Approvals dashboard surface
   + daily digest cron on top of Brief 120's `current_approver_emails`
   denormalization. New worker endpoint

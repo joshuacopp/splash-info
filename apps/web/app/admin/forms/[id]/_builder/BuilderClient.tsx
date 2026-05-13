@@ -32,7 +32,7 @@ import Canvas from "./Canvas";
 import Inspector, { type WorkflowDispatch } from "./Inspector";
 import Palette from "./Palette";
 import TopBar from "./TopBar";
-import { initialState, reducer } from "./reducer";
+import { initialState, reducer, stripBuilderArtifacts } from "./reducer";
 
 interface Props {
   initial: FormDetail;
@@ -87,7 +87,11 @@ export default function BuilderClient({ initial, lookupSources, formId }: Props)
   async function handleSaveDraft() {
     setSaving("saving");
     setErrorMsg(null);
-    const res = await saveDraftAction(formId, state.fields, state.workflow);
+    const res = await saveDraftAction(
+      formId,
+      state.fields,
+      stripBuilderArtifacts(state.workflow)
+    );
     if (res.ok) {
       setSaving("saved");
       dispatch({ type: "mark_clean" });
@@ -104,7 +108,11 @@ export default function BuilderClient({ initial, lookupSources, formId }: Props)
         "You have unsaved changes. Save Draft and publish?"
       );
       if (!proceed) return;
-      const saveRes = await saveDraftAction(formId, state.fields, state.workflow);
+      const saveRes = await saveDraftAction(
+        formId,
+        state.fields,
+        stripBuilderArtifacts(state.workflow)
+      );
       if (!saveRes.ok) {
         setErrorMsg(saveRes.error);
         return;
@@ -155,12 +163,16 @@ export default function BuilderClient({ initial, lookupSources, formId }: Props)
       dispatch({ type: "workflow_update_stage", stageId, patch }),
     onSetApproverSource: (stageId, source) =>
       dispatch({ type: "workflow_set_approver_source", stageId, source }),
+    onClearApproverSource: (stageId) =>
+      dispatch({ type: "workflow_clear_approver_source", stageId }),
     onAddTransition: (stageId) =>
       dispatch({ type: "workflow_add_transition", stageId }),
     onUpdateTransition: (stageId, index, patch) =>
       dispatch({ type: "workflow_update_transition", stageId, index, patch }),
     onRemoveTransition: (stageId, index) =>
-      dispatch({ type: "workflow_remove_transition", stageId, index })
+      dispatch({ type: "workflow_remove_transition", stageId, index }),
+    onRenameStage: (oldId, newId) =>
+      dispatch({ type: "workflow_rename_stage", oldId, newId })
   };
 
   return (

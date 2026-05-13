@@ -121,3 +121,4 @@
 - 2026-05-13 16:16:03 brief-122-forms-localstorage-autosave-and-resume.md (success)
 - 2026-05-13 16:35:34 brief-120-forms-workflow-schema-and-transitions.md (success)
 - 2026-05-13 16:48:51 brief-121-forms-pending-approvals-dashboard-and-digest.md (success)
+- 2026-05-13 17:43:55 brief-123-forms-workflow-builder-ux-fixes.md (success)

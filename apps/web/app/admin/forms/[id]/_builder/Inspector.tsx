@@ -22,6 +22,7 @@ export interface WorkflowDispatch {
   onMoveStage: (stageId: string, direction: -1 | 1) => void;
   onUpdateStage: (stageId: string, patch: Partial<WorkflowStage>) => void;
   onSetApproverSource: (stageId: string, source: ApproverSource) => void;
+  onClearApproverSource: (stageId: string) => void;
   onAddTransition: (stageId: string) => void;
   onUpdateTransition: (
     stageId: string,
@@ -29,6 +30,7 @@ export interface WorkflowDispatch {
     patch: Partial<WorkflowTransition>
   ) => void;
   onRemoveTransition: (stageId: string, index: number) => void;
+  onRenameStage: (oldId: string, newId: string) => void;
 }
 
 interface Props {
