@@ -1497,9 +1497,14 @@ URL-based — service bindings don't apply to those.
   `maxpass_signups` including `phone` (raw 10-digit), `terms_text`,
   `confirmation_token`, country/city/region. Filter column for both
   endpoints is `maxpass_signups.submitted_at` (NOT `created_at` like
-  fleet — signups was always indexed on submitted_at). Dashboard tile
-  is labeled "Signup Admin"; URL `/admin/pricing/*` is intentionally
-  unchanged (operator bookmarks).
+  fleet — signups was always indexed on submitted_at). Brief 116
+  (2026-05-13) split the `/admin/dashboard` entry point along the same
+  `SignupAdminTabs` boundary: Pricing is its own tile under the Admin
+  dashboard group, Signups is its own tile under the Submissions group
+  (the prior unified "MaxPass Admin" tile linked only to `/admin/pricing`).
+  URLs (`/admin/pricing/*` + `/admin/signups/*`) and the in-page
+  `SignupAdminTabs` nav are unchanged — operators inside either page
+  still flip between the two views via the tabs.
 - **admin** - Pricing administration. Lives in signup-worker
   (`/admin/api/*`) + apps/web (`/admin/pricing/*`). Used by area
   managers and location admins to set per-location pricing modes.

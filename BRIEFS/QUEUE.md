@@ -83,6 +83,8 @@
 
 # brief-115-jotform-viewer-comprehensive-ux-restructure.md  (completed 2026-05-12)
 
+# brief-116-dashboard-grouped-tiles-and-per-tile-visibility.md  (completed 2026-05-13)
+
 
 
 
