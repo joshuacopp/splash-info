@@ -201,6 +201,12 @@ export interface InsertSubmissionArgs {
   submitterUserId: string | null;
   submitterEmail: string | null;
   submitterIp: string | null;
+  // Brief 120 — workflow seed values. Null when the form version has no
+  // workflow block; otherwise the worker computes the default stage's
+  // approver list before insert.
+  workflowStage?: string | null;
+  workflowHistory?: unknown[];
+  currentApproverEmails?: string[];
 }
 
 /**
@@ -234,7 +240,12 @@ export async function insertSubmissionIdempotent(
     submitter_kind: args.submitterKind,
     submitter_user_id: args.submitterUserId,
     submitter_email: args.submitterEmail,
-    submitter_ip: args.submitterIp
+    submitter_ip: args.submitterIp,
+    // Brief 120 — workflow seed. Pass-through null when the version
+    // has no workflow; column default also accepts null.
+    workflow_stage: args.workflowStage ?? null,
+    workflow_history: args.workflowHistory ?? [],
+    current_approver_emails: args.currentApproverEmails ?? []
     // submitted_at + status default server-side
   });
 

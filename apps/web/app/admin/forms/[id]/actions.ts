@@ -10,7 +10,7 @@
 
 "use server";
 
-import type { Field } from "@splash/forms-schema";
+import type { Field, FormSchema, FormWorkflow } from "@splash/forms-schema";
 
 import {
   publishFormAdmin,
@@ -28,10 +28,18 @@ export type PublishResult =
 
 export async function saveDraftAction(
   formId: string,
-  fields: Field[]
+  fields: Field[],
+  workflow: FormWorkflow | null
 ): Promise<SaveDraftResult> {
   try {
-    await updateDraftAdmin(formId, { fields });
+    // Brief 120 — omit `workflow` from the schema entirely when null
+    // (rather than sending `workflow: null`) so the optional field on
+    // formSchemaSchema's draft variant stays absent. The worker's Zod
+    // schema treats missing-vs-null as different shapes.
+    const schema: FormSchema = workflow
+      ? { fields, workflow }
+      : { fields };
+    await updateDraftAdmin(formId, schema);
     return { ok: true };
   } catch (err) {
     return {

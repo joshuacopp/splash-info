@@ -1,28 +1,58 @@
 "use client";
 
-import type { Field, LookupSource } from "@splash/forms-schema";
+import type {
+  ApproverSource,
+  Field,
+  FormWorkflow,
+  LookupSource,
+  WorkflowStage,
+  WorkflowTransition
+} from "@splash/forms-schema";
 
 import { getFieldModule } from "../_field-types";
 import type { FormMetaState } from "./reducer";
+import WorkflowEditor from "./WorkflowEditor";
+
+export interface WorkflowDispatch {
+  onEnable: () => void;
+  onDisable: () => void;
+  onSetDefaultStage: (stageId: string) => void;
+  onAddStage: () => void;
+  onRemoveStage: (stageId: string) => void;
+  onMoveStage: (stageId: string, direction: -1 | 1) => void;
+  onUpdateStage: (stageId: string, patch: Partial<WorkflowStage>) => void;
+  onSetApproverSource: (stageId: string, source: ApproverSource) => void;
+  onAddTransition: (stageId: string) => void;
+  onUpdateTransition: (
+    stageId: string,
+    index: number,
+    patch: Partial<WorkflowTransition>
+  ) => void;
+  onRemoveTransition: (stageId: string, index: number) => void;
+}
 
 interface Props {
   selectedField: Field | undefined;
   formMeta: FormMetaState;
+  workflow: FormWorkflow | null;
   allFields: Field[];
   lookupSources: readonly LookupSource[];
   formId: string;
   onFieldUpdate: (patch: Partial<Field>) => void;
   onFormMetaUpdate: (patch: Partial<FormMetaState>) => void;
+  workflowDispatch: WorkflowDispatch;
 }
 
 export default function Inspector({
   selectedField,
   formMeta,
+  workflow,
   allFields,
   lookupSources,
   formId,
   onFieldUpdate,
-  onFormMetaUpdate
+  onFormMetaUpdate,
+  workflowDispatch
 }: Props) {
   return (
     <aside className="w-80 shrink-0 overflow-y-auto rounded-splash-md border border-gray-light bg-white px-4 py-3">
@@ -35,7 +65,14 @@ export default function Inspector({
           onUpdate={onFieldUpdate}
         />
       ) : (
-        <FormMetaInspector formMeta={formMeta} onUpdate={onFormMetaUpdate} />
+        <div className="space-y-4">
+          <FormMetaInspector formMeta={formMeta} onUpdate={onFormMetaUpdate} />
+          <WorkflowEditor
+            workflow={workflow}
+            allFields={allFields}
+            {...workflowDispatch}
+          />
+        </div>
       )}
     </aside>
   );

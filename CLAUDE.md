@@ -1244,6 +1244,127 @@ URL-based — service bindings don't apply to those.
   Splash Notes / Version) + sticky first column + sticky header in
   the wide table; cells outside a row's own version schema render a
   muted `—` with `title="Not part of v{N} schema"`.
+  Brief 122 (2026-05-13) added localStorage autosave + resume banner
+  to the public form-render path (`forms-public.js`). Autosave is
+  debounced 500 ms on every `input`/`change` bubbled to the form
+  root; values persist to `localStorage["forms.draft.{slug}"]` with
+  `{values, pendingSubmissionId, savedAt}`. On page load, a <30-day
+  draft renders an amber banner above the first field with Resume /
+  Discard buttons; stale drafts (>30 days) get cleared silently.
+  Resume restores values AND the saved `pending_submission_id` so
+  prior OOB-uploaded files / signatures in R2 stay linked to the
+  form. File / signature `<canvas>` / `<input type=file>` visible
+  state is NOT restored (only the hidden `_r2` companion is), so
+  operators see a blank canvas / file picker next to a restored
+  r2_key. The Brief 92 `wireSignature` / `wireFile` upload handlers
+  read `pending_submission_id` lazily inside the upload closure via
+  a `currentPendingId(formEl)` helper, so a resume that rewrites the
+  hidden input flows through to new uploads transparently. Clear-on-
+  submit is via a `submit` event listener that calls `clearDraft`
+  optimistically before the browser navigates (option B from the
+  brief). Trade-off: a rare 422 validation_failed loses the draft;
+  user can hit Back to recover DOM state from bfcache. Per-browser-
+  per-device (no server-side draft table); staging.splashcarwashes.info
+  and splashcarwashes.info don't share localStorage, which is the
+  intended isolation. Future executors shouldn't accidentally break
+  the contract: the autosave watches every named input via event
+  bubbling on the form root, so adding a new field type doesn't
+  require touching the autosave path (as long as the renderer uses
+  a real form input with a `name`). New field types that don't fit
+  the standard `<input>` / `<select>` / `<textarea>` mold need
+  their own persistence story (signature + file are the prior art).
+  Brief 120 (2026-05-13) added an optional `workflow` block to
+  `form_versions.schema` — per-form approval flows. Schema shape:
+  `{default_stage, stages: [{id, label, approver_source, transitions:
+  [{to, label, requires?}]}]}`. Three `ApproverSource` types ship:
+  `site_role` (reads `am_email`/`rm_email`/`site_email` from
+  `pricing_simple` via Brief 101's `getLocationContactInfo`, keyed
+  off the form's Location field's payload value — the location_code
+  slug); `static_emails` (form-builder allow-list); `payload_field`
+  (reads approver email from a form field at submission time). Three
+  new `form_submissions` columns added by operator SQL:
+  `workflow_stage text` (current stage id; null when version has no
+  workflow), `workflow_history jsonb default '[]'` (append-only
+  audit array, one entry per transition), `current_approver_emails
+  text[] default '{}'` (denormalized email list for Brief 121's
+  "pending for me" GIN-indexed dashboard query). The submit handler
+  seeds both `workflow_stage = workflow.default_stage` and pre-
+  resolves `current_approver_emails` for the default stage on
+  insert. Worker endpoint `POST /forms/admin/api/forms/{id}/
+  submissions/{subId}/transition` accepts `{to, note?, typed_name?,
+  signature_r2_key?}`; auth = any session, per-stage authority is
+  gated against `current_approver_emails` (super_admin / admin tier
+  bypass as escape hatch). Per-transition `requires` block (note /
+  typed_name / signature booleans) enforced server-side; missing
+  required fields return 400 `missing_required` with `missing[]`.
+  Builder UI: `Inspector` renders a `WorkflowEditor` below the form-
+  meta panel when no field is selected — Enable/Disable toggle,
+  default-stage dropdown, per-stage card with id/label inputs,
+  `ApproverSourceEditor` (radio + type-specific sub-form), per-
+  transition row, move-up/down + remove. Submission detail page:
+  `WorkflowSection` renders current stage + per-transition buttons
+  (disabled with title-attr hint when caller is not an approver) +
+  inline `requires` modal (Brief 19 `<ActionForm>` pattern) +
+  vertical history timeline (mirrors damage activity log).
+  Workflows are versioned with the form — a submission against v2
+  follows v2's workflow forever, even if v3 changes the stages.
+  Signature canvas wiring on the admin transition modal punted to
+  Brief 121; v1 accepts an existing `signature_r2_key` text input.
+  Notification webhook fire on transition deferred to Brief 121.
+  Department-approver source + conditional transitions deferred to
+  v2 per the brief's out-of-scope section. Strict publish-time Zod
+  validator (`formSchemaSchema.superRefine`) enforces no-duplicate-
+  stage-ids, `default_stage` references a real stage, every
+  `transition.to` references a real stage, and `payload_field
+  .field_key` references a real form field; draft variant relaxes
+  these so the operator can save a mid-build workflow. Future
+  executors adding a new approver source: (1) extend `ApproverSource`
+  union in `packages/forms-schema/src/types.ts`; (2) extend the
+  discriminator in `validators/field-config.ts` (both strict +
+  draft); (3) add a case to `resolveApproverEmails` in
+  `apps/forms-worker/src/workflow-resolution.ts`; (4) add a radio +
+  sub-form in `apps/web/app/admin/forms/[id]/_builder/
+  WorkflowEditor.tsx`'s `ApproverSourceEditor`.
+  Brief 121 (2026-05-13) added the Pending Approvals dashboard surface
+  + daily digest cron on top of Brief 120's `current_approver_emails`
+  denormalization. New worker endpoint
+  `GET /forms/admin/api/pending-approvals` (any-session auth; `?all=1`
+  admin-tier widens scope to every pending approval in the org) —
+  returns `{items, total, scope, caller_email, limit_hit}` with each
+  item carrying `submission_id`/`form_id`/`form_title`/
+  `workflow_stage`/`stage_label` (resolved server-side from the row's
+  version schema)/`current_approver_emails`/`submitter_email`/
+  `submitter_kind`/`submitted_at`/`location_code`/`review_path`. 500-
+  row safety cap; uses PostgREST `cs.{email}` against the GIN-indexed
+  `current_approver_emails` column for fast "pending for me" lookup.
+  New apps/web `/admin/approvals` page (any authenticated session;
+  worker query naturally returns empty for non-approvers) groups
+  items by form (forms with more items float; alphabetical
+  tie-break), renders per-row Stage pill / submitter / submitted-at
+  relative / Review → button linking to Brief 96's detail page;
+  admin-tier "Mine / All Approvals" toggle for ops oversight. New
+  "Pending Approvals" tile in the dashboard Operations group
+  (`anySession`). Daily digest cron at 12:00 UTC: queries every
+  `form_submissions` row with non-empty `current_approver_emails`,
+  groups by approver email × form_id, fires one POST per recipient
+  to optional `FORMS_APPROVAL_DIGEST_WEBHOOK_URL` with payload
+  `{recipient_email, total_pending, by_form: [{form_id, form_title,
+  count, oldest_submitted_at}], dashboard_url}`. Single PA flow for
+  the entire forms feature — adding new workflows automatically
+  participates, zero PA work per new form. Fail-soft per recipient
+  (15s timeout, swallow non-2xx, `[forms.approval-digest]` log).
+  When secret unbound the cron logs would-fire counts and skips
+  the POST. Worker `scheduled` handler now dispatches on
+  `event.cron` literal — `"0 12 * * *"` runs the digest, anything
+  else (including Brief 97's `"0 11 * * *"` cleanup) falls through
+  to the cleanup pass. `wrangler.toml` `[triggers] crons` widened
+  from `["0 11 * * *"]` to `["0 11 * * *", "0 12 * * *"]` — slot
+  inventory: 11:00 UTC cleanup → 11:30 UTC workorders MaintainX sync
+  → 12:00 UTC forms approval digest → 13:00 UTC damage daily summary.
+  Per-event notifications + "mark as viewed" / "snooze" + count
+  badge on the dashboard tile all deferred to v2 per the brief's
+  out-of-scope. PA flow build guide at `PA_FLOWS_BRIEF_121.md`
+  mirrors the Brief 101/102/105 pattern.
 - **fleet-inquiry-worker** (Brief 81) - Public fleet-inquiry form +
   three JSON endpoints. The seventh worker in the monorepo and the
   most recent addition. Lift-and-shifted into `apps/fleet-inquiry-

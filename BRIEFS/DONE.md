@@ -118,3 +118,6 @@
 - 2026-05-13 07:12:42 brief-117-dashboard-drill-down-two-level-navigation.md (success)
 - 2026-05-13 07:40:16 brief-118-forms-submissions-admin-index-and-post-submit-nav.md (success)
 - 2026-05-13 14:50:03 brief-119-forms-submissions-wide-column-table.md (success)
+- 2026-05-13 16:16:03 brief-122-forms-localstorage-autosave-and-resume.md (success)
+- 2026-05-13 16:35:34 brief-120-forms-workflow-schema-and-transitions.md (success)
+- 2026-05-13 16:48:51 brief-121-forms-pending-approvals-dashboard-and-digest.md (success)

@@ -29,7 +29,7 @@ import type { LookupSource } from "@splash/forms-schema";
 import { publishFormAction, saveDraftAction } from "../actions";
 import type { FormDetail } from "../../_lib/worker-fetch";
 import Canvas from "./Canvas";
-import Inspector from "./Inspector";
+import Inspector, { type WorkflowDispatch } from "./Inspector";
 import Palette from "./Palette";
 import TopBar from "./TopBar";
 import { initialState, reducer } from "./reducer";
@@ -87,7 +87,7 @@ export default function BuilderClient({ initial, lookupSources, formId }: Props)
   async function handleSaveDraft() {
     setSaving("saving");
     setErrorMsg(null);
-    const res = await saveDraftAction(formId, state.fields);
+    const res = await saveDraftAction(formId, state.fields, state.workflow);
     if (res.ok) {
       setSaving("saved");
       dispatch({ type: "mark_clean" });
@@ -104,7 +104,7 @@ export default function BuilderClient({ initial, lookupSources, formId }: Props)
         "You have unsaved changes. Save Draft and publish?"
       );
       if (!proceed) return;
-      const saveRes = await saveDraftAction(formId, state.fields);
+      const saveRes = await saveDraftAction(formId, state.fields, state.workflow);
       if (!saveRes.ok) {
         setErrorMsg(saveRes.error);
         return;
@@ -140,6 +140,28 @@ export default function BuilderClient({ initial, lookupSources, formId }: Props)
   const selectedField = state.selectedFieldId
     ? state.fields.find((f) => f.id === state.selectedFieldId)
     : undefined;
+
+  const workflowDispatch: WorkflowDispatch = {
+    onEnable: () => dispatch({ type: "workflow_enable" }),
+    onDisable: () => dispatch({ type: "workflow_disable" }),
+    onSetDefaultStage: (stageId) =>
+      dispatch({ type: "workflow_set_default_stage", stageId }),
+    onAddStage: () => dispatch({ type: "workflow_add_stage" }),
+    onRemoveStage: (stageId) =>
+      dispatch({ type: "workflow_remove_stage", stageId }),
+    onMoveStage: (stageId, direction) =>
+      dispatch({ type: "workflow_move_stage", stageId, direction }),
+    onUpdateStage: (stageId, patch) =>
+      dispatch({ type: "workflow_update_stage", stageId, patch }),
+    onSetApproverSource: (stageId, source) =>
+      dispatch({ type: "workflow_set_approver_source", stageId, source }),
+    onAddTransition: (stageId) =>
+      dispatch({ type: "workflow_add_transition", stageId }),
+    onUpdateTransition: (stageId, index, patch) =>
+      dispatch({ type: "workflow_update_transition", stageId, index, patch }),
+    onRemoveTransition: (stageId, index) =>
+      dispatch({ type: "workflow_remove_transition", stageId, index })
+  };
 
   return (
     <div className="flex flex-col gap-4">
@@ -189,6 +211,7 @@ export default function BuilderClient({ initial, lookupSources, formId }: Props)
         <Inspector
           selectedField={selectedField}
           formMeta={state.formMeta}
+          workflow={state.workflow}
           allFields={state.fields}
           lookupSources={lookupSources}
           formId={formId}
@@ -204,6 +227,7 @@ export default function BuilderClient({ initial, lookupSources, formId }: Props)
           onFormMetaUpdate={(patch) =>
             dispatch({ type: "update_form_meta", patch })
           }
+          workflowDispatch={workflowDispatch}
         />
       </div>
     </div>

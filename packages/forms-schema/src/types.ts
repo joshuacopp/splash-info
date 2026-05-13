@@ -196,8 +196,97 @@ export type Field =
   | LookupField;
 
 // Form schema = ordered list of fields. Order is implicit (array index).
+// Brief 120 adds an optional `workflow` block — forms without a workflow
+// behave as today (submit → no stages, terminal). Workflows are versioned
+// alongside the schema: a submission against v2 follows v2's workflow
+// forever, even if v3 changes the stages.
 export interface FormSchema {
   fields: Field[];
+  workflow?: FormWorkflow;
+}
+
+// -----------------------------------------------------------------------------
+// Workflow (Brief 120) — per-stage approval flows on a form.
+// -----------------------------------------------------------------------------
+
+/**
+ * Where the worker resolves the email list of operators allowed to advance
+ * a stage. Brief 120 ships three sources; a `department` source is flagged
+ * for v2 (Brief 120.5) once the `departments` table design lands.
+ *
+ * - `site_role` reads `am_email` / `rm_email` / `site_email` from
+ *   `pricing_simple` via `getLocationContactInfo` (Brief 101 helper).
+ *   Requires the submission's payload to carry a `location` field
+ *   (or any lookup field resolving to a `pricing_simple.location_code`).
+ * - `static_emails` is a form-builder-configured allow-list. Single
+ *   approver is the common case; multi-element supports committees.
+ * - `payload_field` reads the approver email from a field on the form
+ *   (operator picks an approver at submission time).
+ */
+export type ApproverSource =
+  | { type: "site_role"; role: "am_email" | "rm_email" | "site_email" }
+  | { type: "static_emails"; emails: string[] }
+  | { type: "payload_field"; field_key: string };
+
+/**
+ * Per-transition requirements gating the action button. Combinations
+ * supported: requires={signature:true, note:true} means the modal renders
+ * both inputs and the worker rejects 400 when either is missing.
+ *
+ * v2 candidates flagged inline below; this brief ships only the three
+ * boolean knobs.
+ */
+export interface WorkflowTransitionRequirements {
+  signature?: boolean;
+  typed_name?: boolean;
+  note?: boolean;
+  // v2: amount_field?: string, custom_field?: { key, label, type }
+}
+
+/**
+ * A single outgoing edge from a stage. The button label is what the
+ * operator sees; the `to` references another stage's `id`.
+ */
+export interface WorkflowTransition {
+  to: string;
+  label: string;
+  requires?: WorkflowTransitionRequirements;
+}
+
+/**
+ * A stage in the workflow. Terminal stages (e.g. "approved", "denied")
+ * carry an empty `transitions` array.
+ */
+export interface WorkflowStage {
+  id: string;
+  label: string;
+  approver_source: ApproverSource;
+  transitions: WorkflowTransition[];
+}
+
+/**
+ * Full workflow block. `default_stage` must reference one of `stages[].id`
+ * — validated by Zod at draft-save AND publish time.
+ */
+export interface FormWorkflow {
+  default_stage: string;
+  stages: WorkflowStage[];
+}
+
+/**
+ * History entry appended to `form_submissions.workflow_history` on every
+ * successful transition. Schema lives here so apps/web and the worker
+ * share the row shape.
+ */
+export interface WorkflowHistoryEntry {
+  from: string;
+  to: string;
+  actor_email: string;
+  actor_session_role: string | null;
+  note: string | null;
+  signature_r2_key: string | null;
+  typed_name: string | null;
+  at: string;
 }
 
 export interface FormVersion {
@@ -241,6 +330,10 @@ export interface FormSubmission {
   submittedAt: string;
   status: "new" | "in_progress" | "closed";
   splashNotes: string | null;
+  // Brief 120 — present only when the submission's version has a workflow.
+  workflowStage: string | null;
+  workflowHistory: WorkflowHistoryEntry[];
+  currentApproverEmails: string[];
 }
 
 // Location options pre-baked into the Location field's <select> at render time.

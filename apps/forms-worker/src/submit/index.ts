@@ -31,6 +31,7 @@ import { authenticate } from "@splash/auth";
 import { isOriginAllowed, jsonError } from "@splash/http";
 import { payloadValidatorFor, LOOKUP_SOURCES } from "@splash/forms-schema";
 import { resolveLookup, createServiceClient } from "@splash/db-supabase";
+import { resolveApproverEmails } from "../workflow-resolution.js";
 import type { Env } from "../index.js";
 import {
   getFormBySlug,
@@ -341,6 +342,42 @@ export async function handleSubmit(
   }
 
   // -----------------------------------------------------------------
+  // Brief 120 — workflow seed.
+  //
+  // If the version has a workflow block, seed `workflow_stage` to its
+  // `default_stage` and pre-resolve the default stage's approver emails
+  // into `current_approver_emails`. Brief 121's "pending for me"
+  // dashboard reads off `current_approver_emails`, so populating at
+  // submit time is what makes a freshly-submitted form immediately
+  // routable.
+  // -----------------------------------------------------------------
+  let workflowStage: string | null = null;
+  let currentApproverEmails: string[] = [];
+  if (version.schema.workflow) {
+    const defaultStageId = version.schema.workflow.default_stage;
+    const defaultStage = version.schema.workflow.stages.find(
+      (s) => s.id === defaultStageId
+    );
+    if (defaultStage) {
+      workflowStage = defaultStageId;
+      try {
+        currentApproverEmails = await resolveApproverEmails(
+          env,
+          defaultStage.approver_source,
+          { schema: version.schema, payload }
+        );
+      } catch (err) {
+        console.error("[forms] workflow seed: approver resolve threw", err);
+        currentApproverEmails = [];
+      }
+    } else {
+      console.warn(
+        `[forms] workflow seed: default_stage "${defaultStageId}" not found in stages for form ${form.id}`
+      );
+    }
+  }
+
+  // -----------------------------------------------------------------
   // Idempotent insert.
   // -----------------------------------------------------------------
   const submitterIp = req.headers.get("CF-Connecting-IP");
@@ -354,7 +391,10 @@ export async function handleSubmit(
       submitterKind,
       submitterUserId,
       submitterEmail,
-      submitterIp
+      submitterIp,
+      workflowStage,
+      workflowHistory: [],
+      currentApproverEmails
     });
   } catch (err) {
     console.error("[forms] handleSubmit: insert failed", err);

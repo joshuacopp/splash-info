@@ -15,7 +15,8 @@ import NoAccessCard from "../../../_components/NoAccessCard";
 import { ActionForm } from "../../../../_components/ActionForm";
 import StatusPill from "../_components/StatusPill";
 import PayloadRenderer from "./_components/PayloadRenderer";
-import { updateSubmissionAction } from "./actions";
+import WorkflowSection from "./_components/WorkflowSection";
+import { transitionAction, updateSubmissionAction } from "./actions";
 
 export const dynamic = "force-dynamic";
 
@@ -85,6 +86,12 @@ export default async function SubmissionDetailPage({ params }: PageProps) {
   }
 
   const save = updateSubmissionAction.bind(null, id, subId);
+  const transition = transitionAction.bind(null, id, subId);
+  const workflow = submission.version.schema.workflow;
+  const isAdminTier =
+    session.role === "super_admin" ||
+    session.dcRole === "admin" ||
+    session.dcRole === "super_admin";
 
   return (
     <section className="mx-auto w-full max-w-[820px] px-5 py-9">
@@ -158,6 +165,20 @@ export default async function SubmissionDetailPage({ params }: PageProps) {
           </button>
         </ActionForm>
       </section>
+
+      {workflow && (
+        <WorkflowSection
+          workflow={workflow}
+          currentStageId={
+            submission.workflow_stage ?? workflow.default_stage
+          }
+          history={submission.workflow_history}
+          currentApproverEmails={submission.current_approver_emails}
+          callerEmail={session.email}
+          isAdminTier={isAdminTier}
+          transitionAction={transition}
+        />
+      )}
 
       <section className="mb-6">
         <h2 className="mb-2 text-lg font-semibold text-splash-navy">

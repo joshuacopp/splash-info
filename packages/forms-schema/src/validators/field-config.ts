@@ -194,9 +194,160 @@ export const fieldSchema = z.discriminatedUnion("type", [
   lookupFieldSchema
 ]);
 
-export const formSchemaSchema = z.object({
-  fields: z.array(fieldSchema)
+// -----------------------------------------------------------------------------
+// Workflow (Brief 120) — Zod schemas + structural cross-checks
+// -----------------------------------------------------------------------------
+//
+// The discriminated union mirrors `ApproverSource` in types.ts. Cross-field
+// invariants (default_stage references a real stage, every transition's `to`
+// references a real stage, no duplicate stage ids, payload_field
+// approver_source references a real form field) live in a `.superRefine`
+// applied at the FormSchema level so the issue path can include the field
+// index of the offending stage/transition.
+
+const approverSourceSchema = z.discriminatedUnion("type", [
+  z.object({
+    type: z.literal("site_role"),
+    role: z.enum(["am_email", "rm_email", "site_email"])
+  }),
+  z.object({
+    type: z.literal("static_emails"),
+    emails: z.array(z.string())
+  }),
+  z.object({
+    type: z.literal("payload_field"),
+    field_key: z.string().min(1)
+  })
+]);
+
+const workflowTransitionSchema = z.object({
+  to: z.string().min(1),
+  label: z.string().min(1),
+  requires: z
+    .object({
+      signature: z.boolean().optional(),
+      typed_name: z.boolean().optional(),
+      note: z.boolean().optional()
+    })
+    .optional()
 });
+
+const workflowStageSchema = z.object({
+  id: z.string().regex(/^[a-z][a-z0-9_]*$/, "snake_case slug, leading non-digit"),
+  label: z.string().min(1),
+  approver_source: approverSourceSchema,
+  transitions: z.array(workflowTransitionSchema)
+});
+
+export const formWorkflowSchema = z.object({
+  default_stage: z.string().min(1),
+  stages: z.array(workflowStageSchema).min(1)
+});
+
+// Lenient variant for save-draft — operator may be mid-build with one stage
+// added but no transitions, an empty default_stage, or an in-progress
+// `payload_field` field_key. Discriminator + enum constraints stay strict.
+const approverSourceSchemaDraft = z.discriminatedUnion("type", [
+  z.object({
+    type: z.literal("site_role"),
+    role: z.enum(["am_email", "rm_email", "site_email"])
+  }),
+  z.object({
+    type: z.literal("static_emails"),
+    emails: z.array(z.string())
+  }),
+  z.object({
+    type: z.literal("payload_field"),
+    field_key: z.string()
+  })
+]);
+
+const workflowTransitionSchemaDraft = z.object({
+  to: z.string(),
+  label: z.string(),
+  requires: z
+    .object({
+      signature: z.boolean().optional(),
+      typed_name: z.boolean().optional(),
+      note: z.boolean().optional()
+    })
+    .optional()
+});
+
+const workflowStageSchemaDraft = z.object({
+  id: z.string().regex(/^[a-z][a-z0-9_]*$/, "snake_case slug, leading non-digit"),
+  label: z.string(),
+  approver_source: approverSourceSchemaDraft,
+  transitions: z.array(workflowTransitionSchemaDraft)
+});
+
+export const formWorkflowSchemaDraft = z.object({
+  default_stage: z.string(),
+  stages: z.array(workflowStageSchemaDraft)
+});
+
+// -----------------------------------------------------------------------------
+// Top-level FormSchema — strict (publish + render time)
+// -----------------------------------------------------------------------------
+
+export const formSchemaSchema = z
+  .object({
+    fields: z.array(fieldSchema),
+    workflow: formWorkflowSchema.optional()
+  })
+  .superRefine((data, ctx) => {
+    if (!data.workflow) return;
+    const { default_stage, stages } = data.workflow;
+    const stageIds = new Set<string>();
+    for (let i = 0; i < stages.length; i++) {
+      const stage = stages[i];
+      if (!stage) continue;
+      if (stageIds.has(stage.id)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["workflow", "stages", i, "id"],
+          message: `duplicate stage id "${stage.id}"`
+        });
+      }
+      stageIds.add(stage.id);
+    }
+    if (!stageIds.has(default_stage)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["workflow", "default_stage"],
+        message: `default_stage "${default_stage}" not in stages[]`
+      });
+    }
+    const fieldKeys = new Set(
+      data.fields
+        .filter((f) => f.type !== "heading" && f.type !== "image")
+        .map((f) => f.key)
+    );
+    for (let i = 0; i < stages.length; i++) {
+      const stage = stages[i];
+      if (!stage) continue;
+      for (let j = 0; j < stage.transitions.length; j++) {
+        const transition = stage.transitions[j];
+        if (!transition) continue;
+        if (!stageIds.has(transition.to)) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["workflow", "stages", i, "transitions", j, "to"],
+            message: `transition.to "${transition.to}" not in stages[]`
+          });
+        }
+      }
+      if (stage.approver_source.type === "payload_field") {
+        if (!fieldKeys.has(stage.approver_source.field_key)) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["workflow", "stages", i, "approver_source", "field_key"],
+            message: `approver_source.field_key "${stage.approver_source.field_key}" does not reference a form field`
+          });
+        }
+      }
+    }
+  });
 
 // -----------------------------------------------------------------------------
 // Draft schema — lenient variant for save-draft
@@ -364,6 +515,12 @@ export const fieldSchemaDraft = z.discriminatedUnion("type", [
   lookupFieldSchemaDraft
 ]);
 
+// Brief 120 — draft variant accepts a partial workflow (operator may save
+// mid-build with an empty default_stage or a transition that doesn't yet
+// reference an existing stage). Publish re-validates against the strict
+// `formSchemaSchema` so anything draft-only-valid surfaces a 422 at
+// publish time.
 export const draftFormSchemaSchema = z.object({
-  fields: z.array(fieldSchemaDraft)
+  fields: z.array(fieldSchemaDraft),
+  workflow: formWorkflowSchemaDraft.optional()
 });

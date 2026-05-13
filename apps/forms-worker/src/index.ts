@@ -14,6 +14,7 @@
 //   GET    /forms/api/asset/{form_id}/{asset_id}      — Brief 90 followup: public in-form image asset
 //   GET    /forms/admin/api/files/*                   — Brief 92: admin-gated R2 serve
 //   GET    /forms/admin/api/lookup-sources            — Brief 94: lookup registry
+//   GET    /forms/admin/api/pending-approvals         — Brief 121: cross-form "pending for me"
 //   GET    /forms/admin/api/forms                     — Brief 94: list forms
 //   POST   /forms/admin/api/forms                     — Brief 94: create form
 //   GET    /forms/admin/api/forms/{id}                — Brief 94: get form detail
@@ -27,6 +28,7 @@
 //   GET    /forms/admin/api/forms/{id}/submissions.csv — Brief 96: CSV export
 //   GET    /forms/admin/api/forms/{id}/submissions/{subId}   — Brief 96: detail
 //   PATCH  /forms/admin/api/forms/{id}/submissions/{subId}   — Brief 96: notes/status
+//   POST   /forms/admin/api/forms/{id}/submissions/{subId}/transition — Brief 120: workflow stage flip
 //   GET    /forms/admin/api/forms/{id}/versions       — Brief 96: version history
 //
 // Audience gating (Brief 90 render path / Brief 91 submit path):
@@ -71,10 +73,13 @@ import {
   handleListSubmissions,
   handleGetSubmission,
   handlePatchSubmission,
-  handleSubmissionsCsv
+  handleSubmissionsCsv,
+  handleTransition
 } from "./admin/submissions.js";
 import { handleListVersions } from "./admin/versions.js";
+import { handlePendingApprovals } from "./admin/pending-approvals.js";
 import { runDailyCleanup } from "./cron/cleanup.js";
+import { runDailyApprovalDigest } from "./cron/approval-digest.js";
 
 export interface Env {
   SUPABASE_URL: string;
@@ -87,6 +92,11 @@ export interface Env {
   TURNSTILE_SITE_KEY?: string;
   TURNSTILE_SECRET_KEY?: string;
   FORMS_SUBMISSION_WEBHOOK_URL?: string;
+  /** Brief 121 — daily Pending Approvals digest POST target. Optional;
+   *  when unbound the cron logs counts but skips the POST (fail-soft,
+   *  matches Brief 65 / 101 posture). One PA flow fans out one email per
+   *  recipient summarizing all forms with pending items. */
+  FORMS_APPROVAL_DIGEST_WEBHOOK_URL?: string;
   FORMS_FILES: R2Bucket;
 }
 
@@ -161,6 +171,16 @@ export default {
     // GET /forms/admin/api/lookup-sources
     if (url.pathname === "/forms/admin/api/lookup-sources" && req.method === "GET") {
       return handleLookupSources(env, req);
+    }
+
+    // Brief 121 — GET /forms/admin/api/pending-approvals
+    //   Cross-form "pending for me" list. Any-session auth; admin-tier can
+    //   pass ?all=1 to widen to every pending approval in the org.
+    if (
+      url.pathname === "/forms/admin/api/pending-approvals" &&
+      req.method === "GET"
+    ) {
+      return handlePendingApprovals(env, req);
     }
 
     // /forms/admin/api/forms (list / create)
@@ -253,6 +273,26 @@ export default {
       return handleListSubmissions(env, req, subListMatch[1]);
     }
 
+    // Brief 120 — POST /forms/admin/api/forms/{id}/submissions/{subId}/transition
+    // Must match BEFORE the bare-{subId} pattern so the trailing path segment
+    // doesn't get treated as part of the UUID.
+    const subTransitionMatch = url.pathname.match(
+      /^\/forms\/admin\/api\/forms\/([^/]+)\/submissions\/([^/]+)\/transition$/
+    );
+    if (
+      subTransitionMatch &&
+      subTransitionMatch[1] &&
+      subTransitionMatch[2] &&
+      req.method === "POST"
+    ) {
+      return handleTransition(
+        env,
+        req,
+        subTransitionMatch[1],
+        subTransitionMatch[2]
+      );
+    }
+
     // /forms/admin/api/forms/{id}/submissions/{subId}
     const subDetailMatch = url.pathname.match(
       /^\/forms\/admin\/api\/forms\/([^/]+)\/submissions\/([^/]+)$/
@@ -278,15 +318,34 @@ export default {
     return notFoundPage();
   },
 
-  // Brief 97 — daily R2 orphan cleanup. Trigger configured in
-  // wrangler.toml's `[triggers] crons = ["0 11 * * *"]` block. The
-  // [observability.logs] block from Brief 89 covers scheduled
+  // Scheduled-trigger dispatcher. Two crons today, keyed off the
+  // `event.cron` literal that Cloudflare passes in:
+  //
+  //   "0 11 * * *"  — Brief 97 daily R2 orphan cleanup (11:00 UTC)
+  //   "0 12 * * *"  — Brief 121 daily Pending Approvals digest (12:00 UTC)
+  //
+  // The [observability.logs] block from Brief 89 covers scheduled
   // invocations automatically (eventType: scheduled in CF dashboard).
+  //
+  // When CF passes an unrecognized cron expression (e.g., adding a new
+  // trigger without updating this dispatcher), we fall back to the
+  // cleanup pass so the worker doesn't silently no-op a scheduled run.
   async scheduled(
-    _event: ScheduledController,
+    event: ScheduledController,
     env: Env,
     ctx: ExecutionContext
   ): Promise<void> {
+    if (event.cron === "0 12 * * *") {
+      ctx.waitUntil(
+        runDailyApprovalDigest(env).then((result) => {
+          console.log("[forms.approval-digest.cron] result", result);
+        })
+      );
+      return;
+    }
+    // Default: cleanup pass. Covers the existing "0 11 * * *" cron AND
+    // any future cron that hasn't been wired into the dispatcher yet
+    // (the cleanup pass is safe to run any time of day).
     ctx.waitUntil(
       runDailyCleanup(env).then((result) => {
         console.log("[forms.cleanup.cron] result", result);

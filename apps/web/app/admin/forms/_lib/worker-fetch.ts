@@ -13,7 +13,12 @@
 
 import { cookies, headers } from "next/headers";
 import { getCloudflareContext } from "@opennextjs/cloudflare";
-import type { FormMeta, FormSchema, LookupSource } from "@splash/forms-schema";
+import type {
+  FormMeta,
+  FormSchema,
+  LookupSource,
+  WorkflowHistoryEntry
+} from "@splash/forms-schema";
 
 // =============================================================================
 // Brief 96 — submission + version response shapes
@@ -86,8 +91,29 @@ export interface SubmissionDetail {
   splash_notes: string | null;
   splash_notes_updated_at: string | null;
   splash_notes_updated_by: string | null;
+  // Brief 120 — null when the submission's version had no workflow.
+  workflow_stage: string | null;
+  workflow_history: WorkflowHistoryEntry[];
+  current_approver_emails: string[];
   version: SubmissionVersionDetail;
   files: SubmissionFile[];
+}
+
+export interface TransitionPatchBody {
+  to: string;
+  note?: string;
+  typed_name?: string;
+  signature_r2_key?: string;
+}
+
+export interface TransitionResponse {
+  ok: true;
+  id: string;
+  from: string;
+  to: string;
+  workflow_stage: string;
+  workflow_history: WorkflowHistoryEntry[];
+  current_approver_emails: string[];
 }
 
 export interface SubmissionDetailResponse {
@@ -442,4 +468,86 @@ export async function listVersionsAdmin(
   );
   if (resp.status === 401 || resp.status === 403) return null;
   return readJson<VersionListResponse>(resp, "listVersionsAdmin");
+}
+
+// =============================================================================
+// Brief 120 — workflow transition
+// =============================================================================
+//
+// The forms-worker transition endpoint accepts any-session auth (per-stage
+// authority is gated against `current_approver_emails` server-side; admin
+// tier bypasses). 403 with `{error:"not_approver", allowed_emails}` is
+// re-surfaced verbatim so the caller can render a "not your stage" hint.
+
+export type TransitionResult =
+  | TransitionResponse
+  | { ok: false; error: string; allowed_emails?: string[]; missing?: string[] };
+
+export async function transitionSubmissionAdmin(
+  formId: string,
+  subId: string,
+  body: TransitionPatchBody
+): Promise<TransitionResult> {
+  const resp = await callForms(
+    `/forms/admin/api/forms/${encodeURIComponent(formId)}/submissions/${encodeURIComponent(subId)}/transition`,
+    { method: "POST", jsonBody: body }
+  );
+  if (!resp.ok) {
+    let parsed: {
+      error?: string;
+      allowed_emails?: string[];
+      missing?: string[];
+    } = {};
+    try {
+      parsed = (await resp.json()) as typeof parsed;
+    } catch {
+      // body wasn't JSON
+    }
+    return {
+      ok: false,
+      error: parsed.error ?? `HTTP ${resp.status}`,
+      allowed_emails: parsed.allowed_emails,
+      missing: parsed.missing
+    };
+  }
+  return (await resp.json()) as TransitionResponse;
+}
+
+// =============================================================================
+// Brief 121 — Pending Approvals cross-form list
+// =============================================================================
+
+export interface PendingApprovalItem {
+  submission_id: string;
+  form_id: string;
+  form_title: string;
+  workflow_stage: string;
+  stage_label: string;
+  current_approver_emails: string[];
+  submitter_email: string | null;
+  submitter_kind: SubmitterKind;
+  submitted_at: string;
+  location_code: string | null;
+  review_path: string;
+}
+
+export interface PendingApprovalsResponse {
+  items: PendingApprovalItem[];
+  total: number;
+  scope: "me" | "all";
+  caller_email: string;
+  limit_hit: boolean;
+}
+
+export async function listPendingApprovalsAdmin(
+  params: { all?: boolean } = {}
+): Promise<PendingApprovalsResponse | null> {
+  const qs = new URLSearchParams();
+  if (params.all) qs.set("all", "1");
+  const path = `/forms/admin/api/pending-approvals${
+    qs.toString() ? `?${qs}` : ""
+  }`;
+  const resp = await callForms(path);
+  if (resp.status === 401 || resp.status === 403) return null;
+  return readJson<PendingApprovalsResponse>(resp, "listPendingApprovalsAdmin");
 }

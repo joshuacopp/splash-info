@@ -18,15 +18,23 @@
 // is the right call for a multi-version form because per-version columns
 // would diverge across submissions and break the wide-table shape.
 
+import { authenticate } from "@splash/auth";
 import { isOriginAllowed, jsonError } from "@splash/http";
+import type {
+  FormSchema,
+  WorkflowHistoryEntry,
+  WorkflowStage
+} from "@splash/forms-schema";
 import { adminGate, adminGateResponse, requireServiceKey } from "./auth.js";
 import {
   listSubmissions,
   getSubmission,
   updateSubmission,
   listSubmissionsForCsv,
+  transitionSubmission,
   type SubmissionStatus
 } from "../db/admin-submissions.js";
+import { resolveApproverEmails } from "../workflow-resolution.js";
 import type { Env } from "../index.js";
 
 const FORM_ID_RE =
@@ -363,4 +371,223 @@ function csvEscape(v: string): string {
     return `"${s.replace(/"/g, '""')}"`;
   }
   return s;
+}
+
+// =============================================================================
+// Brief 120 — POST /forms/admin/api/forms/{id}/submissions/{subId}/transition
+// =============================================================================
+//
+// Auth: any authenticated session. The caller's authority to advance THIS
+// stage is checked via approver-email membership (resolved off the
+// submission payload). super_admin / admin bypass that check as a stuck-
+// workflow escape hatch — same posture as the damage workflow's admin
+// reverts.
+//
+// Lifecycle:
+//   1. Auth (`authenticate` from @splash/auth — broader than the admin
+//      gate; RM/RD/GM operators can take site_email transitions).
+//   2. Load submission + version's schema in one PostgREST round-trip
+//      (`getSubmission`).
+//   3. Validate the version has a workflow + the body's `to` is a
+//      defined transition from the current stage.
+//   4. Resolve current stage's approver_source to email list; gate
+//      `session.email` membership (super_admin / admin tier bypass).
+//   5. Validate body's `requires` shape against the transition.
+//   6. Append to `workflow_history`, flip `workflow_stage`, recompute
+//      `current_approver_emails` for the destination stage.
+//   7. Return the updated row (with `next_approver_emails` for the UI).
+//
+// Notification webhook fire deferred to Brief 121.
+
+export async function handleTransition(
+  env: Env,
+  req: Request,
+  formId: string,
+  subId: string
+): Promise<Response> {
+  const sk = requireServiceKey(env);
+  if (sk) return sk;
+  if (!isOriginAllowed(req)) return jsonError(403, "bad_origin");
+
+  if (!FORM_ID_RE.test(formId) || !SUB_ID_RE.test(subId)) {
+    return jsonError(400, "bad_id");
+  }
+
+  // Auth: any session works at this gate; per-stage authority is
+  // resolved against the submission payload below.
+  const auth = await authenticate(req, env);
+  if (auth.status !== "authenticated") {
+    return new Response(JSON.stringify({ error: "unauthenticated" }), {
+      status: 401,
+      headers: { "Content-Type": "application/json" }
+    });
+  }
+  const { session } = auth;
+  const isAdminTier =
+    session.role === "super_admin" ||
+    session.dcRole === "admin" ||
+    session.dcRole === "super_admin";
+
+  let body: {
+    to?: unknown;
+    note?: unknown;
+    typed_name?: unknown;
+    signature_r2_key?: unknown;
+  };
+  try {
+    body = await req.json();
+  } catch {
+    return jsonError(400, "bad_json");
+  }
+
+  if (typeof body.to !== "string" || body.to.length === 0) {
+    return jsonError(400, "bad_target_stage");
+  }
+  const toStageId = body.to.trim();
+  const note =
+    typeof body.note === "string" && body.note.trim() ? body.note.trim() : null;
+  const typedName =
+    typeof body.typed_name === "string" && body.typed_name.trim()
+      ? body.typed_name.trim()
+      : null;
+  const signatureR2Key =
+    typeof body.signature_r2_key === "string" && body.signature_r2_key.trim()
+      ? body.signature_r2_key.trim()
+      : null;
+
+  let submission: Awaited<ReturnType<typeof getSubmission>>;
+  try {
+    submission = await getSubmission(env, formId, subId);
+  } catch (err) {
+    console.error("[forms.admin] transition: load submission failed", err);
+    return jsonError(500, "load_failed");
+  }
+  if (!submission) return jsonError(404, "not_found");
+
+  const schema: FormSchema = submission.version.schema;
+  const workflow = schema.workflow;
+  if (!workflow) {
+    return jsonError(400, "no_workflow");
+  }
+
+  const currentStageId = submission.workflow_stage ?? workflow.default_stage;
+  const currentStage = workflow.stages.find((s) => s.id === currentStageId);
+  if (!currentStage) {
+    return jsonError(409, "current_stage_unknown");
+  }
+
+  const transition = currentStage.transitions.find((t) => t.to === toStageId);
+  if (!transition) {
+    return jsonError(400, "transition_not_defined");
+  }
+  const destStage = workflow.stages.find((s) => s.id === toStageId);
+  if (!destStage) {
+    return jsonError(500, "dest_stage_unknown");
+  }
+
+  // Authority gate: caller must either be admin-tier (escape hatch) OR
+  // hold an email on the CURRENT stage's approver list.
+  if (!isAdminTier) {
+    let allowed: string[];
+    try {
+      allowed = await resolveApproverEmails(env, currentStage.approver_source, {
+        schema,
+        payload: submission.payload
+      });
+    } catch (err) {
+      console.error("[forms.admin] transition: approver resolve failed", err);
+      return jsonError(500, "approver_resolve_failed");
+    }
+    const callerEmail = session.email.trim().toLowerCase();
+    if (!allowed.includes(callerEmail)) {
+      return new Response(
+        JSON.stringify({
+          error: "not_approver",
+          allowed_emails: allowed
+        }),
+        {
+          status: 403,
+          headers: { "Content-Type": "application/json" }
+        }
+      );
+    }
+  }
+
+  // Requirements: any field marked required by the transition's
+  // `requires` block must be present in the body.
+  const requires = transition.requires ?? {};
+  const missing: string[] = [];
+  if (requires.signature && !signatureR2Key) missing.push("signature_r2_key");
+  if (requires.typed_name && !typedName) missing.push("typed_name");
+  if (requires.note && !note) missing.push("note");
+  if (missing.length > 0) {
+    return new Response(
+      JSON.stringify({ error: "missing_required", missing }),
+      {
+        status: 400,
+        headers: { "Content-Type": "application/json" }
+      }
+    );
+  }
+
+  const historyEntry: WorkflowHistoryEntry = {
+    from: currentStageId,
+    to: toStageId,
+    actor_email: session.email,
+    actor_session_role: session.role ?? null,
+    note,
+    signature_r2_key: signatureR2Key,
+    typed_name: typedName,
+    at: new Date().toISOString()
+  };
+  const nextHistory = [...submission.workflow_history, historyEntry];
+
+  let nextApproverEmails: string[];
+  try {
+    nextApproverEmails = await resolveApproverEmails(
+      env,
+      destStage.approver_source,
+      { schema, payload: submission.payload }
+    );
+  } catch (err) {
+    console.error("[forms.admin] transition: dest approver resolve failed", err);
+    nextApproverEmails = [];
+  }
+
+  try {
+    const updated = await transitionSubmission(env, formId, subId, {
+      workflow_stage: toStageId,
+      workflow_history: nextHistory,
+      current_approver_emails: nextApproverEmails
+    });
+    if (!updated) return jsonError(404, "not_found");
+    return new Response(
+      JSON.stringify({
+        ok: true,
+        id: updated.id,
+        from: currentStageId,
+        to: toStageId,
+        workflow_stage: toStageId,
+        workflow_history: nextHistory,
+        current_approver_emails: nextApproverEmails
+      }),
+      {
+        status: 200,
+        headers: { "Content-Type": "application/json" }
+      }
+    );
+  } catch (err) {
+    console.error("[forms.admin] transition: PATCH failed", err);
+    return jsonError(500, "transition_failed");
+  }
+}
+
+// Helper for the apps/web detail page server-action (re-exported for
+// potential future use; keeps stage-shape lookup in one place).
+export function findCurrentStage(
+  workflow: FormSchema["workflow"],
+  stageId: string
+): WorkflowStage | undefined {
+  if (!workflow) return undefined;
+  return workflow.stages.find((s) => s.id === stageId);
 }

@@ -155,6 +155,13 @@ const clipboardListIcon: ReactNode = (
   </svg>
 );
 
+const checkCircleIcon: ReactNode = (
+  <svg {...SvgProps}>
+    <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" />
+    <polyline points="22 4 12 14.01 9 11.01" />
+  </svg>
+);
+
 const settingsGearIcon: ReactNode = (
   <svg {...SvgProps}>
     <circle cx="12" cy="12" r="3" />
@@ -228,6 +235,16 @@ export const TILES: ReadonlyArray<Tile> = [
     description: "View MaintainX work orders for your locations.",
     href: "/workorders",
     icon: wrenchIcon,
+    visibleTo: anySession
+  },
+  {
+    id: "pending-approvals",
+    group: "operations",
+    eyebrow: "Workflow",
+    title: "Pending Approvals",
+    description: "Custom form submissions waiting on your review.",
+    href: "/admin/approvals",
+    icon: checkCircleIcon,
     visibleTo: anySession
   },
   {

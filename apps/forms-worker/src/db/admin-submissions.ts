@@ -8,7 +8,7 @@
 // caller can't update a submission belonging to another form by guessing
 // just the submission UUID.
 
-import type { FormSchema } from "@splash/forms-schema";
+import type { FormSchema, WorkflowHistoryEntry } from "@splash/forms-schema";
 
 interface SupabaseEnv {
   SUPABASE_URL: string;
@@ -217,6 +217,10 @@ export interface SubmissionDetail {
   splash_notes: string | null;
   splash_notes_updated_at: string | null;
   splash_notes_updated_by: string | null;
+  // Brief 120 — null when the submission's version had no workflow.
+  workflow_stage: string | null;
+  workflow_history: WorkflowHistoryEntry[];
+  current_approver_emails: string[];
   version: SubmissionVersionDetail;
   files: SubmissionFile[];
 }
@@ -237,6 +241,9 @@ interface SubmissionDetailDbRow {
   splash_notes: string | null;
   splash_notes_updated_at: string | null;
   splash_notes_updated_by: string | null;
+  workflow_stage: string | null;
+  workflow_history: WorkflowHistoryEntry[] | null;
+  current_approver_emails: string[] | null;
   version: {
     id: string;
     version_number: number;
@@ -276,6 +283,9 @@ export async function getSubmission(
       "splash_notes",
       "splash_notes_updated_at",
       "splash_notes_updated_by",
+      "workflow_stage",
+      "workflow_history",
+      "current_approver_emails",
       "version:form_versions!inner(id,version_number,schema,published_at,published_by)",
       "files:form_submission_files(id,field_key,r2_key,mime,size_bytes,original_filename)"
     ].join(",")
@@ -314,6 +324,9 @@ export async function getSubmission(
     splash_notes: row.splash_notes,
     splash_notes_updated_at: row.splash_notes_updated_at,
     splash_notes_updated_by: row.splash_notes_updated_by,
+    workflow_stage: row.workflow_stage,
+    workflow_history: row.workflow_history ?? [],
+    current_approver_emails: row.current_approver_emails ?? [],
     version: {
       id: row.version.id,
       version_number: row.version.version_number,
@@ -323,6 +336,57 @@ export async function getSubmission(
     },
     files: row.files ?? []
   };
+}
+
+// =============================================================================
+// transitionSubmission (Brief 120 — workflow stage flip + history append)
+// =============================================================================
+
+export interface TransitionPatch {
+  workflow_stage: string;
+  workflow_history: WorkflowHistoryEntry[];
+  current_approver_emails: string[];
+}
+
+/**
+ * Brief 120 — single PATCH writes the new stage id, the appended history
+ * array, and the recomputed approver-emails list atomically. The handler
+ * computes the appended `workflow_history` value locally (reads current,
+ * appends, writes the whole array back); PostgREST has no native
+ * `array_append` over JSONB so the read-modify-write here is the
+ * idiomatic shape. Returns the row on success or null when no row
+ * matched the (formId, subId) pair.
+ */
+export async function transitionSubmission(
+  env: SupabaseEnv,
+  formId: string,
+  subId: string,
+  patch: TransitionPatch
+): Promise<{ id: string } | null> {
+  const url = new URL("/rest/v1/form_submissions", env.SUPABASE_URL);
+  url.searchParams.set("id", `eq.${subId}`);
+  url.searchParams.set("form_id", `eq.${formId}`);
+  url.searchParams.set("select", "id");
+
+  const resp = await fetch(url.toString(), {
+    method: "PATCH",
+    headers: {
+      ...headers(env),
+      "Content-Type": "application/json",
+      Prefer: "return=representation"
+    },
+    body: JSON.stringify({
+      workflow_stage: patch.workflow_stage,
+      workflow_history: patch.workflow_history,
+      current_approver_emails: patch.current_approver_emails
+    })
+  });
+  if (!resp.ok) {
+    const errText = await resp.text().catch(() => "");
+    throw new Error(`transitionSubmission: ${resp.status}: ${errText}`);
+  }
+  const rows = (await resp.json().catch(() => [])) as Array<{ id: string }>;
+  return rows[0] ?? null;
 }
 
 // =============================================================================

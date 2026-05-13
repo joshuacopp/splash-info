@@ -58,6 +58,20 @@
 #                                       (planning Decision 6). Forms
 #                                       opt out per-form via
 #                                       `forms.notify_webhook = false`.
+#   FORMS_APPROVAL_DIGEST_WEBHOOK_URL — secret. Optional (Brief 121).
+#                                       Daily 12:00 UTC cron POSTs one
+#                                       per-recipient digest of pending
+#                                       approvals across every form to
+#                                       this URL. Single PA flow ("Forms
+#                                       Approval Digest") fans out one
+#                                       email per recipient with a deep
+#                                       link to /admin/approvals. When
+#                                       unbound the cron logs counts and
+#                                       skips the POST (fail-soft).
+#                                       Bind via `pnpm --filter
+#                                       @splash/forms-worker exec
+#                                       wrangler secret put
+#                                       FORMS_APPROVAL_DIGEST_WEBHOOK_URL`.
 
 name = "splash-forms"
 main = "src/index.ts"
@@ -108,13 +122,27 @@ cpu_ms = 30000
 enabled = true
 invocation_logs = true
 
-# Brief 97 — daily R2 cleanup cron. 11:00 UTC chosen to avoid colliding
-# with damage-worker daily summary at 13:00 UTC (Brief 65) and
-# workorders-worker MaintainX sync at 11:30 UTC (Brief 71). Two passes:
-# (1) orphan submission files (>24h, no matching form_submissions.id)
-# and (2) orphan form assets (>1h grace, no matching form_assets.r2_key
-# row). Hard pagination caps (50 pages × 1000 = 50K submission files;
-# 20 pages × 1000 = 20K assets) prevent runaway. Worker default export
-# now exposes { fetch, scheduled }.
+# Scheduled triggers — dispatched by `event.cron` literal inside the
+# worker's `scheduled` handler.
+#
+# Brief 97 — daily R2 cleanup cron at 11:00 UTC. Two passes:
+#   (1) orphan submission files (>24h, no matching form_submissions.id)
+#   (2) orphan form assets (>1h grace, no matching form_assets.r2_key row).
+# Hard pagination caps (50 pages × 1000 = 50K submission files; 20 pages
+# × 1000 = 20K assets) prevent runaway.
+#
+# Brief 121 — daily Pending Approvals digest at 12:00 UTC (7 AM EDT).
+# Picked to fire BEFORE damage-worker's daily summary at 13:00 UTC
+# (Brief 65) and AFTER the 11:00 UTC cleanup pass. Cron groups every
+# form_submissions row with non-empty current_approver_emails by
+# recipient, fires one POST per recipient to
+# `FORMS_APPROVAL_DIGEST_WEBHOOK_URL` (single PA flow for the entire
+# forms feature).
+#
+# Slot inventory across the project:
+#   - 11:00 UTC  forms-worker R2 cleanup (Brief 97)
+#   - 11:30 UTC  workorders-worker MaintainX user/team sync (Brief 71)
+#   - 12:00 UTC  forms-worker Pending Approvals digest (Brief 121)
+#   - 13:00 UTC  damage-worker daily summary cron (Brief 65)
 [triggers]
-crons = ["0 11 * * *"]
+crons = ["0 11 * * *", "0 12 * * *"]
