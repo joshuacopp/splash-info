@@ -22,6 +22,12 @@ import type { FormMeta, FormSchema, LookupSource } from "@splash/forms-schema";
 export type SubmissionStatus = "new" | "in_progress" | "closed";
 export type SubmitterKind = "authenticated" | "anonymous";
 
+export interface SubmissionListVersion {
+  id: string;
+  version_number: number;
+  schema: FormSchema;
+}
+
 export interface SubmissionListItem {
   id: string;
   submitted_at: string;
@@ -31,6 +37,13 @@ export interface SubmissionListItem {
   version_number: number | null;
   splash_notes_preview: string | null;
   splash_notes_truncated: boolean;
+  // Brief 119 — populated when listSubmissionsAdmin is called with
+  // `include: "payload"`. Wide-table view reads these to render every
+  // answer as a column without a per-row detail fetch.
+  payload?: Record<string, unknown>;
+  splash_notes?: string | null;
+  form_version_id?: string;
+  version?: SubmissionListVersion;
 }
 
 export interface SubmissionListResponse {
@@ -353,6 +366,7 @@ export interface ListSubmissionsParams {
   status?: string;
   submitter_kind?: string;
   limit?: number;
+  include?: "payload";
 }
 
 export async function listSubmissionsAdmin(
@@ -365,6 +379,7 @@ export async function listSubmissionsAdmin(
   if (params.status) qs.set("status", params.status);
   if (params.submitter_kind) qs.set("submitter_kind", params.submitter_kind);
   if (params.limit) qs.set("limit", String(params.limit));
+  if (params.include) qs.set("include", params.include);
   const path = `/forms/admin/api/forms/${encodeURIComponent(formId)}/submissions${
     qs.toString() ? `?${qs}` : ""
   }`;

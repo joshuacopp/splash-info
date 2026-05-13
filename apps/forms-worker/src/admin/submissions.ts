@@ -99,6 +99,10 @@ export async function handleListSubmissions(
       : DEFAULT_LIST_LIMIT,
     MAX_LIST_LIMIT
   );
+  // Brief 119 — wide-table view asks for the full payload + per-row version
+  // schema in one round-trip. Default shape stays back-compat: callers that
+  // don't pass include=payload see the Brief 96 metadata-only response.
+  const includePayload = url.searchParams.get("include") === "payload";
 
   try {
     const items = await listSubmissions(env, {
@@ -107,7 +111,8 @@ export async function handleListSubmissions(
       toIso: range.toIso,
       status,
       submitterKind,
-      limit: limit + 1
+      limit: limit + 1,
+      includePayload
     });
     const limitHit = items.length > limit;
     const trimmed = limitHit ? items.slice(0, limit) : items;

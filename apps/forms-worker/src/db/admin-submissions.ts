@@ -27,6 +27,12 @@ const headers = (env: SupabaseEnv) => ({
 export type SubmissionStatus = "new" | "in_progress" | "closed";
 export type SubmitterKind = "authenticated" | "anonymous";
 
+export interface SubmissionListVersion {
+  id: string;
+  version_number: number;
+  schema: FormSchema;
+}
+
 export interface SubmissionListItem {
   id: string;
   submitted_at: string;
@@ -36,6 +42,13 @@ export interface SubmissionListItem {
   version_number: number | null;
   splash_notes_preview: string | null;
   splash_notes_truncated: boolean;
+  // Optional, populated when listSubmissions is called with includePayload=true
+  // (Brief 119 wide-table view). Apps/web reads these to render every answer
+  // as a column without round-tripping the per-submission detail endpoint.
+  payload?: Record<string, unknown>;
+  splash_notes?: string | null;
+  form_version_id?: string;
+  version?: SubmissionListVersion;
 }
 
 export interface ListSubmissionsArgs {
@@ -45,6 +58,7 @@ export interface ListSubmissionsArgs {
   status?: string;
   submitterKind?: string;
   limit: number;
+  includePayload?: boolean;
 }
 
 interface ListSubmissionDbRow {
@@ -56,6 +70,22 @@ interface ListSubmissionDbRow {
   splash_notes: string | null;
   // PostgREST embeds the parent row as an object via the FK relationship.
   version: { version_number: number } | null;
+}
+
+interface ListSubmissionWithPayloadDbRow {
+  id: string;
+  submitted_at: string;
+  status: SubmissionStatus;
+  submitter_kind: SubmitterKind;
+  submitter_email: string | null;
+  splash_notes: string | null;
+  payload: Record<string, unknown>;
+  form_version_id: string;
+  version: {
+    id: string;
+    version_number: number;
+    schema: unknown;
+  } | null;
 }
 
 /**
@@ -72,10 +102,17 @@ export async function listSubmissions(
   args: ListSubmissionsArgs
 ): Promise<SubmissionListItem[]> {
   const url = new URL("/rest/v1/form_submissions", env.SUPABASE_URL);
-  url.searchParams.set(
-    "select",
-    "id,submitted_at,status,submitter_kind,submitter_email,splash_notes,version:form_versions!inner(version_number)"
-  );
+  if (args.includePayload) {
+    url.searchParams.set(
+      "select",
+      "id,submitted_at,status,submitter_kind,submitter_email,splash_notes,payload,form_version_id,version:form_versions!inner(id,version_number,schema)"
+    );
+  } else {
+    url.searchParams.set(
+      "select",
+      "id,submitted_at,status,submitter_kind,submitter_email,splash_notes,version:form_versions!inner(version_number)"
+    );
+  }
   url.searchParams.set("form_id", `eq.${args.formId}`);
   url.searchParams.set("submitted_at", `gte.${args.fromIso}`);
   url.searchParams.append("submitted_at", `lte.${args.toIso}`);
@@ -93,6 +130,40 @@ export async function listSubmissions(
     const errText = await resp.text().catch(() => "");
     throw new Error(`listSubmissions: ${resp.status}: ${errText}`);
   }
+
+  if (args.includePayload) {
+    const rows = (await resp
+      .json()
+      .catch(() => [])) as ListSubmissionWithPayloadDbRow[];
+    return rows.map((r) => {
+      const splash = r.splash_notes ?? null;
+      const schema =
+        r.version?.schema && typeof r.version.schema === "object"
+          ? (r.version.schema as FormSchema)
+          : ({ fields: [] } as FormSchema);
+      return {
+        id: r.id,
+        submitted_at: r.submitted_at,
+        status: r.status,
+        submitter_kind: r.submitter_kind,
+        submitter_email: r.submitter_email,
+        version_number: r.version?.version_number ?? null,
+        splash_notes_preview: splash ? splash.slice(0, 80) : null,
+        splash_notes_truncated: splash ? splash.length > 80 : false,
+        payload: r.payload ?? {},
+        splash_notes: splash,
+        form_version_id: r.form_version_id,
+        version: r.version
+          ? {
+              id: r.version.id,
+              version_number: r.version.version_number,
+              schema
+            }
+          : undefined
+      };
+    });
+  }
+
   const rows = (await resp.json().catch(() => [])) as ListSubmissionDbRow[];
   return rows.map((r) => {
     const splash = r.splash_notes ?? null;

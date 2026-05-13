@@ -1214,6 +1214,36 @@ URL-based — service bindings don't apply to those.
   to `/login`), tertiary "Fill Out Another" (→ `/forms/{slug}`,
   unchanged behavior). Splash-navy header bar with white-script logo
   was already on the success page; only the action area changed.
+  Brief 119 (2026-05-13) flipped the per-form submissions viewer
+  (`/admin/forms/[id]/submissions`) to a wide-column table by default
+  — every schema-union field across versions in the date range gets
+  its own column, so operators see all answers inline instead of
+  clicking through to `[subId]` per row. Compact view (Brief 96's
+  prior narrow meta-only renderer) is preserved as the fallback via
+  `?view=compact` URL param + `localStorage["forms.submissions.view"]`
+  persistence (URL param wins when explicit; localStorage is the
+  default for subsequent visits). Worker change: `GET /forms/admin/api/forms/{id}/submissions`
+  accepts `?include=payload` — when set, each row carries the full
+  `payload` JSONB, `form_version_id`, and a `version: { id,
+  version_number, schema }` embed (the existing `form_versions!inner`
+  FK join widened from `(version_number)` to `(id,version_number,schema)`;
+  no extra round-trip). Default shape is back-compat. apps/web new
+  components under `_components/`: `AnswerCell.tsx` (per-field-type
+  cell renderer; long text truncates to 80 chars with hover-tooltip,
+  file/signature thumbnails inline via `/forms/admin/api/files/{r2_key}`
+  read from the payload's own `r2_key` references — Brief 92 enriches
+  the submit payload with `r2_key`/`mime`/`size_bytes`/`original_filename`,
+  so no separate `form_submission_files` join is needed for the table
+  view), `ViewToggle.tsx` (client island writing to localStorage +
+  `router.push(?view=...)`); new `_lib/schema-union.ts` computes the
+  column union ("most recent version's fields in schema order, then
+  older-version-only fields alphabetical"). Display-only `heading` /
+  `image` skipped. Detail page (`[subId]/page.tsx`) and
+  `PayloadRenderer` untouched — focused-review surface stays full-
+  fidelity. Sticky meta columns (Submitted / Status / Submitter /
+  Splash Notes / Version) + sticky first column + sticky header in
+  the wide table; cells outside a row's own version schema render a
+  muted `—` with `title="Not part of v{N} schema"`.
 - **fleet-inquiry-worker** (Brief 81) - Public fleet-inquiry form +
   three JSON endpoints. The seventh worker in the monorepo and the
   most recent addition. Lift-and-shifted into `apps/fleet-inquiry-

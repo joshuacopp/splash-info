@@ -117,3 +117,4 @@
 - 2026-05-13 00:20:10 brief-116-dashboard-grouped-tiles-and-per-tile-visibility.md (success)
 - 2026-05-13 07:12:42 brief-117-dashboard-drill-down-two-level-navigation.md (success)
 - 2026-05-13 07:40:16 brief-118-forms-submissions-admin-index-and-post-submit-nav.md (success)
+- 2026-05-13 14:50:03 brief-119-forms-submissions-wide-column-table.md (success)
