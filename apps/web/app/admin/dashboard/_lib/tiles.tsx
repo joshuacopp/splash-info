@@ -203,10 +203,10 @@ export const TILES: ReadonlyArray<Tile> = [
     group: "submissions",
     eyebrow: "Custom forms",
     title: "Forms",
-    description: "Submissions from custom-built forms.",
-    href: "/forms",
+    description: "View submissions to admin-built custom forms.",
+    href: "/admin/forms/submissions",
     icon: inboxIcon,
-    visibleTo: anySession
+    visibleTo: isAdminTier
   },
 
   // ---- Operations group ----

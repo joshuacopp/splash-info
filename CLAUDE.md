@@ -1194,6 +1194,26 @@ URL-based — service bindings don't apply to those.
   `navigator.clipboard.writeText` with a `window.prompt()` fallback
   for locked-down browsers. Unpublished rows show an em-dash — only
   published forms have a working `/forms/{slug}` URL.
+  Brief 118 (2026-05-13) added a credentialed-admin submissions index
+  on apps/web at `/admin/forms/submissions` (admin-tier gated; mirrors
+  the Brief 109 JotForm index card grid) — card-per-form with status
+  pill + running submission count, drill-through to Brief 96's per-form
+  `/admin/forms/[id]/submissions` viewer. Drafts filtered out (no
+  public URL → no submissions). No new worker endpoint — reuses
+  Brief 94's `GET /forms/admin/api/forms` (the existing list response
+  already carries `submissionCount`). The dashboard Submissions-group
+  "Forms" tile retargeted to this page (was pointing at `/forms` —
+  Brief 99's fill-out index, which other Submissions-group tiles
+  didn't match in intent); tile `visibleTo` tightened to admin-tier
+  to match the underlying worker contract. Forms-worker post-submit
+  confirmation page (`apps/forms-worker/src/submit/success.ts`) gained
+  three CTAs in place of the lone "Fill out another" link: primary
+  "Back to Forms" (→ `/forms`), secondary "Dashboard" (→
+  `/admin/dashboard`, rendered ONLY for `audience: "internal"` forms
+  since non-authed visitors on public / link-only would just bounce
+  to `/login`), tertiary "Fill Out Another" (→ `/forms/{slug}`,
+  unchanged behavior). Splash-navy header bar with white-script logo
+  was already on the success page; only the action area changed.
 - **fleet-inquiry-worker** (Brief 81) - Public fleet-inquiry form +
   three JSON endpoints. The seventh worker in the monorepo and the
   most recent addition. Lift-and-shifted into `apps/fleet-inquiry-
