@@ -85,6 +85,8 @@
 
 # brief-116-dashboard-grouped-tiles-and-per-tile-visibility.md  (completed 2026-05-13)
 
+# brief-117-dashboard-drill-down-two-level-navigation.md  (completed 2026-05-13)
+
 
 
 

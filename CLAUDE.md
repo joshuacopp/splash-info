@@ -1505,6 +1505,29 @@ URL-based — service bindings don't apply to those.
   URLs (`/admin/pricing/*` + `/admin/signups/*`) and the in-page
   `SignupAdminTabs` nav are unchanged — operators inside either page
   still flip between the two views via the tabs.
+- **Admin dashboard** - Two-level drill-down navigation at
+  `/admin/dashboard` (Brief 117, on top of Brief 116). Top page renders
+  three group tiles (Submissions / Operations / Admin) sourced from
+  the `GROUPS` array in `apps/web/app/admin/dashboard/_lib/tiles.tsx`;
+  each group tile links to `/admin/dashboard/{groupId}` where the
+  sub-tiles render. Brief 116's per-tile `visibleTo(session)`
+  predicates remain the single source of truth: a group tile is
+  visible iff at least one of its sub-tiles is visible to the caller,
+  and the group landing page 404s (via `notFound()`) when the caller
+  has zero accessible sub-tiles in that group (matches the hidden-tile
+  state at the top level so direct-URL probes don't leak existence).
+  Sub-tile pages reuse `<DashboardTile>` from Brief 116 verbatim, so
+  visual identity is unchanged from the prior flat grid. Adding a new
+  tile is a single-file change in `_lib/tiles.tsx`; adding a new
+  GROUP requires a `GROUPS` entry plus a `GROUP_DESCRIPTIONS` row in
+  both `page.tsx` and `[group]/page.tsx` (consider extracting
+  `GROUP_DESCRIPTIONS` to `_lib/tiles.tsx` if a 4th group ever lands).
+  Header "Dashboard" link points at `/admin/dashboard` (top level),
+  not a sub-tile. Middleware (`apps/web/middleware.ts`)
+  `ADMIN_KNOWN_SUBPATHS` already includes `dashboard`; the
+  single-segment legacy `/admin/{slug} → /admin/pricing/{slug}`
+  redirect rule bypasses any `/admin/dashboard/{anything}` path
+  because it's multi-segment.
 - **admin** - Pricing administration. Lives in signup-worker
   (`/admin/api/*`) + apps/web (`/admin/pricing/*`). Used by area
   managers and location admins to set per-location pricing modes.

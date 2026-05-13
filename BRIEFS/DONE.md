@@ -115,3 +115,4 @@
 - 2026-05-12 12:02:20 brief-114-jotform-parse-date-as-eastern-not-utc.md (success)
 - 2026-05-12 15:45:34 brief-115-jotform-viewer-comprehensive-ux-restructure.md (success)
 - 2026-05-13 00:20:10 brief-116-dashboard-grouped-tiles-and-per-tile-visibility.md (success)
+- 2026-05-13 07:12:42 brief-117-dashboard-drill-down-two-level-navigation.md (success)
