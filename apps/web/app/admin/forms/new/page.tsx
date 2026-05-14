@@ -8,6 +8,7 @@ import Link from "next/link";
 
 import { getMe } from "../../../_lib/me";
 import { ActionForm } from "../../_components/ActionForm";
+import { SubmitButton } from "../../_components/SubmitButton";
 import FormsAdminTabs from "../_components/FormsAdminTabs";
 import NoAccessCard from "../_components/NoAccessCard";
 import { createFormAction } from "./actions";
@@ -116,12 +117,12 @@ export default async function NewFormPage() {
           </div>
 
           <div className="flex items-center gap-3 pt-2">
-            <button
-              type="submit"
-              className="inline-flex items-center gap-1.5 rounded-splash-sm bg-splash-blue px-5 py-2.5 text-sm font-bold text-white shadow-splash-btn transition-colors hover:bg-splash-blue-dark"
+            <SubmitButton
+              pendingText="Creating form…"
+              className="inline-flex items-center gap-1.5 rounded-splash-sm bg-splash-blue px-5 py-2.5 text-sm font-bold text-white shadow-splash-btn transition-colors hover:bg-splash-blue-dark disabled:cursor-not-allowed disabled:bg-splash-blue/60"
             >
               Create form
-            </button>
+            </SubmitButton>
             <Link
               href="/admin/forms"
               className="text-sm text-splash-navy/70 hover:underline"
