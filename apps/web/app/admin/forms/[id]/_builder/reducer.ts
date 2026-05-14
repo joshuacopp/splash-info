@@ -229,16 +229,56 @@ function makeBlankStage(): WorkflowStage {
   };
 }
 
+// Brief 132 — picks an `approver_source` for the seeded approval step
+// based on the form's current fields, so workflow_enable on a
+// lookup-keyed form (no Location field) doesn't write a `site_role`
+// shape the worker resolver can't handle. Mirrors `ApproverPicker`'s
+// `detectFromFields` priority order: lookup `rm_email` → any lookup
+// `*_email` → email field → site_role when a Location field exists →
+// empty static_emails (operator must pick before publishing; the strict
+// publish-time validator would reject it).
+function pickSeedApproverSource(fields: Field[]): ApproverSource {
+  for (const f of fields) {
+    if (f.type === "lookup" && f.sourceColumn === "rm_email") {
+      return { type: "payload_field", field_key: f.key };
+    }
+  }
+  for (const f of fields) {
+    if (
+      f.type === "lookup" &&
+      (f.sourceColumn === "am_email" ||
+        f.sourceColumn === "site_email" ||
+        (typeof f.sourceColumn === "string" &&
+          f.sourceColumn.endsWith("_email")))
+    ) {
+      return { type: "payload_field", field_key: f.key };
+    }
+  }
+  for (const f of fields) {
+    if (f.type === "email") {
+      return { type: "payload_field", field_key: f.key };
+    }
+  }
+  if (fields.some((f) => f.type === "location")) {
+    return { type: "site_role", role: "rm_email" };
+  }
+  return { type: "static_emails", emails: [] };
+}
+
 // Brief 123 / 125 — auto-seed three stages on workflow enable so operators
 // land in a working starter template. Brief 125 stamps `kind` for the
 // outcomes ("approved" / "denied" are terminal outcomes, not stages with
 // "no approver and no transitions") so the new Workflow tab can bucket
 // stages into steps vs outcomes cleanly even when the user is mid-edit.
-function makeWorkflowSeed(): FormWorkflow {
+// Brief 132 — accepts `fields` so the seeded approval step's
+// `approver_source` matches the form's actual shape (lookup-keyed forms
+// get `payload_field`; Location-bearing forms get `site_role`; bare forms
+// get an empty `static_emails` the operator must pick before publishing).
+function makeWorkflowSeed(fields: Field[]): FormWorkflow {
   const approval: WorkflowStage = {
     id: "approval",
     label: "Approval",
-    approver_source: { type: "site_role", role: "rm_email" },
+    approver_source: pickSeedApproverSource(fields),
     transitions: [
       { to: "approved", label: "Approve" },
       { to: "denied", label: "Deny" }
@@ -483,12 +523,15 @@ Review here: {submission.url}
     }
     case "email_rm_on_submission": {
       // Single email step inserted right after Form Submitted, before
-      // the existing default stage. Recipient = first lookup field
-      // whose sourceColumn is rm_email, or if none, fall back to a
-      // location-shape site_role.
+      // the existing default stage. Brief 132 — when a matching RM
+      // lookup field exists, save `payload_field` (the lookup has
+      // already resolved the email at submit time, so its payload
+      // value IS the email). Fall back to a location-shape `site_role`
+      // when a Location field is present; else empty (operator must
+      // pick before publishing).
       const rmLookup = findFirstRmLikeLookupField(fields);
       const recipients: ApproverSource[] = rmLookup
-        ? [{ type: "site_role", role: "rm_email" }]
+        ? [{ type: "payload_field", field_key: rmLookup.key }]
         : fields.some((f) => f.type === "location")
           ? [{ type: "site_role", role: "rm_email" }]
           : [];
@@ -724,7 +767,7 @@ export function reducer(
       if (state.workflow) return state;
       return {
         ...state,
-        workflow: makeWorkflowSeed(),
+        workflow: makeWorkflowSeed(state.fields),
         dirty: true
       };
     }

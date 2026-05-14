@@ -157,6 +157,22 @@ workflow + approval flow effectively unusable today:
     operator surfaced (create email step downstream first, then
     go back to wire upstream).
 
+13. **Builder Save button stuck on "Saving..." indefinitely.**
+    Real-world test: operator clicked Save Draft on the form
+    builder, "Saving..." pending state persisted for 10+ minutes.
+    Server side: the `form_versions` INSERT succeeded (verified
+    in Supabase). Client side: SubmitButton's `useFormStatus()`
+    pending flag never flipped back to false, AND the "Unsaved
+    changes" reducer flag stayed set. So the server action is
+    either hanging on the response round-trip, looping on
+    `router.refresh()` triggered by `<ActionForm>`'s success
+    effect, or blocking on a slow side effect (e.g., Mermaid
+    re-render, schema re-validate, or a CF Workers OpenNext
+    edge case where the action's serialized return value never
+    reaches the client). Highest-priority bug — operator
+    literally can't save form edits today without an indefinite
+    wait. Phase 2.5 diagnoses + fixes.
+
 ## Scope
 
 ### Phase 1 — Diagnostic: confirm payload-key vs field-id
@@ -176,7 +192,121 @@ keys ARE `field.key`, not `field.id`. But verify:
 Once confirmed, the builder + SQL fixes use the correct
 identifier consistently.
 
-### Phase 2 — Builder picker: save payload_field correctly
+### Phase 2 — HIGH PRIORITY: Fix builder Save action returning malformed/error response
+
+The builder's Save Draft button stays in "Saving..." indefinitely
+from the operator's perspective. Real-world reproduction:
+operator clicked Save, button flipped to "Saving...", state
+appeared to never resolve. Supabase confirmed the INSERT landed.
+
+**Critical diagnostic clue from operator's devtools console:**
+
+```
+Uncaught (in promise) Error: An unexpected response was received from the server.
+__NEXT_ERROR_CODE: E394
+```
+
+This is Next.js's E394 error code thrown from:
+
+```js
+throw Error(g.status >= 400 && "text/plain" === A
+  ? await g.text()
+  : "An unexpected response was received from the server.")
+```
+
+That means **the server action DID return** — but with `status >=
+400` AND a `content-type !== "text/plain"` response body. Next's
+runtime can't parse the action result and throws the generic
+error. The client never updates the pending state because the
+action's `useActionState` promise rejects without a useful
+`ActionResult` value.
+
+So the bug is NOT that the action hangs forever — it's that the
+action's server-side path is FAILING with a non-text/plain error
+response that Next can't parse. Most likely causes (in
+descending probability):
+
+1. **CF Workers wall-clock timeout (522/524).** The save action's
+   chain (Next handler → fetch to splash-forms PATCH → Supabase
+   INSERT → return) exceeds CF's budget. CF returns an HTML
+   error page (not text/plain), Next throws E394. The INSERT
+   landed because the worker had time to do it before the
+   timeout killed the response.
+2. **OpenNext serialization crash.** Action completes server-
+   side, but the returned `ActionResult` object hits a
+   serialization edge case in OpenNext-on-Workers (e.g., the
+   reducer state contains a non-serializable value, or the
+   response exceeds a size limit). Crash returns HTML 500 page.
+3. **Upstream gateway error.** Next handler succeeds, but the
+   fetch from apps/web → splash-forms PATCH endpoint returns a
+   non-2xx that the action handler doesn't catch + reshape into
+   `{ok: false, error: ...}`. The thrown error propagates as a
+   500 with HTML body.
+
+Diagnose:
+
+1. **Reproduce with Chrome devtools Network tab open.**
+   Click Save. Find the server-action POST (same path as the
+   page URL, will have a `next-action` header). Capture:
+   - **HTTP status code** (522/524 = CF timeout; 500 = OpenNext
+     crash; 504 = upstream; anything else surprising)
+   - **`content-type` response header** (the bug is that it's
+     NOT `text/plain`; what IS it? `text/html` typically means
+     a CF error page or an unhandled server crash)
+   - **First ~500 bytes of response body** — paste literally;
+     this tells us which layer threw
+   - **Timing** — how long the request hung before responding
+2. **Check the saveDraftAction return path.** Look at
+   `apps/web/app/admin/forms/[id]/_builder/actions.ts` (or
+   wherever the save action lives). Common patterns that hang:
+   - Action `await`s something that never resolves (a long-
+     timeout fetch to splash-forms worker, an `Promise` that
+     never settles).
+   - Action returns `void` instead of `ActionResult` —
+     `<ActionForm>` waits forever for a result that never
+     comes; React 19's `useActionState` keeps pending state on
+     until the promise resolves with a value.
+   - Action throws after the INSERT but the thrown error never
+     propagates back (some `try/catch` swallowing).
+3. **Check ActionForm's useEffect loop.** The Brief 19
+   `<ActionForm>` calls `router.refresh()` on every fresh
+   `result?.ok`. If `router.refresh()` somehow re-fires the
+   form action OR triggers a re-render that resets `result` to
+   null + re-pending, you'd get an infinite spinner.
+4. **Check for slow side effects after INSERT.** The Brief 123
+   Mermaid preview re-renders on every reducer dispatch; if the
+   save action triggers a reducer dispatch (e.g., marking
+   clean) AND that dispatch re-renders Mermaid synchronously,
+   that's blocking. Should be async/lazy-loaded.
+
+Likely root causes (in descending probability):
+
+- **Action returns void instead of ActionResult.** Most
+  common in actions that originally used `redirect()` for
+  success feedback (Brief 19 migration leftover). Fix: ensure
+  every code path returns `{ok: true, ...}` or `{ok: false,
+  error: "..."}`.
+- **OpenNext-on-Workers serialization issue.** Server action
+  completes on the worker side but the response body never
+  reaches the client. Diagnostic: add explicit `console.log`
+  before the `return` in the action; check CF Workers logs to
+  see if the log line fires (= action did return).
+- **router.refresh() re-fires action.** Unlikely but
+  possible. Brief 19's pattern is supposed to be safe;
+  re-verify.
+
+Fix once identified. The action should return within ~500ms
+of the INSERT completing.
+
+Also surface diagnostic logging to the worker / apps/web logs
+on a slow save (> 2s) so the next time this happens we can
+spot it in CF Workers logs without local reproduction.
+
+Also: when the action does return, confirm the reducer's
+dirty-state flag clears (the "Unsaved changes" indicator
+should disappear).
+
+### Phase 3 — Builder picker: save payload_field correctly
 
 In `apps/web/app/admin/forms/[id]/_workflow/` (the approver +
 recipient pickers from Brief 125), when the operator picks an

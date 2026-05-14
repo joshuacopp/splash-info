@@ -11,10 +11,22 @@
 // Selecting an auto-detected option maps to the matching
 // `ApproverSource` schema shape. Selecting Specific person / Multiple
 // people opens the autosuggest below the dropdown.
+//
+// Brief 132 — auto-upgrade legacy `site_role` shapes on mount. Brief
+// 131 fixed the forward path (lookup_role picks now save as
+// `payload_field`) but published forms built before that brief still
+// carry `{type: "site_role", role: "rm_email"}` shapes on lookup-keyed
+// stages — and the resolver's `site_role` branch only walks `type:
+// "location"` fields, so resolution silently returns []. The effect
+// below detects this on first render and fires `onChange` with the
+// upgraded `payload_field` shape pointing at the matching lookup. By
+// the second render the saved source is `payload_field`, the
+// `sourceToAutoKey` fallback below is never exercised, and the next
+// Save Draft persists the corrected shape.
 
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { ApproverSource, Field } from "@splash/forms-schema";
 
 import PersonAutosuggest from "./PersonAutosuggest";
@@ -142,18 +154,12 @@ function sourceToAutoKey(
 ): string | null {
   if (!source) return null;
   if (source.type === "site_role") {
-    // `site_role` is now only saved by `location_role` picks (Brief 131
-    // — `lookup_role` picks save as `payload_field` because the lookup
-    // field's payload value IS the resolved email). Legacy schemas that
-    // still carry `site_role` from a lookup-keyed step continue to round-
-    // trip through the `lookup_role` selection as a UI courtesy: when a
-    // matching lookup option exists we surface it, else fall back to the
-    // location_role option.
-    const lookupOpt = options.find(
-      (o): o is Extract<AutoOption, { kind: "lookup_role" }> =>
-        o.kind === "lookup_role" && o.role === source.role
-    );
-    if (lookupOpt) return lookupOpt.key;
+    // Brief 132 — `site_role` is only valid when the form has a
+    // Location field; the auto-upgrade `useEffect` below migrates any
+    // lookup-keyed `site_role` shape to `payload_field` on first
+    // render, so by the second render this branch only matches
+    // legitimate `location_role` selections. The legacy `lookup_role`
+    // fallback (Brief 131) is no longer needed.
     const locOpt = options.find(
       (o): o is Extract<AutoOption, { kind: "location_role" }> =>
         o.kind === "location_role" && o.role === source.role
@@ -189,6 +195,28 @@ export default function ApproverPicker({
   mode = "approver"
 }: Props) {
   const options = useMemo(() => detectFromFields(fields), [fields]);
+
+  // Brief 132 — auto-upgrade legacy `site_role` shapes saved against
+  // lookup-keyed forms. If a matching `lookup_role` option exists for
+  // the saved role, the lookup field's payload value IS the resolved
+  // email, so the correct shape is `payload_field` keyed on the lookup
+  // field's `key`. Fires `onChange` once; subsequent renders see the
+  // upgraded source and this effect no-ops.
+  useEffect(() => {
+    if (!source) return;
+    if (source.type !== "site_role") return;
+    const matchingLookup = options.find(
+      (o): o is Extract<AutoOption, { kind: "lookup_role" }> =>
+        o.kind === "lookup_role" && o.role === source.role
+    );
+    if (matchingLookup) {
+      onChange({
+        type: "payload_field",
+        field_key: matchingLookup.sourceFieldKey
+      });
+    }
+  }, [source, options, onChange]);
+
   const autoKey = sourceToAutoKey(source, options);
   const isRecipient = mode === "recipient";
   const headerLabel = isRecipient ? "Send email to" : "Who approves this step?";

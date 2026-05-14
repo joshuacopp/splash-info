@@ -1763,6 +1763,30 @@ URL-based — service bindings don't apply to those.
   handler accepts any approver — RM/GM approvers can hit the worker
   endpoint via curl but can't reach the apps/web page UI today.
   Widening the page gate is a follow-up brief.
+  Brief 132 (2026-05-14) closed the seed-path / Quick-Pattern variants
+  of the same picker-mis-mapping bug class Brief 131 Phase 2 partially
+  fixed. `makeWorkflowSeed` in
+  `apps/web/app/admin/forms/[id]/_builder/reducer.ts` now accepts the
+  form's current `fields` and delegates to a new
+  `pickSeedApproverSource` helper — priority order: first lookup
+  `rm_email` → `payload_field`, any lookup `*_email` →
+  `payload_field`, first email-type field → `payload_field`, Location
+  field present → `site_role rm_email`, empty `static_emails` (operator
+  picks before publishing). The `email_rm_on_submission` Quick Pattern's
+  lookup branch was rewritten to emit `payload_field` keyed on the
+  matched lookup field's `key` rather than `site_role`. New
+  `ApproverPicker` `useEffect` auto-migrates legacy published
+  `site_role` shapes to `payload_field` on first render when a matching
+  `lookup_role` option exists; the next Save Draft persists the
+  corrected schema (in-flight `current_approver_emails` rows on
+  already-submitted forms stay untouched — resubmission against the
+  fixed schema is the path forward). `sourceToAutoKey`'s legacy
+  `site_role → lookup_role` round-trip fallback removed (auto-upgrade
+  preempts it). Future readers extending this for a new lookup-shape
+  `sourceColumn` registered in `LOOKUP_SOURCES`: add a case to
+  `pickSeedApproverSource` first (the picker's `detectFromFields`
+  already accepts any `*_email` suffix via the priority-2 branch, so
+  picker UI doesn't need touching).
 - **outbound_emails table** (Brief 127) - Shared queue of fully-rendered
   outbound emails. Single Power Automate flow polls every 5 minutes
   and drains the queue regardless of which worker enqueued the row.
