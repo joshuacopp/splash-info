@@ -30,6 +30,7 @@ import {
   fetchAndEmbedR2Image,
   drawImageScaled,
   formatEst,
+  sanitizeForWinAnsi,
   type Cursor,
   type Fonts,
   type R2Like,
@@ -87,9 +88,12 @@ async function drawHistoryEntry(
   const isSystem = entry.actor_email === SYSTEM_ACTOR;
 
   addPageIfNeeded(doc, cursor, 22);
-  // From → To header.
-  const arrow = "→";
-  const headerText = `${fromLabel} ${arrow} ${toLabel}`;
+  // Brief 133 — From -> To header. pdf-lib's standard Helvetica uses
+  // WinAnsi encoding, which cannot represent U+2192 RIGHTWARDS ARROW.
+  // ASCII "->" stand-in keeps drawText happy; sanitize wraps the
+  // interpolated stage labels (operator-authored).
+  const arrow = "->";
+  const headerText = sanitizeForWinAnsi(`${fromLabel} ${arrow} ${toLabel}`);
   cursor.page.drawText(headerText, {
     x: MARGIN,
     y: cursor.y,
@@ -99,10 +103,11 @@ async function drawHistoryEntry(
   });
   cursor.y -= 16;
 
-  // Actor + timestamp line.
+  // Actor + timestamp line. ASCII bullet "*" replaces U+2022 for the
+  // same WinAnsi reason; actor_email is sanitized defensively.
   const actorText = isSystem
-    ? `System  •  ${formatEst(entry.at)}`
-    : `${entry.actor_email}  •  ${formatEst(entry.at)}`;
+    ? `System  *  ${formatEst(entry.at)}`
+    : `${sanitizeForWinAnsi(entry.actor_email)}  *  ${formatEst(entry.at)}`;
   cursor.page.drawText(actorText, {
     x: MARGIN,
     y: cursor.y,
@@ -174,7 +179,7 @@ function drawSubLabel(
   label: string
 ): void {
   addPageIfNeeded(doc, cursor, 12);
-  cursor.page.drawText(label.toUpperCase(), {
+  cursor.page.drawText(sanitizeForWinAnsi(label.toUpperCase()), {
     x: MARGIN,
     y: cursor.y,
     size: 7,

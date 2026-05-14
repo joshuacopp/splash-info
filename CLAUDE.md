@@ -1787,6 +1787,114 @@ URL-based — service bindings don't apply to those.
   `pickSeedApproverSource` first (the picker's `detectFromFields`
   already accepts any `*_email` suffix via the priority-2 branch, so
   picker UI doesn't need touching).
+  Brief 133 (2026-05-14) closed three correctness gaps surfaced by
+  real-world testing of the full workflow approval flow. (a) Bug A —
+  `form_submissions.status_updated_by` is `uuid` (per
+  `supabase/forms-tables.sql:73`), not `text`. Brief 131 Phase 5's
+  auto-status update wrote the literal string `"system@workflow"`,
+  which 22P02'd against the column type and 500'd every terminal-
+  outcome transition. Fix: dropped `status_updated_by` from the
+  `statusPatch` in `apps/forms-worker/src/admin/submissions.ts` — the
+  canonical actor-audit for system-initiated status flips lives in
+  `workflow_history[-1].actor_email` (captures the operator who
+  triggered the terminal-outcome transition), so a null column isn't
+  a loss. Future executors who need to write a real UUID actor can
+  populate `TransitionPatch.status_updated_by` (preserved as an
+  optional schema entry) with an actual `auth.users.id`. (b) Bug B —
+  `enqueueOutboundEmail` in `packages/db-supabase/src/outbound-emails.ts`
+  sent `Prefer: resolution=ignore-duplicates` without `?on_conflict=`,
+  so the unique-index hit propagated as PostgREST 409 Conflict instead
+  of the intended no-op. Fix: added `url.searchParams.set("on_conflict",
+  "source_worker,source_kind,source_id,recipient")` matching the
+  table's unique index. The helper's `was_duplicate` heuristic (3s
+  clock-skew tolerance vs `created_at`) now triggers correctly because
+  dedup returns 201-with-existing-row. (c) Bug C — pdf-lib's standard
+  Helvetica uses WinAnsi encoding, which cannot represent typographic
+  Unicode (right-arrow `→`, em-dash `—`, bullet `•`, ellipsis `…`,
+  smart quotes). `drawText` throws on the first unencodable character.
+  Fix: added `sanitizeForWinAnsi(s: string): string` helper to
+  `apps/forms-worker/src/pdf/layout-utils.ts` mapping the common
+  offenders to ASCII equivalents. Sanitization is layered: source
+  literals were rewritten to ASCII at all `apps/forms-worker/src/pdf/
+  layout-*.ts` files (em-dash placeholders → `"-"`, `truncateToWidth`
+  ellipsis → `"..."`, header `•` → `*`, footer brand-line em-dash →
+  hyphen, workflow-history arrow `→` → `->`); `wrapText` and
+  `truncateToWidth` sanitize their inputs (catches every value
+  flowing through `drawLabelValue` / `drawFieldHeading` /
+  `drawKeyValueGrid` / `drawWrappedText`); direct `drawText` sites
+  that interpolate user-content but skip both helpers are wrapped
+  explicitly (header `titleText`, workflow-history `headerText` +
+  `actorText` + `drawSubLabel`, payload signature/file labels).
+  `sanitizeForWinAnsi` is the canonical home for future PDF Unicode
+  issues — when a new typographic character bites (additional
+  fractions, em-spaces, etc.), extend the mapping table there
+  rather than spawning per-file handlers. The helper is exported
+  from `layout-utils.ts` rather than scoped inline so future
+  cross-worker PDF surfaces (damage-worker's check-request PDF,
+  etc.) can import it when audited. Closed secondary bugs:
+  Brief 129's outer try/catch swallowed the drawText throw so
+  transitions proceeded, but per-cascade `attach_pdf: true` email
+  steps silently lost their PDF attachment + spammed
+  `[forms.pdf] generation threw` per transition — both now
+  resolved. `workflow_history` (not `status_updated_by`) is the
+  canonical actor-audit surface for system-initiated status
+  transitions; future executors looking for "who closed this
+  submission" should read `workflow_history[-1].actor_email`.
+  Brief 134 (2026-05-14) upgraded workflow email step rendering to
+  produce HTML alongside the existing plain text. Operators keep
+  authoring plain-text `body_template` — the worker auto-derives an
+  HTML body via the new `renderTemplateHtml` exported from
+  `apps/forms-worker/src/workflow-email-step.ts` and wraps it in a
+  Splash-branded Outlook-safe shell from new
+  `apps/forms-worker/src/workflow-email-shell.ts` (navy header band
+  with the public R2 white-script logo at `ASSETS.logoWhite`, 600px
+  white content area, light-gray footer with "Splash Car Wash ·
+  splashcarwashes.info" brand line + optional "View All Open
+  Approvals" / "View My Requests" secondary CTAs). The cascade
+  populates `body_html` on every `outbound_emails` row alongside the
+  existing `body_text`; PA's Send Email V2 flow picks `body_html`
+  when present, falls back to `body_text` for plain-text-only
+  clients (operator-side flow editor change: Body expression
+  `if(not(empty(...?['body_html'])), ...?['body_html'],
+  ...?['body_text'])`, "Is HTML" toggle to true when html non-null).
+  Two new template tokens shipped: `{approvals.url}` renders a
+  primary-style "View All Open Approvals" CTA button in HTML and
+  `Pending Approvals: https://splashcarwashes.info/admin/approvals`
+  in plain text; `{my_requests.url}` renders "View My Requests" CTA
+  and `Your Submissions: ...` plain text. Other token HTML mappings:
+  `{submission.url}` → primary blue CTA "View Submission" button;
+  `{payload.summary}` → `<table>` with one row per non-empty field;
+  `{outcome.label}` → `<strong>` tinted by keyword heuristic
+  (`/approv/` → success green, `/(den|reject)/` → danger red, else
+  navy); `{form.title}` / `{submitter.name}` escape via the 5-char
+  map; `{submitter.email}` wraps in a monospace `<span>`. Body text
+  outside tokens splits on `\n\n` into `<p>` paragraphs with single
+  `\n` as `<br>`. Sentinel-pair (`\x01` / `\x02`) wrapping protects
+  trusted token HTML from the paragraph-normalization pass —
+  `escapeOutsideSentinels()` walks the rendered string and escapes
+  only non-token spans. Footer CTA picker uses
+  `localRuntime.outcome.outcomeLabel == null` heuristic — assignment
+  emails are pre-outcome → approver footer; outcome emails fire on
+  entry into an outcome → submitter footer. Logo source is the
+  existing `ASSETS.logoWhite` constant from `@splash/storage-r2`
+  (`https://pub-88f136a47a5846d5b7e47fbce605719b.r2.dev/SplashScriptWhite_RedCar.png`,
+  operator-confirmed public per Brief 32's damage check-request
+  PDF). No new R2 asset, no new dependencies — `@splash/storage-r2`
+  was already a forms-worker workspace ref. Brand line matches the
+  damage-worker PDF footer (`apps/forms-worker/src/pdf/layout-footer.ts:16`).
+  Future executors adding a new template token: add a case to
+  `renderTemplate`'s switch in `workflow-email-step.ts` for the
+  plain-text rendering, then add a matching case to
+  `renderTokenHtml` for the HTML rendering. CTA-button-style tokens
+  use the `renderCtaButton(url, label, kind)` helper; inline link
+  tokens use `renderInlineLink(url, label)`; if the new token's
+  value is operator-supplied text, escape via `escapeHtml`. v2
+  candidates the brief explicitly punted: per-form custom email
+  branding (custom logo / color overrides), operator-authored HTML
+  body templates (current path is server-side auto-rendering only),
+  dark-mode CSS targeting, VML rounded-corner buttons for older
+  Outlook, embedded images other than the logo, email open/click
+  tracking pixels.
 - **outbound_emails table** (Brief 127) - Shared queue of fully-rendered
   outbound emails. Single Power Automate flow polls every 5 minutes
   and drains the queue regardless of which worker enqueued the row.

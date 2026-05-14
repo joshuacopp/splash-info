@@ -40,9 +40,9 @@ export function drawMetadata(
   const submitter =
     input.submission.submitterKind === "anonymous"
       ? "Anonymous"
-      : input.submission.submitterEmail || "—";
+      : input.submission.submitterEmail || "-";
   const version =
-    input.formVersionNumber != null ? `v${input.formVersionNumber}` : "—";
+    input.formVersionNumber != null ? `v${input.formVersionNumber}` : "-";
 
   drawKeyValueGrid(doc, cursor, fonts, [
     ["Submission ID", shortId(input.submission.id)],
@@ -58,8 +58,8 @@ export function drawMetadata(
     [
       "Outcome",
       input.outcomeLabel
-        ? `${input.outcomeLabel}${input.outcomeReachedAt ? ` — ${formatEst(input.outcomeReachedAt)}` : ""}`
-        : "—"
+        ? `${input.outcomeLabel}${input.outcomeReachedAt ? ` - ${formatEst(input.outcomeReachedAt)}` : ""}`
+        : "-"
     ]
   ]);
 

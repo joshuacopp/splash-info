@@ -73,6 +73,32 @@ export function addPageIfNeeded(
 }
 
 /**
+ * Brief 133 — pdf-lib's standard Helvetica uses WinAnsi encoding, which
+ * doesn't cover common typographic Unicode (right-arrow, em-dash, bullet,
+ * ellipsis, smart quotes). `drawText` throws on the first unencodable
+ * character. Sanitize user-generated strings (form titles, field labels,
+ * payload values, actor emails, stage labels, file names, notes,
+ * typed-name fields) at every drawText entry point before passing into
+ * the layout helpers.
+ *
+ * Add new mappings as they surface. Hardcoded literal strings owned by
+ * Splash code should be edited to ASCII at the source rather than relying
+ * on this helper.
+ */
+export function sanitizeForWinAnsi(s: string): string {
+  if (!s) return s;
+  return s
+    .replace(/→/g, "->")
+    .replace(/←/g, "<-")
+    .replace(/•/g, "*")
+    .replace(/—/g, "-")
+    .replace(/–/g, "-")
+    .replace(/[“”]/g, '"')
+    .replace(/[‘’]/g, "'")
+    .replace(/…/g, "...");
+}
+
+/**
  * Wrap text to a max width at the given font/size, preserving hard newlines.
  * Returns an array of lines ready to draw one-per-row.
  */
@@ -83,7 +109,10 @@ export function wrapText(
   maxWidth: number
 ): string[] {
   if (!text) return [];
-  const paragraphs = text.replace(/\r\n/g, "\n").split("\n");
+  // Brief 133 — sanitize before measuring/wrapping so widthOfTextAtSize
+  // sees only WinAnsi-encodable characters.
+  const safe = sanitizeForWinAnsi(text);
+  const paragraphs = safe.replace(/\r\n/g, "\n").split("\n");
   const out: string[] = [];
   for (const para of paragraphs) {
     const words = para.split(/\s+/).filter(Boolean);
@@ -137,11 +166,11 @@ export function drawLabelValue(
   const maxWidth = opts.maxWidth ?? CONTENT_WIDTH;
   const valueSize = opts.valueSize ?? 11;
   const lineHeight = valueSize * 1.35;
-  const valueLines = wrapText(value || "—", fonts.regular, valueSize, maxWidth);
+  const valueLines = wrapText(value || "-", fonts.regular, valueSize, maxWidth);
   const needed = 12 + valueLines.length * lineHeight + 6;
   addPageIfNeeded(doc, cursor, needed);
 
-  cursor.page.drawText(label.toUpperCase(), {
+  cursor.page.drawText(sanitizeForWinAnsi(label.toUpperCase()), {
     x: MARGIN,
     y: cursor.y,
     size: 7,
@@ -182,7 +211,7 @@ export function drawSectionHeading(
     color: COLORS.blue
   });
   cursor.y -= 18;
-  cursor.page.drawText(label, {
+  cursor.page.drawText(sanitizeForWinAnsi(label), {
     x: MARGIN,
     y: cursor.y,
     size: 13,
@@ -259,17 +288,20 @@ export function truncateToWidth(
   size: number,
   maxWidth: number
 ): string {
-  if (font.widthOfTextAtSize(text, size) <= maxWidth) return text;
+  // Brief 133 — sanitize before measuring so widthOfTextAtSize sees only
+  // WinAnsi-encodable characters; ellipsis is ASCII for the same reason.
+  const safe = sanitizeForWinAnsi(text);
+  if (font.widthOfTextAtSize(safe, size) <= maxWidth) return safe;
   let lo = 0;
-  let hi = text.length;
-  const ellipsis = "…";
+  let hi = safe.length;
+  const ellipsis = "...";
   while (lo < hi) {
     const mid = Math.floor((lo + hi + 1) / 2);
-    const candidate = text.slice(0, mid) + ellipsis;
+    const candidate = safe.slice(0, mid) + ellipsis;
     if (font.widthOfTextAtSize(candidate, size) <= maxWidth) lo = mid;
     else hi = mid - 1;
   }
-  return text.slice(0, lo) + ellipsis;
+  return safe.slice(0, lo) + ellipsis;
 }
 
 /**
@@ -297,14 +329,14 @@ export function drawKeyValueGrid(
       if (!pair) continue;
       const [label, value] = pair;
       const x = MARGIN + c * (colWidth + COL_GAP);
-      cursor.page.drawText(label.toUpperCase(), {
+      cursor.page.drawText(sanitizeForWinAnsi(label.toUpperCase()), {
         x,
         y: cursor.y,
         size: 7,
         font: fonts.bold,
         color: COLORS.muted
       });
-      const valueText = value || "—";
+      const valueText = value || "-";
       const truncated = truncateToWidth(valueText, fonts.regular, 11, colWidth);
       cursor.page.drawText(truncated, {
         x,
@@ -404,7 +436,7 @@ export function drawImageScaled(
  * the generator for "submitted at" / outcome / history timestamps.
  */
 export function formatEst(iso: string | null | undefined): string {
-  if (!iso) return "—";
+  if (!iso) return "-";
   try {
     const d = new Date(iso);
     if (Number.isNaN(d.getTime())) return iso;
@@ -427,7 +459,7 @@ export function formatEst(iso: string | null | undefined): string {
 
 /** Short uuid prefix used in metadata grid + filenames. */
 export function shortId(id: string): string {
-  return id ? id.slice(0, 8) : "—";
+  return id ? id.slice(0, 8) : "-";
 }
 
 /** Filename-safe slug for use in the Content-Disposition filename. */

@@ -13,7 +13,7 @@ import {
 } from "./layout-utils.js";
 
 const FOOTER_Y = 30;
-const BRAND_LINE = "Splash Car Wash — splashcarwashes.info";
+const BRAND_LINE = "Splash Car Wash - splashcarwashes.info";
 
 export function drawFooters(doc: PDFDocument, fonts: Fonts): void {
   const pages = doc.getPages();

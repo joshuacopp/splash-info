@@ -95,6 +95,16 @@ export async function enqueueOutboundEmail(
   payload: OutboundEmailPayload
 ): Promise<EnqueueOutboundEmailResult> {
   const url = new URL("/rest/v1/outbound_emails", env.SUPABASE_URL);
+  // Brief 133 — PostgREST honors `Prefer: resolution=ignore-duplicates`
+  // only when the request URL also carries `on_conflict=<column-list>`.
+  // Without it, a unique-index hit propagates as Postgres 23505 →
+  // PostgREST 409 Conflict. The column list MUST match the unique
+  // index on `outbound_emails`
+  // (source_worker, source_kind, source_id, recipient).
+  url.searchParams.set(
+    "on_conflict",
+    "source_worker,source_kind,source_id,recipient"
+  );
   // `ignore-duplicates` makes the unique index a no-op silencer for
   // re-fires. `return=representation` so we can read the id back —
   // PostgREST returns 201 with the inserted row on success, and 201

@@ -16,6 +16,7 @@ import {
   type Fonts,
   type R2Like,
   formatEst,
+  sanitizeForWinAnsi,
   shortId
 } from "./layout-utils.js";
 
@@ -70,7 +71,9 @@ export async function drawHeader(
     });
   }
 
-  const titleText = input.formTitle || "Form submission";
+  // Brief 133 — form title is operator-authored; sanitize before measuring
+  // and drawing so a stray em-dash / curly quote doesn't crash WinAnsi.
+  const titleText = sanitizeForWinAnsi(input.formTitle || "Form submission");
   const titleSize = 18;
   const titleW = fonts.bold.widthOfTextAtSize(titleText, titleSize);
   page.drawText(titleText, {
@@ -81,7 +84,7 @@ export async function drawHeader(
     color: COLORS.white
   });
 
-  const subText = `${shortId(input.submissionId)}  •  ${formatEst(input.submittedAt)}`;
+  const subText = `${shortId(input.submissionId)}  *  ${formatEst(input.submittedAt)}`;
   const subSize = 9;
   const subW = fonts.regular.widthOfTextAtSize(subText, subSize);
   page.drawText(subText, {

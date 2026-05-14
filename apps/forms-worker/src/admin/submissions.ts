@@ -652,14 +652,18 @@ export async function handleTransition(
   // outcome and the submission's Brief 96 `status` column is still
   // `new` or `in_progress`, auto-flip it to `closed`. Don't override
   // an admin who's already set `closed` (or any future enum value).
-  // Stamp the audit columns with a system-actor marker so the UI's
-  // "Status updated by" row makes the auto-update visible.
+  //
+  // Brief 133 — `status_updated_by` is `uuid` (supabase/forms-tables.sql
+  // line 73), not `text`. Writing a string sentinel ("system@workflow")
+  // 22P02s and 500s the transition. The canonical actor-audit for
+  // system-initiated status flips lives in `workflow_history[-1]`
+  // (captures the operator who triggered the terminal-outcome
+  // transition); leaving `status_updated_by` null is the right answer.
   const finalStage = workflow.stages.find((s) => s.id === finalStageId);
   let statusPatch:
     | {
         status: "closed";
         status_updated_at: string;
-        status_updated_by: string;
       }
     | undefined;
   if (
@@ -669,8 +673,7 @@ export async function handleTransition(
   ) {
     statusPatch = {
       status: "closed",
-      status_updated_at: new Date().toISOString(),
-      status_updated_by: "system@workflow"
+      status_updated_at: new Date().toISOString()
     };
   }
 

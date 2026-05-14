@@ -42,6 +42,7 @@ import {
   drawSpacer,
   fetchAndEmbedR2Image,
   drawImageScaled,
+  sanitizeForWinAnsi,
   truncateToWidth,
   type Cursor,
   type Fonts,
@@ -141,8 +142,8 @@ function isEmpty(value: unknown): boolean {
 }
 
 function stringifyScalar(v: unknown): string {
-  if (v == null) return "—";
-  if (typeof v === "string") return v || "—";
+  if (v == null) return "-";
+  if (typeof v === "string") return v || "-";
   if (typeof v === "number" || typeof v === "boolean") return String(v);
   if (Array.isArray(v)) return v.map((x) => stringifyScalar(x)).join(", ");
   if (typeof v === "object") {
@@ -154,7 +155,7 @@ function stringifyScalar(v: unknown): string {
     try {
       return JSON.stringify(v);
     } catch {
-      return "—";
+      return "-";
     }
   }
   return String(v);
@@ -178,7 +179,7 @@ function renderChoice(
 
   if (Array.isArray(value)) {
     const text = value.map((v) => labelFor(String(v))).join(", ");
-    drawLabelValue(doc, cursor, fonts, field.label, text || "—");
+    drawLabelValue(doc, cursor, fonts, field.label, text || "-");
     return;
   }
   drawLabelValue(doc, cursor, fonts, field.label, labelFor(String(value ?? "")));
@@ -227,7 +228,7 @@ async function renderSignature(
   }
   // Render label first, then the inline image.
   addPageIfNeeded(doc, cursor, 14);
-  cursor.page.drawText(label.toUpperCase(), {
+  cursor.page.drawText(sanitizeForWinAnsi(label.toUpperCase()), {
     x: MARGIN,
     y: cursor.y,
     size: 7,
@@ -262,11 +263,11 @@ async function renderFile(
 ): Promise<void> {
   const entries = Array.isArray(value) ? value : value != null ? [value] : [];
   if (entries.length === 0) {
-    drawLabelValue(doc, cursor, fonts, label, "—");
+    drawLabelValue(doc, cursor, fonts, label, "-");
     return;
   }
   addPageIfNeeded(doc, cursor, 14);
-  cursor.page.drawText(label.toUpperCase(), {
+  cursor.page.drawText(sanitizeForWinAnsi(label.toUpperCase()), {
     x: MARGIN,
     y: cursor.y,
     size: 7,

@@ -44,6 +44,7 @@ import {
 import type { Env } from "./index.js";
 import { resolveApproverEmails } from "./workflow-resolution.js";
 import { generateOrReuseCompletedPdf } from "./pdf/cascade-attach.js";
+import { wrapInEmailShell } from "./workflow-email-shell.js";
 
 const MAX_CASCADE_DEPTH = 10;
 
@@ -234,6 +235,25 @@ export async function cascadeThroughEmailSteps(
         ctx.payload,
         localRuntime
       );
+      // Brief 134 — auto-derive an HTML body from the same operator-
+      // authored plain-text template. Wrap the rendered fragment in
+      // the branded shell so PA can ship HTML when the queue row
+      // carries body_html.
+      const bodyHtmlFragment = renderTemplateHtml(
+        stage.body_template ?? "",
+        ctx.schema,
+        ctx.payload,
+        localRuntime
+      );
+      const bodyHtml = wrapInEmailShell(bodyHtmlFragment, {
+        title: subject,
+        preheader: body.slice(0, 100),
+        // Heuristic — outcome-paired email steps populate
+        // outcome.outcomeLabel (next stage is an outcome). Plain
+        // assignment / midstream email steps leave it null.
+        showApproverFooter: localRuntime.outcome.outcomeLabel == null,
+        showSubmitterFooter: localRuntime.outcome.outcomeLabel != null
+      });
       const payload: OutboundEmailPayload = {
         source_worker: "forms",
         source_kind: "workflow-email-step",
@@ -241,6 +261,7 @@ export async function cascadeThroughEmailSteps(
         recipient,
         subject,
         body_text: body,
+        body_html: bodyHtml,
         ...(stageAttachments ? { attachments: stageAttachments } : {})
       };
       try {
@@ -418,6 +439,10 @@ function normaliseSubmitterEmailSource(
  *   {form.title}            — form's title
  *   {form.url}              — public form URL
  *   {submission.url}        — admin-facing submission URL
+ *   {approvals.url}         — Brief 134: pending-approvals dashboard URL
+ *                              (HTML renders a labeled CTA button)
+ *   {my_requests.url}       — Brief 134: "my requests" dashboard URL
+ *                              (HTML renders a labeled CTA button)
  *   {submitter.email}       — form_submissions.submitter_email (or "")
  *   {submitter.name}        — best-effort name; falls back to local part
  *   {outcome.label}         — outcome stage's label (when applicable)
@@ -452,6 +477,10 @@ export function renderTemplate(
         return `https://splashcarwashes.info/forms/${encodeURIComponent(runtime.formSlug)}`;
       case "submission.url":
         return `https://splashcarwashes.info/admin/forms/${encodeURIComponent(runtime.formId)}/submissions/${encodeURIComponent(runtime.submissionId)}`;
+      case "approvals.url":
+        return "Pending Approvals: https://splashcarwashes.info/admin/approvals";
+      case "my_requests.url":
+        return "Your Submissions: https://splashcarwashes.info/admin/my-requests";
       case "submitter.email":
         return runtime.submitterEmail ?? "";
       case "submitter.name":
@@ -470,6 +499,226 @@ export function renderTemplate(
     }
     return match;
   });
+}
+
+// =============================================================================
+// HTML template rendering (Brief 134)
+// =============================================================================
+
+/**
+ * Brief 134 — produce an HTML fragment from the same template input
+ * `renderTemplate` consumes. The fragment is intended to be wrapped in
+ * `wrapInEmailShell` before being shipped as `body_html`.
+ *
+ * Operators keep authoring plain-text `body_template` — this function
+ * derives the HTML body server-side. Recognized tokens render with
+ * HTML-aware substitutions (escaped text, CTA buttons, payload table);
+ * body text outside tokens is normalized via paragraph + linebreak
+ * rules (`\n\n` → paragraph, single `\n` → `<br>`).
+ *
+ * Unknown tokens are left in place exactly like `renderTemplate` (the
+ * operator sees the literal `{whatever}` in the rendered HTML —
+ * non-fatal + debuggable).
+ */
+export function renderTemplateHtml(
+  template: string,
+  schema: FormSchema,
+  payload: SubmissionPayload,
+  runtime: RuntimeContext
+): string {
+  if (!template) return "";
+  const fieldLabels = new Map<string, string>();
+  for (const f of schema.fields) {
+    if (f.type === "heading" || f.type === "image") continue;
+    fieldLabels.set(f.key, f.label);
+  }
+
+  // Step 1: substitute tokens with sentinel-wrapped HTML so subsequent
+  // paragraph normalization can't mangle the embedded markup. The
+  // sentinels are bracketed by ASCII control-character pairs (\x01...
+  // \x02) that should never appear in operator-authored templates.
+  const TOKEN_OPEN = "\x01";
+  const TOKEN_CLOSE = "\x02";
+  const tokenReplaced = template.replace(/\{([^}\n]+)\}/g, (match, raw: string) => {
+    const token = raw.trim();
+    const html = renderTokenHtml(token, schema, payload, runtime, fieldLabels);
+    if (html === null) return match;
+    return `${TOKEN_OPEN}${html}${TOKEN_CLOSE}`;
+  });
+
+  // Step 2: paragraph + linebreak normalization. Split on `\n\n`
+  // (double newline → new paragraph), single `\n` becomes `<br>`.
+  // Each paragraph wraps in a styled `<p>`. Empty paragraphs drop.
+  const paragraphs = tokenReplaced.split(/\n\n+/);
+  const out: string[] = [];
+  for (const p of paragraphs) {
+    if (!p.trim()) continue;
+    // Escape every character of the paragraph that isn't inside a
+    // sentinel-wrapped token span. The token HTML is trusted (we
+    // built it via the per-token helpers above); the rest is
+    // operator-authored plain text and must be escaped to keep
+    // user-supplied `<` / `>` / `&` from leaking into the DOM.
+    const escaped = escapeOutsideSentinels(p, TOKEN_OPEN, TOKEN_CLOSE);
+    // Single newlines inside the paragraph become `<br>`. Do this
+    // after escaping so the literal "\n" sequences haven't been
+    // touched.
+    const withBreaks = escaped.replace(/\n/g, "<br>");
+    out.push(`<p style="margin: 0 0 16px 0; font-size: 15px; line-height: 1.55; color: #1f2937;">${withBreaks}</p>`);
+  }
+  return out.join("\n");
+}
+
+function renderTokenHtml(
+  token: string,
+  schema: FormSchema,
+  payload: SubmissionPayload,
+  runtime: RuntimeContext,
+  fieldLabels: Map<string, string>
+): string | null {
+  switch (token) {
+    case "form.title":
+      return escapeHtml(runtime.formTitle);
+    case "form.url": {
+      const url = `https://splashcarwashes.info/forms/${encodeURIComponent(runtime.formSlug)}`;
+      return renderInlineLink(url, "View Form");
+    }
+    case "submission.url": {
+      const url = `https://splashcarwashes.info/admin/forms/${encodeURIComponent(runtime.formId)}/submissions/${encodeURIComponent(runtime.submissionId)}`;
+      return renderCtaButton(url, "View Submission", "primary");
+    }
+    case "approvals.url":
+      return renderCtaButton(
+        "https://splashcarwashes.info/admin/approvals",
+        "View All Open Approvals",
+        "secondary"
+      );
+    case "my_requests.url":
+      return renderCtaButton(
+        "https://splashcarwashes.info/admin/my-requests",
+        "View My Requests",
+        "secondary"
+      );
+    case "submitter.email":
+      return runtime.submitterEmail
+        ? `<span style="font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: #0E2745;">${escapeHtml(runtime.submitterEmail)}</span>`
+        : "";
+    case "submitter.name":
+      return escapeHtml(runtime.submitterName ?? "");
+    case "outcome.label": {
+      const label = runtime.outcome.outcomeLabel ?? "";
+      if (!label) return "";
+      const tint = outcomeTintColor(label);
+      return `<strong style="color: ${tint};">${escapeHtml(label)}</strong>`;
+    }
+    case "outcome.reached_at":
+      return escapeHtml(runtime.outcome.outcomeReachedAt ?? "");
+    case "payload.summary":
+      return renderPayloadSummaryHtml(payload, fieldLabels);
+  }
+  if (token.startsWith("field.")) {
+    const key = token.slice("field.".length);
+    const v = payload[key];
+    const formatted = formatScalar(v);
+    if (!formatted) return "";
+    // Multi-line strings render with `<br>` between lines.
+    return escapeHtml(formatted).replace(/\n/g, "<br>");
+  }
+  return null;
+}
+
+function renderInlineLink(url: string, label: string): string {
+  return `<a href="${escapeAttr(url)}" style="color: #1FB6E0; text-decoration: underline;">${escapeHtml(label)}</a>`;
+}
+
+function renderCtaButton(
+  url: string,
+  label: string,
+  kind: "primary" | "secondary"
+): string {
+  const styles = kind === "primary"
+    ? "display: inline-block; padding: 12px 24px; background-color: #1FB6E0; color: #ffffff; font-size: 15px; font-weight: 600; text-decoration: none; border-radius: 6px; border: 2px solid #1FB6E0; mso-padding-alt: 0;"
+    : "display: inline-block; padding: 10px 20px; background-color: #ffffff; color: #0E2745; font-size: 14px; font-weight: 600; text-decoration: none; border-radius: 6px; border: 2px solid #0E2745; mso-padding-alt: 0;";
+  // Wrap in a table for Outlook-safe vertical spacing — bare inline
+  // `<a>` with padding can collapse in some Outlook versions.
+  return [
+    `<table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin: 16px 0;"><tr><td>`,
+    `<a href="${escapeAttr(url)}" style="${styles}" target="_blank" rel="noopener">${escapeHtml(label)}</a>`,
+    `</td></tr></table>`
+  ].join("");
+}
+
+function renderPayloadSummaryHtml(
+  payload: SubmissionPayload,
+  fieldLabels: Map<string, string>
+): string {
+  const rows: string[] = [];
+  for (const [key, label] of fieldLabels.entries()) {
+    const value = payload[key];
+    if (value == null) continue;
+    const formatted = formatScalar(value);
+    if (!formatted) continue;
+    const valueHtml = escapeHtml(formatted).replace(/\n/g, "<br>");
+    rows.push(
+      `<tr>` +
+        `<td style="padding: 8px 12px 8px 0; vertical-align: top; font-size: 14px; font-weight: 600; color: #0E2745; border-bottom: 1px solid #E5E7EB; width: 35%;">${escapeHtml(label)}</td>` +
+        `<td style="padding: 8px 0; vertical-align: top; font-size: 14px; color: #1f2937; border-bottom: 1px solid #E5E7EB;">${valueHtml}</td>` +
+      `</tr>`
+    );
+  }
+  if (rows.length === 0) return "";
+  return [
+    `<table role="presentation" cellpadding="0" cellspacing="0" border="0" style="width: 100%; border-collapse: collapse; margin: 8px 0 20px 0; background-color: #F9FAFB; border-radius: 6px; padding: 4px 12px;">`,
+    `<tbody>`,
+    rows.join(""),
+    `</tbody>`,
+    `</table>`
+  ].join("");
+}
+
+function outcomeTintColor(label: string): string {
+  const lower = label.toLowerCase();
+  if (/approv/.test(lower)) return "#047857"; // success green
+  if (/(den|reject)/.test(lower)) return "#B91C1C"; // danger red
+  return "#0E2745"; // splash navy default
+}
+
+function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function escapeAttr(s: string): string {
+  return s.replace(/&/g, "&amp;").replace(/"/g, "&quot;");
+}
+
+function escapeOutsideSentinels(
+  s: string,
+  open: string,
+  close: string
+): string {
+  const out: string[] = [];
+  let i = 0;
+  while (i < s.length) {
+    const openIdx = s.indexOf(open, i);
+    if (openIdx === -1) {
+      out.push(escapeHtml(s.slice(i)));
+      break;
+    }
+    out.push(escapeHtml(s.slice(i, openIdx)));
+    const closeIdx = s.indexOf(close, openIdx + open.length);
+    if (closeIdx === -1) {
+      // Malformed — drop the unmatched sentinel and the rest as text.
+      out.push(escapeHtml(s.slice(openIdx + open.length)));
+      break;
+    }
+    out.push(s.slice(openIdx + open.length, closeIdx));
+    i = closeIdx + close.length;
+  }
+  return out.join("");
 }
 
 function renderPayloadSummary(
