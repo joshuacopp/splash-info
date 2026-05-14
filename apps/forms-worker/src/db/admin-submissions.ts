@@ -42,6 +42,11 @@ export interface SubmissionListItem {
   version_number: number | null;
   splash_notes_preview: string | null;
   splash_notes_truncated: boolean;
+  // Brief 131 — workflow state surfaced on every list row so apps/web's
+  // Brief 96 list (`/admin/forms/[id]/submissions`) can render a
+  // "Workflow" column without round-tripping the detail endpoint. Null
+  // when the submission's version had no workflow.
+  workflow_stage?: string | null;
   // Optional, populated when listSubmissions is called with includePayload=true
   // (Brief 119 wide-table view). Apps/web reads these to render every answer
   // as a column without round-tripping the per-submission detail endpoint.
@@ -68,6 +73,7 @@ interface ListSubmissionDbRow {
   submitter_kind: SubmitterKind;
   submitter_email: string | null;
   splash_notes: string | null;
+  workflow_stage: string | null;
   // PostgREST embeds the parent row as an object via the FK relationship.
   version: { version_number: number } | null;
 }
@@ -79,6 +85,7 @@ interface ListSubmissionWithPayloadDbRow {
   submitter_kind: SubmitterKind;
   submitter_email: string | null;
   splash_notes: string | null;
+  workflow_stage: string | null;
   payload: Record<string, unknown>;
   form_version_id: string;
   version: {
@@ -105,12 +112,12 @@ export async function listSubmissions(
   if (args.includePayload) {
     url.searchParams.set(
       "select",
-      "id,submitted_at,status,submitter_kind,submitter_email,splash_notes,payload,form_version_id,version:form_versions!inner(id,version_number,schema)"
+      "id,submitted_at,status,submitter_kind,submitter_email,splash_notes,workflow_stage,payload,form_version_id,version:form_versions!inner(id,version_number,schema)"
     );
   } else {
     url.searchParams.set(
       "select",
-      "id,submitted_at,status,submitter_kind,submitter_email,splash_notes,version:form_versions!inner(version_number)"
+      "id,submitted_at,status,submitter_kind,submitter_email,splash_notes,workflow_stage,version:form_versions!inner(version_number)"
     );
   }
   url.searchParams.set("form_id", `eq.${args.formId}`);
@@ -150,6 +157,7 @@ export async function listSubmissions(
         version_number: r.version?.version_number ?? null,
         splash_notes_preview: splash ? splash.slice(0, 80) : null,
         splash_notes_truncated: splash ? splash.length > 80 : false,
+        workflow_stage: r.workflow_stage,
         payload: r.payload ?? {},
         splash_notes: splash,
         form_version_id: r.form_version_id,
@@ -175,7 +183,8 @@ export async function listSubmissions(
       submitter_email: r.submitter_email,
       version_number: r.version?.version_number ?? null,
       splash_notes_preview: splash ? splash.slice(0, 80) : null,
-      splash_notes_truncated: splash ? splash.length > 80 : false
+      splash_notes_truncated: splash ? splash.length > 80 : false,
+      workflow_stage: r.workflow_stage
     };
   });
 }
@@ -346,6 +355,13 @@ export interface TransitionPatch {
   workflow_stage: string;
   workflow_history: WorkflowHistoryEntry[];
   current_approver_emails: string[];
+  // Brief 131 — when the transition lands on a terminal outcome and the
+  // caller wants to auto-update Brief 96's `status` column to `closed`,
+  // these three columns ride the same PATCH so the change is atomic
+  // with the workflow-stage flip.
+  status?: SubmissionStatus;
+  status_updated_at?: string;
+  status_updated_by?: string;
 }
 
 /**
@@ -378,7 +394,14 @@ export async function transitionSubmission(
     body: JSON.stringify({
       workflow_stage: patch.workflow_stage,
       workflow_history: patch.workflow_history,
-      current_approver_emails: patch.current_approver_emails
+      current_approver_emails: patch.current_approver_emails,
+      ...(patch.status !== undefined ? { status: patch.status } : {}),
+      ...(patch.status_updated_at !== undefined
+        ? { status_updated_at: patch.status_updated_at }
+        : {}),
+      ...(patch.status_updated_by !== undefined
+        ? { status_updated_by: patch.status_updated_by }
+        : {})
     })
   });
   if (!resp.ok) {

@@ -50,6 +50,9 @@ export interface StepCardProps {
     patch: Partial<WorkflowTransition>
   ) => void;
   onRemoveTransition: (index: number) => void;
+  // Brief 131 — inline "+ Create new email step here" dispatch. Wired
+  // into each ActionSubCard's Then-go-to dropdown as a sentinel option.
+  onCreateAndRouteToEmailStep: (index: number) => void;
   onDuplicate: () => void;
   onRemove: () => void;
 }
@@ -83,6 +86,7 @@ export default function StepCard(props: StepCardProps) {
     onAddTransition,
     onUpdateTransition,
     onRemoveTransition,
+    onCreateAndRouteToEmailStep,
     onDuplicate,
     onRemove
   } = props;
@@ -178,6 +182,9 @@ export default function StepCard(props: StepCardProps) {
               destinationOptions={destinationOptions}
               onUpdate={(patch) => onUpdateTransition(idx, patch)}
               onRemove={() => onRemoveTransition(idx)}
+              onCreateAndRouteToEmailStep={() =>
+                onCreateAndRouteToEmailStep(idx)
+              }
             />
           ))}
         </div>
@@ -198,13 +205,17 @@ interface ActionProps {
   destinationOptions: StepCardProps["destinationOptions"];
   onUpdate: (patch: Partial<WorkflowTransition>) => void;
   onRemove: () => void;
+  onCreateAndRouteToEmailStep: () => void;
 }
+
+const CREATE_EMAIL_STEP_SENTINEL = "__create_email_step__";
 
 function ActionSubCard({
   action,
   destinationOptions,
   onUpdate,
-  onRemove
+  onRemove,
+  onCreateAndRouteToEmailStep
 }: ActionProps) {
   const tint = actionTint(action.label);
   const dotColor =
@@ -296,7 +307,17 @@ function ActionSubCard({
         Then go to
         <select
           value={action.to}
-          onChange={(e) => onUpdate({ to: e.currentTarget.value })}
+          onChange={(e) => {
+            const value = e.currentTarget.value;
+            if (value === CREATE_EMAIL_STEP_SENTINEL) {
+              // The reducer creates the step + rewires this action's
+              // `to` atomically — don't dispatch a separate onUpdate
+              // that would race with the create.
+              onCreateAndRouteToEmailStep();
+              return;
+            }
+            onUpdate({ to: value });
+          }}
           className="mt-1 w-full rounded-splash-sm border border-gray-light bg-white px-2 py-1 text-sm font-normal text-splash-navy"
         >
           <option value="">— Pick a destination —</option>
@@ -306,6 +327,9 @@ function ActionSubCard({
               {d.disabled ? ` ${d.disabledReason ?? "(unavailable)"}` : ""}
             </option>
           ))}
+          <option value={CREATE_EMAIL_STEP_SENTINEL}>
+            + Create new email step here
+          </option>
         </select>
       </label>
     </div>

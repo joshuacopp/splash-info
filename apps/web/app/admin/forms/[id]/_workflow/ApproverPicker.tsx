@@ -23,6 +23,13 @@ interface Props {
   source: ApproverSource | undefined;
   fields: Field[];
   onChange: (source: ApproverSource | undefined) => void;
+  /**
+   * Brief 131 — contextualizes the dropdown copy. "approver" (default)
+   * is the wording for an approval step's "Who approves this step?"
+   * label. "recipient" is the wording for an email step's "Send email
+   * to" label, set by EmailStepCard's RecipientsList.
+   */
+  mode?: "approver" | "recipient";
 }
 
 type AutoOption =
@@ -135,9 +142,13 @@ function sourceToAutoKey(
 ): string | null {
   if (!source) return null;
   if (source.type === "site_role") {
-    // Could be a location_role (no lookup link) OR a lookup_role (with a
-    // specific source field). We prefer lookup_role when a matching
-    // lookup field exists, else fall back to location_role.
+    // `site_role` is now only saved by `location_role` picks (Brief 131
+    // — `lookup_role` picks save as `payload_field` because the lookup
+    // field's payload value IS the resolved email). Legacy schemas that
+    // still carry `site_role` from a lookup-keyed step continue to round-
+    // trip through the `lookup_role` selection as a UI courtesy: when a
+    // matching lookup option exists we surface it, else fall back to the
+    // location_role option.
     const lookupOpt = options.find(
       (o): o is Extract<AutoOption, { kind: "lookup_role" }> =>
         o.kind === "lookup_role" && o.role === source.role
@@ -151,9 +162,16 @@ function sourceToAutoKey(
   }
   if (source.type === "payload_field") {
     const opt = options.find(
-      (o): o is Extract<AutoOption, { kind: "email_field" | "lookup_email" }> =>
-        (o.kind === "email_field" || o.kind === "lookup_email") &&
-        o.fieldKey === source.field_key
+      (o): o is Extract<
+        AutoOption,
+        { kind: "email_field" | "lookup_email" | "lookup_role" }
+      > =>
+        (o.kind === "email_field" ||
+          o.kind === "lookup_email" ||
+          o.kind === "lookup_role") &&
+        (o.kind === "lookup_role"
+          ? o.sourceFieldKey === source.field_key
+          : o.fieldKey === source.field_key)
     );
     return opt?.key ?? null;
   }
@@ -164,20 +182,37 @@ const SPECIFIC_KEY = "__specific__";
 const MULTIPLE_KEY = "__multiple__";
 const UNSET_KEY = "__unset__";
 
-export default function ApproverPicker({ source, fields, onChange }: Props) {
+export default function ApproverPicker({
+  source,
+  fields,
+  onChange,
+  mode = "approver"
+}: Props) {
   const options = useMemo(() => detectFromFields(fields), [fields]);
   const autoKey = sourceToAutoKey(source, options);
+  const isRecipient = mode === "recipient";
+  const headerLabel = isRecipient ? "Send email to" : "Who approves this step?";
+  const unsetLabel = isRecipient
+    ? "— Pick a recipient —"
+    : "— Pick an approver —";
+  const specificLabel = isRecipient
+    ? "Specific person"
+    : "Specific person";
+  const multipleLabel = isRecipient ? "Multiple recipients" : "Multiple people";
 
-  // Determine which "mode" the picker is in.
-  let mode: string;
-  if (autoKey) mode = autoKey;
+  // Determine which select-option the picker should render as active.
+  // Renamed from `mode` in Brief 131 because the prop `mode` ("approver" |
+  // "recipient") was shadowing this local — `selectMode` is the active
+  // <select> value, not the picker's contextual wording.
+  let selectMode: string;
+  if (autoKey) selectMode = autoKey;
   else if (source?.type === "static_emails") {
-    mode = source.emails.length > 1 ? MULTIPLE_KEY : SPECIFIC_KEY;
+    selectMode = source.emails.length > 1 ? MULTIPLE_KEY : SPECIFIC_KEY;
   } else if (!source) {
-    mode = UNSET_KEY;
+    selectMode = UNSET_KEY;
   } else {
     // payload_field that doesn't match a current field — surface as missing
-    mode = "__missing__";
+    selectMode = "__missing__";
   }
 
   const [, forceRerender] = useState(0);
@@ -197,7 +232,22 @@ export default function ApproverPicker({ source, fields, onChange }: Props) {
     }
     const opt = options.find((o) => o.key === value);
     if (!opt) return;
-    if (opt.kind === "lookup_role" || opt.kind === "location_role") {
+    if (opt.kind === "lookup_role") {
+      // Brief 131 — the lookup field has already resolved the email at
+      // submit time, so its payload value IS the email. Save as
+      // `payload_field` keyed on the lookup field's `key` (the same
+      // identifier the submit handler uses when writing
+      // `payload[field.key] = <resolved value>`).
+      onChange({
+        type: "payload_field",
+        field_key: opt.sourceFieldKey
+      });
+      return;
+    }
+    if (opt.kind === "location_role") {
+      // Location-shaped fields stay `site_role` — the worker resolver
+      // finds the location_code in payload and goes through
+      // `getLocationContactInfo` to look up the matching contact email.
       onChange({ type: "site_role", role: opt.role });
       return;
     }
@@ -207,21 +257,21 @@ export default function ApproverPicker({ source, fields, onChange }: Props) {
     }
   }
 
-  const isSpecific = mode === SPECIFIC_KEY;
-  const isMultiple = mode === MULTIPLE_KEY;
+  const isSpecific = selectMode === SPECIFIC_KEY;
+  const isMultiple = selectMode === MULTIPLE_KEY;
   const emails =
     source?.type === "static_emails" ? source.emails : [];
 
   return (
     <div className="space-y-2">
       <label className="block text-sm font-semibold text-splash-navy">
-        Who approves this step?
+        {headerLabel}
         <select
-          value={mode}
+          value={selectMode}
           onChange={(e) => pickOption(e.currentTarget.value)}
           className="mt-1 w-full rounded-splash-sm border border-gray-light bg-white px-2 py-2 text-sm font-normal text-splash-navy"
         >
-          <option value={UNSET_KEY}>— Pick an approver —</option>
+          <option value={UNSET_KEY}>{unsetLabel}</option>
           {options.length > 0 && (
             <optgroup label="From your form">
               {options.map((o) => (
@@ -231,15 +281,15 @@ export default function ApproverPicker({ source, fields, onChange }: Props) {
               ))}
             </optgroup>
           )}
-          <optgroup label="Specific person">
+          <optgroup label={specificLabel}>
             <option value={SPECIFIC_KEY}>Type or pick from org directory…</option>
           </optgroup>
-          <optgroup label="Multiple people">
+          <optgroup label={multipleLabel}>
             <option value={MULTIPLE_KEY}>Build a list…</option>
           </optgroup>
-          {mode === "__missing__" && (
+          {selectMode === "__missing__" && (
             <option value="__missing__" disabled>
-              ⚠ Saved approver no longer matches a form field
+              ⚠ Saved {isRecipient ? "recipient" : "approver"} no longer matches a form field
             </option>
           )}
         </select>

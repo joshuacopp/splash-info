@@ -171,6 +171,17 @@ export type BuilderAction =
       stepId: string;
       recipients: ApproverSource[];
     }
+  // Brief 131 — inline "+ Create new email step here" in an approval
+  // action's Then-go-to dropdown. Creates a new email step, wires the
+  // approval action's `to` at it, and routes the new email step's
+  // single auto-advance transition at the first available outcome
+  // (with a keyword heuristic against the originating action's label
+  // to pick approved-tinted vs denied-tinted when both exist).
+  | {
+      type: "workflow_add_email_step_from_action";
+      stepId: string;
+      transitionIndex: number;
+    }
   // Brief 127 — Quick patterns popover dispatches a single bulk
   // workflow replacement (rather than a chain of individual reducer
   // events) so the result is atomic in the dirty-flag + undo sense.
@@ -350,7 +361,12 @@ export type QuickPattern =
   | "email_submitter_on_outcome"
   | "email_approver_when_assigned"
   | "email_rm_on_submission"
-  | "email_specific_person_on_submission";
+  | "email_specific_person_on_submission"
+  // Brief 131 — composite pattern: for each approval step, finds the
+  // Approve and Deny actions, builds two new email steps (approval +
+  // denial, both to submitter), and rewires the actions through the
+  // email steps before reaching the matching outcome.
+  | "email_submitter_on_approve_and_deny";
 
 function findFirstRmLikeLookupField(fields: Field[]): Field | undefined {
   for (const f of fields) {
@@ -510,6 +526,126 @@ Review here: {submission.url}
         default_stage: emailStep.id,
         stages: [emailStep, ...workflow.stages]
       };
+    }
+    case "email_submitter_on_approve_and_deny": {
+      // Find each approval step that has an Approve-shaped action AND
+      // a Deny-shaped action, then rewire both through email steps.
+      const approvals = workflow.stages.filter((s) => stageIsApproval(s));
+      if (approvals.length === 0) return workflow;
+      const outcomes = workflow.stages.filter((s) => stageIsOutcome(s));
+      let stages = [...workflow.stages];
+
+      for (const approval of approvals) {
+        // Locate the approve / deny transitions on this approval step.
+        const approveTxIdx = approval.transitions.findIndex((t) =>
+          /\bapprov|\baccept|\bok\b|\byes\b|\bconfirm/.test(t.label.toLowerCase())
+        );
+        const denyTxIdx = approval.transitions.findIndex((t) =>
+          /\bden|\breject|\bdecline/.test(t.label.toLowerCase())
+        );
+        if (approveTxIdx < 0 && denyTxIdx < 0) continue;
+
+        const approveTx =
+          approveTxIdx >= 0 ? approval.transitions[approveTxIdx] : undefined;
+        const denyTx = denyTxIdx >= 0 ? approval.transitions[denyTxIdx] : undefined;
+
+        const approvedOutcome =
+          outcomes.find(
+            (o) => o.tint === "success" || /\bapprov/.test(o.label.toLowerCase())
+          ) ?? outcomes[0];
+        const deniedOutcome =
+          outcomes.find(
+            (o) =>
+              o.tint === "danger" ||
+              /\bden|\breject|\bdecline/.test(o.label.toLowerCase())
+          ) ?? outcomes[outcomes.length - 1];
+
+        let approvalEmailStep: WorkflowStage | null = null;
+        let denialEmailStep: WorkflowStage | null = null;
+
+        if (approveTx && approvedOutcome) {
+          approvalEmailStep = {
+            id: `email_${lowerNanoid()}`,
+            label: `${approvedOutcome.label} email`,
+            transitions: [
+              {
+                to: approvedOutcome.id,
+                label: `Continue to ${approvedOutcome.label}`
+              }
+            ],
+            kind: "email",
+            recipients: [
+              { type: "payload_field", field_key: "submitter.email" }
+            ],
+            subject_template: `Your {form.title} submission was ${approvedOutcome.label}`,
+            body_template: `Hi {submitter.name},
+
+Your {form.title} submission was ${approvedOutcome.label} on {outcome.reached_at}.
+
+{payload.summary}
+
+— Splash team`,
+            attach_pdf: true,
+            _uiKey: nanoid(8)
+          };
+        }
+
+        if (denyTx && deniedOutcome) {
+          denialEmailStep = {
+            id: `email_${lowerNanoid()}`,
+            label: `${deniedOutcome.label} email`,
+            transitions: [
+              {
+                to: deniedOutcome.id,
+                label: `Continue to ${deniedOutcome.label}`
+              }
+            ],
+            kind: "email",
+            recipients: [
+              { type: "payload_field", field_key: "submitter.email" }
+            ],
+            subject_template: `Your {form.title} submission was ${deniedOutcome.label}`,
+            body_template: `Hi {submitter.name},
+
+Your {form.title} submission was ${deniedOutcome.label} on {outcome.reached_at}.
+
+{payload.summary}
+
+— Splash team`,
+            // Brief 131 — denial doesn't attach the PDF by default
+            // (matches the operator-discussed convention).
+            attach_pdf: false,
+            _uiKey: nanoid(8)
+          };
+        }
+
+        // Rewire the origin approval's transitions and splice the new
+        // email steps right after the approval step in document order.
+        stages = stages.map((s) => {
+          if (s.id !== approval.id) return s;
+          return {
+            ...s,
+            transitions: s.transitions.map((t, i) => {
+              if (i === approveTxIdx && approvalEmailStep) {
+                return { ...t, to: approvalEmailStep.id };
+              }
+              if (i === denyTxIdx && denialEmailStep) {
+                return { ...t, to: denialEmailStep.id };
+              }
+              return t;
+            })
+          };
+        });
+        const approvalIdx = stages.findIndex((s) => s.id === approval.id);
+        const toInsert = [approvalEmailStep, denialEmailStep].filter(
+          (x): x is WorkflowStage => x !== null
+        );
+        if (approvalIdx >= 0 && toInsert.length > 0) {
+          stages.splice(approvalIdx + 1, 0, ...toInsert);
+        }
+      }
+
+      return { ...workflow, stages };
     }
   }
 }
@@ -990,6 +1126,88 @@ export function reducer(
       return {
         ...state,
         workflow: { ...workflow, default_stage: nextDefault, stages: nextStages },
+        dirty: true
+      };
+    }
+    case "workflow_add_email_step_from_action": {
+      if (!state.workflow) return state;
+      const originStage = state.workflow.stages.find(
+        (s) => s.id === action.stepId
+      );
+      if (!originStage) return state;
+      const originAction = originStage.transitions[action.transitionIndex];
+      if (!originAction) return state;
+      const actionLabel = originAction.label;
+      const lowerActionLabel = actionLabel.toLowerCase();
+      // Pick an outcome to land on. Keyword heuristic: "approve"-ish
+      // labels → first success/approved outcome; "deny"-ish → first
+      // danger/denied outcome; else first outcome in document order.
+      const outcomes = state.workflow.stages.filter((s) => stageIsOutcome(s));
+      let destOutcome: WorkflowStage | undefined;
+      if (/\bapprov|\baccept|\bok\b|\byes\b/.test(lowerActionLabel)) {
+        destOutcome = outcomes.find(
+          (o) => o.tint === "success" || /\bapprov/.test(o.label.toLowerCase())
+        );
+      } else if (/\bden|\breject|\bdecline/.test(lowerActionLabel)) {
+        destOutcome = outcomes.find(
+          (o) => o.tint === "danger" || /\bden|\breject|\bdecline/.test(o.label.toLowerCase())
+        );
+      }
+      if (!destOutcome) destOutcome = outcomes[0];
+
+      // Build a label derived from the destination outcome (Brief 131
+      // Phase 10's "smart default labels"). Falls back to a generic
+      // counter when no outcome exists yet.
+      const emailCount = state.workflow.stages.filter((s) =>
+        stageIsEmail(s)
+      ).length;
+      const seedLabel = destOutcome
+        ? `${destOutcome.label} email`
+        : emailCount === 0
+          ? "Email"
+          : `Email step ${emailCount + 1}`;
+
+      const newEmailStep: WorkflowStage = {
+        id: `email_${lowerNanoid()}`,
+        label: seedLabel,
+        transitions: [
+          {
+            to: destOutcome?.id ?? "",
+            label: destOutcome ? `Continue to ${destOutcome.label}` : "Continue"
+          }
+        ],
+        kind: "email",
+        recipients: [],
+        subject_template: DEFAULT_EMAIL_SUBJECT_TEMPLATE,
+        body_template: DEFAULT_EMAIL_BODY_TEMPLATE,
+        // PDF default mirrors the "Email submitter on outcome" quick
+        // pattern (Brief 129): an outbound notification AFTER the
+        // operator has acted on the form is the typical reason to wire
+        // a routed email step.
+        attach_pdf: true,
+        _uiKey: nanoid(8)
+      };
+      // Insert the new email step just after its origin step.
+      const stages = [...state.workflow.stages];
+      const originIdx = stages.findIndex((s) => s.id === originStage.id);
+      if (originIdx >= 0) {
+        stages.splice(originIdx + 1, 0, newEmailStep);
+      } else {
+        stages.push(newEmailStep);
+      }
+      // Rewire the origin action to point at the new email step.
+      const updatedStages = stages.map((s) => {
+        if (s.id !== originStage.id) return s;
+        return {
+          ...s,
+          transitions: s.transitions.map((t, i) =>
+            i === action.transitionIndex ? { ...t, to: newEmailStep.id } : t
+          )
+        };
+      });
+      return {
+        ...state,
+        workflow: { ...state.workflow, stages: updatedStages },
         dirty: true
       };
     }

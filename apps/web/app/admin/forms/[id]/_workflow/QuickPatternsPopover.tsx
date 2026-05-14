@@ -43,6 +43,12 @@ const PATTERNS: ReadonlyArray<{
     id: "email_specific_person_on_submission",
     label: "Email a specific person on submission",
     description: "Adds an email step with an empty recipient — you pick who."
+  },
+  {
+    id: "email_submitter_on_approve_and_deny",
+    label: "Email submitter on approve + deny",
+    description:
+      "Wires the approval step's Approve action through an approval-email step (PDF attached) → Approved outcome, and its Deny action through a denial-email step → Denied outcome. Both emails go to the form submitter."
   }
 ];
 

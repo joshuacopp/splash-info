@@ -229,6 +229,9 @@ function FormGroup({
             <div className="min-w-0 flex-1">
               <div className="flex flex-wrap items-baseline gap-2 text-sm text-splash-navy">
                 <StagePill label={item.stage_label} />
+                {item.approver_resolution_status === "empty" && (
+                  <UnresolvedApproverPill />
+                )}
                 {item.submitter_email ? (
                   <span className="truncate font-medium">
                     {item.submitter_email}
@@ -250,7 +253,7 @@ function FormGroup({
               </p>
             </div>
             <Link
-              href={item.review_path}
+              href={`${item.review_path}?from=approvals`}
               className="inline-flex items-center gap-1.5 rounded-splash-sm bg-splash-blue px-4 py-1.5 text-xs font-bold uppercase tracking-wide text-white shadow-splash-btn transition-colors hover:bg-splash-blue-dark"
             >
               Review
@@ -279,6 +282,17 @@ function StagePill({ label }: { label: string }) {
   return (
     <span className="inline-flex items-center rounded-full bg-amber-100 px-2 py-0.5 text-[0.6875rem] font-bold uppercase tracking-wide text-amber-800">
       {label}
+    </span>
+  );
+}
+
+function UnresolvedApproverPill() {
+  return (
+    <span
+      className="inline-flex items-center rounded-full bg-racecar-red/10 px-2 py-0.5 text-[0.6875rem] font-bold uppercase tracking-wide text-racecar-red ring-1 ring-racecar-red/40"
+      title="The approver_source on this stage resolved to no emails. Check the form's workflow configuration."
+    >
+      ⚠ No approver resolved
     </span>
   );
 }

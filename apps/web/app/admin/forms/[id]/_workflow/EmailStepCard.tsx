@@ -135,8 +135,9 @@ export default function EmailStepCard(props: EmailStepCardProps) {
           type="text"
           value={step.label}
           onChange={(e) => onUpdateLabel(e.currentTarget.value)}
-          placeholder={`Step ${stepIndex + 1}`}
-          className="ml-1 flex-1 rounded-splash-sm border border-transparent bg-transparent px-1 py-0.5 text-sm font-semibold text-splash-navy focus:border-gray-light focus:bg-white"
+          placeholder="Click to name this step…"
+          title="Click to edit this step's label"
+          className="ml-1 flex-1 rounded-splash-sm border border-dashed border-amber-300/70 bg-transparent px-1.5 py-0.5 text-sm font-semibold text-splash-navy hover:border-amber-400 hover:bg-white focus:border-amber-500 focus:bg-white focus:outline-none"
         />
         <button
           type="button"
@@ -191,7 +192,7 @@ export default function EmailStepCard(props: EmailStepCardProps) {
 
         <details className="text-xs text-splash-navy/70">
           <summary className="cursor-pointer font-semibold">
-            Use placeholders like {"{field.label}"} or {"{field.key}"}
+            Use dynamic fields
           </summary>
           <div className="mt-1 rounded-splash-sm border border-gray-light bg-white p-2">
             <p className="text-[0.65rem] font-semibold uppercase tracking-wide text-splash-navy/70">
@@ -295,6 +296,7 @@ function RecipientsList({
         <ApproverPicker
           source={undefined}
           fields={fields}
+          mode="recipient"
           onChange={(src) => {
             if (src) onChange([src]);
             else onChange([]);
@@ -308,6 +310,7 @@ function RecipientsList({
               <ApproverPicker
                 source={src}
                 fields={fields}
+                mode="recipient"
                 onChange={(next) => {
                   if (!next) {
                     onChange(list.filter((_, i) => i !== idx));

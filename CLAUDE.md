@@ -1647,6 +1647,122 @@ URL-based — service bindings don't apply to those.
   added as a direct forms-worker dep (same version damage-worker
   uses → bundle dedupe). Bundle impact: +870 KiB raw / +222 KiB
   gzip on the forms-worker compressed size.
+  Brief 131 (2026-05-14) closed a chain of correctness + UX gaps
+  surfaced by real-world testing of Brief 125/127's workflow + email
+  infrastructure. **Picker correctness fix.** Brief 125's
+  `ApproverPicker` (`apps/web/app/admin/forms/[id]/_workflow/`)
+  saved `{type: "site_role", role: "rm_email"}` when the operator
+  picked a lookup option whose `sourceColumn` was `rm_email` (or
+  `am_email` / `site_email`). That forced the resolver to walk the
+  schema for a `location` field or location-keyed lookup and resolve
+  via `getLocationContactInfo` — which fails when the form has only
+  a Site Number lookup, not a Location field, because
+  `extractLocationCode` returns null. Brief 131 audits the picker's
+  `onChange` handler: `lookup_role` picks now save as
+  `{type: "payload_field", field_key: <lookup field's payload key>}`
+  — the lookup has already resolved the email at submit time, so its
+  payload value IS the email. `location_role` picks (auto-detected
+  from a real `location` field) continue to save `site_role` because
+  the resolver finds `location_code` and looks up the contact email
+  via `getLocationContactInfo`. **Payload-key vs field-id
+  clarification.** Empirical confirmation: payload keys are
+  `field.key`, NOT `field.id`. Three sites in agreement: submit
+  handler at `apps/forms-worker/src/submit/parse.ts:53` writes
+  `payload[field.key] = value`; resolver at
+  `apps/forms-worker/src/workflow-resolution.ts:98` reads
+  `ctx.payload[f.key]`; pending-approvals at
+  `apps/forms-worker/src/admin/pending-approvals.ts:203` reads
+  `payload[f.key]`. Any future helper that needs to read a payload
+  value MUST key on `field.key`, not `field.id`. **Terminal-stage
+  auto-status.** Brief 96's `form_submissions.status` enum stays
+  `new` / `in_progress` / `closed`, but the transition handler in
+  `apps/forms-worker/src/admin/submissions.ts` now auto-flips the
+  column to `closed` when the destination is a terminal outcome
+  (`workflowStageIsOutcome(destStage)`) AND the current status is
+  `new` or `in_progress` — so operators don't have to manually
+  update Status after reaching an outcome. The audit columns
+  `status_updated_at` / `status_updated_by = 'system@workflow'` get
+  stamped server-side in the same PATCH. Admin-curated `closed`
+  status isn't overridden. **Inline signature canvas.** Brief 120
+  shipped a literal-text "paste an r2_key" input on the admin
+  transition modal that was clearly a dev placeholder. Brief 131
+  replaces it with a real `<canvas>`-backed signature pad at
+  `apps/web/app/admin/forms/[id]/submissions/[subId]/_components/SignatureCanvas.tsx`
+  that loads the vendored `signature_pad.min.js` (Brief 92) via
+  `<Script src="/forms/api/static/signature-pad.min.js" strategy="afterInteractive">`.
+  Same-origin in production via path-carving; cross-origin in dev
+  (smoke deferred to staging per the brief). New worker endpoint
+  `POST /forms/admin/api/transition-signatures/{submission_id}`
+  (admin-tier gate) writes the PNG blob to R2 at
+  `transition-signatures/{submissionId}/{nanoid}.png` and returns
+  `{r2_key}`. The hidden `signature_r2_key` form input gets
+  populated via React state; the existing transition action sends
+  it through to Brief 120's `signature_r2_key` parameter unchanged.
+  **All Approvals widening.** Brief 121's
+  `GET /forms/admin/api/pending-approvals?all=1` dropped the
+  `current_approver_emails != '{}'` filter so admin oversight can
+  spot rows whose approver resolution failed. Each item carries a
+  new `approver_resolution_status: "resolved" | "empty"` field;
+  apps/web `/admin/approvals` renders a "⚠ No approver resolved"
+  pill on empty rows. Rows whose current stage has no
+  `approver_source` (terminal / email-step stages) are skipped —
+  they shouldn't surface as pending approvals. **Workflow column
+  on per-form submissions list.** Brief 119's wide-table viewer
+  (`/admin/forms/[id]/submissions`) gained a "Workflow" column.
+  `SubmissionListItem` on both the worker side
+  (`apps/forms-worker/src/db/admin-submissions.ts`) and apps/web
+  side gains `workflow_stage?: string | null` (returned on every
+  list row regardless of `include=payload`). New
+  `apps/web/app/admin/forms/[id]/submissions/_components/WorkflowOutcomeCell.tsx`
+  renders three states: no workflow → muted em-dash; terminal
+  outcome → tinted pill (Brief 125's `stage.tint` + keyword
+  heuristic fallback); in-flight → info-tinted "stage label" pill.
+  **Loading state.** New
+  `apps/web/app/admin/forms/[id]/submissions/[subId]/loading.tsx`
+  skeleton renders immediately on click (Next.js loading
+  convention); SubmitButton (Brief 130) wired on the transition
+  modal + Status & Splash Notes Save button with contextual
+  `pendingText` derived from the action label
+  ("Approving…" / "Denying…" / "Sending back…"). **Approvals
+  nav.** `/admin/approvals` Review buttons append `?from=approvals`;
+  the per-submission detail page reads `searchParams.from` and
+  prepends a `← Back to Pending Approvals` link to the breadcrumb
+  row. **Builder label polish.** EmailStepCard "Use placeholders
+  like {field.label} or {field.key}" → "Use dynamic fields"; the
+  step-label input gets dashed amber border + "Click to name this
+  step…" placeholder + hover affordance. `ApproverPicker` gains a
+  `mode: "approver" | "recipient"` prop that retitles the header
+  ("Who approves this step?" → "Send email to" for email steps) +
+  the empty-placeholder and missing-source warning copy.
+  EmailStepCard passes `mode="recipient"` to its inner pickers.
+  **Inline "+ Create new email step here."** New reducer action
+  `workflow_add_email_step_from_action` + dispatch
+  `onCreateAndRouteToEmailStep` + sentinel `<option>` `+ Create
+  new email step here` in every ActionSubCard's "Then go to"
+  dropdown. Picking it creates a fresh email step (label derived
+  from the matching outcome — "Approved email" / "Denied email"),
+  splices it immediately after the origin approval step, points
+  the action's `to` at it, routes the new step's auto-advance
+  transition to the keyword-matched outcome (success-tinted for
+  approve-ish action labels; danger-tinted for deny-ish; first
+  outcome otherwise). One-click vs the three-step manual sequence
+  Brief 125/127 required (create email step downstream first → wire
+  it → go back to wire upstream). **New Quick Pattern.**
+  `email_submitter_on_approve_and_deny` — for each approval step,
+  finds Approve and Deny actions (keyword-matched), creates two
+  email steps (approval email with `attach_pdf: true` → Approved
+  outcome; denial email with `attach_pdf: false` → Denied outcome),
+  rewires both actions through them. **Defensive resolver log.**
+  `apps/forms-worker/src/workflow-resolution.ts` `payload_field`
+  branch now `console.warn`s `[forms.workflow.resolve]
+  payload_field "{field_key}" resolved to empty / non-email value`
+  when resolution fails, so a future picker misconfiguration is
+  grep-able in worker logs. **Latent for follow-up.** The
+  per-submission detail page (`/admin/forms/[id]/submissions/[subId]/page.tsx`)
+  is admin-tier gated on apps/web, but Brief 120's transition
+  handler accepts any approver — RM/GM approvers can hit the worker
+  endpoint via curl but can't reach the apps/web page UI today.
+  Widening the page gate is a follow-up brief.
 - **outbound_emails table** (Brief 127) - Shared queue of fully-rendered
   outbound emails. Single Power Automate flow polls every 5 minutes
   and drains the queue regardless of which worker enqueued the row.

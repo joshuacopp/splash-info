@@ -88,6 +88,7 @@ import { handleListVersions } from "./admin/versions.js";
 import { handlePendingApprovals } from "./admin/pending-approvals.js";
 import { handleMyRequests } from "./admin/my-requests.js";
 import { handleUserSearch } from "./admin/users-search.js";
+import { handleTransitionSignatureUpload } from "./admin/transition-signatures.js";
 import { handleEmailQueueClaim } from "./email-queue/claim.js";
 import { handleEmailQueueConfirm } from "./email-queue/confirm.js";
 import {
@@ -260,6 +261,17 @@ export default {
     // GET /forms/admin/api/lookup-sources
     if (url.pathname === "/forms/admin/api/lookup-sources" && req.method === "GET") {
       return handleLookupSources(env, req);
+    }
+
+    // Brief 131 — POST /forms/admin/api/transition-signatures/{submission_id}
+    //   Admin transition-modal canvas-rendered signature upload. R2 lands at
+    //   transition-signatures/{submission_id}/{nanoid}.png; the returned
+    //   r2_key feeds back into the transition action's `signature_r2_key`.
+    const txSigMatch = url.pathname.match(
+      /^\/forms\/admin\/api\/transition-signatures\/([^/]+)$/
+    );
+    if (txSigMatch && txSigMatch[1] && req.method === "POST") {
+      return handleTransitionSignatureUpload(env, req, txSigMatch[1]);
     }
 
     // Brief 121 — GET /forms/admin/api/pending-approvals

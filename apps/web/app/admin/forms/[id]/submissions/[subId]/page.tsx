@@ -13,6 +13,7 @@ import { getSubmissionAdmin } from "../../../_lib/worker-fetch";
 import FormsAdminTabs from "../../../_components/FormsAdminTabs";
 import NoAccessCard from "../../../_components/NoAccessCard";
 import { ActionForm } from "../../../../_components/ActionForm";
+import { SubmitButton } from "../../../../_components/SubmitButton";
 import StatusPill from "../_components/StatusPill";
 import PayloadRenderer from "./_components/PayloadRenderer";
 import WorkflowSection from "./_components/WorkflowSection";
@@ -22,6 +23,7 @@ export const dynamic = "force-dynamic";
 
 interface PageProps {
   params: Promise<{ id: string; subId: string }>;
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
 }
 
 function em(): React.ReactNode {
@@ -41,8 +43,13 @@ function formatAbsolute(iso: string | null): string {
   });
 }
 
-export default async function SubmissionDetailPage({ params }: PageProps) {
+export default async function SubmissionDetailPage({
+  params,
+  searchParams
+}: PageProps) {
   const { id, subId } = await params;
+  const sp = await searchParams;
+  const fromApprovals = sp.from === "approvals";
 
   const session = await getMe().catch(() => null);
   if (!session) {
@@ -95,7 +102,15 @@ export default async function SubmissionDetailPage({ params }: PageProps) {
 
   return (
     <section className="mx-auto w-full max-w-[820px] px-5 py-9">
-      <div className="mb-2 text-sm">
+      <div className="mb-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm">
+        {fromApprovals && (
+          <Link
+            href="/admin/approvals"
+            className="font-semibold text-splash-blue hover:underline"
+          >
+            ← Back to Pending Approvals
+          </Link>
+        )}
         <Link
           href={`/admin/forms/${encodeURIComponent(id)}/submissions`}
           className="text-splash-blue hover:underline"
@@ -157,17 +172,18 @@ export default async function SubmissionDetailPage({ params }: PageProps) {
               className="block w-full rounded-splash-md border border-gray-light bg-white px-3 py-2 text-sm text-splash-navy focus:border-splash-blue focus:outline-none focus:ring-1 focus:ring-splash-blue"
             />
           </div>
-          <button
-            type="submit"
-            className="rounded-splash-md bg-splash-navy px-4 py-2 text-sm font-semibold text-white hover:bg-splash-blue-dark"
+          <SubmitButton
+            pendingText="Saving…"
+            className="rounded-splash-md bg-splash-navy px-4 py-2 text-sm font-semibold text-white hover:bg-splash-blue-dark disabled:opacity-70"
           >
             Save
-          </button>
+          </SubmitButton>
         </ActionForm>
       </section>
 
       {workflow && (
         <WorkflowSection
+          submissionId={subId}
           workflow={workflow}
           currentStageId={
             submission.workflow_stage ?? workflow.default_stage

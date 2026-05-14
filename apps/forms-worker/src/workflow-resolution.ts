@@ -65,10 +65,16 @@ export async function resolveApproverEmails(
 
     case "payload_field": {
       const value = ctx.payload[source.field_key];
-      if (typeof value !== "string") return [];
-      const trimmed = value.trim();
-      if (!trimmed || !trimmed.includes("@")) return [];
-      return normaliseEmails([trimmed]);
+      if (typeof value !== "string" || !value.trim() || !value.includes("@")) {
+        // Brief 131 — defensive log so a misconfigured picker (or a
+        // payload-key vs field-id mismatch) surfaces in worker logs
+        // instead of silently producing an empty approver list.
+        console.warn(
+          `[forms.workflow.resolve] payload_field "${source.field_key}" resolved to empty / non-email value`
+        );
+        return [];
+      }
+      return normaliseEmails([value.trim()]);
     }
 
     case "site_role": {

@@ -42,6 +42,11 @@ export interface SubmissionListItem {
   version_number: number | null;
   splash_notes_preview: string | null;
   splash_notes_truncated: boolean;
+  // Brief 131 — workflow stage id on every list row; null when the
+  // submission's version has no workflow. Apps/web pairs this with
+  // `version?.schema.workflow.stages` to render the Workflow column
+  // (stage label + outcome tint for terminal stages).
+  workflow_stage?: string | null;
   // Brief 119 — populated when listSubmissionsAdmin is called with
   // `include: "payload"`. Wide-table view reads these to render every
   // answer as a column without a per-row detail fetch.
@@ -529,6 +534,12 @@ export interface PendingApprovalItem {
   submitted_at: string;
   location_code: string | null;
   review_path: string;
+  /**
+   * Brief 131 — "empty" when the row's approver_source couldn't be
+   * resolved to any emails. Surfaced on the All Approvals admin view
+   * as a "No approver resolved" warning pill.
+   */
+  approver_resolution_status?: "resolved" | "empty";
 }
 
 export interface PendingApprovalsResponse {

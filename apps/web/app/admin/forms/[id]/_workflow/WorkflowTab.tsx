@@ -97,6 +97,13 @@ export interface WorkflowTabDispatch {
     recipients: ApproverSource[]
   ) => void;
   onApplyQuickPattern: (pattern: QuickPattern) => void;
+  // Brief 131 — inline "+ Create new email step here" routed from an
+  // approval action's Then-go-to dropdown. Atomic: creates the step,
+  // wires the action at it, picks a default outcome destination.
+  onCreateAndRouteToEmailStep: (
+    stepId: string,
+    transitionIndex: number
+  ) => void;
   onAddOutcome: () => void;
   onUpdateOutcome: (
     outcomeId: string,
@@ -293,6 +300,9 @@ export default function WorkflowTab({ workflow, fields, dispatch }: Props) {
                     }
                     onRemoveTransition={(index) =>
                       dispatch.onRemoveTransition(step.id, index)
+                    }
+                    onCreateAndRouteToEmailStep={(index) =>
+                      dispatch.onCreateAndRouteToEmailStep(step.id, index)
                     }
                     onDuplicate={() => dispatch.onDuplicateStep(step.id)}
                     onRemove={() => {

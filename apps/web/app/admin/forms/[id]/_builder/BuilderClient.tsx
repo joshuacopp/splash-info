@@ -200,6 +200,12 @@ export default function BuilderClient({
       dispatch({ type: "workflow_set_email_recipients", stepId, recipients }),
     onApplyQuickPattern: (pattern) =>
       dispatch({ type: "workflow_apply_pattern", pattern }),
+    onCreateAndRouteToEmailStep: (stepId, transitionIndex) =>
+      dispatch({
+        type: "workflow_add_email_step_from_action",
+        stepId,
+        transitionIndex
+      }),
     onAddOutcome: () => dispatch({ type: "workflow_add_outcome" }),
     onUpdateOutcome: (outcomeId, patch) =>
       dispatch({ type: "workflow_update_outcome", outcomeId, patch }),

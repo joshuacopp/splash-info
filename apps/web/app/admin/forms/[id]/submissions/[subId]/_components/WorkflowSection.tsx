@@ -1,4 +1,9 @@
 // Brief 120 — workflow section on the submission detail page.
+// Brief 131 — replaced the dev-placeholder "paste an r2_key" signature
+// input with a real `<SignatureCanvas>` client component, swapped the
+// bare submit button for the shared `<SubmitButton>` so transitions
+// show a pending state, and contextualized the pending label per
+// action (e.g. "Approving…" / "Denying…").
 //
 // Renders:
 //   1. Current stage label (prominent at top)
@@ -7,14 +12,8 @@
 //      email; super_admin / admin tier always sees every transition button
 //      as the escape hatch).
 //   3. Modal-style requirements collector (note / typed_name / signature
-//      checkboxes from the transition's `requires` block).
+//      canvas from the transition's `requires` block).
 //   4. Vertical history timeline mirroring the damage activity log.
-//
-// The transition POST runs through Brief 19 `useActionState` pattern via
-// <ActionForm> for the textual requirements (note + typed_name); the
-// signature input is a stub — full canvas wiring deferred to a Brief 121
-// follow-up (the worker accepts a signature_r2_key today, the apps/web
-// signature capture is non-trivial and not blocking the data-model brief).
 
 "use client";
 
@@ -26,9 +25,15 @@ import type {
   WorkflowTransition
 } from "@splash/forms-schema";
 
-import { ActionForm, type ActionResult } from "../../../../../_components/ActionForm";
+import {
+  ActionForm,
+  type ActionResult
+} from "../../../../../_components/ActionForm";
+import { SubmitButton } from "../../../../../_components/SubmitButton";
+import SignatureCanvas from "./SignatureCanvas";
 
 interface Props {
+  submissionId: string;
   workflow: FormWorkflow;
   currentStageId: string;
   history: WorkflowHistoryEntry[];
@@ -40,6 +45,18 @@ interface Props {
     _prev: ActionResult | null,
     formData: FormData
   ) => Promise<ActionResult>;
+}
+
+const POSITIVE_TOKENS = ["approve", "accept", "ok", "yes", "confirm"];
+const NEGATIVE_TOKENS = ["deny", "decline", "reject", "no"];
+
+function pendingTextForLabel(label: string): string {
+  const lower = label.toLowerCase();
+  if (POSITIVE_TOKENS.some((t) => lower.includes(t))) return "Approving…";
+  if (NEGATIVE_TOKENS.some((t) => lower.includes(t))) return "Denying…";
+  if (lower.includes("send back")) return "Sending back…";
+  if (lower.includes("cancel")) return "Cancelling…";
+  return `${label}…`;
 }
 
 export default function WorkflowSection(props: Props) {
@@ -109,6 +126,7 @@ export default function WorkflowSection(props: Props) {
 
       {activeTx && (
         <TransitionModal
+          submissionId={props.submissionId}
           transition={activeTx}
           stages={stages}
           onCancel={() => setActiveTransition(null)}
@@ -122,6 +140,7 @@ export default function WorkflowSection(props: Props) {
 }
 
 interface TransitionModalProps {
+  submissionId: string;
   transition: WorkflowTransition;
   stages: WorkflowStage[];
   onCancel: () => void;
@@ -135,6 +154,13 @@ function TransitionModal(p: TransitionModalProps) {
   const requires = p.transition.requires ?? {};
   const destLabel =
     p.stages.find((s) => s.id === p.transition.to)?.label ?? p.transition.to;
+  const pendingText = pendingTextForLabel(p.transition.label);
+
+  // Brief 131 — track the canvas-uploaded r2_key in client state so the
+  // hidden form input reflects it on submit. Updates flow back from
+  // <SignatureCanvas> via onUploaded / onCleared.
+  const [signatureR2Key, setSignatureR2Key] = useState<string>("");
+
   return (
     <div className="mb-4 rounded-md border border-splash-blue bg-sudsy-blue/5 p-4">
       <div className="mb-2 flex items-start justify-between gap-2">
@@ -177,32 +203,35 @@ function TransitionModal(p: TransitionModalProps) {
           </label>
         )}
         {requires.signature && (
-          <label className="block text-xs font-semibold uppercase tracking-wide text-splash-navy/70">
-            Signature R2 key (required)
-            <input
-              type="text"
-              name="signature_r2_key"
-              required
-              placeholder="form-submission-files/.../signature.png"
-              className="mt-1 block w-full rounded-splash-md border border-gray-light bg-white px-3 py-1.5 text-sm font-mono text-splash-navy"
+          <div className="space-y-1">
+            <label className="block text-xs font-semibold uppercase tracking-wide text-splash-navy/70">
+              Signature (required)
+            </label>
+            <SignatureCanvas
+              submissionId={p.submissionId}
+              onUploaded={(r2_key) => setSignatureR2Key(r2_key)}
+              onCleared={() => setSignatureR2Key("")}
+              currentR2Key={signatureR2Key || null}
             />
-            <span className="mt-1 block text-[0.65rem] text-splash-navy/60">
-              Full signature-canvas wiring is a Brief 121 follow-up; for v1
-              paste an existing r2_key.
-            </span>
-          </label>
+            <input
+              type="hidden"
+              name="signature_r2_key"
+              value={signatureR2Key}
+              required
+            />
+          </div>
         )}
         {!requires.note && !requires.typed_name && !requires.signature && (
           <p className="text-xs text-splash-navy/60">
             No additional fields required. Click Confirm to advance.
           </p>
         )}
-        <button
-          type="submit"
-          className="rounded-splash-md bg-splash-navy px-4 py-2 text-sm font-semibold text-white hover:bg-splash-blue-dark"
+        <SubmitButton
+          pendingText={pendingText}
+          className="rounded-splash-md bg-splash-navy px-4 py-2 text-sm font-semibold text-white hover:bg-splash-blue-dark disabled:opacity-70"
         >
           Confirm: {p.transition.label}
-        </button>
+        </SubmitButton>
       </ActionForm>
     </div>
   );

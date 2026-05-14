@@ -27,6 +27,7 @@ import { CsvExportButton } from "../../../../_components/CsvExportButton";
 import StatusPill from "./_components/StatusPill";
 import ViewToggle from "./_components/ViewToggle";
 import AnswerCell from "./_components/AnswerCell";
+import WorkflowOutcomeCell from "./_components/WorkflowOutcomeCell";
 import { computeSchemaUnion, type AnswerColumn } from "./_lib/schema-union";
 
 export const dynamic = "force-dynamic";
@@ -267,6 +268,7 @@ function WideSubmissionsTable({
           <tr>
             <th className={stickyHeadLeft}>Submitted</th>
             <th className={stickyHeadBase}>Status</th>
+            <th className={stickyHeadBase}>Workflow</th>
             <th className={stickyHeadBase}>Submitter</th>
             <th className={stickyHeadBase}>Splash Notes</th>
             <th className={stickyHeadBase}>Version</th>
@@ -297,6 +299,9 @@ function WideSubmissionsTable({
               </td>
               <td className="px-3 py-2 align-top">
                 <StatusPill status={s.status} />
+              </td>
+              <td className="px-3 py-2 align-top">
+                <WorkflowOutcomeCell item={s} />
               </td>
               <td className="px-3 py-2 align-top text-splash-navy">
                 {s.submitter_kind === "authenticated" ? (
@@ -391,6 +396,7 @@ function CompactSubmissionsTable({
           <tr>
             <th className="px-3 py-2 font-semibold">Submitted</th>
             <th className="px-3 py-2 font-semibold">Status</th>
+            <th className="px-3 py-2 font-semibold">Workflow</th>
             <th className="px-3 py-2 font-semibold">Submitter</th>
             <th className="px-3 py-2 font-semibold">Splash Notes</th>
             <th className="px-3 py-2 font-semibold">Version</th>
@@ -410,6 +416,9 @@ function CompactSubmissionsTable({
               </td>
               <td className="px-3 py-2 align-top">
                 <StatusPill status={s.status} />
+              </td>
+              <td className="px-3 py-2 align-top">
+                <WorkflowOutcomeCell item={s} />
               </td>
               <td className="px-3 py-2 align-top text-splash-navy">
                 {s.submitter_kind === "authenticated" ? (

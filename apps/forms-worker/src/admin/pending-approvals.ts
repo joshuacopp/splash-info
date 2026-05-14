@@ -41,6 +41,15 @@ export interface PendingApprovalItem {
   location_code: string | null;
   /** Direct link target for the Review button. */
   review_path: string;
+  /**
+   * Brief 131 — set to "empty" when the row's `approver_source` exists
+   * but resolution produced no emails (a misconfigured picker, mid-form
+   * data drift, etc.). The All Approvals admin view surfaces a
+   * "No approver resolved" warning pill on these so admins can spot
+   * stuck workflows. Always "resolved" for `scope === "me"` because
+   * empty-approver rows can't match the caller's email anyway.
+   */
+  approver_resolution_status: "resolved" | "empty";
 }
 
 interface PendingApprovalDbRow {
@@ -107,12 +116,14 @@ export async function handlePendingApprovals(
       "current_approver_emails",
       `cs.{${escapePgrstArrayLiteral(callerEmail)}}`
     );
-  } else {
-    // "all" — every pending approval, regardless of approver. Use
-    // not-empty as the filter: `current_approver_emails=neq.{}` returns
-    // rows whose array literal isn't the empty `{}`.
-    pgUrl.searchParams.set("current_approver_emails", "neq.{}");
   }
+  // Brief 131 — All Approvals (scope === "all") drops the
+  // `current_approver_emails != {}` filter so admin oversight can spot
+  // rows whose approver resolution failed (stuck workflow diagnostic).
+  // The per-row `approver_resolution_status` field below tells the
+  // apps/web caller which rows need the "No approver resolved" pill.
+  // Rows are still filtered to `workflow_stage IS NOT NULL` above, so
+  // legacy non-workflow submissions are excluded.
   pgUrl.searchParams.set("order", "submitted_at.desc");
   pgUrl.searchParams.set("limit", String(PENDING_LIMIT));
 
@@ -147,18 +158,30 @@ export async function handlePendingApprovals(
         ? (r.version.schema as FormSchema)
         : ({ fields: [] } as FormSchema);
     const stage = schema.workflow?.stages.find((s) => s.id === r.workflow_stage);
+    // Brief 131 — when scope=all and approver list is empty, the row is
+    // only meaningful as a diagnostic surface if the stage actually
+    // EXPECTS an approver (i.e., has an approver_source). Rows without
+    // approver_source are terminal/email-step stages that shouldn't
+    // appear in a "pending approval" feed; skip them.
+    const approverEmails = r.current_approver_emails ?? [];
+    const expectsApprover = Boolean(stage?.approver_source);
+    if (scope === "all" && approverEmails.length === 0 && !expectsApprover) {
+      continue;
+    }
     items.push({
       submission_id: r.id,
       form_id: r.form_id,
       form_title: r.form.title,
       workflow_stage: r.workflow_stage,
       stage_label: stage?.label ?? r.workflow_stage,
-      current_approver_emails: r.current_approver_emails ?? [],
+      current_approver_emails: approverEmails,
       submitter_email: r.submitter_email,
       submitter_kind: r.submitter_kind,
       submitted_at: r.submitted_at,
       location_code: extractLocationCode(schema, r.payload),
-      review_path: `/admin/forms/${r.form_id}/submissions/${r.id}`
+      review_path: `/admin/forms/${r.form_id}/submissions/${r.id}`,
+      approver_resolution_status:
+        approverEmails.length === 0 && expectsApprover ? "empty" : "resolved"
     });
   }
 

@@ -41,6 +41,7 @@ import {
   isEmailStage,
   payloadWithSubmitterSynthetic
 } from "../workflow-email-step.js";
+import { workflowStageIsOutcome } from "../notifications.js";
 import type { Env } from "../index.js";
 
 const FORM_ID_RE =
@@ -647,11 +648,38 @@ export async function handleTransition(
   // call site — it's still threaded through.
   void ctx;
 
+  // Brief 131 — when the post-cascade resting stage is a terminal
+  // outcome and the submission's Brief 96 `status` column is still
+  // `new` or `in_progress`, auto-flip it to `closed`. Don't override
+  // an admin who's already set `closed` (or any future enum value).
+  // Stamp the audit columns with a system-actor marker so the UI's
+  // "Status updated by" row makes the auto-update visible.
+  const finalStage = workflow.stages.find((s) => s.id === finalStageId);
+  let statusPatch:
+    | {
+        status: "closed";
+        status_updated_at: string;
+        status_updated_by: string;
+      }
+    | undefined;
+  if (
+    finalStage &&
+    workflowStageIsOutcome(finalStage) &&
+    (submission.status === "new" || submission.status === "in_progress")
+  ) {
+    statusPatch = {
+      status: "closed",
+      status_updated_at: new Date().toISOString(),
+      status_updated_by: "system@workflow"
+    };
+  }
+
   try {
     const updated = await transitionSubmission(env, formId, subId, {
       workflow_stage: finalStageId,
       workflow_history: finalHistory,
-      current_approver_emails: finalApproverEmails
+      current_approver_emails: finalApproverEmails,
+      ...(statusPatch ?? {})
     });
     if (!updated) return jsonError(404, "not_found");
 
@@ -663,7 +691,8 @@ export async function handleTransition(
         to: toStageId,
         workflow_stage: finalStageId,
         workflow_history: finalHistory,
-        current_approver_emails: finalApproverEmails
+        current_approver_emails: finalApproverEmails,
+        status_auto_updated: statusPatch ? "closed" : null
       }),
       {
         status: 200,
