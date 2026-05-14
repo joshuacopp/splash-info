@@ -47,10 +47,11 @@ import { renderSuccessPage } from "./success.js";
 import { fireSubmissionWebhook, type WebhookFile } from "./webhook.js";
 import { HARD_LIMITS } from "../limits.js";
 import {
-  fireAssignmentNotification,
-  getWorkflowNotifications,
-  buildReviewUrl
-} from "../notifications.js";
+  cascadeThroughEmailSteps,
+  buildRuntimeContext,
+  isEmailStage,
+  payloadWithSubmitterSynthetic
+} from "../workflow-email-step.js";
 
 const PENDING_ID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -347,16 +348,21 @@ export async function handleSubmit(
   }
 
   // -----------------------------------------------------------------
-  // Brief 120 — workflow seed.
+  // Brief 120 + Brief 127 — workflow seed + email-step cascade.
   //
   // If the version has a workflow block, seed `workflow_stage` to its
-  // `default_stage` and pre-resolve the default stage's approver emails
-  // into `current_approver_emails`. Brief 121's "pending for me"
-  // dashboard reads off `current_approver_emails`, so populating at
-  // submit time is what makes a freshly-submitted form immediately
-  // routable.
+  // `default_stage`. If the default stage is an email step, run the
+  // cascade now — render templates, enqueue rows, append history — so
+  // the inserted row carries the post-cascade state. The next non-
+  // email stage's approvers land in `current_approver_emails` for
+  // Brief 121's dashboard.
+  //
+  // The cascade is wrapped in try/catch — any throw collapses to the
+  // pre-cascade default-stage seed so the form submission itself isn't
+  // blocked by enqueue / approver-resolve failures.
   // -----------------------------------------------------------------
   let workflowStage: string | null = null;
+  let workflowHistory: unknown[] = [];
   let currentApproverEmails: string[] = [];
   if (version.schema.workflow) {
     const defaultStageId = version.schema.workflow.default_stage;
@@ -378,6 +384,50 @@ export async function handleSubmit(
         } catch (err) {
           console.error("[forms] workflow seed: approver resolve threw", err);
           currentApproverEmails = [];
+        }
+      }
+      // Brief 127 — cascade through email steps starting at the
+      // default stage. When the default stage is an email step the
+      // cascade renders + enqueues + advances; when it isn't, the
+      // cascade returns the same stage with its approvers. Either way
+      // the result is what we write to the row.
+      if (isEmailStage(defaultStage)) {
+        try {
+          const runtimeBase = buildRuntimeContext({
+            form: { id: form.id, slug: form.slug, title: form.title },
+            submissionId: pendingSubmissionId,
+            submitterEmail
+          });
+          const cascade = await cascadeThroughEmailSteps(env, {
+            form,
+            version,
+            schema: version.schema,
+            payload: payloadWithSubmitterSynthetic(payload, submitterEmail),
+            runtime: runtimeBase,
+            startStageId: defaultStageId,
+            fromStageId: null,
+            // Brief 129 — submission metadata for the completed-form PDF
+            // generator. At submit time we don't yet have `submitted_at`
+            // from the DB row; the column default fires server-side, so
+            // we stamp `new Date()` here as a close approximation.
+            submissionMeta: {
+              id: pendingSubmissionId,
+              submittedAt: new Date().toISOString(),
+              submitterKind,
+              submitterEmail
+            },
+            priorWorkflowHistory: []
+          });
+          workflowStage = cascade.workflow_stage;
+          workflowHistory = cascade.appended_history;
+          currentApproverEmails = cascade.current_approver_emails;
+        } catch (err) {
+          console.error(
+            "[forms.workflow.email-step] submit-time cascade threw; falling back to seed",
+            err
+          );
+          // Pre-cascade values stay intact (default stage + empty history
+          // + already-resolved approvers if any).
         }
       }
     } else {
@@ -403,7 +453,7 @@ export async function handleSubmit(
       submitterEmail,
       submitterIp,
       workflowStage,
-      workflowHistory: [],
+      workflowHistory,
       currentApproverEmails
     });
   } catch (err) {
@@ -457,49 +507,12 @@ export async function handleSubmit(
     );
   }
 
-  // -----------------------------------------------------------------
-  // Brief 125 — fire per-step assignment notifications for the default
-  // stage, if the workflow opted in. Idempotent re-submits skip (the
-  // original submit already fired).
-  // -----------------------------------------------------------------
-  if (
-    inserted.wasNew &&
-    version.schema.workflow &&
-    currentApproverEmails.length > 0
-  ) {
-    const notif = getWorkflowNotifications(version.schema.workflow);
-    if (notif.notify_approver_on_assignment) {
-      const defaultStage = version.schema.workflow.stages.find(
-        (s) => s.id === workflowStage
-      );
-      const stepLabel = defaultStage?.label ?? workflowStage ?? "Review";
-      const reviewUrl = buildReviewUrl(form.id, inserted.row.id);
-      const submitterLower = submitterEmail
-        ? submitterEmail.trim().toLowerCase()
-        : null;
-      for (const recipientEmail of currentApproverEmails) {
-        // Actor exclusion: if the submitter happens to be on the approver
-        // list (operator forwarding a form to themselves), skip — they
-        // already know they submitted it.
-        if (submitterLower && recipientEmail.toLowerCase() === submitterLower) {
-          continue;
-        }
-        ctx.waitUntil(
-          fireAssignmentNotification(env, {
-            type: "assignment",
-            submission_id: inserted.row.id,
-            form_id: form.id,
-            form_title: form.title,
-            step_label: stepLabel,
-            recipient_email: recipientEmail,
-            submitter_email: submitterEmail,
-            submitted_at: inserted.row.submittedAt,
-            review_url: reviewUrl
-          })
-        );
-      }
-    }
-  }
+  // Brief 127 — Brief 125's per-step assignment + per-outcome
+  // notification webhook fires were removed in favor of workflow email
+  // steps + the shared `outbound_emails` queue. Operators express
+  // "email the approver when assigned" as an explicit email step
+  // before the approval step via the Workflow tab's Quick patterns
+  // popover.
 
   return renderSuccessPage(form);
 }

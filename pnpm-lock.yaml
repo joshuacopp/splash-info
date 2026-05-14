@@ -134,6 +134,9 @@ importers:
       file-type:
         specifier: ^19.6.0
         version: 19.6.0
+      pdf-lib:
+        specifier: ^1.17.1
+        version: 1.17.1
     devDependencies:
       '@cloudflare/workers-types':
         specifier: ^4.20250101.0

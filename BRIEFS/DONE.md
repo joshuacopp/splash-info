@@ -124,3 +124,6 @@
 - 2026-05-13 17:43:55 brief-123-forms-workflow-builder-ux-fixes.md (success)
 - 2026-05-14 09:00:49 brief-125-forms-workflow-builder-ux-redesign.md (success)
 - 2026-05-14 09:11:25 brief-126-forms-my-requests-view.md (success)
+- 2026-05-14 10:06:00 brief-127-outbound-email-queue-and-workflow-email-steps.md (success)
+- 2026-05-14 10:19:12 brief-128-email-queue-admin-viewer.md (success)
+- 2026-05-14 10:40:54 brief-129-forms-completed-form-pdf-generator.md (success)

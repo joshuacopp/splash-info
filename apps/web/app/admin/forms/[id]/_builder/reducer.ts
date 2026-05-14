@@ -54,9 +54,13 @@ export function stripBuilderArtifacts(
   workflow: FormWorkflow | null
 ): FormWorkflow | null {
   if (!workflow) return null;
+  // Brief 127 — also drop the Brief 125 deprecated `notifications` block
+  // when present (it's no-ops now; saving it back round-trips the same
+  // legacy data, which is harmless but adds noise to schema JSONB).
   return {
     default_stage: workflow.default_stage,
-    stages: workflow.stages.map(({ _uiKey: _ignored, ...rest }) => rest)
+    stages: workflow.stages.map(({ _uiKey: _ignored, ...rest }) => rest),
+    ...(workflow.notifications ? { notifications: workflow.notifications } : {})
   };
 }
 
@@ -149,7 +153,28 @@ export type BuilderAction =
       outcomeId: string;
       patch: Partial<Pick<WorkflowStage, "label" | "tint">>;
     }
-  | { type: "workflow_set_notifications"; patch: Partial<WorkflowNotifications> };
+  | { type: "workflow_set_notifications"; patch: Partial<WorkflowNotifications> }
+  // Brief 127 — email-step actions.
+  | { type: "workflow_add_email_step" }
+  | {
+      type: "workflow_update_email_step";
+      stepId: string;
+      patch: Partial<
+        Pick<
+          WorkflowStage,
+          "label" | "subject_template" | "body_template" | "attach_pdf"
+        >
+      >;
+    }
+  | {
+      type: "workflow_set_email_recipients";
+      stepId: string;
+      recipients: ApproverSource[];
+    }
+  // Brief 127 — Quick patterns popover dispatches a single bulk
+  // workflow replacement (rather than a chain of individual reducer
+  // events) so the result is atomic in the dirty-flag + undo sense.
+  | { type: "workflow_apply_pattern"; pattern: QuickPattern };
 
 export interface BuilderInitial {
   form: {
@@ -237,14 +262,33 @@ function makeWorkflowSeed(): FormWorkflow {
   };
 }
 
-// Brief 125 — predicate-based detection of a stage's UI bucket. `kind`
-// hint wins when present; otherwise: has approver_source → step; no
-// approver, no transitions → outcome; everything else (orphan stages)
-// falls into "step" so the operator can fix them in place.
+// Brief 125 / 127 — predicate-based detection of a stage's UI bucket.
+// `kind` hint wins when present; otherwise: recipients present →
+// email; approver_source present → approval; no approver + no
+// transitions → outcome; everything else (orphan stages) falls into
+// approval so the operator can fix them in place.
 export function stageIsOutcome(stage: WorkflowStage): boolean {
   if (stage.kind === "outcome") return true;
-  if (stage.kind === "step") return false;
-  return stage.transitions.length === 0 && !stage.approver_source;
+  if (stage.kind === "email" || stage.kind === "approval" || stage.kind === "step") {
+    return false;
+  }
+  return (
+    stage.transitions.length === 0 &&
+    !stage.approver_source &&
+    (!stage.recipients || stage.recipients.length === 0)
+  );
+}
+
+export function stageIsEmail(stage: WorkflowStage): boolean {
+  if (stage.kind === "email") return true;
+  if (stage.kind === "outcome") return false;
+  // Predicate fallback for un-kinded legacy stages: never email
+  // (Brief 125 + earlier never produced email stages).
+  return false;
+}
+
+export function stageIsApproval(stage: WorkflowStage): boolean {
+  return !stageIsOutcome(stage) && !stageIsEmail(stage);
 }
 
 function makeStepSeed(stepCount: number): WorkflowStage {
@@ -268,6 +312,206 @@ function makeOutcomeSeed(label: string, tint: WorkflowStage["tint"] = "neutral")
     tint,
     _uiKey: nanoid(8)
   };
+}
+
+// Brief 127 — default body template auto-populated for new email steps.
+// Operator can replace with explicit `{field.label}` placeholders for
+// selective fields, or rewrite entirely.
+const DEFAULT_EMAIL_BODY_TEMPLATE = `Hi,
+
+A new {form.title} submission was received.
+
+{payload.summary}
+
+Open in Splash: {submission.url}
+
+— Splash team`;
+
+const DEFAULT_EMAIL_SUBJECT_TEMPLATE = "New {form.title} submission";
+
+function makeEmailStepSeed(stepCount: number): WorkflowStage {
+  const id = `email_${lowerNanoid()}`;
+  return {
+    id,
+    label: stepCount === 0 ? "Email" : `Email step ${stepCount + 1}`,
+    transitions: [{ to: "", label: "" }],
+    kind: "email",
+    recipients: [],
+    subject_template: DEFAULT_EMAIL_SUBJECT_TEMPLATE,
+    body_template: DEFAULT_EMAIL_BODY_TEMPLATE,
+    _uiKey: nanoid(8)
+  };
+}
+
+// Brief 127 — Quick patterns produce normal email-step entries. The
+// pure-UI sugar inserts them at the appropriate position; everything
+// downstream treats them as ordinary email stages.
+export type QuickPattern =
+  | "email_submitter_on_outcome"
+  | "email_approver_when_assigned"
+  | "email_rm_on_submission"
+  | "email_specific_person_on_submission";
+
+function findFirstRmLikeLookupField(fields: Field[]): Field | undefined {
+  for (const f of fields) {
+    if (f.type === "lookup" && f.sourceColumn === "rm_email") return f;
+  }
+  return undefined;
+}
+
+function applyQuickPattern(
+  workflow: FormWorkflow,
+  fields: Field[],
+  pattern: QuickPattern
+): FormWorkflow {
+  switch (pattern) {
+    case "email_submitter_on_outcome": {
+      // For each outcome, insert an email step right before it. The
+      // outcome's existing inbound transitions get rewritten to point
+      // at the new email step; the email step's single transition
+      // points at the original outcome.
+      const outcomes = workflow.stages.filter((s) => stageIsOutcome(s));
+      if (outcomes.length === 0) return workflow;
+      let stages = [...workflow.stages];
+      for (const outcome of outcomes) {
+        const emailStep: WorkflowStage = {
+          id: `email_${lowerNanoid()}`,
+          label: `Email submitter (${outcome.label})`,
+          transitions: [{ to: outcome.id, label: `Continue to ${outcome.label}` }],
+          kind: "email",
+          recipients: [{ type: "payload_field", field_key: "submitter.email" }],
+          subject_template: `Your {form.title} submission was ${outcome.label}`,
+          body_template: `Hi,
+
+Your {form.title} submission was ${outcome.label} on {outcome.reached_at}.
+
+{payload.summary}
+
+— Splash team`,
+          // Brief 129 — submitters typically want the PDF.
+          attach_pdf: true,
+          _uiKey: nanoid(8)
+        };
+        // Rewrite every transition that targeted the outcome to target
+        // the new email step.
+        stages = stages.map((s) => ({
+          ...s,
+          transitions: s.transitions.map((t) =>
+            t.to === outcome.id ? { ...t, to: emailStep.id } : t
+          )
+        }));
+        // Insert the email step just before the outcome in the stages
+        // array (visual order).
+        const outcomeIdx = stages.findIndex((s) => s.id === outcome.id);
+        if (outcomeIdx >= 0) {
+          stages.splice(outcomeIdx, 0, emailStep);
+        } else {
+          stages.push(emailStep);
+        }
+      }
+      return { ...workflow, stages };
+    }
+    case "email_approver_when_assigned": {
+      // For each approval step, insert an email step right before it.
+      const approvals = workflow.stages.filter((s) => stageIsApproval(s));
+      if (approvals.length === 0) return workflow;
+      let stages = [...workflow.stages];
+      const newDefault = (() => {
+        // If the workflow's default_stage is an approval, we want the
+        // pattern's freshly-inserted email step to become the new
+        // entry point so the assignment notification fires before the
+        // approver lands on their step.
+        return workflow.default_stage;
+      })();
+      let defaultStage = newDefault;
+      for (const approval of approvals) {
+        const emailStep: WorkflowStage = {
+          id: `email_${lowerNanoid()}`,
+          label: `Email approver (${approval.label})`,
+          transitions: [{ to: approval.id, label: `Continue to ${approval.label}` }],
+          kind: "email",
+          recipients: approval.approver_source ? [approval.approver_source] : [],
+          subject_template: `You have a new {form.title} item to review`,
+          body_template: `Hi,
+
+You have a new {form.title} item waiting for your review at the "${approval.label}" step.
+
+{payload.summary}
+
+Review here: {submission.url}
+
+— Splash team`,
+          // Brief 129 — approvers click through to the review page; the
+          // assignment email shouldn't ship a PDF before they act.
+          attach_pdf: false,
+          _uiKey: nanoid(8)
+        };
+        // Rewrite every transition that targeted this approval step
+        // (rare in practice — most workflows have a single entry into
+        // each approval).
+        stages = stages.map((s) => ({
+          ...s,
+          transitions: s.transitions.map((t) =>
+            t.to === approval.id ? { ...t, to: emailStep.id } : t
+          )
+        }));
+        if (defaultStage === approval.id) defaultStage = emailStep.id;
+        const approvalIdx = stages.findIndex((s) => s.id === approval.id);
+        if (approvalIdx >= 0) {
+          stages.splice(approvalIdx, 0, emailStep);
+        } else {
+          stages.push(emailStep);
+        }
+      }
+      return { ...workflow, default_stage: defaultStage, stages };
+    }
+    case "email_rm_on_submission": {
+      // Single email step inserted right after Form Submitted, before
+      // the existing default stage. Recipient = first lookup field
+      // whose sourceColumn is rm_email, or if none, fall back to a
+      // location-shape site_role.
+      const rmLookup = findFirstRmLikeLookupField(fields);
+      const recipients: ApproverSource[] = rmLookup
+        ? [{ type: "site_role", role: "rm_email" }]
+        : fields.some((f) => f.type === "location")
+          ? [{ type: "site_role", role: "rm_email" }]
+          : [];
+      const prevDefault = workflow.default_stage;
+      const emailStep: WorkflowStage = {
+        id: `email_${lowerNanoid()}`,
+        label: "Email RM",
+        transitions: [{ to: prevDefault, label: "Continue" }],
+        kind: "email",
+        recipients,
+        subject_template: "New {form.title} submission for review",
+        body_template: DEFAULT_EMAIL_BODY_TEMPLATE,
+        _uiKey: nanoid(8)
+      };
+      return {
+        ...workflow,
+        default_stage: emailStep.id,
+        stages: [emailStep, ...workflow.stages]
+      };
+    }
+    case "email_specific_person_on_submission": {
+      const prevDefault = workflow.default_stage;
+      const emailStep: WorkflowStage = {
+        id: `email_${lowerNanoid()}`,
+        label: "Email specific person",
+        transitions: [{ to: prevDefault, label: "Continue" }],
+        kind: "email",
+        recipients: [],
+        subject_template: "New {form.title} submission",
+        body_template: DEFAULT_EMAIL_BODY_TEMPLATE,
+        _uiKey: nanoid(8)
+      };
+      return {
+        ...workflow,
+        default_stage: emailStep.id,
+        stages: [emailStep, ...workflow.stages]
+      };
+    }
+  }
 }
 
 export function reducer(
@@ -728,6 +972,60 @@ export function reducer(
           ...state.workflow,
           notifications: { ...current, ...action.patch }
         },
+        dirty: true
+      };
+    }
+    case "workflow_add_email_step": {
+      const workflow = state.workflow ?? {
+        default_stage: "",
+        stages: [] as WorkflowStage[]
+      };
+      const emailCount = workflow.stages.filter((s) => stageIsEmail(s)).length;
+      const step = makeEmailStepSeed(emailCount);
+      const nextStages = [...workflow.stages, step];
+      const nextDefault =
+        workflow.default_stage && workflow.stages.some((s) => s.id === workflow.default_stage)
+          ? workflow.default_stage
+          : step.id;
+      return {
+        ...state,
+        workflow: { ...workflow, default_stage: nextDefault, stages: nextStages },
+        dirty: true
+      };
+    }
+    case "workflow_update_email_step": {
+      if (!state.workflow) return state;
+      return {
+        ...state,
+        workflow: {
+          ...state.workflow,
+          stages: state.workflow.stages.map((s) =>
+            s.id === action.stepId ? { ...s, ...action.patch } : s
+          )
+        },
+        dirty: true
+      };
+    }
+    case "workflow_set_email_recipients": {
+      if (!state.workflow) return state;
+      return {
+        ...state,
+        workflow: {
+          ...state.workflow,
+          stages: state.workflow.stages.map((s) =>
+            s.id === action.stepId
+              ? { ...s, recipients: action.recipients, kind: "email" as const }
+              : s
+          )
+        },
+        dirty: true
+      };
+    }
+    case "workflow_apply_pattern": {
+      if (!state.workflow) return state;
+      return {
+        ...state,
+        workflow: applyQuickPattern(state.workflow, state.fields, action.pattern),
         dirty: true
       };
     }

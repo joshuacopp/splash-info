@@ -22,3 +22,4 @@ export * from "./performance.js";
 export * from "./audit.js";
 export * from "./summary.js";
 export * from "./lookup.js";
+export * from "./outbound-emails.js";

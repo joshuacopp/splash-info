@@ -9,6 +9,7 @@
 import type { Field, LookupSource } from "@splash/forms-schema";
 
 import { getFieldModule } from "../_field-types";
+import AdvancedSection from "../_field-types/_shared/AdvancedSection";
 
 interface Props {
   selectedField: Field | undefined;
@@ -85,6 +86,7 @@ function FieldInspector({
         formId={formId}
         onUpdate={onUpdate}
       />
+      <AdvancedSection field={field} onUpdate={onUpdate} />
     </div>
   );
 }

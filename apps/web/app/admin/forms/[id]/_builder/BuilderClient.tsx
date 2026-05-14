@@ -168,6 +168,7 @@ export default function BuilderClient({
     onEnable: () => dispatch({ type: "workflow_enable" }),
     onDisable: () => dispatch({ type: "workflow_disable" }),
     onAddStep: () => dispatch({ type: "workflow_add_step" }),
+    onAddEmailStep: () => dispatch({ type: "workflow_add_email_step" }),
     onDuplicateStep: (stepId) =>
       dispatch({ type: "workflow_duplicate_step", stepId }),
     onRemoveStep: (stepId) =>
@@ -193,13 +194,17 @@ export default function BuilderClient({
         stageId: stepId,
         index
       }),
+    onUpdateEmailTemplates: (stepId, patch) =>
+      dispatch({ type: "workflow_update_email_step", stepId, patch }),
+    onSetEmailRecipients: (stepId, recipients) =>
+      dispatch({ type: "workflow_set_email_recipients", stepId, recipients }),
+    onApplyQuickPattern: (pattern) =>
+      dispatch({ type: "workflow_apply_pattern", pattern }),
     onAddOutcome: () => dispatch({ type: "workflow_add_outcome" }),
     onUpdateOutcome: (outcomeId, patch) =>
       dispatch({ type: "workflow_update_outcome", outcomeId, patch }),
     onRemoveOutcome: (outcomeId) =>
-      dispatch({ type: "workflow_remove_outcome", outcomeId }),
-    onSetNotifications: (patch) =>
-      dispatch({ type: "workflow_set_notifications", patch })
+      dispatch({ type: "workflow_remove_outcome", outcomeId })
   };
 
   return (

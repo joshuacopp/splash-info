@@ -32,6 +32,12 @@
 //   PATCH  /forms/admin/api/forms/{id}/submissions/{subId}   — Brief 96: notes/status
 //   POST   /forms/admin/api/forms/{id}/submissions/{subId}/transition — Brief 120: workflow stage flip
 //   GET    /forms/admin/api/forms/{id}/versions       — Brief 96: version history
+//   POST   /forms/internal/api/email-queue/claim      — Brief 127: PA claims batch
+//   POST   /forms/internal/api/email-queue/confirm    — Brief 127: PA confirms send
+//   GET    /forms/admin/api/email-queue/list          — Brief 128: admin viewer list
+//   GET    /forms/admin/api/email-queue/{id}          — Brief 128: admin viewer detail
+//   POST   /forms/admin/api/email-queue/{id}/retry    — Brief 128: reset row
+//   POST   /forms/admin/api/email-queue/{id}/abandon  — Brief 128: park row
 //
 // Audience gating (Brief 90 render path / Brief 91 submit path):
 //   public      → no auth; Turnstile widget rendered when site key bound;
@@ -82,6 +88,14 @@ import { handleListVersions } from "./admin/versions.js";
 import { handlePendingApprovals } from "./admin/pending-approvals.js";
 import { handleMyRequests } from "./admin/my-requests.js";
 import { handleUserSearch } from "./admin/users-search.js";
+import { handleEmailQueueClaim } from "./email-queue/claim.js";
+import { handleEmailQueueConfirm } from "./email-queue/confirm.js";
+import {
+  handleEmailQueueList,
+  handleEmailQueueGet,
+  handleEmailQueueRetry,
+  handleEmailQueueAbandon
+} from "./admin/email-queue.js";
 import { runDailyCleanup } from "./cron/cleanup.js";
 import { runDailyApprovalDigest } from "./cron/approval-digest.js";
 
@@ -101,11 +115,18 @@ export interface Env {
    *  matches Brief 65 / 101 posture). One PA flow fans out one email per
    *  recipient summarizing all forms with pending items. */
   FORMS_APPROVAL_DIGEST_WEBHOOK_URL?: string;
-  /** Brief 125 — workflow assignment + outcome notification POST target.
-   *  Single PA flow handles both event types; discriminated by the
-   *  `type` field on the payload. Fail-soft when unbound — submit /
-   *  transition handlers still succeed and log a skip message. */
+  /** Brief 125 — DEPRECATED as of Brief 127. The outcome / assignment
+   *  notification webhook fires were removed in Brief 127's migration to
+   *  the `outbound_emails` queue table. The secret is documented as
+   *  obsolete in BUILD_STATE.md; operators can unbind at their
+   *  convenience. Kept in the Env interface so existing wrangler bindings
+   *  don't error at build time. */
   FORMS_OUTCOME_NOTIFICATION_WEBHOOK_URL?: string;
+  /** Brief 127 — shared secret PA sends as `X-Email-Queue-Token` when
+   *  polling `/forms/internal/api/email-queue/{claim,confirm}`. When
+   *  unbound, both endpoints return 503 — workers keep enqueueing rows
+   *  safely; the queue idles until PA flow + token are wired. */
+  FORMS_EMAIL_QUEUE_TOKEN?: string;
   FORMS_FILES: R2Bucket;
 }
 
@@ -173,6 +194,65 @@ export default {
     const serveMatch = url.pathname.match(/^\/forms\/admin\/api\/files\/(.+)$/);
     if (serveMatch && serveMatch[1] && req.method === "GET") {
       return handleFileServe(env, req, decodeURIComponent(serveMatch[1]));
+    }
+
+    // ---- Brief 127 email queue (PA polls these) -------------------------
+    // Path namespace `/forms/internal/api/email-queue/*` is distinct from
+    // both the public `/forms/api/*` surface and the operator-facing
+    // `/forms/admin/api/*` surface. Auth is shared-secret via
+    // `X-Email-Queue-Token`; PA stores the token in its connection
+    // config and sends it on every call.
+
+    if (
+      url.pathname === "/forms/internal/api/email-queue/claim" &&
+      req.method === "POST"
+    ) {
+      return handleEmailQueueClaim(env, req);
+    }
+
+    if (
+      url.pathname === "/forms/internal/api/email-queue/confirm" &&
+      req.method === "POST"
+    ) {
+      return handleEmailQueueConfirm(env, req);
+    }
+
+    // ---- Brief 128 admin email-queue viewer -----------------------------
+    // GET  /forms/admin/api/email-queue/list
+    // GET  /forms/admin/api/email-queue/{id}
+    // POST /forms/admin/api/email-queue/{id}/retry
+    // POST /forms/admin/api/email-queue/{id}/abandon
+    //
+    // Static `/list` must match before the bare-{id} pattern below so the
+    // string "list" doesn't get treated as a UUID. Action routes (retry /
+    // abandon) match before the bare-{id} pattern for the same reason.
+
+    if (
+      url.pathname === "/forms/admin/api/email-queue/list" &&
+      req.method === "GET"
+    ) {
+      return handleEmailQueueList(env, req);
+    }
+
+    const queueRetryMatch = url.pathname.match(
+      /^\/forms\/admin\/api\/email-queue\/([^/]+)\/retry$/
+    );
+    if (queueRetryMatch && queueRetryMatch[1] && req.method === "POST") {
+      return handleEmailQueueRetry(env, req, queueRetryMatch[1]);
+    }
+
+    const queueAbandonMatch = url.pathname.match(
+      /^\/forms\/admin\/api\/email-queue\/([^/]+)\/abandon$/
+    );
+    if (queueAbandonMatch && queueAbandonMatch[1] && req.method === "POST") {
+      return handleEmailQueueAbandon(env, req, queueAbandonMatch[1]);
+    }
+
+    const queueDetailMatch = url.pathname.match(
+      /^\/forms\/admin\/api\/email-queue\/([^/]+)$/
+    );
+    if (queueDetailMatch && queueDetailMatch[1] && req.method === "GET") {
+      return handleEmailQueueGet(env, req, queueDetailMatch[1]);
     }
 
     // ---- Brief 94 admin API ---------------------------------------------

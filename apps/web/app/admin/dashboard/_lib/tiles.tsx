@@ -169,6 +169,13 @@ const sendIcon: ReactNode = (
   </svg>
 );
 
+const mailIcon: ReactNode = (
+  <svg {...SvgProps}>
+    <rect x="2" y="4" width="20" height="16" rx="2" />
+    <path d="M2 7l10 6 10-6" />
+  </svg>
+);
+
 const settingsGearIcon: ReactNode = (
   <svg {...SvgProps}>
     <circle cx="12" cy="12" r="3" />
@@ -305,5 +312,15 @@ export const TILES: ReadonlyArray<Tile> = [
     href: "/admin/sysadmin",
     icon: settingsGearIcon,
     visibleTo: isSuperAdmin
+  },
+  {
+    id: "email-queue",
+    group: "admin",
+    eyebrow: "Infra",
+    title: "Email Queue",
+    description: "Pending, sent, and stuck outbound emails.",
+    href: "/admin/email-queue",
+    icon: mailIcon,
+    visibleTo: isAdminTier
   }
 ];

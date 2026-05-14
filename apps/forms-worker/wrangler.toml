@@ -72,6 +72,25 @@
 #                                       @splash/forms-worker exec
 #                                       wrangler secret put
 #                                       FORMS_APPROVAL_DIGEST_WEBHOOK_URL`.
+#   FORMS_EMAIL_QUEUE_TOKEN          — secret. Optional (Brief 127).
+#                                       Shared-secret token PA sends as
+#                                       `X-Email-Queue-Token` when polling
+#                                       `/forms/internal/api/email-queue/
+#                                       {claim,confirm}`. When unbound,
+#                                       both endpoints return 503 —
+#                                       workers continue to enqueue rows
+#                                       safely; the queue idles until PA
+#                                       flow + token are wired. See
+#                                       PA_FLOWS_BRIEF_127.md for the PA
+#                                       flow build guide.
+#   FORMS_OUTCOME_NOTIFICATION_WEBHOOK_URL  — DEPRECATED (Brief 127).
+#                                       Brief 125's per-step assignment +
+#                                       per-outcome notification fires
+#                                       migrated to the outbound_emails
+#                                       queue + explicit "email step"
+#                                       workflow stages. The secret can
+#                                       be unbound; no code path
+#                                       references it now.
 
 name = "splash-forms"
 main = "src/index.ts"

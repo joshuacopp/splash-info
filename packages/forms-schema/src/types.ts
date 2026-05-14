@@ -27,6 +27,11 @@ export interface FieldBase {
   label: string;
   required: boolean;   // ignored on display-only types (heading, image)
   helpText?: string;
+  // Brief 129 — when true, the completed-form PDF generator skips this
+  // field entirely (label + value omitted). Defaults to false / missing.
+  // Operators can flip this on internal-only fields (e.g. private notes,
+  // signature scratchpads) that shouldn't appear on emailed PDFs.
+  exclude_from_pdf?: boolean;
 }
 
 // -----------------------------------------------------------------------------
@@ -275,22 +280,53 @@ export interface WorkflowStage {
   transitions: WorkflowTransition[];
   // Brief 125 — kind hint disambiguates the Workflow tab's UI buckets
   // (steps vs outcomes) for stages mid-build where the predicate-based
-  // detection (no approver + no transitions = outcome) is ambiguous. When
-  // omitted, predicate detection is the source of truth: a stage with an
-  // `approver_source` is always a step; a stage with no approver and no
-  // transitions is an outcome.
-  kind?: "step" | "outcome";
+  // detection (no approver + no transitions = outcome) is ambiguous.
+  // Brief 127 added the `"email"` kind for email-step stages. Legacy
+  // values `"step"` (Brief 125 seed) and `"approval"` are both treated
+  // as approval-kind by the predicate fallback. When omitted, the
+  // predicate is the source of truth: approver_source present + at
+  // least one transition → approval; no approver + no transitions →
+  // outcome; recipients present → email.
+  kind?: "step" | "approval" | "email" | "outcome";
   // Brief 125 — UI tint for outcomes (success / danger / warning / info /
   // neutral). Optional; defaults to "neutral" at render time. Steps
   // ignore this field.
   tint?: "success" | "danger" | "warning" | "info" | "neutral";
+  // Brief 127 — email-step-only fields. The strict publish-time
+  // validator refuses to publish an email stage with empty `recipients`
+  // OR with `transitions.length !== 1` (email stages auto-advance and
+  // need exactly one outgoing edge — no Approve/Deny branching).
+  // Recipients accept the same `ApproverSource` shape as the approval-
+  // step `approver_source` — operators can pick a payload field, a
+  // site_role, or a static email list as the To: address. Multiple
+  // recipients are expressed as multiple entries; the worker calls
+  // `resolveApproverEmails` once per entry and unions the result.
+  recipients?: ApproverSource[];
+  subject_template?: string;
+  body_template?: string;
+  // Brief 129 — email-step-only flag. When true, the email step's enqueue
+  // path generates / reuses a PDF of the completed form (built from the
+  // submission's payload + workflow history; respecting per-field
+  // `exclude_from_pdf`) and attaches it to every enqueued outbound_email
+  // row. Reused across multiple email steps in the same cascade — second
+  // pass reads the just-written R2 object instead of regenerating. Defaults
+  // to false / missing.
+  attach_pdf?: boolean;
   _uiKey?: string;
 }
 
 /**
- * Brief 125 — per-workflow notification opt-ins. Defaults applied at
- * read time when missing: assignment=true, submitter_outcome=true,
- * approvers_outcome=false. The pdf_outcome attach is flagged for v2.
+ * Brief 125 — per-workflow notification opt-ins.
+ *
+ * @deprecated Brief 127 — the booleans on this block no longer drive
+ * any webhook fire. The block stays in the schema for back-compat so
+ * existing form_versions rows still validate; new forms should express
+ * the same use cases as explicit `kind: "email"` workflow stages,
+ * inserted via the Workflow tab's Quick patterns popover.
+ *
+ * The cron-driven daily approval digest (Brief 121,
+ * `FORMS_APPROVAL_DIGEST_WEBHOOK_URL`) is independent of this block
+ * and continues to fire as before.
  */
 export interface WorkflowNotifications {
   notify_approver_on_assignment?: boolean;

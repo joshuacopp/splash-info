@@ -1,18 +1,23 @@
 // Brief 125 — Workflow tab (top-level, not nested in the Inspector).
+// Brief 127 — added email-step support + Quick patterns + removed the
+// Notifications panel (its use cases now expressed as explicit email
+// steps in the workflow).
 //
 // Top-to-bottom layout:
-//   1. Header — "Approval workflow" + description + Disable button (when enabled).
+//   1. Header — "Approval workflow" + description + Disable button.
 //   2. Entry anchor — "Form submitted" pill + downward arrow.
-//   3. Step cards stack — vertical list with drag-to-reorder.
-//   4. "+ Add approval step" dashed button.
+//   3. Step cards stack — vertical list with drag-to-reorder. Approval
+//      steps render via StepCard; email steps render via EmailStepCard.
+//   4. "+ Add step" choice popover (Approval / Email) + "Quick
+//      patterns…" popover.
 //   5. Outcomes section.
-//   6. Notifications panel.
-//   7. Live flow preview.
+//   6. Live flow preview.
 //
-// Schema mapping: the workflow JSONB's `stages[]` contains BOTH steps and
-// outcomes. This tab buckets them via the `stageIsOutcome` predicate in
-// reducer.ts (which respects the optional `kind` hint added in Brief 125).
-// `default_stage` always points at the first step.
+// Schema mapping: the workflow JSONB's `stages[]` contains approval
+// steps, email steps, AND outcomes. This tab buckets them via the
+// `stageIsOutcome` + `stageIsEmail` + `stageIsApproval` predicates
+// (Brief 125 + Brief 127). `default_stage` always points at the first
+// stage in the steps list.
 
 "use client";
 
@@ -35,15 +40,21 @@ import type {
   ApproverSource,
   Field,
   FormWorkflow,
-  WorkflowNotifications,
   WorkflowStage,
   WorkflowTransition
 } from "@splash/forms-schema";
 
-import { stageIsOutcome } from "../_builder/reducer";
+import {
+  stageIsApproval,
+  stageIsEmail,
+  stageIsOutcome,
+  type QuickPattern
+} from "../_builder/reducer";
 import StepCard from "./StepCard";
+import EmailStepCard from "./EmailStepCard";
 import OutcomesSection from "./OutcomesSection";
-import NotificationsPanel from "./NotificationsPanel";
+import AddStepPopover from "./AddStepPopover";
+import QuickPatternsPopover from "./QuickPatternsPopover";
 
 // Lazy-load Mermaid so the heavy lib only ships to operators editing
 // workflows. The Brief 123 chunk split is preserved.
@@ -56,6 +67,7 @@ export interface WorkflowTabDispatch {
   onEnable: () => void;
   onDisable: () => void;
   onAddStep: () => void;
+  onAddEmailStep: () => void;
   onDuplicateStep: (stepId: string) => void;
   onRemoveStep: (stepId: string) => void;
   onReorderSteps: (fromIndex: number, toIndex: number) => void;
@@ -68,13 +80,29 @@ export interface WorkflowTabDispatch {
     patch: Partial<WorkflowTransition>
   ) => void;
   onRemoveTransition: (stepId: string, index: number) => void;
+  // Brief 127 — email-step dispatchers. Brief 129 widened the patch
+  // shape to include `attach_pdf` so EmailStepCard's PDF checkbox can
+  // ride the same dispatch.
+  onUpdateEmailTemplates: (
+    stepId: string,
+    patch: Partial<
+      Pick<
+        WorkflowStage,
+        "subject_template" | "body_template" | "attach_pdf"
+      >
+    >
+  ) => void;
+  onSetEmailRecipients: (
+    stepId: string,
+    recipients: ApproverSource[]
+  ) => void;
+  onApplyQuickPattern: (pattern: QuickPattern) => void;
   onAddOutcome: () => void;
   onUpdateOutcome: (
     outcomeId: string,
     patch: Partial<Pick<WorkflowStage, "label" | "tint">>
   ) => void;
   onRemoveOutcome: (outcomeId: string) => void;
-  onSetNotifications: (patch: Partial<WorkflowNotifications>) => void;
 }
 
 interface Props {
@@ -93,10 +121,8 @@ export default function WorkflowTab({ workflow, fields, dispatch }: Props) {
           stop there.
         </p>
         <p className="mt-2 text-sm text-splash-navy/70">
-          Enable a workflow to add review steps. Each step picks an
-          approver, defines what actions they can take, and routes the
-          submission to an outcome (Approved, Denied, or anything you
-          define).
+          Enable a workflow to add review steps, email notifications, and
+          outcome routing.
         </p>
         <button
           type="button"
@@ -109,6 +135,8 @@ export default function WorkflowTab({ workflow, fields, dispatch }: Props) {
     );
   }
 
+  // Brief 127 — steps are the non-outcome stages (both approval AND
+  // email). Outcomes render separately in the OutcomesSection.
   const steps = workflow.stages.filter((s) => !stageIsOutcome(s));
   const outcomes = workflow.stages.filter((s) => stageIsOutcome(s));
 
@@ -169,7 +197,7 @@ export default function WorkflowTab({ workflow, fields, dispatch }: Props) {
           <h2 className="text-lg font-bold text-splash-navy">Approval workflow</h2>
           <p className="mt-1 text-sm text-splash-navy/70">
             Each submission walks through these steps. Approvers see the
-            actions you list; the destination decides what happens next.
+            actions you list; email steps send a message and move on.
           </p>
         </div>
         <button
@@ -210,42 +238,74 @@ export default function WorkflowTab({ workflow, fields, dispatch }: Props) {
           <div className="space-y-2">
             {steps.length === 0 && (
               <p className="rounded-splash-md border border-dashed border-gray-light bg-white p-4 text-center text-sm text-splash-navy/60">
-                No approval steps yet. Add one below to require an
-                approver.
+                No steps yet. Add an approval step or an email step
+                below.
               </p>
             )}
             {steps.map((step, idx) => (
               <div key={step._uiKey ?? step.id}>
-                <StepCard
-                  step={step}
-                  stepIndex={idx}
-                  isFirst={idx === 0}
-                  fields={fields}
-                  destinationOptions={destinationOptionsFor(step.id)}
-                  onUpdateLabel={(label) =>
-                    dispatch.onUpdateStepLabel(step.id, label)
-                  }
-                  onSetApprover={(source) =>
-                    dispatch.onSetStepApprover(step.id, source)
-                  }
-                  onAddTransition={() => dispatch.onAddTransition(step.id)}
-                  onUpdateTransition={(index, patch) =>
-                    dispatch.onUpdateTransition(step.id, index, patch)
-                  }
-                  onRemoveTransition={(index) =>
-                    dispatch.onRemoveTransition(step.id, index)
-                  }
-                  onDuplicate={() => dispatch.onDuplicateStep(step.id)}
-                  onRemove={() => {
-                    if (
-                      window.confirm(
-                        `Remove "${step.label || "this step"}"? Actions pointing at it will be cleared.`
-                      )
-                    ) {
-                      dispatch.onRemoveStep(step.id);
+                {stageIsEmail(step) ? (
+                  <EmailStepCard
+                    step={step}
+                    stepIndex={idx}
+                    isFirst={idx === 0}
+                    fields={fields}
+                    destinationOptions={destinationOptionsFor(step.id)}
+                    onUpdateLabel={(label) =>
+                      dispatch.onUpdateStepLabel(step.id, label)
                     }
-                  }}
-                />
+                    onUpdateTemplates={(patch) =>
+                      dispatch.onUpdateEmailTemplates(step.id, patch)
+                    }
+                    onSetRecipients={(recipients) =>
+                      dispatch.onSetEmailRecipients(step.id, recipients)
+                    }
+                    onUpdateTransition={(index, patch) =>
+                      dispatch.onUpdateTransition(step.id, index, patch)
+                    }
+                    onDuplicate={() => dispatch.onDuplicateStep(step.id)}
+                    onRemove={() => {
+                      if (
+                        window.confirm(
+                          `Remove "${step.label || "this email step"}"?`
+                        )
+                      ) {
+                        dispatch.onRemoveStep(step.id);
+                      }
+                    }}
+                  />
+                ) : (
+                  <StepCard
+                    step={step}
+                    stepIndex={idx}
+                    isFirst={idx === 0}
+                    fields={fields}
+                    destinationOptions={destinationOptionsFor(step.id)}
+                    onUpdateLabel={(label) =>
+                      dispatch.onUpdateStepLabel(step.id, label)
+                    }
+                    onSetApprover={(source) =>
+                      dispatch.onSetStepApprover(step.id, source)
+                    }
+                    onAddTransition={() => dispatch.onAddTransition(step.id)}
+                    onUpdateTransition={(index, patch) =>
+                      dispatch.onUpdateTransition(step.id, index, patch)
+                    }
+                    onRemoveTransition={(index) =>
+                      dispatch.onRemoveTransition(step.id, index)
+                    }
+                    onDuplicate={() => dispatch.onDuplicateStep(step.id)}
+                    onRemove={() => {
+                      if (
+                        window.confirm(
+                          `Remove "${step.label || "this step"}"? Actions pointing at it will be cleared.`
+                        )
+                      ) {
+                        dispatch.onRemoveStep(step.id);
+                      }
+                    }}
+                  />
+                )}
                 {idx < steps.length - 1 && (
                   <div className="my-1 flex justify-center text-base text-splash-navy/40">
                     ↓
@@ -257,24 +317,21 @@ export default function WorkflowTab({ workflow, fields, dispatch }: Props) {
         </SortableContext>
       </DndContext>
 
-      <button
-        type="button"
-        onClick={dispatch.onAddStep}
-        className="block w-full rounded-splash-md border border-dashed border-splash-navy/60 py-3 text-sm font-semibold text-splash-navy/80 hover:bg-splash-navy/5"
-      >
-        + Add approval step
-      </button>
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex-1">
+          <AddStepPopover
+            onAddApprovalStep={dispatch.onAddStep}
+            onAddEmailStep={dispatch.onAddEmailStep}
+          />
+        </div>
+        <QuickPatternsPopover onApply={dispatch.onApplyQuickPattern} />
+      </div>
 
       <OutcomesSection
         outcomes={outcomes}
         onAdd={dispatch.onAddOutcome}
         onRemove={dispatch.onRemoveOutcome}
         onUpdate={dispatch.onUpdateOutcome}
-      />
-
-      <NotificationsPanel
-        notifications={workflow.notifications}
-        onChange={dispatch.onSetNotifications}
       />
 
       <section className="space-y-2 rounded-splash-md border border-gray-light bg-white p-4">
@@ -289,3 +346,8 @@ export default function WorkflowTab({ workflow, fields, dispatch }: Props) {
     </section>
   );
 }
+
+// Re-export the predicate that callers (e.g. the BuilderClient legacy
+// detection / external integrations) may want without re-importing
+// from the reducer module.
+export { stageIsApproval };

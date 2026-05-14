@@ -1540,6 +1540,185 @@ URL-based — service bindings don't apply to those.
   re-submit denied, and workflows-without-stages are all out of
   scope at v1 per the brief; the per-submission detail page Brief
   120 built already has the timeline + transition modal.
+  Brief 127 (2026-05-14) added the outbound email queue infrastructure
+  + workflow email-step stage type + migrated Brief 125's outcome
+  notification webhook to queue-based fan-out. New shared
+  `outbound_emails` Supabase table (see top-level glossary entry of
+  the same name) is the single drain point for every monorepo email;
+  one Power Automate flow polls + sends + confirms. New worker
+  endpoints `POST /forms/internal/api/email-queue/{claim,confirm}`
+  (`apps/forms-worker/src/email-queue/`) auth via shared-secret
+  `X-Email-Queue-Token` (new optional secret `FORMS_EMAIL_QUEUE_TOKEN`);
+  503 when unbound. Workflow schema gains `kind: "email"` stage
+  variant with `recipients: ApproverSource[]` + `subject_template` +
+  `body_template` + single auto-advance transition. Cascade helper
+  `cascadeThroughEmailSteps` in
+  `apps/forms-worker/src/workflow-email-step.ts` (~370 LOC) renders
+  templates against payload + runtime context (form / submitter /
+  outcome / payload.summary / `{field.key}`), resolves recipients via
+  the existing `resolveApproverEmails`, enqueues one row per
+  recipient, stamps a system-actor history entry, advances. Depth
+  cap 10 (cycles caught by strict validator at publish). Runs at
+  both submit time (default-stage cascade before insert so the row
+  carries the post-cascade state) AND transition time (dest-stage
+  cascade after the operator's transition action). Brief 125's
+  `FORMS_OUTCOME_NOTIFICATION_WEBHOOK_URL` fire sites removed at both
+  paths; `fireAssignmentNotification`/`fireOutcomeNotification`
+  helpers in `apps/forms-worker/src/notifications.ts` become
+  documented `@deprecated` no-op log lines (deletion candidate one
+  cycle out). Brief 125's `notifications` block on the workflow
+  schema stays for back-compat but is `@deprecated` and no longer
+  drives side effects. Builder UI: "+ Add approval step" replaced
+  with "+ Add step" choice popover (Approval / Email); new
+  `EmailStepCard.tsx` (amber-toned, multi-recipient picker + Subject
+  + Body + placeholder reference + "Then go to" select); new
+  `QuickPatternsPopover.tsx` with four one-click templates that
+  produce normal email-step schema entries ("Email submitter on
+  outcome" / "Email approver when assigned" / "Email RM on
+  submission" / "Email a specific person on submission");
+  `NotificationsPanel.tsx` deleted. `WorkflowFlowPreview` adds an
+  `:::emailstep` Mermaid node class (amber) with unlabeled edges
+  (auto-advance). `kind` union widened to
+  `"step" | "approval" | "email" | "outcome"`; legacy `"step"` rows
+  continue to validate (predicate fallback treats as approval).
+  `enqueueOutboundEmail` helper in
+  `packages/db-supabase/src/outbound-emails.ts` is intentionally
+  worker-agnostic — future damage / fleet / workorders / signup /
+  jotform migrations are an `import` away. PA flow build guide at
+  `PA_FLOWS_BRIEF_127.md`. Backwards compatibility: existing
+  workflows continue to validate + transition normally; the
+  `notifications` block's booleans persist in the schema (read-only
+  back-compat) but no longer fire any webhook.
+  Brief 129 (2026-05-14) added the completed-form PDF generator on
+  splash-forms. New module under `apps/forms-worker/src/pdf/` (eight
+  files: `generate.ts` public entry, `layout-utils.ts` shared
+  cursor/font/wrap/measure/EST-formatter/R2-image helpers,
+  `layout-header.ts` navy band + white-script logo from
+  `assets/splash-logo-white.png` R2 + form title + submission id,
+  `layout-metadata.ts` two-column grid, `layout-payload.ts`
+  per-field-type renderer honoring `exclude_from_pdf`,
+  `layout-workflow-history.ts` from→to per entry with actor /
+  timestamp / note / typed_name / signature image,
+  `layout-footer.ts` Splash brand line + Page N of M,
+  `cascade-attach.ts` the generate-or-reuse worker hook). pdf-lib
+  programmatic (Helvetica + Helvetica-Bold standard fonts only). PDF
+  lives in the `FORMS_FILES` R2 bucket at
+  `form-submission-pdfs/{form_id}/{submission_id}.pdf`. Generated
+  once per submission, reused across multiple email steps in the
+  same cascade — reuse semantics key on `R2.head().uploaded` vs the
+  latest `workflow_history[*].at` timestamp (cumulative across
+  cascade). When that timestamp moves (new transition / new email
+  step entry), the PDF regenerates; otherwise the existing R2
+  object is reused. Schema additions are additive + optional:
+  `FieldBase.exclude_from_pdf?: boolean` inherited by every field
+  type (Field Inspector's Advanced section exposes the checkbox),
+  `WorkflowStage.attach_pdf?: boolean` on email-step stages
+  (EmailStepCard exposes the checkbox). `cascadeThroughEmailSteps`
+  gains optional `submissionMeta` + `priorWorkflowHistory` params;
+  when set AND the email step has `attach_pdf: true`, fires the
+  cascade-attach helper and pushes
+  `{filename, r2_key, mime: "application/pdf", size_bytes, bucket:
+  "FORMS_FILES"}` onto every recipient's
+  `OutboundEmailPayload.attachments`. Brief 127's claim endpoint
+  already base64-inlines R2 attachments on PA fetch — zero new
+  claim-side code. Fail-soft: PDF generation / R2 write / timeout
+  collapse to "enqueue without attachment" + log. 15s
+  `AbortController` timeout on generation catches pathological
+  cases (huge file fields with many image thumbnails). Brief 97's
+  daily R2 cleanup at 11:00 UTC gains a third sweep —
+  `form-submission-pdfs/{form_id}/{submission_id}.pdf` objects with
+  no matching `form_submissions.id` row → delete (1h grace,
+  20-page = 20K-PDF/run cap). PDFs for active submissions are
+  NEVER deleted (referenced indefinitely by re-send / re-attach
+  paths). Quick patterns: "Email submitter on outcome" seeds
+  `attach_pdf: true`; "Email approver when assigned" seeds
+  `attach_pdf: false`. Per-form branding override, watermarks,
+  custom layout / field ordering, custom fonts, multi-language,
+  PDF preview in builder, Download-PDF button on detail page,
+  cross-worker PDF consolidation with damage-worker's claim
+  summary PDF all flagged as v2/v3. The new shared
+  `apps/web/app/admin/forms/[id]/_field-types/_shared/AdvancedSection.tsx`
+  renders the per-field `exclude_from_pdf` checkbox in a collapsed
+  `<details>` block; it's wired into the `FieldInspector` wrapper
+  inside `Inspector.tsx` once rather than per-type — adding a 17th
+  field type still inherits the flag automatically (deviation from
+  the brief's "every Inspector imports it" wording; same operator-
+  facing behavior with much less code surface). pdf-lib `^1.17.1`
+  added as a direct forms-worker dep (same version damage-worker
+  uses → bundle dedupe). Bundle impact: +870 KiB raw / +222 KiB
+  gzip on the forms-worker compressed size.
+- **outbound_emails table** (Brief 127) - Shared queue of fully-rendered
+  outbound emails. Single Power Automate flow polls every 5 minutes
+  and drains the queue regardless of which worker enqueued the row.
+  Table schema in `supabase/forms-tables.sql`; key columns are
+  `source_worker` / `source_kind` / `source_id` / `recipient`
+  (forming the dedup index — re-enqueueing the same logical email is
+  a no-op via PostgREST `Prefer: resolution=ignore-duplicates`),
+  `subject` / `body_html` / `body_text` (rendered by the caller —
+  the queue does NO template substitution), `attachments` JSONB
+  (each entry is `{filename, mime, size_bytes}` + either `r2_key` or
+  `base64`; r2_key is preferred + inlined at claim time so queue
+  rows stay small), `scheduled_for` (defaults `now()`), `claimed_at`
+  + `claim_id` (lock state — 10-minute stale-claim window),
+  `sent_at` (null until PA confirms send), `send_attempts` (drops
+  out of eligible pool at >= 5), `last_error`. Indexes: unique dedup
+  (`source_worker, source_kind, source_id, recipient`), partial
+  pending (`scheduled_for WHERE sent_at IS NULL`), source-narrow
+  (`source_worker, source_kind, created_at DESC`) for the Brief 128
+  admin viewer. SQL function `claim_outbound_emails(p_claim_id,
+  p_limit)` exposes the `FOR UPDATE SKIP LOCKED` pattern PostgREST
+  can't surface at the table layer; clamps `p_limit` to
+  `LEAST(p_limit, 200)`. Endpoints on `splash-forms`:
+  `POST /forms/internal/api/email-queue/claim?limit=50` calls the
+  RPC + inlines R2-backed attachments as base64 (per-attachment 5MB
+  cap; overage drops with a log). `POST /forms/internal/api/email-
+  queue/confirm` accepts `{claim_id, results: [{id, status,
+  error?}]}` and stamps `sent_at` for `sent` results or releases the
+  claim + increments `send_attempts` + records `last_error` for
+  `failed`. Auth: shared-secret `X-Email-Queue-Token` (new optional
+  secret `FORMS_EMAIL_QUEUE_TOKEN`, constant-time compared); 503
+  when unbound. Who's allowed to write: any worker holding
+  `SUPABASE_SERVICE_KEY` via the shared helper
+  `enqueueOutboundEmail(env, payload)` in `@splash/db-supabase`. At
+  Brief 127 the only writer is forms-worker (via
+  `cascadeThroughEmailSteps` for `kind: "email"` workflow stages —
+  `source_kind: "workflow-email-step"`, `source_id:
+  "{submission_id}:{stage_id}"`); damage / fleet / workorders /
+  signup / jotform per-purpose webhook fires are NOT migrated yet
+  per operator scope and continue to work via their existing PA
+  flows. Future migrations: import the helper, render the email,
+  call it. PA flow build guide at `PA_FLOWS_BRIEF_127.md`.
+  Brief 128 (2026-05-14) landed the admin viewer at
+  `/admin/email-queue` (apps/web, admin-tier — `super_admin` OR
+  `dcRole admin/super_admin`; tile in the Admin dashboard group).
+  Four endpoints under `/forms/admin/api/email-queue/*` on
+  splash-forms: `GET /list` (filter by status / source_worker /
+  source_kind / from / to / limit / offset; default last 7 days,
+  page size 100, max 500), `GET /{id}` (full row incl. body_html /
+  body_text + per-attachment metadata `{filename, mime, size_bytes,
+  has_r2_key, has_base64}` — admin viewer does NOT inline base64
+  even when present, only the PA-facing claim endpoint does that),
+  `POST /{id}/retry` (resets `claimed_at`, `claim_id`,
+  `send_attempts=0`, `last_error=NULL` → row eligible for next PA
+  poll), `POST /{id}/abandon` (stamps `send_attempts=99` +
+  `last_error="Manually abandoned by {admin_email} at {now}"`; row
+  stays for audit but never sends). Status taxonomy is derived in
+  handler code from row state (the table has no `status` column):
+  pending = `sent_at IS NULL AND claimed_at IS NULL AND
+  send_attempts < 5`; claimed = `sent_at IS NULL AND claimed_at IS
+  NOT NULL AND send_attempts < 5`; sent = `sent_at IS NOT NULL`;
+  stuck = `sent_at IS NULL AND send_attempts >= 5`. Body_html on
+  the detail page renders as ESCAPED preformatted text via React's
+  auto-escape — `<pre>{html}</pre>` displays raw HTML markup as
+  visible characters, never DOM-injected; no
+  `dangerouslySetInnerHTML` on operator-authored payloads. Abandon
+  button is disabled with hover hint for non-stuck rows + uses a
+  client-island `<ConfirmSubmitButton>` running `window.confirm()`
+  before the form dispatches. Per-row admin-action audit log (who
+  retried / who abandoned) deferred to v2 — abandon stamps the
+  admin email into `last_error` which is enough for single-admin
+  operations; multi-admin contention would need a `claim_audit`
+  JSONB column or separate audit table.
 - **fleet-inquiry-worker** (Brief 81) - Public fleet-inquiry form +
   three JSON endpoints. The seventh worker in the monorepo and the
   most recent addition. Lift-and-shifted into `apps/fleet-inquiry-

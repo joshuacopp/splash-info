@@ -20,7 +20,12 @@ const fieldBaseSchema = {
   key: z.string().regex(/^[a-z][a-z0-9_]*$/, "snake_case slug, leading non-digit"),
   label: z.string().min(1),
   required: z.boolean(),
-  helpText: z.string().optional()
+  helpText: z.string().optional(),
+  // Brief 129 — optional per-field flag that hides the field from the
+  // completed-form PDF (generated when an email step has `attach_pdf:
+  // true`). No structural enforcement beyond type — operators flip the
+  // flag freely.
+  exclude_from_pdf: z.boolean().optional()
 };
 
 const dropdownOptionSchema = z.object({
@@ -240,11 +245,23 @@ const workflowStageSchema = z.object({
   // operator action is required to "act" on them.
   approver_source: approverSourceSchema.optional(),
   transitions: z.array(workflowTransitionSchema),
-  // Brief 125 — UI bucket hint + outcome tint
-  kind: z.enum(["step", "outcome"]).optional(),
+  // Brief 125 — UI bucket hint + outcome tint. Brief 127 added "email";
+  // legacy "step" stays accepted so existing published forms keep
+  // validating (predicate fallback treats both as approval).
+  kind: z.enum(["step", "approval", "email", "outcome"]).optional(),
   tint: z
     .enum(["success", "danger", "warning", "info", "neutral"])
-    .optional()
+    .optional(),
+  // Brief 127 — email-step-only fields. Empty / missing on approval +
+  // outcome stages; required + non-empty on email stages (enforced in
+  // the `superRefine` on `formSchemaSchema` so the issue path can point
+  // at the offending stage index).
+  recipients: z.array(approverSourceSchema).optional(),
+  subject_template: z.string().optional(),
+  body_template: z.string().optional(),
+  // Brief 129 — email-step PDF attach flag. No strict-mode cross-check;
+  // generator no-ops when false / missing.
+  attach_pdf: z.boolean().optional()
 });
 
 const workflowNotificationsSchema = z.object({
@@ -294,10 +311,17 @@ const workflowStageSchemaDraft = z.object({
   label: z.string(),
   approver_source: approverSourceSchemaDraft.optional(),
   transitions: z.array(workflowTransitionSchemaDraft),
-  kind: z.enum(["step", "outcome"]).optional(),
+  kind: z.enum(["step", "approval", "email", "outcome"]).optional(),
   tint: z
     .enum(["success", "danger", "warning", "info", "neutral"])
-    .optional()
+    .optional(),
+  // Brief 127 — email-step-only fields. Draft variant accepts empty /
+  // missing values; strict validator enforces shape at publish time.
+  recipients: z.array(approverSourceSchemaDraft).optional(),
+  subject_template: z.string().optional(),
+  body_template: z.string().optional(),
+  // Brief 129 — email-step PDF attach flag (draft variant).
+  attach_pdf: z.boolean().optional()
 });
 
 export const formWorkflowSchemaDraft = z.object({
@@ -375,6 +399,46 @@ export const formSchemaSchema = z
             message: `approver_source.field_key "${stage.approver_source.field_key}" does not reference a form field`
           });
         }
+      }
+      // Brief 127 — email stages have their own structural shape:
+      //   - exactly one transition (auto-advance after enqueue)
+      //   - non-empty recipients list
+      //   - subject + body templates present (allowed to be empty
+      //     strings — operator may want unsubstituted blank, validator
+      //     just ensures the keys exist so the renderer doesn't crash).
+      // Approval stages must NOT carry email-only fields and vice
+      // versa (allowed but ignored — kept lenient at strict-validator
+      // level to avoid double-touching every existing schema).
+      const isEmailStage =
+        stage.kind === "email" ||
+        (!stage.approver_source &&
+          stage.transitions.length === 1 &&
+          (stage.recipients?.length ?? 0) > 0);
+      if (isEmailStage) {
+        if (!stage.recipients || stage.recipients.length === 0) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["workflow", "stages", i, "recipients"],
+            message: `Email step "${stage.id}" has no recipients. Pick at least one To: option.`
+          });
+        }
+        if (stage.transitions.length !== 1) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["workflow", "stages", i, "transitions"],
+            message: `Email step "${stage.id}" must have exactly one outgoing edge (it auto-advances after sending). Got ${stage.transitions.length}.`
+          });
+        }
+        // approver_source on an email stage is a builder bug — the email
+        // step kind doesn't gate on approver authority.
+        if (stage.approver_source) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["workflow", "stages", i, "approver_source"],
+            message: `Email step "${stage.id}" should not carry an approver source.`
+          });
+        }
+        continue;
       }
       // Brief 123 — orphaned approval stages. A stage with an approver but
       // no outgoing transitions strands submissions: the approver can't
@@ -460,7 +524,10 @@ const fieldBaseSchemaDraft = {
   key: z.string().regex(/^[a-z][a-z0-9_]*$/, "snake_case slug, leading non-digit"),
   label: z.string(),
   required: z.boolean(),
-  helpText: z.string().optional()
+  helpText: z.string().optional(),
+  // Brief 129 — see fieldBaseSchema for the rationale; draft variant
+  // mirrors so save-draft accepts the flag mid-build.
+  exclude_from_pdf: z.boolean().optional()
 };
 
 const headingFieldSchemaDraft = z.object({

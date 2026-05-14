@@ -1,13 +1,16 @@
 // Brief 125 — workflow notification webhook fires.
+// Brief 127 — DEPRECATED. The per-step assignment + per-outcome
+// webhook fires migrated to the `outbound_emails` queue table +
+// explicit "email step" workflow stages. The functions in this module
+// are documented no-ops kept for one cycle so any operator config that
+// still references `FORMS_OUTCOME_NOTIFICATION_WEBHOOK_URL` doesn't
+// error at the call site. Future executors should delete this module
+// once it's confirmed no code path imports it.
 //
-// Single PA flow handles both per-step assignment and per-outcome
-// notifications; discriminated by a top-level `type` field in the
-// payload. Both fires are fail-soft + 15s AbortSignal timeout (Brief 65
-// / 101 posture). When `FORMS_OUTCOME_NOTIFICATION_WEBHOOK_URL` is
-// unbound, both fires no-op silently with a log line.
-//
-// Callers wrap these fires in `ctx.waitUntil` so the transition
-// response isn't blocked.
+// `getWorkflowNotifications` is the only helper that retains semantic
+// meaning — the `notifications` block on the workflow schema is
+// preserved for back-compat (read-only) so existing form_versions rows
+// continue to validate. The booleans no longer drive any side effect.
 
 import type { FormWorkflow, WorkflowHistoryEntry } from "@splash/forms-schema";
 
@@ -51,67 +54,39 @@ export interface OutcomePayload {
   review_url: string;
 }
 
-const FIRE_TIMEOUT_MS = 15_000;
-
+/** @deprecated Brief 127 — no-op. Use explicit `kind: "email"` workflow
+ *  stages + `outbound_emails` queue instead. */
 export async function fireAssignmentNotification(
-  env: Env,
+  _env: Env,
   payload: AssignmentPayload
 ): Promise<void> {
-  const url = env.FORMS_OUTCOME_NOTIFICATION_WEBHOOK_URL;
-  if (!url) {
-    console.log(
-      `[forms.notify.assignment] webhook unbound — skipping recipient=${payload.recipient_email}`
-    );
-    return;
-  }
-  await firePost(url, payload, "assignment");
+  console.log(
+    `[forms.notify.assignment] deprecated webhook path; use workflow email steps (recipient=${payload.recipient_email})`
+  );
 }
 
+/** @deprecated Brief 127 — no-op. Use explicit `kind: "email"` workflow
+ *  stages + `outbound_emails` queue instead. */
 export async function fireOutcomeNotification(
-  env: Env,
+  _env: Env,
   payload: OutcomePayload
 ): Promise<void> {
-  const url = env.FORMS_OUTCOME_NOTIFICATION_WEBHOOK_URL;
-  if (!url) {
-    console.log(
-      `[forms.notify.outcome] webhook unbound — skipping recipient=${payload.recipient_email}`
-    );
-    return;
-  }
-  await firePost(url, payload, "outcome");
-}
-
-async function firePost(
-  url: string,
-  body: unknown,
-  label: "assignment" | "outcome"
-): Promise<void> {
-  try {
-    const res = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-      signal: AbortSignal.timeout(FIRE_TIMEOUT_MS)
-    });
-    if (!res.ok) {
-      console.error(
-        `[forms.notify.${label}] non-2xx response: status ${res.status}`
-      );
-    }
-  } catch (err) {
-    console.error(`[forms.notify.${label}] fire failed (fail-soft)`, err);
-  }
+  console.log(
+    `[forms.notify.outcome] deprecated webhook path; use workflow email steps (recipient=${payload.recipient_email})`
+  );
 }
 
 // =============================================================================
-// Helpers
+// Helpers (still in use post-Brief 127)
 // =============================================================================
 
 /**
- * Brief 125 — defaults for the workflow.notifications block. Defaults
- * apply at READ time (the saved schema may omit the block entirely); we
- * never persist these into the schema so future executors can evolve
- * defaults without re-publishing every form.
+ * Brief 125 — defaults for the workflow.notifications block.
+ *
+ * @deprecated Brief 127 — the booleans on the returned shape no longer
+ * drive any side effect. The helper is preserved so any downstream
+ * consumer reading the workflow object's defaults doesn't break;
+ * future readers should treat the result as informational only.
  */
 export function getWorkflowNotifications(workflow: FormWorkflow): {
   notify_approver_on_assignment: boolean;
@@ -129,16 +104,21 @@ export function getWorkflowNotifications(workflow: FormWorkflow): {
 
 /**
  * Brief 125 — predicate matching the apps/web `stageIsOutcome` helper.
- * A stage is an outcome iff:
+ * Predicate fallback: a stage is an outcome iff:
  *   - `kind === "outcome"` (explicit hint), OR
  *   - no approver_source AND no transitions out (predicate-detected
  *     terminal).
+ *
+ * Still used by the cascade helper to detect outcome-paired email
+ * steps for `{outcome.label}` template substitution.
  */
 export function workflowStageIsOutcome(
   stage: FormWorkflow["stages"][number]
 ): boolean {
   if (stage.kind === "outcome") return true;
-  if (stage.kind === "step") return false;
+  if (stage.kind === "step" || stage.kind === "approval" || stage.kind === "email") {
+    return false;
+  }
   return stage.transitions.length === 0 && !stage.approver_source;
 }
 
@@ -156,11 +136,9 @@ export function buildReviewUrl(formId: string, submissionId: string): string {
 }
 
 /**
- * Brief 125 — convert the submission's `workflow_history` array into the
- * `OutcomePayload.actor_history` shape. Each entry rendered with the
- * step label resolved off the WORKFLOW (so PA can write "RM Approval"
- * instead of the snake_case `stage.id` slug); the transition's label
- * is the "action" the actor took ("Approve" / "Deny" / etc).
+ * Brief 125 — convert the submission's `workflow_history` array into
+ * the `OutcomePayload.actor_history` shape. Retained for any future
+ * consumer that wants the same shape.
  */
 export function buildActorHistory(
   workflow: FormWorkflow,

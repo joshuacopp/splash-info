@@ -17,7 +17,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { FormWorkflow, WorkflowStage } from "@splash/forms-schema";
 
-import { stageIsOutcome } from "../_builder/reducer";
+import { stageIsEmail, stageIsOutcome } from "../_builder/reducer";
 
 interface Props {
   workflow: FormWorkflow;
@@ -55,6 +55,8 @@ function buildMermaidSource(workflow: FormWorkflow): string {
     const label = escMermaidLabel(stage.label || stage.id);
     if (stageIsOutcome(stage)) {
       lines.push(`  ${stage.id}(("${label}")):::${tintToClass(stage.tint)}`);
+    } else if (stageIsEmail(stage)) {
+      lines.push(`  ${stage.id}["📧 ${label}"]:::emailstep`);
     } else {
       lines.push(`  ${stage.id}["${label}"]:::step`);
     }
@@ -69,8 +71,16 @@ function buildMermaidSource(workflow: FormWorkflow): string {
   }
 
   for (const stage of workflow.stages) {
+    const isEmail = stageIsEmail(stage);
     for (const t of stage.transitions) {
       if (!t.to) continue;
+      // Email steps auto-advance and never carry a meaningful action
+      // label (the operator picks "Then go to" but there's no
+      // approver-facing button). Render as an unlabeled edge.
+      if (isEmail) {
+        lines.push(`  ${stage.id} --> ${t.to}`);
+        continue;
+      }
       const label = escMermaidLabel(t.label || "Move");
       lines.push(`  ${stage.id} -->|${label}| ${t.to}`);
     }
@@ -78,6 +88,7 @@ function buildMermaidSource(workflow: FormWorkflow): string {
 
   lines.push("  classDef entry fill:#f1f5f9,stroke:#64748b,color:#1e293b,stroke-width:1px");
   lines.push("  classDef step fill:#ffffff,stroke:#1e3a8a,color:#1e3a8a,stroke-width:1.5px");
+  lines.push("  classDef emailstep fill:#fffbeb,stroke:#d97706,color:#78350f,stroke-width:1.5px");
   lines.push("  classDef outcomeSuccess fill:#dcfce7,stroke:#16a34a,color:#14532d,stroke-width:1.5px");
   lines.push("  classDef outcomeDanger fill:#fee2e2,stroke:#dc2626,color:#7f1d1d,stroke-width:1.5px");
   lines.push("  classDef outcomeWarning fill:#fef3c7,stroke:#d97706,color:#78350f,stroke-width:1.5px");

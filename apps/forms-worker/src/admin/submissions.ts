@@ -36,13 +36,11 @@ import {
 } from "../db/admin-submissions.js";
 import { resolveApproverEmails } from "../workflow-resolution.js";
 import {
-  fireAssignmentNotification,
-  fireOutcomeNotification,
-  getWorkflowNotifications,
-  workflowStageIsOutcome,
-  buildReviewUrl,
-  buildActorHistory
-} from "../notifications.js";
+  cascadeThroughEmailSteps,
+  buildRuntimeContext,
+  isEmailStage,
+  payloadWithSubmitterSynthetic
+} from "../workflow-email-step.js";
 import type { Env } from "../index.js";
 
 const FORM_ID_RE =
@@ -567,116 +565,95 @@ export async function handleTransition(
     typed_name: typedName,
     at: new Date().toISOString()
   };
-  const nextHistory = [...submission.workflow_history, historyEntry];
 
-  let nextApproverEmails: string[] = [];
-  // Brief 123 — terminal destination has no approver_source; emails stays [].
-  if (destStage.approver_source) {
+  // Brief 127 — if the destination is an email step, cascade through
+  // it (render + enqueue + advance) before the PATCH. The cascade
+  // produces the FINAL workflow_stage, history additions, and approver
+  // list — all written in one transitionSubmission call below. Email
+  // steps auto-advance; the destStage we landed on isn't where we
+  // stop, just where we start the cascade.
+  let finalStageId: string = toStageId;
+  let finalHistory: WorkflowHistoryEntry[] = [
+    ...submission.workflow_history,
+    historyEntry
+  ];
+  let finalApproverEmails: string[] = [];
+
+  if (isEmailStage(destStage)) {
     try {
-      nextApproverEmails = await resolveApproverEmails(
+      // Fetch the form metadata we need for placeholder substitution.
+      // Slug + title are not on the submission detail; one tiny extra
+      // read keeps the cascade self-contained.
+      const formMeta = await fetchFormMetaForCascade(env, formId);
+      const runtimeBase = buildRuntimeContext({
+        form: { id: formId, slug: formMeta.slug, title: formMeta.title },
+        submissionId: subId,
+        submitterEmail: submission.submitter_email
+      });
+      const cascade = await cascadeThroughEmailSteps(env, {
+        form: { id: formId, slug: formMeta.slug, title: formMeta.title },
+        // The cascade reads `version.versionNumber` for the Brief 129
+        // PDF metadata grid (when attach_pdf fires). Other version
+        // fields aren't used by the cascade itself.
+        version: {
+          id: submission.version.id,
+          versionNumber: submission.version.version_number
+        },
+        schema,
+        payload: payloadWithSubmitterSynthetic(
+          submission.payload,
+          submission.submitter_email
+        ),
+        runtime: runtimeBase,
+        startStageId: toStageId,
+        fromStageId: currentStageId,
+        // Brief 129 — submission metadata + prior history for the PDF
+        // generator's reuse check.
+        submissionMeta: {
+          id: subId,
+          submittedAt: submission.submitted_at,
+          submitterKind: submission.submitter_kind,
+          submitterEmail: submission.submitter_email
+        },
+        priorWorkflowHistory: finalHistory.slice()
+      });
+      finalStageId = cascade.workflow_stage;
+      finalHistory = [...finalHistory, ...cascade.appended_history];
+      finalApproverEmails = cascade.current_approver_emails;
+    } catch (err) {
+      console.error(
+        "[forms.workflow.email-step] transition-time cascade threw; landing on dest stage with empty approvers",
+        err
+      );
+      // Fall through with destStage as the resting point + empty
+      // approvers. Operator can intervene via direct SQL if needed.
+    }
+  } else if (destStage.approver_source) {
+    try {
+      finalApproverEmails = await resolveApproverEmails(
         env,
         destStage.approver_source,
         { schema, payload: submission.payload }
       );
     } catch (err) {
       console.error("[forms.admin] transition: dest approver resolve failed", err);
-      nextApproverEmails = [];
+      finalApproverEmails = [];
     }
   }
+  // Mark `ctx` as intentionally unused now that Brief 125's notification
+  // fires (which were the only reason transition needed `ctx`) have
+  // been removed in Brief 127. Future executors adding new
+  // ctx.waitUntil-driven side effects can re-read the param at the
+  // call site — it's still threaded through.
+  void ctx;
 
   try {
     const updated = await transitionSubmission(env, formId, subId, {
-      workflow_stage: toStageId,
-      workflow_history: nextHistory,
-      current_approver_emails: nextApproverEmails
+      workflow_stage: finalStageId,
+      workflow_history: finalHistory,
+      current_approver_emails: finalApproverEmails
     });
     if (!updated) return jsonError(404, "not_found");
-
-    // -----------------------------------------------------------------
-    // Brief 125 — notification fires (fail-soft, ctx.waitUntil-ed).
-    //
-    // (a) Per-step assignment: if the destination stage has approvers
-    //     AND the workflow opted in, fire one POST per recipient.
-    //     Actor-exclusion: skip the caller's own email (they ARE the
-    //     approver they just forwarded to themselves — rare but
-    //     observable in admin-tier bypass cases).
-    // (b) Per-outcome: if the destination is an outcome, build the
-    //     recipient list (submitter + acted-on approvers) per the
-    //     opted-in booleans and fire one POST per recipient.
-    // -----------------------------------------------------------------
-    const notif = getWorkflowNotifications(workflow);
-    const callerEmailLower = session.email.trim().toLowerCase();
-    const reviewUrl = buildReviewUrl(formId, subId);
-    const formTitle = await fetchFormTitleForNotification(env, formId).catch(
-      () => ""
-    );
-
-    if (
-      notif.notify_approver_on_assignment &&
-      nextApproverEmails.length > 0 &&
-      !workflowStageIsOutcome(destStage)
-    ) {
-      for (const recipientEmail of nextApproverEmails) {
-        if (recipientEmail.toLowerCase() === callerEmailLower) continue;
-        const fire = fireAssignmentNotification(env, {
-          type: "assignment",
-          submission_id: subId,
-          form_id: formId,
-          form_title: formTitle,
-          step_label: destStage.label || destStage.id,
-          recipient_email: recipientEmail,
-          submitter_email: submission.submitter_email,
-          submitted_at: submission.submitted_at,
-          review_url: reviewUrl
-        });
-        if (ctx) ctx.waitUntil(fire);
-        else await fire;
-      }
-    }
-
-    if (workflowStageIsOutcome(destStage)) {
-      const recipients = new Map<string, "submitter" | "actor">();
-      if (
-        notif.notify_submitter_on_outcome &&
-        submission.submitter_email
-      ) {
-        recipients.set(
-          submission.submitter_email.trim().toLowerCase(),
-          "submitter"
-        );
-      }
-      if (notif.notify_approvers_on_outcome) {
-        for (const h of nextHistory) {
-          if (!h.actor_email) continue;
-          const lower = h.actor_email.trim().toLowerCase();
-          if (!recipients.has(lower)) recipients.set(lower, "actor");
-        }
-      }
-      const actorHistory = buildActorHistory(workflow, nextHistory);
-      const outcomeKind = destStage.tint ?? "neutral";
-      const outcomeReachedAt =
-        nextHistory[nextHistory.length - 1]?.at ??
-        new Date().toISOString();
-      for (const [recipientEmail, role] of recipients.entries()) {
-        const fire = fireOutcomeNotification(env, {
-          type: "outcome",
-          submission_id: subId,
-          form_id: formId,
-          form_title: formTitle,
-          outcome_label: destStage.label || destStage.id,
-          outcome_kind: outcomeKind,
-          recipient_email: recipientEmail,
-          recipient_role: role,
-          submitter_email: submission.submitter_email,
-          submitted_at: submission.submitted_at,
-          outcome_reached_at: outcomeReachedAt,
-          actor_history: actorHistory,
-          review_url: reviewUrl
-        });
-        if (ctx) ctx.waitUntil(fire);
-        else await fire;
-      }
-    }
 
     return new Response(
       JSON.stringify({
@@ -684,9 +661,9 @@ export async function handleTransition(
         id: updated.id,
         from: currentStageId,
         to: toStageId,
-        workflow_stage: toStageId,
-        workflow_history: nextHistory,
-        current_approver_emails: nextApproverEmails
+        workflow_stage: finalStageId,
+        workflow_history: finalHistory,
+        current_approver_emails: finalApproverEmails
       }),
       {
         status: 200,
@@ -699,15 +676,20 @@ export async function handleTransition(
   }
 }
 
-// Brief 125 — fetch form.title for the notification payload. Tiny direct
-// PostgREST read; service-key already gates the entire admin surface so
-// we don't need extra auth here.
-async function fetchFormTitleForNotification(
+// Brief 127 — tiny direct PostgREST read so the transition-time cascade
+// can substitute `{form.title}` + `{form.url}` placeholders without
+// adding a slug/title field to the SubmissionDetail row. Service-key
+// already gates the entire admin surface.
+interface FormMetaForCascade {
+  slug: string;
+  title: string;
+}
+async function fetchFormMetaForCascade(
   env: Env,
   formId: string
-): Promise<string> {
+): Promise<FormMetaForCascade> {
   const url = new URL("/rest/v1/forms", env.SUPABASE_URL);
-  url.searchParams.set("select", "title");
+  url.searchParams.set("select", "slug,title");
   url.searchParams.set("id", `eq.${formId}`);
   url.searchParams.set("limit", "1");
   const resp = await fetch(url.toString(), {
@@ -717,9 +699,9 @@ async function fetchFormTitleForNotification(
       Accept: "application/json"
     }
   });
-  if (!resp.ok) return "";
-  const rows = (await resp.json().catch(() => [])) as Array<{ title?: string }>;
-  return rows[0]?.title ?? "";
+  if (!resp.ok) return { slug: "", title: "" };
+  const rows = (await resp.json().catch(() => [])) as Array<FormMetaForCascade>;
+  return rows[0] ?? { slug: "", title: "" };
 }
 
 // Helper for the apps/web detail page server-action (re-exported for

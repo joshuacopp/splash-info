@@ -605,3 +605,116 @@ export async function listMyRequestsAdmin(
   if (resp.status === 401 || resp.status === 403) return null;
   return readJson<MyRequestsResponse>(resp, "listMyRequestsAdmin");
 }
+
+// =============================================================================
+// Brief 128 — Email queue admin viewer
+// =============================================================================
+
+export type EmailQueueStatus = "pending" | "claimed" | "sent" | "stuck";
+export type EmailQueueStatusFilter = EmailQueueStatus | "all";
+
+export interface EmailQueueListItem {
+  id: string;
+  source_worker: string;
+  source_kind: string;
+  source_id: string;
+  recipient: string;
+  subject: string;
+  status: EmailQueueStatus;
+  send_attempts: number;
+  last_error: string | null;
+  created_at: string;
+  claimed_at: string | null;
+  sent_at: string | null;
+}
+
+export interface EmailQueueAttachmentMeta {
+  filename: string;
+  mime: string;
+  size_bytes: number;
+  has_r2_key: boolean;
+  has_base64: boolean;
+}
+
+export interface EmailQueueDetail extends EmailQueueListItem {
+  cc: string[];
+  reply_to: string | null;
+  body_html: string | null;
+  body_text: string | null;
+  attachments: EmailQueueAttachmentMeta[];
+  scheduled_for: string;
+  claim_id: string | null;
+}
+
+export interface EmailQueueListResponse {
+  items: EmailQueueListItem[];
+  total: number | null;
+  limit_hit: boolean;
+  from: string;
+  to: string;
+}
+
+export interface EmailQueueDetailResponse {
+  item: EmailQueueDetail;
+}
+
+export interface ListEmailQueueParams {
+  status?: EmailQueueStatusFilter;
+  source_worker?: string;
+  source_kind?: string;
+  from?: string;
+  to?: string;
+  limit?: number;
+  offset?: number;
+}
+
+export async function listEmailQueueAdmin(
+  params: ListEmailQueueParams = {}
+): Promise<EmailQueueListResponse | null> {
+  const qs = new URLSearchParams();
+  if (params.status && params.status !== "all") qs.set("status", params.status);
+  if (params.source_worker) qs.set("source_worker", params.source_worker);
+  if (params.source_kind) qs.set("source_kind", params.source_kind);
+  if (params.from) qs.set("from", params.from);
+  if (params.to) qs.set("to", params.to);
+  if (params.limit) qs.set("limit", String(params.limit));
+  if (params.offset) qs.set("offset", String(params.offset));
+  const path = `/forms/admin/api/email-queue/list${
+    qs.toString() ? `?${qs}` : ""
+  }`;
+  const resp = await callForms(path);
+  if (resp.status === 401 || resp.status === 403) return null;
+  return readJson<EmailQueueListResponse>(resp, "listEmailQueueAdmin");
+}
+
+export async function getEmailQueueAdmin(
+  id: string
+): Promise<EmailQueueDetail | null> {
+  const resp = await callForms(
+    `/forms/admin/api/email-queue/${encodeURIComponent(id)}`
+  );
+  if (resp.status === 401 || resp.status === 403 || resp.status === 404) {
+    return null;
+  }
+  const data = await readJson<EmailQueueDetailResponse>(
+    resp,
+    "getEmailQueueAdmin"
+  );
+  return data.item;
+}
+
+export async function retryEmailQueueAdmin(id: string): Promise<void> {
+  const resp = await callForms(
+    `/forms/admin/api/email-queue/${encodeURIComponent(id)}/retry`,
+    { method: "POST" }
+  );
+  await readJson<{ ok: true; id: string }>(resp, "retryEmailQueueAdmin");
+}
+
+export async function abandonEmailQueueAdmin(id: string): Promise<void> {
+  const resp = await callForms(
+    `/forms/admin/api/email-queue/${encodeURIComponent(id)}/abandon`,
+    { method: "POST" }
+  );
+  await readJson<{ ok: true; id: string }>(resp, "abandonEmailQueueAdmin");
+}
