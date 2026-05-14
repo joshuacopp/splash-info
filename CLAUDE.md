@@ -1428,6 +1428,118 @@ URL-based — service bindings don't apply to those.
   badge on the dashboard tile all deferred to v2 per the brief's
   out-of-scope. PA flow build guide at `PA_FLOWS_BRIEF_121.md`
   mirrors the Brief 101/102/105 pattern.
+  Brief 125 (2026-05-14) replaced the Brief 120/123 Inspector-panel
+  workflow editor with a top-level Workflow tab on `/admin/forms/[id]`
+  (Fields / Workflow / Settings, URL-driven via `?tab=`). The Workflow
+  tab uses user-language vocabulary throughout — `steps` /
+  `actions` / `outcomes` — and never surfaces schema words (`stage`,
+  `transition`, `approver_source`, `payload_field`, `site_role`,
+  `terminal`, `default_stage`). Step cards have drag-to-reorder via
+  `@dnd-kit/sortable`; the new per-step "Who approves?" picker
+  auto-detects email-shaped lookup fields, email-type fields, and
+  location fields from the form's schema, and the "Specific person" /
+  "Multiple people" options autosuggest from `auth_unified` via a new
+  admin-tier `GET /forms/admin/api/users/search?q=` endpoint (email
+  ilike substring; 20-row cap; future-extensible to `full_name` when
+  `auth_unified` is widened to surface it). Each action sub-card has
+  a "Required action" subsection (Signature / Note / Typed name)
+  framed as requirements the form maker sets on the approver (NOT
+  "Requires before submit"). Outcomes are a separate visual section
+  (horizontal pill row; Add outcome / tint picker / remove-with-confirm
+  inline panel); Approved + Denied are auto-seeded on workflow enable.
+  The destination dropdown lists every Outcome first, then every other
+  Step (`Outcome: {label}` / `Step N: {label}` prefixes); self-step
+  disabled with hover hint. Schema additions are additive + optional:
+  `WorkflowStage.kind?: "step" | "outcome"` (UI bucket hint —
+  predicate-derived fallback for legacy stages), `WorkflowStage.tint?:
+  "success"|"danger"|"warning"|"info"|"neutral"` (outcome pill color),
+  and `FormWorkflow.notifications?: { notify_approver_on_assignment?,
+  notify_submitter_on_outcome?, notify_approvers_on_outcome? }` with
+  defaults true/true/false applied at READ time (via
+  `getWorkflowNotifications` in `apps/forms-worker/src/notifications.ts`
+  — keeps stored schemas minimal so we can evolve defaults without
+  re-publishing every form). The Brief 123 `WorkflowMermaidPreview`
+  was renamed to `WorkflowFlowPreview` with new entry / step /
+  outcome node classes (`"Form submitted"` anchor → step rectangles →
+  outcome circles tinted per the stage); lazy-load via
+  `next/dynamic({ ssr: false })` preserved so the Mermaid bundle still
+  code-splits. New optional secret
+  `FORMS_OUTCOME_NOTIFICATION_WEBHOOK_URL` is the single PA flow for
+  both per-step assignment ("you have a new item to review") AND
+  per-outcome ("your submission was Approved/Denied") emails;
+  discriminated by a top-level `type` field on the payload. Two fire
+  points in the worker: (a) `submit/index.ts` fires assignment for
+  every member of `current_approver_emails` after the default-stage
+  seed when `notify_approver_on_assignment` is true (with submitter
+  actor-exclusion); (b) `admin/submissions.ts handleTransition` fires
+  assignment when transitioning INTO a non-outcome destination with
+  approvers AND fires outcome when transitioning INTO an outcome with
+  recipient list = submitter (when opt-in) + acted-on approvers from
+  `workflow_history` (when opt-in). Both fires are fail-soft + 15s
+  `AbortSignal.timeout` + `ctx.waitUntil`-ed; actor-exclusion (caller's
+  own email) on assignment. When secret unbound, both fires log
+  `[forms.notify.{assignment|outcome}] webhook unbound — skipping` and
+  no-op. New helper module `apps/forms-worker/src/notifications.ts`
+  exports `fireAssignmentNotification` / `fireOutcomeNotification` /
+  `getWorkflowNotifications` / `workflowStageIsOutcome` /
+  `buildReviewUrl` / `buildActorHistory` — canonical home for all
+  forms notification helpers (the existing submission webhook can
+  move here in a future cleanup). PA flow build guide at
+  `PA_FLOWS_BRIEF_125.md` mirrors the Brief 121 pattern. Settings tab
+  renders form-meta editors (title / description / audience /
+  notify_webhook / Turnstile / success message) but persistence stays
+  client-only (Brief 95 limitation — `PATCH /draft` accepts schema
+  only) — a follow-up brief should widen the worker endpoint with a
+  `meta` accept path. Files deleted at this brief:
+  `apps/web/app/admin/forms/[id]/_builder/{WorkflowEditor,
+  WorkflowMermaidPreview}.tsx` (replaced by the new `_workflow/`
+  tree). Underlying Brief 120 schema (stages / transitions /
+  approver_source / current_approver_emails) is preserved verbatim —
+  submissions written under the Brief 120/123 UI continue to render
+  and transition correctly with no re-publish needed (legacy stages
+  without `kind` resolve to step/outcome via the predicate fallback).
+  Conditional transitions + outcome drag-reorder + PDF-of-completed-
+  form attach all flagged as v2 (PDF placeholder is a disabled
+  checkbox on the Notifications panel).
+  Brief 126 (2026-05-14) added the My Requests view as the companion
+  to Brief 121's Pending Approvals (Approvals shows items waiting on
+  YOU; My Requests shows items YOU submitted). New worker endpoint
+  `GET /forms/admin/api/my-requests` in
+  `apps/forms-worker/src/admin/my-requests.ts` — any-session auth via
+  `authenticate()`; PostgREST query scoped by `submitter_email=eq.
+  {caller_email_lowercase}` (Brief 120 normalizes the column at
+  insert time, so case-insensitive matching works without ilike).
+  Query params: `status=waiting|done|all` (default all) + `limit`
+  (default 200, max 500) + `offset` (default 0). Returns
+  `{items, total, scope, caller_email, limit_hit}` with each item
+  carrying `submission_id` / `form_id` / `form_title` /
+  `workflow_stage` / `stage_label` (resolved from the row's version
+  schema) / `status_kind` ("waiting" when stage has approver_source,
+  "outcome" when terminal) / `status_tint` (`info` for in-flight,
+  else Brief 125 `stage.tint` if set, else label-keyword heuristic
+  — `/\bapprov/` → success, `/\bden/` → danger, else neutral) /
+  `current_approver_emails` (empty for outcomes) / `submitted_at` /
+  `outcome_reached_at` (newest `workflow_history` entry whose `to`
+  matches the current stage; null while waiting) / `detail_path`.
+  Submissions without a workflow (`workflow_stage IS NULL`) are
+  filtered at the SQL layer. New apps/web `/admin/my-requests` page
+  (any-session — worker returns empty for callers with no
+  submissions, so no defense-in-depth gate beyond signin) renders
+  All / Waiting / Approved / Denied tabs (All + Waiting map to the
+  worker `status` param; Approved + Denied request `status=done`
+  and narrow client-side by `status_tint`), offset pagination
+  (Prev / Next, page size 50), per-row Status pill + "Waiting on"
+  approver sub-line for in-flight + "Reached" timestamp for
+  outcomes (formatEst per Brief 113). Empty-state copy avoids
+  schema vocabulary ("stage" / "outcome"). New "My Requests" tile
+  in the dashboard Submissions group (`anySession`); new
+  `"my-requests"` entry in `apps/web/middleware.ts`
+  `ADMIN_KNOWN_SUBPATHS` per the CLAUDE.md mandatory rule. New
+  `listMyRequestsAdmin({status?,limit?,offset?})` worker-fetch
+  helper mirrors `listPendingApprovalsAdmin`. Cancel/withdraw,
+  re-submit denied, and workflows-without-stages are all out of
+  scope at v1 per the brief; the per-submission detail page Brief
+  120 built already has the timeline + transition modal.
 - **fleet-inquiry-worker** (Brief 81) - Public fleet-inquiry form +
   three JSON endpoints. The seventh worker in the monorepo and the
   most recent addition. Lift-and-shifted into `apps/fleet-inquiry-

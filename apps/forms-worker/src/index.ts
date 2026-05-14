@@ -15,6 +15,8 @@
 //   GET    /forms/admin/api/files/*                   — Brief 92: admin-gated R2 serve
 //   GET    /forms/admin/api/lookup-sources            — Brief 94: lookup registry
 //   GET    /forms/admin/api/pending-approvals         — Brief 121: cross-form "pending for me"
+//   GET    /forms/admin/api/my-requests               — Brief 126: cross-form "submitted by me"
+//   GET    /forms/admin/api/users/search?q=           — Brief 125: org-directory autosuggest
 //   GET    /forms/admin/api/forms                     — Brief 94: list forms
 //   POST   /forms/admin/api/forms                     — Brief 94: create form
 //   GET    /forms/admin/api/forms/{id}                — Brief 94: get form detail
@@ -78,6 +80,8 @@ import {
 } from "./admin/submissions.js";
 import { handleListVersions } from "./admin/versions.js";
 import { handlePendingApprovals } from "./admin/pending-approvals.js";
+import { handleMyRequests } from "./admin/my-requests.js";
+import { handleUserSearch } from "./admin/users-search.js";
 import { runDailyCleanup } from "./cron/cleanup.js";
 import { runDailyApprovalDigest } from "./cron/approval-digest.js";
 
@@ -97,6 +101,11 @@ export interface Env {
    *  matches Brief 65 / 101 posture). One PA flow fans out one email per
    *  recipient summarizing all forms with pending items. */
   FORMS_APPROVAL_DIGEST_WEBHOOK_URL?: string;
+  /** Brief 125 — workflow assignment + outcome notification POST target.
+   *  Single PA flow handles both event types; discriminated by the
+   *  `type` field on the payload. Fail-soft when unbound — submit /
+   *  transition handlers still succeed and log a skip message. */
+  FORMS_OUTCOME_NOTIFICATION_WEBHOOK_URL?: string;
   FORMS_FILES: R2Bucket;
 }
 
@@ -181,6 +190,28 @@ export default {
       req.method === "GET"
     ) {
       return handlePendingApprovals(env, req);
+    }
+
+    // Brief 126 — GET /forms/admin/api/my-requests
+    //   Cross-form "submitted by me" list. Any-session auth. Mirrors the
+    //   Pending Approvals endpoint but scoped by `submitter_email` instead
+    //   of `current_approver_emails`.
+    if (
+      url.pathname === "/forms/admin/api/my-requests" &&
+      req.method === "GET"
+    ) {
+      return handleMyRequests(env, req);
+    }
+
+    // Brief 125 — GET /forms/admin/api/users/search?q=
+    //   Org-directory autosuggest for the ApproverPicker. Admin-tier
+    //   gate (super_admin OR dcRole admin/super_admin) mirrors the rest
+    //   of /forms/admin/api/*.
+    if (
+      url.pathname === "/forms/admin/api/users/search" &&
+      req.method === "GET"
+    ) {
+      return handleUserSearch(env, req);
     }
 
     // /forms/admin/api/forms (list / create)
@@ -289,7 +320,8 @@ export default {
         env,
         req,
         subTransitionMatch[1],
-        subTransitionMatch[2]
+        subTransitionMatch[2],
+        ctx
       );
     }
 

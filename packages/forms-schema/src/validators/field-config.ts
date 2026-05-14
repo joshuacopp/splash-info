@@ -239,12 +239,24 @@ const workflowStageSchema = z.object({
   // approver_source entirely; they have no outgoing transitions and no
   // operator action is required to "act" on them.
   approver_source: approverSourceSchema.optional(),
-  transitions: z.array(workflowTransitionSchema)
+  transitions: z.array(workflowTransitionSchema),
+  // Brief 125 — UI bucket hint + outcome tint
+  kind: z.enum(["step", "outcome"]).optional(),
+  tint: z
+    .enum(["success", "danger", "warning", "info", "neutral"])
+    .optional()
+});
+
+const workflowNotificationsSchema = z.object({
+  notify_approver_on_assignment: z.boolean().optional(),
+  notify_submitter_on_outcome: z.boolean().optional(),
+  notify_approvers_on_outcome: z.boolean().optional()
 });
 
 export const formWorkflowSchema = z.object({
   default_stage: z.string().min(1),
-  stages: z.array(workflowStageSchema).min(1)
+  stages: z.array(workflowStageSchema).min(1),
+  notifications: workflowNotificationsSchema.optional()
 });
 
 // Lenient variant for save-draft — operator may be mid-build with one stage
@@ -281,12 +293,17 @@ const workflowStageSchemaDraft = z.object({
   id: z.string().regex(/^[a-z][a-z0-9_]*$/, "snake_case slug, leading non-digit"),
   label: z.string(),
   approver_source: approverSourceSchemaDraft.optional(),
-  transitions: z.array(workflowTransitionSchemaDraft)
+  transitions: z.array(workflowTransitionSchemaDraft),
+  kind: z.enum(["step", "outcome"]).optional(),
+  tint: z
+    .enum(["success", "danger", "warning", "info", "neutral"])
+    .optional()
 });
 
 export const formWorkflowSchemaDraft = z.object({
   default_stage: z.string(),
-  stages: z.array(workflowStageSchemaDraft)
+  stages: z.array(workflowStageSchemaDraft),
+  notifications: workflowNotificationsSchema.optional()
 });
 
 // -----------------------------------------------------------------------------

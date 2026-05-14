@@ -5,6 +5,10 @@
 // dispatches mutating client-only state until the operator clicks Save Draft,
 // which fires updateDraftAdmin (the canonical PATCH). Publish creates a new
 // immutable form_versions row and spawns a fresh draft (Brief 94 lifecycle).
+//
+// Brief 125 — tab-aware. Renders Fields / Workflow / Settings based on the
+// `activeTab` prop (page-controlled via `?tab=`). State is shared across
+// tabs in the single useReducer; dirty flag tracks every tab.
 
 "use client";
 
@@ -29,18 +33,29 @@ import type { LookupSource } from "@splash/forms-schema";
 import { publishFormAction, saveDraftAction } from "../actions";
 import type { FormDetail } from "../../_lib/worker-fetch";
 import Canvas from "./Canvas";
-import Inspector, { type WorkflowDispatch } from "./Inspector";
+import Inspector from "./Inspector";
 import Palette from "./Palette";
 import TopBar from "./TopBar";
 import { initialState, reducer, stripBuilderArtifacts } from "./reducer";
+import WorkflowTab, {
+  type WorkflowTabDispatch
+} from "../_workflow/WorkflowTab";
+import SettingsTab from "../_workflow/SettingsTab";
+import type { BuilderTab } from "../_components/FormBuilderTabs";
 
 interface Props {
   initial: FormDetail;
   lookupSources: readonly LookupSource[];
   formId: string;
+  activeTab: BuilderTab;
 }
 
-export default function BuilderClient({ initial, lookupSources, formId }: Props) {
+export default function BuilderClient({
+  initial,
+  lookupSources,
+  formId,
+  activeTab
+}: Props) {
   const [state, dispatch] = useReducer(
     reducer,
     initial,
@@ -149,30 +164,42 @@ export default function BuilderClient({ initial, lookupSources, formId }: Props)
     ? state.fields.find((f) => f.id === state.selectedFieldId)
     : undefined;
 
-  const workflowDispatch: WorkflowDispatch = {
+  const workflowTabDispatch: WorkflowTabDispatch = {
     onEnable: () => dispatch({ type: "workflow_enable" }),
     onDisable: () => dispatch({ type: "workflow_disable" }),
-    onSetDefaultStage: (stageId) =>
-      dispatch({ type: "workflow_set_default_stage", stageId }),
-    onAddStage: () => dispatch({ type: "workflow_add_stage" }),
-    onRemoveStage: (stageId) =>
-      dispatch({ type: "workflow_remove_stage", stageId }),
-    onMoveStage: (stageId, direction) =>
-      dispatch({ type: "workflow_move_stage", stageId, direction }),
-    onUpdateStage: (stageId, patch) =>
-      dispatch({ type: "workflow_update_stage", stageId, patch }),
-    onSetApproverSource: (stageId, source) =>
-      dispatch({ type: "workflow_set_approver_source", stageId, source }),
-    onClearApproverSource: (stageId) =>
-      dispatch({ type: "workflow_clear_approver_source", stageId }),
-    onAddTransition: (stageId) =>
-      dispatch({ type: "workflow_add_transition", stageId }),
-    onUpdateTransition: (stageId, index, patch) =>
-      dispatch({ type: "workflow_update_transition", stageId, index, patch }),
-    onRemoveTransition: (stageId, index) =>
-      dispatch({ type: "workflow_remove_transition", stageId, index }),
-    onRenameStage: (oldId, newId) =>
-      dispatch({ type: "workflow_rename_stage", oldId, newId })
+    onAddStep: () => dispatch({ type: "workflow_add_step" }),
+    onDuplicateStep: (stepId) =>
+      dispatch({ type: "workflow_duplicate_step", stepId }),
+    onRemoveStep: (stepId) =>
+      dispatch({ type: "workflow_remove_step", stepId }),
+    onReorderSteps: (fromIndex, toIndex) =>
+      dispatch({ type: "workflow_reorder_steps", fromIndex, toIndex }),
+    onUpdateStepLabel: (stepId, label) =>
+      dispatch({ type: "workflow_update_step_label", stepId, label }),
+    onSetStepApprover: (stepId, source) =>
+      dispatch({ type: "workflow_set_step_approver", stepId, source }),
+    onAddTransition: (stepId) =>
+      dispatch({ type: "workflow_add_transition", stageId: stepId }),
+    onUpdateTransition: (stepId, index, patch) =>
+      dispatch({
+        type: "workflow_update_transition",
+        stageId: stepId,
+        index,
+        patch
+      }),
+    onRemoveTransition: (stepId, index) =>
+      dispatch({
+        type: "workflow_remove_transition",
+        stageId: stepId,
+        index
+      }),
+    onAddOutcome: () => dispatch({ type: "workflow_add_outcome" }),
+    onUpdateOutcome: (outcomeId, patch) =>
+      dispatch({ type: "workflow_update_outcome", outcomeId, patch }),
+    onRemoveOutcome: (outcomeId) =>
+      dispatch({ type: "workflow_remove_outcome", outcomeId }),
+    onSetNotifications: (patch) =>
+      dispatch({ type: "workflow_set_notifications", patch })
   };
 
   return (
@@ -191,57 +218,71 @@ export default function BuilderClient({ initial, lookupSources, formId }: Props)
           dispatch({ type: "update_form_meta", patch: { title } })
         }
       />
-      <div
-        className="flex gap-4"
-        style={{ minHeight: "calc(100vh - 280px)" }}
-      >
-        <Palette
-          onAdd={(fieldType) =>
-            dispatch({ type: "add_field", fieldType })
-          }
-        />
-        <DndContext
-          sensors={sensors}
-          collisionDetection={closestCenter}
-          onDragEnd={handleDragEnd}
+
+      {activeTab === "fields" && (
+        <div
+          className="flex gap-4"
+          style={{ minHeight: "calc(100vh - 320px)" }}
         >
-          <SortableContext
-            items={state.fields.map((f) => f.id)}
-            strategy={verticalListSortingStrategy}
-          >
-            <Canvas
-              fields={state.fields}
-              selectedFieldId={state.selectedFieldId}
-              onSelect={(id) => dispatch({ type: "select_field", fieldId: id })}
-              onDelete={(id) => dispatch({ type: "remove_field", fieldId: id })}
-              onDuplicate={(id) =>
-                dispatch({ type: "duplicate_field", fieldId: id })
-              }
-            />
-          </SortableContext>
-        </DndContext>
-        <Inspector
-          selectedField={selectedField}
-          formMeta={state.formMeta}
-          workflow={state.workflow}
-          allFields={state.fields}
-          lookupSources={lookupSources}
-          formId={formId}
-          onFieldUpdate={(patch) => {
-            if (selectedField) {
-              dispatch({
-                type: "update_field_config",
-                fieldId: selectedField.id,
-                patch
-              });
+          <Palette
+            onAdd={(fieldType) =>
+              dispatch({ type: "add_field", fieldType })
             }
-          }}
-          onFormMetaUpdate={(patch) =>
+          />
+          <DndContext
+            sensors={sensors}
+            collisionDetection={closestCenter}
+            onDragEnd={handleDragEnd}
+          >
+            <SortableContext
+              items={state.fields.map((f) => f.id)}
+              strategy={verticalListSortingStrategy}
+            >
+              <Canvas
+                fields={state.fields}
+                selectedFieldId={state.selectedFieldId}
+                onSelect={(id) => dispatch({ type: "select_field", fieldId: id })}
+                onDelete={(id) => dispatch({ type: "remove_field", fieldId: id })}
+                onDuplicate={(id) =>
+                  dispatch({ type: "duplicate_field", fieldId: id })
+                }
+              />
+            </SortableContext>
+          </DndContext>
+          <Inspector
+            selectedField={selectedField}
+            allFields={state.fields}
+            lookupSources={lookupSources}
+            formId={formId}
+            onFieldUpdate={(patch) => {
+              if (selectedField) {
+                dispatch({
+                  type: "update_field_config",
+                  fieldId: selectedField.id,
+                  patch
+                });
+              }
+            }}
+          />
+        </div>
+      )}
+
+      {activeTab === "workflow" && (
+        <WorkflowTab
+          workflow={state.workflow}
+          fields={state.fields}
+          dispatch={workflowTabDispatch}
+        />
+      )}
+
+      {activeTab === "settings" && (
+        <SettingsTab
+          formMeta={state.formMeta}
+          onUpdate={(patch) =>
             dispatch({ type: "update_form_meta", patch })
           }
-          workflowDispatch={workflowDispatch}
         />
-      </div>
+      )}
     </div>
   );
 }

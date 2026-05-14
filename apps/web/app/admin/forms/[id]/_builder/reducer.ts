@@ -17,6 +17,7 @@ import type {
   Field,
   FieldType,
   FormWorkflow,
+  WorkflowNotifications,
   WorkflowStage,
   WorkflowTransition
 } from "@splash/forms-schema";
@@ -129,7 +130,26 @@ export type BuilderAction =
   // Brief 123 — rename a stage and cascade-update default_stage + every
   // transition.to that referenced the old id, in one dispatch so the
   // editor renders one consistent state, not three intermediate ones.
-  | { type: "workflow_rename_stage"; oldId: string; newId: string };
+  | { type: "workflow_rename_stage"; oldId: string; newId: string }
+  // Brief 125 — user-language workflow editor dispatches.
+  | { type: "workflow_add_step" }
+  | { type: "workflow_duplicate_step"; stepId: string }
+  | { type: "workflow_remove_step"; stepId: string }
+  | { type: "workflow_reorder_steps"; fromIndex: number; toIndex: number }
+  | { type: "workflow_update_step_label"; stepId: string; label: string }
+  | {
+      type: "workflow_set_step_approver";
+      stepId: string;
+      source: ApproverSource | undefined;
+    }
+  | { type: "workflow_add_outcome" }
+  | { type: "workflow_remove_outcome"; outcomeId: string }
+  | {
+      type: "workflow_update_outcome";
+      outcomeId: string;
+      patch: Partial<Pick<WorkflowStage, "label" | "tint">>;
+    }
+  | { type: "workflow_set_notifications"; patch: Partial<WorkflowNotifications> };
 
 export interface BuilderInitial {
   form: {
@@ -173,10 +193,11 @@ function makeBlankStage(): WorkflowStage {
   };
 }
 
-// Brief 123 — auto-seed three stages on workflow enable so operators land
-// in a working starter template instead of a confused single-stage state
-// where the only transition destination is the stage itself. Operators
-// can rename / delete any of these; the seed is just a starting point.
+// Brief 123 / 125 — auto-seed three stages on workflow enable so operators
+// land in a working starter template. Brief 125 stamps `kind` for the
+// outcomes ("approved" / "denied" are terminal outcomes, not stages with
+// "no approver and no transitions") so the new Workflow tab can bucket
+// stages into steps vs outcomes cleanly even when the user is mid-edit.
 function makeWorkflowSeed(): FormWorkflow {
   const approval: WorkflowStage = {
     id: "approval",
@@ -184,26 +205,68 @@ function makeWorkflowSeed(): FormWorkflow {
     approver_source: { type: "site_role", role: "rm_email" },
     transitions: [
       { to: "approved", label: "Approve" },
-      { to: "denied", label: "Decline" }
+      { to: "denied", label: "Deny" }
     ],
+    kind: "step",
     _uiKey: nanoid(8)
   };
   const approved: WorkflowStage = {
     id: "approved",
     label: "Approved",
-    // Terminal — no approver_source, no transitions.
     transitions: [],
+    kind: "outcome",
+    tint: "success",
     _uiKey: nanoid(8)
   };
   const denied: WorkflowStage = {
     id: "denied",
     label: "Denied",
     transitions: [],
+    kind: "outcome",
+    tint: "danger",
     _uiKey: nanoid(8)
   };
   return {
     default_stage: approval.id,
-    stages: [approval, approved, denied]
+    stages: [approval, approved, denied],
+    notifications: {
+      notify_approver_on_assignment: true,
+      notify_submitter_on_outcome: true,
+      notify_approvers_on_outcome: false
+    }
+  };
+}
+
+// Brief 125 — predicate-based detection of a stage's UI bucket. `kind`
+// hint wins when present; otherwise: has approver_source → step; no
+// approver, no transitions → outcome; everything else (orphan stages)
+// falls into "step" so the operator can fix them in place.
+export function stageIsOutcome(stage: WorkflowStage): boolean {
+  if (stage.kind === "outcome") return true;
+  if (stage.kind === "step") return false;
+  return stage.transitions.length === 0 && !stage.approver_source;
+}
+
+function makeStepSeed(stepCount: number): WorkflowStage {
+  const id = `step_${lowerNanoid()}`;
+  return {
+    id,
+    label: stepCount === 0 ? "Approval" : `Step ${stepCount + 1}`,
+    approver_source: { type: "static_emails", emails: [] },
+    transitions: [],
+    kind: "step",
+    _uiKey: nanoid(8)
+  };
+}
+
+function makeOutcomeSeed(label: string, tint: WorkflowStage["tint"] = "neutral"): WorkflowStage {
+  return {
+    id: `outcome_${lowerNanoid()}`,
+    label,
+    transitions: [],
+    kind: "outcome",
+    tint,
+    _uiKey: nanoid(8)
   };
 }
 
@@ -493,7 +556,178 @@ export function reducer(
         workflow.default_stage === oldId ? newId : workflow.default_stage;
       return {
         ...state,
-        workflow: { default_stage: nextDefault, stages: nextStages },
+        workflow: { ...workflow, default_stage: nextDefault, stages: nextStages },
+        dirty: true
+      };
+    }
+    case "workflow_add_step": {
+      const workflow = state.workflow ?? {
+        default_stage: "",
+        stages: [] as WorkflowStage[]
+      };
+      const stepCount = workflow.stages.filter((s) => !stageIsOutcome(s)).length;
+      const step = makeStepSeed(stepCount);
+      const nextStages = [...workflow.stages, step];
+      // If no default_stage set (mid-build), this step becomes default.
+      const nextDefault =
+        workflow.default_stage && workflow.stages.some((s) => s.id === workflow.default_stage)
+          ? workflow.default_stage
+          : step.id;
+      return {
+        ...state,
+        workflow: { ...workflow, default_stage: nextDefault, stages: nextStages },
+        dirty: true
+      };
+    }
+    case "workflow_duplicate_step": {
+      if (!state.workflow) return state;
+      const idx = state.workflow.stages.findIndex((s) => s.id === action.stepId);
+      if (idx < 0) return state;
+      const orig = state.workflow.stages[idx];
+      if (!orig) return state;
+      const dup: WorkflowStage = {
+        ...orig,
+        id: `step_${lowerNanoid()}`,
+        _uiKey: nanoid(8),
+        transitions: orig.transitions.map((t) => ({ ...t }))
+      };
+      const next = [...state.workflow.stages];
+      next.splice(idx + 1, 0, dup);
+      return {
+        ...state,
+        workflow: { ...state.workflow, stages: next },
+        dirty: true
+      };
+    }
+    case "workflow_remove_step": {
+      if (!state.workflow) return state;
+      const remaining = state.workflow.stages.filter(
+        (s) => s.id !== action.stepId
+      );
+      // Reset transitions in the remaining stages that pointed at the
+      // removed step.
+      const cleaned = remaining.map((s) => ({
+        ...s,
+        transitions: s.transitions.filter((t) => t.to !== action.stepId)
+      }));
+      // Recompute default_stage if it pointed at the removed step.
+      const firstStep = cleaned.find((s) => !stageIsOutcome(s));
+      const nextDefault =
+        state.workflow.default_stage === action.stepId
+          ? firstStep?.id ?? ""
+          : state.workflow.default_stage;
+      return {
+        ...state,
+        workflow: { ...state.workflow, default_stage: nextDefault, stages: cleaned },
+        dirty: true
+      };
+    }
+    case "workflow_reorder_steps": {
+      if (!state.workflow) return state;
+      const { fromIndex, toIndex } = action;
+      const steps = state.workflow.stages.filter((s) => !stageIsOutcome(s));
+      const outcomes = state.workflow.stages.filter((s) => stageIsOutcome(s));
+      if (
+        fromIndex < 0 ||
+        fromIndex >= steps.length ||
+        toIndex < 0 ||
+        toIndex >= steps.length
+      ) {
+        return state;
+      }
+      const reordered = [...steps];
+      const [moved] = reordered.splice(fromIndex, 1);
+      if (!moved) return state;
+      reordered.splice(toIndex, 0, moved);
+      const newStages = [...reordered, ...outcomes];
+      const newDefault = reordered[0]?.id ?? state.workflow.default_stage;
+      return {
+        ...state,
+        workflow: { ...state.workflow, default_stage: newDefault, stages: newStages },
+        dirty: true
+      };
+    }
+    case "workflow_update_step_label": {
+      if (!state.workflow) return state;
+      return {
+        ...state,
+        workflow: {
+          ...state.workflow,
+          stages: state.workflow.stages.map((s) =>
+            s.id === action.stepId ? { ...s, label: action.label } : s
+          )
+        },
+        dirty: true
+      };
+    }
+    case "workflow_set_step_approver": {
+      if (!state.workflow) return state;
+      return {
+        ...state,
+        workflow: {
+          ...state.workflow,
+          stages: state.workflow.stages.map((s) => {
+            if (s.id !== action.stepId) return s;
+            if (action.source === undefined) {
+              const { approver_source: _drop, ...rest } = s;
+              return { ...rest, kind: "step" };
+            }
+            return { ...s, approver_source: action.source, kind: "step" };
+          })
+        },
+        dirty: true
+      };
+    }
+    case "workflow_add_outcome": {
+      const workflow = state.workflow ?? {
+        default_stage: "",
+        stages: [] as WorkflowStage[]
+      };
+      const outcome = makeOutcomeSeed("New outcome", "neutral");
+      return {
+        ...state,
+        workflow: { ...workflow, stages: [...workflow.stages, outcome] },
+        dirty: true
+      };
+    }
+    case "workflow_remove_outcome": {
+      if (!state.workflow) return state;
+      const cleaned = state.workflow.stages
+        .filter((s) => s.id !== action.outcomeId)
+        .map((s) => ({
+          ...s,
+          transitions: s.transitions.filter((t) => t.to !== action.outcomeId)
+        }));
+      return {
+        ...state,
+        workflow: { ...state.workflow, stages: cleaned },
+        dirty: true
+      };
+    }
+    case "workflow_update_outcome": {
+      if (!state.workflow) return state;
+      return {
+        ...state,
+        workflow: {
+          ...state.workflow,
+          stages: state.workflow.stages.map((s) =>
+            s.id === action.outcomeId
+              ? { ...s, ...action.patch, kind: "outcome" }
+              : s
+          )
+        },
+        dirty: true
+      };
+    }
+    case "workflow_set_notifications": {
+      if (!state.workflow) return state;
+      const current = state.workflow.notifications ?? {};
+      return {
+        ...state,
+        workflow: {
+          ...state.workflow,
+          notifications: { ...current, ...action.patch }
+        },
         dirty: true
       };
     }

@@ -75,6 +75,7 @@ const ADMIN_KNOWN_SUBPATHS = new Set<string>([
   "fleet",
   "forms",
   "jotform",
+  "my-requests",
   "performance",
   "pricing",
   "signups",

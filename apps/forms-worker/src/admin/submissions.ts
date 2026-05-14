@@ -35,6 +35,14 @@ import {
   type SubmissionStatus
 } from "../db/admin-submissions.js";
 import { resolveApproverEmails } from "../workflow-resolution.js";
+import {
+  fireAssignmentNotification,
+  fireOutcomeNotification,
+  getWorkflowNotifications,
+  workflowStageIsOutcome,
+  buildReviewUrl,
+  buildActorHistory
+} from "../notifications.js";
 import type { Env } from "../index.js";
 
 const FORM_ID_RE =
@@ -397,13 +405,17 @@ function csvEscape(v: string): string {
 //      `current_approver_emails` for the destination stage.
 //   7. Return the updated row (with `next_approver_emails` for the UI).
 //
-// Notification webhook fire deferred to Brief 121.
+// Brief 120 deferred notification webhook fire; Brief 125 wires it in:
+// assignment + outcome notification webhooks fire here. Both are
+// fail-soft + ctx.waitUntil'd from the calling fetch handler. We
+// re-thread ctx in via a fourth param.
 
 export async function handleTransition(
   env: Env,
   req: Request,
   formId: string,
-  subId: string
+  subId: string,
+  ctx?: ExecutionContext
 ): Promise<Response> {
   const sk = requireServiceKey(env);
   if (sk) return sk;
@@ -579,6 +591,93 @@ export async function handleTransition(
       current_approver_emails: nextApproverEmails
     });
     if (!updated) return jsonError(404, "not_found");
+
+    // -----------------------------------------------------------------
+    // Brief 125 — notification fires (fail-soft, ctx.waitUntil-ed).
+    //
+    // (a) Per-step assignment: if the destination stage has approvers
+    //     AND the workflow opted in, fire one POST per recipient.
+    //     Actor-exclusion: skip the caller's own email (they ARE the
+    //     approver they just forwarded to themselves — rare but
+    //     observable in admin-tier bypass cases).
+    // (b) Per-outcome: if the destination is an outcome, build the
+    //     recipient list (submitter + acted-on approvers) per the
+    //     opted-in booleans and fire one POST per recipient.
+    // -----------------------------------------------------------------
+    const notif = getWorkflowNotifications(workflow);
+    const callerEmailLower = session.email.trim().toLowerCase();
+    const reviewUrl = buildReviewUrl(formId, subId);
+    const formTitle = await fetchFormTitleForNotification(env, formId).catch(
+      () => ""
+    );
+
+    if (
+      notif.notify_approver_on_assignment &&
+      nextApproverEmails.length > 0 &&
+      !workflowStageIsOutcome(destStage)
+    ) {
+      for (const recipientEmail of nextApproverEmails) {
+        if (recipientEmail.toLowerCase() === callerEmailLower) continue;
+        const fire = fireAssignmentNotification(env, {
+          type: "assignment",
+          submission_id: subId,
+          form_id: formId,
+          form_title: formTitle,
+          step_label: destStage.label || destStage.id,
+          recipient_email: recipientEmail,
+          submitter_email: submission.submitter_email,
+          submitted_at: submission.submitted_at,
+          review_url: reviewUrl
+        });
+        if (ctx) ctx.waitUntil(fire);
+        else await fire;
+      }
+    }
+
+    if (workflowStageIsOutcome(destStage)) {
+      const recipients = new Map<string, "submitter" | "actor">();
+      if (
+        notif.notify_submitter_on_outcome &&
+        submission.submitter_email
+      ) {
+        recipients.set(
+          submission.submitter_email.trim().toLowerCase(),
+          "submitter"
+        );
+      }
+      if (notif.notify_approvers_on_outcome) {
+        for (const h of nextHistory) {
+          if (!h.actor_email) continue;
+          const lower = h.actor_email.trim().toLowerCase();
+          if (!recipients.has(lower)) recipients.set(lower, "actor");
+        }
+      }
+      const actorHistory = buildActorHistory(workflow, nextHistory);
+      const outcomeKind = destStage.tint ?? "neutral";
+      const outcomeReachedAt =
+        nextHistory[nextHistory.length - 1]?.at ??
+        new Date().toISOString();
+      for (const [recipientEmail, role] of recipients.entries()) {
+        const fire = fireOutcomeNotification(env, {
+          type: "outcome",
+          submission_id: subId,
+          form_id: formId,
+          form_title: formTitle,
+          outcome_label: destStage.label || destStage.id,
+          outcome_kind: outcomeKind,
+          recipient_email: recipientEmail,
+          recipient_role: role,
+          submitter_email: submission.submitter_email,
+          submitted_at: submission.submitted_at,
+          outcome_reached_at: outcomeReachedAt,
+          actor_history: actorHistory,
+          review_url: reviewUrl
+        });
+        if (ctx) ctx.waitUntil(fire);
+        else await fire;
+      }
+    }
+
     return new Response(
       JSON.stringify({
         ok: true,
@@ -598,6 +697,29 @@ export async function handleTransition(
     console.error("[forms.admin] transition: PATCH failed", err);
     return jsonError(500, "transition_failed");
   }
+}
+
+// Brief 125 — fetch form.title for the notification payload. Tiny direct
+// PostgREST read; service-key already gates the entire admin surface so
+// we don't need extra auth here.
+async function fetchFormTitleForNotification(
+  env: Env,
+  formId: string
+): Promise<string> {
+  const url = new URL("/rest/v1/forms", env.SUPABASE_URL);
+  url.searchParams.set("select", "title");
+  url.searchParams.set("id", `eq.${formId}`);
+  url.searchParams.set("limit", "1");
+  const resp = await fetch(url.toString(), {
+    headers: {
+      apikey: env.SUPABASE_SERVICE_KEY,
+      Authorization: `Bearer ${env.SUPABASE_SERVICE_KEY}`,
+      Accept: "application/json"
+    }
+  });
+  if (!resp.ok) return "";
+  const rows = (await resp.json().catch(() => [])) as Array<{ title?: string }>;
+  return rows[0]?.title ?? "";
 }
 
 // Helper for the apps/web detail page server-action (re-exported for

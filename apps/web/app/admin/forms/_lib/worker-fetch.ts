@@ -551,3 +551,57 @@ export async function listPendingApprovalsAdmin(
   if (resp.status === 401 || resp.status === 403) return null;
   return readJson<PendingApprovalsResponse>(resp, "listPendingApprovalsAdmin");
 }
+
+// =============================================================================
+// Brief 126 — My Requests cross-form list
+// =============================================================================
+
+export type MyRequestStatusFilter = "waiting" | "done" | "all";
+export type MyRequestStatusKind = "waiting" | "outcome";
+export type MyRequestStatusTint =
+  | "info"
+  | "success"
+  | "danger"
+  | "warning"
+  | "neutral";
+
+export interface MyRequestItem {
+  submission_id: string;
+  form_id: string;
+  form_title: string;
+  workflow_stage: string;
+  stage_label: string;
+  status_kind: MyRequestStatusKind;
+  status_tint: MyRequestStatusTint;
+  current_approver_emails: string[];
+  submitted_at: string;
+  outcome_reached_at: string | null;
+  detail_path: string;
+}
+
+export interface MyRequestsResponse {
+  items: MyRequestItem[];
+  total: number;
+  scope: MyRequestStatusFilter;
+  caller_email: string;
+  limit_hit: boolean;
+}
+
+export async function listMyRequestsAdmin(
+  params: {
+    status?: MyRequestStatusFilter;
+    limit?: number;
+    offset?: number;
+  } = {}
+): Promise<MyRequestsResponse | null> {
+  const qs = new URLSearchParams();
+  if (params.status && params.status !== "all") qs.set("status", params.status);
+  if (params.limit) qs.set("limit", String(params.limit));
+  if (params.offset) qs.set("offset", String(params.offset));
+  const path = `/forms/admin/api/my-requests${
+    qs.toString() ? `?${qs}` : ""
+  }`;
+  const resp = await callForms(path);
+  if (resp.status === 401 || resp.status === 403) return null;
+  return readJson<MyRequestsResponse>(resp, "listMyRequestsAdmin");
+}

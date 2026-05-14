@@ -162,6 +162,13 @@ const checkCircleIcon: ReactNode = (
   </svg>
 );
 
+const sendIcon: ReactNode = (
+  <svg {...SvgProps}>
+    <line x1="22" y1="2" x2="11" y2="13" />
+    <polygon points="22 2 15 22 11 13 2 9 22 2" />
+  </svg>
+);
+
 const settingsGearIcon: ReactNode = (
   <svg {...SvgProps}>
     <circle cx="12" cy="12" r="3" />
@@ -214,6 +221,16 @@ export const TILES: ReadonlyArray<Tile> = [
     href: "/admin/forms/submissions",
     icon: inboxIcon,
     visibleTo: isAdminTier
+  },
+  {
+    id: "my-requests",
+    group: "submissions",
+    eyebrow: "Workflow",
+    title: "My Requests",
+    description: "Submissions you submitted — waiting, approved, denied.",
+    href: "/admin/my-requests",
+    icon: sendIcon,
+    visibleTo: anySession
   },
 
   // ---- Operations group ----

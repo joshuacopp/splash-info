@@ -12,15 +12,26 @@ import { getFormAdmin, getLookupSourcesAdmin } from "../_lib/worker-fetch";
 import FormsAdminTabs from "../_components/FormsAdminTabs";
 import NoAccessCard from "../_components/NoAccessCard";
 import BuilderClient from "./_builder/BuilderClient";
+import FormBuilderTabs, {
+  type BuilderTab
+} from "./_components/FormBuilderTabs";
 
 export const dynamic = "force-dynamic";
 
 interface PageProps {
   params: Promise<{ id: string }>;
+  searchParams: Promise<{ tab?: string }>;
 }
 
-export default async function FormBuilderPage({ params }: PageProps) {
+function resolveTab(raw: string | undefined): BuilderTab {
+  if (raw === "workflow" || raw === "settings") return raw;
+  return "fields";
+}
+
+export default async function FormBuilderPage({ params, searchParams }: PageProps) {
   const { id } = await params;
+  const sp = await searchParams;
+  const activeTab = resolveTab(sp.tab);
 
   const session = await getMe().catch(() => null);
   if (!session) {
@@ -56,10 +67,13 @@ export default async function FormBuilderPage({ params }: PageProps) {
 
       <FormsAdminTabs formId={id} />
 
+      <FormBuilderTabs formId={id} active={activeTab} />
+
       <BuilderClient
         initial={detail}
         lookupSources={lookupSources}
         formId={id}
+        activeTab={activeTab}
       />
     </section>
   );

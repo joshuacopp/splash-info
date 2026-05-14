@@ -122,3 +122,5 @@
 - 2026-05-13 16:35:34 brief-120-forms-workflow-schema-and-transitions.md (success)
 - 2026-05-13 16:48:51 brief-121-forms-pending-approvals-dashboard-and-digest.md (success)
 - 2026-05-13 17:43:55 brief-123-forms-workflow-builder-ux-fixes.md (success)
+- 2026-05-14 09:00:49 brief-125-forms-workflow-builder-ux-redesign.md (success)
+- 2026-05-14 09:11:25 brief-126-forms-my-requests-view.md (success)

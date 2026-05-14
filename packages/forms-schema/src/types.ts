@@ -273,16 +273,44 @@ export interface WorkflowStage {
   // (transitions exist but nobody can advance).
   approver_source?: ApproverSource;
   transitions: WorkflowTransition[];
+  // Brief 125 — kind hint disambiguates the Workflow tab's UI buckets
+  // (steps vs outcomes) for stages mid-build where the predicate-based
+  // detection (no approver + no transitions = outcome) is ambiguous. When
+  // omitted, predicate detection is the source of truth: a stage with an
+  // `approver_source` is always a step; a stage with no approver and no
+  // transitions is an outcome.
+  kind?: "step" | "outcome";
+  // Brief 125 — UI tint for outcomes (success / danger / warning / info /
+  // neutral). Optional; defaults to "neutral" at render time. Steps
+  // ignore this field.
+  tint?: "success" | "danger" | "warning" | "info" | "neutral";
   _uiKey?: string;
+}
+
+/**
+ * Brief 125 — per-workflow notification opt-ins. Defaults applied at
+ * read time when missing: assignment=true, submitter_outcome=true,
+ * approvers_outcome=false. The pdf_outcome attach is flagged for v2.
+ */
+export interface WorkflowNotifications {
+  notify_approver_on_assignment?: boolean;
+  notify_submitter_on_outcome?: boolean;
+  notify_approvers_on_outcome?: boolean;
+  // v2: attach_pdf_on_outcome?: boolean;
 }
 
 /**
  * Full workflow block. `default_stage` must reference one of `stages[].id`
  * — validated by Zod at draft-save AND publish time.
+ *
+ * Brief 125 — optional `notifications` block controls the per-step
+ * assignment + per-outcome notification emails the worker fires via
+ * `FORMS_OUTCOME_NOTIFICATION_WEBHOOK_URL`.
  */
 export interface FormWorkflow {
   default_stage: string;
   stages: WorkflowStage[];
+  notifications?: WorkflowNotifications;
 }
 
 /**

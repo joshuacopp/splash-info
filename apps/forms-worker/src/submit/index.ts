@@ -46,6 +46,11 @@ import { verifyTurnstile } from "./turnstile.js";
 import { renderSuccessPage } from "./success.js";
 import { fireSubmissionWebhook, type WebhookFile } from "./webhook.js";
 import { HARD_LIMITS } from "../limits.js";
+import {
+  fireAssignmentNotification,
+  getWorkflowNotifications,
+  buildReviewUrl
+} from "../notifications.js";
 
 const PENDING_ID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -450,6 +455,50 @@ export async function handleSubmit(
         files: webhookFiles
       })
     );
+  }
+
+  // -----------------------------------------------------------------
+  // Brief 125 — fire per-step assignment notifications for the default
+  // stage, if the workflow opted in. Idempotent re-submits skip (the
+  // original submit already fired).
+  // -----------------------------------------------------------------
+  if (
+    inserted.wasNew &&
+    version.schema.workflow &&
+    currentApproverEmails.length > 0
+  ) {
+    const notif = getWorkflowNotifications(version.schema.workflow);
+    if (notif.notify_approver_on_assignment) {
+      const defaultStage = version.schema.workflow.stages.find(
+        (s) => s.id === workflowStage
+      );
+      const stepLabel = defaultStage?.label ?? workflowStage ?? "Review";
+      const reviewUrl = buildReviewUrl(form.id, inserted.row.id);
+      const submitterLower = submitterEmail
+        ? submitterEmail.trim().toLowerCase()
+        : null;
+      for (const recipientEmail of currentApproverEmails) {
+        // Actor exclusion: if the submitter happens to be on the approver
+        // list (operator forwarding a form to themselves), skip — they
+        // already know they submitted it.
+        if (submitterLower && recipientEmail.toLowerCase() === submitterLower) {
+          continue;
+        }
+        ctx.waitUntil(
+          fireAssignmentNotification(env, {
+            type: "assignment",
+            submission_id: inserted.row.id,
+            form_id: form.id,
+            form_title: form.title,
+            step_label: stepLabel,
+            recipient_email: recipientEmail,
+            submitter_email: submitterEmail,
+            submitted_at: inserted.row.submittedAt,
+            review_url: reviewUrl
+          })
+        );
+      }
+    }
   }
 
   return renderSuccessPage(form);
