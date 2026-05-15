@@ -363,9 +363,7 @@ export function renderClaimForm(args: RenderClaimFormArgs): string {
               <input type="email" id="customerEmail" name="customerEmail" required autocomplete="email">
             </div>
             <div class="form-group">
-              <label for="mailingAddress">Mailing Address <span class="required">*</span>
-                <span class="hint">Where we'll mail claim correspondence and any approved payment.</span>
-              </label>
+              <label for="mailingAddress">Mailing Address <span class="required">*</span></label>
               <input type="text" id="mailingAddress" name="mailingAddress" required autocomplete="street-address">
             </div>
           </div>
