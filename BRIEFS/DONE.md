@@ -131,3 +131,4 @@
 - 2026-05-14 14:56:13 brief-132-workflow-approver-source-seed-fix.md (success)
 - 2026-05-14 16:25:53 brief-133-workflow-transition-three-bug-pass.md (success)
 - 2026-05-14 16:36:30 brief-134-workflow-email-html-render.md (success)
+- 2026-05-15 00:29:19 brief-135-claim-form-customer-section-required-fields.md (success)

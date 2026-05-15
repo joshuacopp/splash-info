@@ -338,17 +338,17 @@ export function renderClaimForm(args: RenderClaimFormArgs): string {
               <input type="email" id="customerEmail" name="customerEmail" required autocomplete="email">
             </div>
             <div class="form-group">
-              <label for="mailingAddress">Mailing Address
-                <span class="hint">Required for payment if claim is approved</span>
+              <label for="mailingAddress">Mailing Address <span class="required">*</span>
+                <span class="hint">Where we'll mail claim correspondence and any approved payment.</span>
               </label>
-              <input type="text" id="mailingAddress" name="mailingAddress" autocomplete="street-address">
+              <input type="text" id="mailingAddress" name="mailingAddress" required autocomplete="street-address">
             </div>
           </div>
 
           <div class="form-row">
             <div class="form-group">
-              <label for="licensePlate">License Plate</label>
-              <input type="text" id="licensePlate" name="licensePlate" style="text-transform: uppercase;">
+              <label for="licensePlate">License Plate <span class="required">*</span></label>
+              <input type="text" id="licensePlate" name="licensePlate" required style="text-transform: uppercase;">
             </div>
             <div class="form-group">
               <label for="vehicleYear">Vehicle Year <span class="required">*</span></label>
@@ -368,8 +368,8 @@ export function renderClaimForm(args: RenderClaimFormArgs): string {
           </div>
 
           <div class="form-group">
-            <label for="vehicleColor">Vehicle Color</label>
-            <input type="text" id="vehicleColor" name="vehicleColor">
+            <label for="vehicleColor">Vehicle Color <span class="required">*</span></label>
+            <input type="text" id="vehicleColor" name="vehicleColor" required>
           </div>
 
           <div class="form-group">
@@ -637,7 +637,24 @@ const FORM_SCRIPT = `(function () {
     employeeSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
   }
   if (btnContinue) {
-    btnContinue.addEventListener('click', function () { openPinModal(); });
+    btnContinue.addEventListener('click', function () {
+      // Brief 135: validate the customer section's required fields
+      // before revealing the staff section. Surface the browser's
+      // native validity bubble at the first invalid field so the
+      // customer fixes it without scrolling through staff content.
+      if (customerSection) {
+        var requiredFields = customerSection.querySelectorAll('[required]');
+        for (var i = 0; i < requiredFields.length; i++) {
+          var field = requiredFields[i];
+          if (!field.checkValidity()) {
+            field.reportValidity();
+            if (typeof field.focus === 'function') field.focus();
+            return;
+          }
+        }
+      }
+      openPinModal();
+    });
   }
   if (btnPinCancel) {
     btnPinCancel.addEventListener('click', function () { closePinModal(); });
