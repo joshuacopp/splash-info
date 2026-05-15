@@ -259,6 +259,31 @@ const SHARED_STYLES = `
     background: #eff6ff; padding: 4px 10px; border-radius: 6px;
     display: inline-block; margin-left: 6px;
   }
+
+  /* Brief 136 — localStorage autosave resume banner (mirrors Brief 122
+     palette on the splash-forms public renderer) */
+  .resume-banner {
+    margin: 18px 22px 0; padding: 12px 14px;
+    background: #fff8e1; border: 1px solid #f0c674;
+    border-radius: 8px;
+    display: flex; flex-wrap: wrap; align-items: center; gap: 10px;
+    color: #5a4a1a; font-size: 14px;
+  }
+  .resume-banner-icon { font-size: 20px; line-height: 1; }
+  .resume-banner-text { flex: 1 1 220px; }
+  .resume-banner-actions { display: inline-flex; flex-wrap: wrap; gap: 8px; }
+  .resume-banner-actions button {
+    cursor: pointer; padding: 8px 14px; border-radius: 6px;
+    font-size: 14px; font-weight: 600; font-family: inherit; line-height: 1.2;
+  }
+  .resume-banner-actions .btn-resume {
+    background: #1e3a8a; color: white; border: 1px solid #1e3a8a;
+  }
+  .resume-banner-actions .btn-resume:hover { filter: brightness(1.05); }
+  .resume-banner-actions .btn-start-over {
+    background: white; color: #1e3a8a; border: 1px solid #c9c9c9;
+  }
+  .resume-banner-actions .btn-start-over:hover { background: #f1f5f9; }
 `;
 
 interface RenderClaimFormArgs {
@@ -812,6 +837,236 @@ const FORM_SCRIPT = `(function () {
     setupPhotoSection
   );
 
+  // ---- Brief 136 — localStorage autosave + resume banner ----------------
+  //
+  // Per-customer-device persistence of customer-section + staff-section
+  // form values. Mirrors the Brief 122 pattern from forms-public.js: 500ms
+  // debounce on input/change, 30-day staleness, amber resume banner above
+  // the first section with Resume / Start over actions, clear-on-success.
+  //
+  // Storage key: claims.draft.{location_code} — per-site isolation so a
+  // browser used across multiple Splash sites keeps drafts separate.
+  //
+  // What is NOT persisted: photos. This form uses a local File-in-closure
+  // pattern (photos appended to FormData at submit), NOT the OOB upload +
+  // hidden r2_key pattern Brief 92 introduced for splash-forms. File
+  // objects don't survive JSON.stringify, and base64-encoding photos to
+  // localStorage would blow the 5MB quota on a typical 4-photo claim.
+  // Customer must re-add photos on resume; the typed customer-section
+  // fields (the bulk of the value) are preserved.
+  //
+  // The PIN gate stays sealed on resume — the staff section remains hidden
+  // until the operator clicks Continue and enters the PIN. Resume restores
+  // staff-section form values silently underneath; once unlocked, those
+  // fields show pre-populated with whatever was saved.
+  var DRAFT_KEY_PREFIX = 'claims.draft.';
+  var DRAFT_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+  var SAVE_DEBOUNCE_MS = 500;
+  var locationInput = form.querySelector('input[name="location"]');
+  var draftSite = locationInput && locationInput.value ? locationInput.value : '';
+  var draftKey = draftSite ? (DRAFT_KEY_PREFIX + draftSite) : '';
+
+  function loadDraft() {
+    if (!draftKey) return null;
+    try {
+      var raw = window.localStorage.getItem(draftKey);
+      if (!raw) return null;
+      var parsed = JSON.parse(raw);
+      if (!parsed || typeof parsed !== 'object') return null;
+      if (!parsed.values || typeof parsed.values !== 'object') return null;
+      if (typeof parsed.savedAt !== 'number') return null;
+      return parsed;
+    } catch (_) { return null; }
+  }
+  function saveDraft(values) {
+    if (!draftKey) return;
+    try {
+      window.localStorage.setItem(draftKey, JSON.stringify({
+        values: values,
+        savedAt: Date.now()
+      }));
+    } catch (_) {
+      // Quota exceeded, storage disabled, etc. — degrade silently.
+    }
+  }
+  function clearDraft() {
+    if (!draftKey) return;
+    try { window.localStorage.removeItem(draftKey); } catch (_) {}
+  }
+  function shouldPersistName(name) {
+    if (!name) return false;
+    // Skip cosmetic __* prefixed fields (e.g., __equipmentRelated — the
+    // companion equipmentMalfunction hidden input round-trips its
+    // intended value). Skip the PIN even though pinInput sits outside
+    // the form (defensive).
+    if (name.indexOf('__') === 0) return false;
+    if (name === 'pinInput') return false;
+    return true;
+  }
+  function serializeForm() {
+    var values = {};
+    var checkboxNames = {};
+    var elements = form.elements;
+    for (var i = 0; i < elements.length; i++) {
+      var el = elements[i];
+      if (!shouldPersistName(el.name)) continue;
+      var type = (el.type || '').toLowerCase();
+      if (type === 'file' || type === 'submit' || type === 'button' || type === 'reset') continue;
+      if (type === 'radio') {
+        if (el.checked) values[el.name] = el.value;
+        continue;
+      }
+      if (type === 'checkbox') {
+        if (!checkboxNames[el.name]) {
+          checkboxNames[el.name] = true;
+          values[el.name] = [];
+        }
+        if (el.checked) values[el.name].push(el.value);
+        continue;
+      }
+      if (el.tagName === 'SELECT' && el.multiple) {
+        var opts = [];
+        for (var j = 0; j < el.options.length; j++) {
+          if (el.options[j].selected) opts.push(el.options[j].value);
+        }
+        values[el.name] = opts;
+        continue;
+      }
+      values[el.name] = el.value;
+    }
+    return values;
+  }
+  function restoreForm(values) {
+    var elements = form.elements;
+    var touched = {};
+    for (var i = 0; i < elements.length; i++) {
+      var el = elements[i];
+      if (!shouldPersistName(el.name)) continue;
+      if (!Object.prototype.hasOwnProperty.call(values, el.name)) continue;
+      var type = (el.type || '').toLowerCase();
+      if (type === 'file' || type === 'submit' || type === 'button' || type === 'reset') continue;
+      var saved = values[el.name];
+      if (type === 'radio') {
+        el.checked = el.value === saved;
+        touched[el.name] = el;
+        continue;
+      }
+      if (type === 'checkbox') {
+        var arr = Array.isArray(saved) ? saved : (saved == null ? [] : [saved]);
+        el.checked = arr.indexOf(el.value) !== -1;
+        touched[el.name] = el;
+        continue;
+      }
+      if (el.tagName === 'SELECT' && el.multiple) {
+        var arr2 = Array.isArray(saved) ? saved : (saved == null ? [] : [saved]);
+        for (var j = 0; j < el.options.length; j++) {
+          el.options[j].selected = arr2.indexOf(el.options[j].value) !== -1;
+        }
+        touched[el.name] = el;
+        continue;
+      }
+      el.value = saved == null ? '' : String(saved);
+      touched[el.name] = el;
+    }
+    // Re-fire dependent visibility handlers AFTER values are in place so
+    // damageOther / equipmentInvolved show/hide correctly. Calling
+    // syncDamageOther / syncEquipment directly is idempotent and cheaper
+    // than relying on synthetic 'change' events alone.
+    syncDamageOther();
+    syncEquipment();
+    // Defensive: fire input + change events on touched elements so any
+    // other wired listeners (none today, but future-proofs against new
+    // field types) pick up the rehydrated values.
+    Object.keys(touched).forEach(function (name) {
+      var el = touched[name];
+      try { el.dispatchEvent(new Event('input', { bubbles: true })); } catch (_) {}
+      try { el.dispatchEvent(new Event('change', { bubbles: true })); } catch (_) {}
+    });
+  }
+  // Debounced autosave via event delegation on the form root — any named
+  // input / textarea / select inside the form triggers a save without
+  // explicit per-field wiring.
+  var saveTimer;
+  function scheduleSave() {
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(function () { saveDraft(serializeForm()); }, SAVE_DEBOUNCE_MS);
+  }
+  form.addEventListener('input', scheduleSave);
+  form.addEventListener('change', scheduleSave);
+
+  // Resume banner on init. If a <30-day draft exists, surface an amber
+  // banner above the first section with Resume / Start over actions.
+  // Stale drafts (>30 days) clear silently.
+  function formatTimeAgo(ms) {
+    var s = Math.round(ms / 1000);
+    if (s < 60) return s <= 1 ? '1 sec ago' : s + ' sec ago';
+    var m = Math.round(s / 60);
+    if (m < 60) return m === 1 ? '1 min ago' : m + ' min ago';
+    var h = Math.round(m / 60);
+    if (h < 24) return h === 1 ? '1 hr ago' : h + ' hr ago';
+    var d = Math.round(h / 24);
+    return d === 1 ? '1 day ago' : d + ' days ago';
+  }
+  function maybeRenderResumeBanner() {
+    var draft = loadDraft();
+    if (!draft) return;
+    var age = Date.now() - draft.savedAt;
+    if (age < 0 || age > DRAFT_TTL_MS) {
+      clearDraft();
+      return;
+    }
+    var banner = document.createElement('div');
+    banner.className = 'resume-banner';
+    banner.setAttribute('role', 'status');
+    banner.setAttribute('data-resume-banner', '1');
+    var icon = document.createElement('span');
+    icon.setAttribute('aria-hidden', 'true');
+    icon.className = 'resume-banner-icon';
+    icon.textContent = '📋';
+    banner.appendChild(icon);
+    var text = document.createElement('span');
+    text.className = 'resume-banner-text';
+    text.innerHTML = 'We saved your progress from <strong></strong>. Pick up where you left off?';
+    text.querySelector('strong').textContent = formatTimeAgo(age);
+    banner.appendChild(text);
+    var actions = document.createElement('span');
+    actions.className = 'resume-banner-actions';
+    var resumeBtn = document.createElement('button');
+    resumeBtn.type = 'button';
+    resumeBtn.className = 'btn-resume';
+    resumeBtn.textContent = 'Resume';
+    resumeBtn.addEventListener('click', function () {
+      restoreForm(draft.values);
+      removeBanner();
+    });
+    var startOverBtn = document.createElement('button');
+    startOverBtn.type = 'button';
+    startOverBtn.className = 'btn-start-over';
+    startOverBtn.textContent = 'Start over';
+    startOverBtn.addEventListener('click', function () {
+      clearDraft();
+      removeBanner();
+    });
+    actions.appendChild(resumeBtn);
+    actions.appendChild(startOverBtn);
+    banner.appendChild(actions);
+    function removeBanner() {
+      if (banner.parentNode) banner.parentNode.removeChild(banner);
+    }
+    // Insert above the customer section (the first .section inside the
+    // form). Falls back to the form's first child if the section lookup
+    // somehow misses.
+    var firstSection = form.querySelector('.section');
+    if (firstSection && firstSection.parentNode === form) {
+      form.insertBefore(banner, firstSection);
+    } else if (form.firstChild) {
+      form.insertBefore(banner, form.firstChild);
+    } else {
+      form.appendChild(banner);
+    }
+  }
+  maybeRenderResumeBanner();
+
   // ---- Submit ------------------------------------------------------------
   function showError(msg) {
     submitError.textContent = msg || 'Submission failed. Please retry.';
@@ -870,6 +1125,13 @@ const FORM_SCRIPT = `(function () {
   form.addEventListener('submit', function (e) {
     e.preventDefault();
     if (!validateBeforeSubmit()) return;
+    // Brief 136: clear the localStorage draft optimistically before the
+    // fetch fires. Mirrors Brief 122's option B — trade-off is that a
+    // network/server failure leaves the customer with an empty draft on
+    // next page load, but the DOM state survives until they navigate
+    // away. validateBeforeSubmit() already gated; only valid submits
+    // reach this point.
+    clearDraft();
 
     var fd = new FormData(form);
     fd.delete('__equipmentRelated');

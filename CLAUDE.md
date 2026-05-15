@@ -2417,6 +2417,25 @@ URL-based — service bindings don't apply to those.
   Email is now required at submission time (HTML5 + worker-side
   regex `^[^@\s]+@[^@\s]+\.[^@\s]+$`); the D1 `customer_email`
   column stays nullable for back-compat with pre-Brief-32 rows.
+  Brief 136 (2026-05-15) added localStorage autosave + resume
+  banner to the customer-facing `/claims/{site}` form rendered by
+  `apps/damage-worker/src/render/claim-form.ts`. Mirrors the
+  Brief 122 contract (forms-public.js pattern): storage key
+  `claims.draft.{location_code}` read from the existing
+  `<input name="location">` hidden input; 500ms debounce on
+  input/change via event delegation on the form root; 30-day
+  staleness ceiling; amber resume banner above the first section
+  with Resume / Start over actions. Photos are NOT persisted —
+  this form uses a local File-in-closure pattern (`var photos`
+  appended to FormData at submit), NOT the Brief 92 OOB-upload +
+  r2_key pattern, so File objects can't be serialized. Customer
+  re-adds photos on resume; the 10+ typed customer-section fields
+  are preserved. PIN gate stays sealed on resume — staff-section
+  values rehydrate silently underneath the hidden section and
+  show pre-populated after PIN unlock. Clear-on-submit fires
+  after `validateBeforeSubmit()` passes but before the fetch
+  (closest analog to Brief 122's "before browser navigates" for
+  this JS-driven fetch + outcome-card form).
 - **CUSTOMER_CLAIM_WEBHOOK_URL** - Optional damage-worker secret
   (Brief 32) fired after a customer-submitted claim — Power Automate
   receives a JSON payload with `claim_id`, `customer_email`,
