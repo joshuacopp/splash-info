@@ -133,3 +133,6 @@
 - 2026-05-14 16:36:30 brief-134-workflow-email-html-render.md (success)
 - 2026-05-15 00:29:19 brief-135-claim-form-customer-section-required-fields.md (success)
 - 2026-05-15 00:49:12 brief-136-claim-form-localstorage-autosave-and-resume.md (success)
+- 2026-05-15 08:11:50 brief-137-claim-form-mailing-address-hint-removal.md (success)
+- 2026-05-21 12:30:15 brief-138-claim-form-submit-resilience.md (success)
+- 2026-05-21 12:38:26 brief-139-claim-form-persist-idempotency-key-in-draft.md (success)

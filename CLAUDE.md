@@ -2205,6 +2205,42 @@ URL-based — service bindings don't apply to those.
   with a four-tier color escalation (neutral / amber / orange / red
   at 0-3 / 4-7 / 8-14 / 15+ days) on Open claims; Closed claims
   render a static muted neutral pill.
+- **`idempotency_key`** (Brief 138) - Nullable `TEXT` column on the
+  D1 `claims` table backed by a partial unique index
+  (`CREATE UNIQUE INDEX idx_claims_idempotency_key ON claims
+  (idempotency_key) WHERE idempotency_key IS NOT NULL`). Holds a
+  client-generated UUID v4 (`crypto.randomUUID()` with a Math.random
+  polyfill fallback for older Safari) that the customer claim form
+  (`apps/damage-worker/src/render/claim-form.ts`) generates once per
+  form instance and reuses across every Phase 4 retry attempt.
+  Worker-side dedup lives in `handleClaimSubmission` BEFORE any side
+  effects (validation, photo upload, R2 write, PA POST, customer +
+  internal webhooks) via `getClaimByIdempotencyKey` in
+  `@splash/db-d1` — hit → re-emits the original success response
+  (303 to `/claims/{slug}/thanks?id={existing}` for browser-mode,
+  JSON with `idempotent_replay: true` for programmatic callers)
+  without re-firing webhooks or generating a duplicate row. Miss →
+  `writeClaimBatch` persists the key alongside the new row.
+  Malformed keys (`/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i`
+  fails) are logged + treated as absent (no 400 — dedup is a hint,
+  not authn). Missing-column tolerance: the dedup query is wrapped
+  in try/catch detecting `no such column.*idempotency_key` and falls
+  through with a logged `[claim.idempotent] column missing — skipping
+  dedup (apply schema migration)` so the brief window between code
+  push and operator-applied D1 migration is safe. NOT used by any
+  admin / dashboard / reporting query — purely a write-path dedup
+  mechanism. Brief 139 (2026-05-21) persists the client-side key into
+  the Brief 136 localStorage draft alongside the typed field values,
+  so a tab-crash / page-reload / lost-response + Resume reuses the
+  SAME key instead of generating a fresh one — closes the last
+  cross-session duplicate-claim failure mode in the submit-resilience
+  pass. `loadDraft()` surfaces `idempotencyKey` (defensively
+  UUID-v4-validated); `saveDraft()` persists the current
+  `submissionId` alongside `values` + `savedAt`; the IIFE init prefers
+  a restored key over `generateSubmissionId()` when present; the
+  Resume banner's Start over handler regenerates the key after
+  `clearDraft()` so a discarded draft's prior key can't leak into a
+  genuinely new submission.
 - **Daily summary** - Brief 65's once-a-day digest of open damage
   claims emitted by damage-worker's `scheduled` handler at 13:00 UTC
   (8 AM ET). Recipients are every gm / rm / admin / super_admin in

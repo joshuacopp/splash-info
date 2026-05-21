@@ -177,6 +177,14 @@ const SHARED_STYLES = `
     border-radius: 8px; color: #991b1b; font-size: 14px;
   }
   .banner-error[hidden] { display: none; }
+  /* Brief 138 Phase 2 — offline indicator */
+  .banner-offline {
+    margin: 0 18px 18px; padding: 10px 14px;
+    background: #fef3c7; color: #92400e;
+    border: 1px solid #fde68a; border-radius: 6px;
+    font-size: 14px; line-height: 1.4;
+  }
+  .banner-offline[hidden] { display: none; }
   .staff-warning {
     margin: 0 0 14px; padding: 10px 14px;
     background: #fef3c7; border: 1px solid #fbbf24;
@@ -335,6 +343,7 @@ export function renderClaimForm(args: RenderClaimFormArgs): string {
       <form id="claimForm" action="/claims-api/submit-claim" method="POST" enctype="multipart/form-data" novalidate>
         ${errorBanner}
         <div class="banner-error" role="alert" id="submitError" hidden></div>
+        <div class="banner-offline" role="status" aria-live="polite" id="offlineBanner" hidden>You're offline — your form is saved on this device. Submit will retry automatically when the connection comes back.</div>
 
         <input type="hidden" name="location" value="${escHtml(locationCode)}">
         <input type="hidden" name="locationPretty" value="${escHtml(locationPretty)}">
@@ -630,6 +639,7 @@ const FORM_SCRIPT = `(function () {
   var btnPinSubmit = document.getElementById('btnPinSubmit');
   var btnPinCancel = document.getElementById('btnPinCancel');
   var submitError = document.getElementById('submitError');
+  var offlineBanner = document.getElementById('offlineBanner');
   var submittingOverlay = document.getElementById('submittingOverlay');
   var formPage = document.getElementById('formPage');
   var outcomePage = document.getElementById('outcomePage');
@@ -873,15 +883,30 @@ const FORM_SCRIPT = `(function () {
       if (!parsed || typeof parsed !== 'object') return null;
       if (!parsed.values || typeof parsed.values !== 'object') return null;
       if (typeof parsed.savedAt !== 'number') return null;
-      return parsed;
+      // Brief 139: surface idempotencyKey with defensive UUID v4 validation.
+      // Drafts saved by pre-Brief-139 builds won't have the field — that's
+      // fine, the IIFE init falls through to generateSubmissionId().
+      var idemRe = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+      var idemKey = (typeof parsed.idempotencyKey === 'string' && idemRe.test(parsed.idempotencyKey))
+        ? parsed.idempotencyKey
+        : null;
+      return {
+        values: parsed.values,
+        savedAt: parsed.savedAt,
+        idempotencyKey: idemKey
+      };
     } catch (_) { return null; }
   }
   function saveDraft(values) {
     if (!draftKey) return;
     try {
+      // Brief 139: persist the current submissionId alongside the typed
+      // values so a tab-close + reload + Resume reuses the same key,
+      // letting the worker dedup any duplicate-submit-after-lost-response.
       window.localStorage.setItem(draftKey, JSON.stringify({
         values: values,
-        savedAt: Date.now()
+        savedAt: Date.now(),
+        idempotencyKey: submissionId
       }));
     } catch (_) {
       // Quota exceeded, storage disabled, etc. — degrade silently.
@@ -1043,6 +1068,10 @@ const FORM_SCRIPT = `(function () {
     startOverBtn.textContent = 'Start over';
     startOverBtn.addEventListener('click', function () {
       clearDraft();
+      // Brief 139: regenerate the idempotency key so the next submit
+      // attempt is treated as a genuinely new claim, not a retry of the
+      // discarded draft's prior key.
+      submissionId = generateSubmissionId();
       removeBanner();
     });
     actions.appendChild(resumeBtn);
@@ -1065,6 +1094,68 @@ const FORM_SCRIPT = `(function () {
   }
   maybeRenderResumeBanner();
 
+  // ---- Brief 138 Phase 2 — offline indicator ----------------------------
+  //
+  // navigator.onLine is a best-effort browser hint; it's accurate enough for
+  // a visual cue but the retry loop (Phase 4) is the authoritative gate.
+  // Submit button stays clickable while offline — Phase 4's retry loop polls
+  // for connectivity and the offline banner is the visual cue, not button
+  // gating (disabling would be a regression vs the pre-Brief-138 one-shot
+  // behavior which also let customers click while offline).
+  var pendingOnlineRetry = null;
+  function updateOfflineBanner() {
+    if (!offlineBanner) return;
+    offlineBanner.hidden = !!navigator.onLine;
+  }
+  window.addEventListener('online', function () {
+    updateOfflineBanner();
+    // Brief 138 Phase 4 — if a retry attempt is held pending reconnection,
+    // fire it immediately instead of waiting out the backoff timer.
+    if (typeof pendingOnlineRetry === 'function') {
+      var fn = pendingOnlineRetry;
+      pendingOnlineRetry = null;
+      try { fn(); } catch (_) {}
+    }
+  });
+  window.addEventListener('offline', updateOfflineBanner);
+  updateOfflineBanner();
+
+  // ---- Brief 138 Phase 3 — idempotency key ------------------------------
+  //
+  // Generated once per form instance and reused on every retry attempt (the
+  // whole point — a retried submission lands on the same row, not a
+  // duplicate). Regenerated only on showOutcome success.
+  //
+  // Brief 139: prefer an idempotencyKey restored from the localStorage
+  // draft over a freshly-generated one. The restored key fingerprints the
+  // customer's prior submit attempt — if that attempt actually succeeded
+  // server-side but the response was lost (Wi-Fi blip, edge timeout, tab
+  // closed mid-response), reusing the key on retry collapses to the
+  // existing claim via the worker's dedup path instead of creating a
+  // duplicate. loadDraft() is a function declaration further down the file
+  // — JavaScript hoists function declarations, so the call here is safe.
+  function generateSubmissionId() {
+    if (window.crypto && typeof window.crypto.randomUUID === 'function') {
+      try { return window.crypto.randomUUID(); } catch (_) { /* fall through */ }
+    }
+    // RFC 4122 v4 polyfill for older Safari etc. Math.random is fine here:
+    // the value is a client-supplied dedup hint, not a security token.
+    var hex = '0123456789abcdef';
+    var s = '';
+    for (var i = 0; i < 36; i++) {
+      if (i === 8 || i === 13 || i === 18 || i === 23) { s += '-'; continue; }
+      if (i === 14) { s += '4'; continue; }
+      var r = Math.random() * 16 | 0;
+      if (i === 19) r = (r & 0x3) | 0x8;
+      s += hex.charAt(r);
+    }
+    return s;
+  }
+  var existingDraft = loadDraft();
+  var submissionId = (existingDraft && existingDraft.idempotencyKey)
+    ? existingDraft.idempotencyKey
+    : generateSubmissionId();
+
   // ---- Submit ------------------------------------------------------------
   function showError(msg) {
     submitError.textContent = msg || 'Submission failed. Please retry.';
@@ -1075,11 +1166,90 @@ const FORM_SCRIPT = `(function () {
     submitError.hidden = true;
     submitError.textContent = '';
   }
-  function setSubmitting(on) {
+  function setSubmitting(on, attempt) {
     submittingOverlay.hidden = !on;
     submitBtn.disabled = !!on;
-    if (on) submitBtn.textContent = 'Submitting...';
-    else submitBtn.textContent = 'Submit claim';
+    if (on) {
+      submitBtn.textContent = 'Submitting...';
+      if (submittingOverlay) {
+        if (attempt && attempt > 1) {
+          submittingOverlay.textContent = 'Submitting (retry ' + (attempt - 1) + ' of 3)...';
+        } else {
+          submittingOverlay.textContent = 'Submitting claim, please wait...';
+        }
+      }
+    } else {
+      submitBtn.textContent = 'Submit claim';
+      if (submittingOverlay) submittingOverlay.textContent = 'Submitting claim, please wait...';
+    }
+  }
+
+  // ---- Brief 138 Phase 4 — retry with exponential backoff ---------------
+  //
+  // Wraps fetch in a retry loop covering transient network failures + HTTP
+  // 408/502/503/504. The submitting overlay stays up across attempts;
+  // overlay text shows attempt count for the second + later attempts.
+  // navigator.onLine === false during a backoff sleep holds the next
+  // attempt pending the 'online' event (Phase 2 listener).
+  // The worker dedups using idempotency_key (Phase 3), so a re-fired
+  // attempt after a lost-response success collapses to the original
+  // claim's response shape — no duplicate row.
+  var RETRYABLE_STATUS = { 408: true, 502: true, 503: true, 504: true };
+  function isRetryableStatus(n) { return RETRYABLE_STATUS[n] === true; }
+  function submitWithRetry(fd, maxAttempts) {
+    var attempt = 0;
+    return new Promise(function (resolve, reject) {
+      function tryOnce() {
+        attempt += 1;
+        setSubmitting(true, attempt);
+        var controller = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+        var timer = setTimeout(function () {
+          if (controller) controller.abort();
+        }, 30000);
+        var fetchOpts = {
+          method: 'POST',
+          body: fd,
+          headers: { 'Accept': 'application/json' }
+        };
+        if (controller) fetchOpts.signal = controller.signal;
+        fetch('/claims-api/submit-claim', fetchOpts).then(function (r) {
+          return r.text().then(function (text) {
+            var body = null;
+            try { body = JSON.parse(text); } catch (_) { body = null; }
+            return { status: r.status, ok: r.ok, body: body, raw: text };
+          });
+        }).then(function (out) {
+          clearTimeout(timer);
+          if (out.ok) { resolve(out); return; }
+          if (isRetryableStatus(out.status) && attempt < maxAttempts) {
+            scheduleNextAttempt();
+            return;
+          }
+          resolve(out); // non-retryable — let caller surface the error
+        }).catch(function (err) {
+          clearTimeout(timer);
+          if (attempt < maxAttempts) {
+            scheduleNextAttempt();
+            return;
+          }
+          reject(err);
+        });
+      }
+      function scheduleNextAttempt() {
+        var delay = Math.pow(2, attempt - 1) * 1000; // 1s, 2s, 4s
+        if (!navigator.onLine) {
+          // Hold the next attempt until reconnection (Phase 2 'online'
+          // listener fires it immediately on reconnect). If multiple
+          // retries pile up we only hold the most recent — earlier ones
+          // are discarded; that's correct because all retries reuse the
+          // same FormData + idempotency_key.
+          pendingOnlineRetry = tryOnce;
+        } else {
+          setTimeout(tryOnce, delay);
+        }
+      }
+      tryOnce();
+    });
   }
   function showOutcome(claimId, summaryPdfUrl) {
     setSubmitting(false);
@@ -1123,13 +1293,17 @@ const FORM_SCRIPT = `(function () {
   form.addEventListener('submit', function (e) {
     e.preventDefault();
     if (!validateBeforeSubmit()) return;
-    // Brief 136: clear the localStorage draft optimistically before the
-    // fetch fires. Mirrors Brief 122's option B — trade-off is that a
-    // network/server failure leaves the customer with an empty draft on
-    // next page load, but the DOM state survives until they navigate
-    // away. validateBeforeSubmit() already gated; only valid submits
-    // reach this point.
-    clearDraft();
+    // Brief 138 reversed Brief 136/122's optimistic-clear (option B) in favor
+    // of a post-success clear (option A). clearDraft() now fires inside the
+    // success branch below, after showOutcome(...) paints. Rationale: a
+    // network/server failure (including the Phase 4 retry exhaustion path)
+    // leaves the draft intact on the customer's device, so a page reload /
+    // tab crash before manual retry preserves the typed fields — the resume
+    // banner on next page load brings them back. Trade-off: customers who
+    // submit successfully AND immediately navigate away before showOutcome
+    // paints (extremely rare with the submitting overlay covering the page)
+    // might see a stale resume banner on next visit. The inverse trade-off
+    // vs option B — the failure-preserves-draft case is the high-value one.
 
     var fd = new FormData(form);
     fd.delete('__equipmentRelated');
@@ -1140,6 +1314,11 @@ const FORM_SCRIPT = `(function () {
     if (!checked || checked.value === 'no') {
       fd.set('equipmentInvolved', '');
     }
+    // Brief 138 Phase 3 — append the client-generated idempotency key so the
+    // worker can dedup retried submissions (Phase 4) AND any customer manual
+    // retry after a lost-response failure. Reused across every retry attempt
+    // of THIS form instance; regenerated only on successful submit.
+    fd.append('idempotency_key', submissionId);
     // Append photos under the canonical worker field names. The worker uses
     // formData.getAll(field) so multiple appends per key land cleanly.
     ['fourCornersPhotos', 'vinPhoto', 'damagePhotos', 'platePhoto'].forEach(function (field) {
@@ -1149,22 +1328,20 @@ const FORM_SCRIPT = `(function () {
     });
 
     setSubmitting(true);
-    fetch('/claims-api/submit-claim', {
-      method: 'POST',
-      body: fd,
-      headers: { 'Accept': 'application/json' }
-    }).then(function (r) {
-      return r.text().then(function (text) {
-        var body = null;
-        try { body = JSON.parse(text); } catch (_) { body = null; }
-        return { status: r.status, ok: r.ok, body: body, raw: text };
-      });
-    }).then(function (out) {
+    submitWithRetry(fd, 3).then(function (out) {
       if (out.ok && out.body && out.body.ok) {
         showOutcome(
           out.body.claim_id || out.body.claimId || '',
           out.body.summary_pdf_url || ''
         );
+        // Brief 138 Phase 1 — clear the draft only after the success card
+        // paints. A failed submit (including retry exhaustion) leaves the
+        // draft intact for resume-on-next-page-load.
+        clearDraft();
+        // Brief 138 Phase 3 — defensive regen for any future code that
+        // re-shows the form after a successful submit. Today the outcome
+        // card terminally replaces the form, so this is belt-and-suspenders.
+        submissionId = generateSubmissionId();
       } else {
         var errMsg = (out.body && out.body.error)
           || (out.body && out.body.message)

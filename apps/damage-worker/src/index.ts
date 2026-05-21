@@ -74,6 +74,7 @@ import {
   countPhotosOfType,
   determinationToClaimStatus,
   getClaimById,
+  getClaimByIdempotencyKey,
   insertDocPhoto,
   lifecycleForStatus,
   listActivityForClaim,
@@ -2392,6 +2393,73 @@ async function handleClaimSubmission(request: Request, env: Env): Promise<Respon
       maintainxWorkorderId: null // filled by Brief 42 hook after writeClaimBatch
     };
 
+    // Brief 138 Phase 3 — idempotency-key dedup. Client appends a UUID v4 to
+    // FormData; worker checks D1 for an existing claim with the same key
+    // BEFORE any side effects (validation rejects, photo upload, R2 write,
+    // PA POST, webhooks). Hit → re-emit the original success response so a
+    // retry after a lost-response success collapses onto the original claim,
+    // not a duplicate. Miss → fall through; writeClaimBatch persists the key
+    // alongside the new row.
+    //
+    // Defensive against tampering: malformed keys are treated as absent
+    // (logged, but no 400 — the goal is dedup, not authn). Tolerates the
+    // column being absent (between code push and operator D1 migration)
+    // by catching the "no such column" error and falling through.
+    const idempotencyKeyRaw = String(formData.get("idempotency_key") ?? "").trim();
+    const idempotencyKeyValid =
+      idempotencyKeyRaw.length === 36 &&
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(idempotencyKeyRaw);
+    const idempotencyKey = idempotencyKeyValid ? idempotencyKeyRaw : null;
+    if (idempotencyKeyRaw && !idempotencyKeyValid) {
+      console.warn(
+        `[claim.idempotent] malformed key supplied (proceeding without dedup): ${idempotencyKeyRaw.slice(0, 64)}`
+      );
+    }
+    if (idempotencyKey) {
+      try {
+        const existing = await getClaimByIdempotencyKey(env.DB, idempotencyKey);
+        if (existing) {
+          console.log(
+            `[claim.idempotent] hit claim_id=${existing.claim_id} key=${idempotencyKey}`
+          );
+          const dedupSummaryUrl = `${baseOrigin}/claims-api/summary/${encodeURIComponent(
+            existing.claim_id
+          )}`;
+          if (browserMode) {
+            const dedupSlug =
+              encodeURIComponent(claimData.location || "") || "unknown";
+            const target = new URL(
+              `${baseOrigin}/claims/${dedupSlug}/thanks?id=${encodeURIComponent(existing.claim_id)}`
+            );
+            return Response.redirect(target.toString(), 303);
+          }
+          return json({
+            ok: true,
+            claim_id: existing.claim_id,
+            success: true,
+            claimId: existing.claim_id,
+            powerAutomateSuccess: true,
+            d1Success: true,
+            photosUploaded: 0,
+            summary_pdf_url: dedupSummaryUrl,
+            idempotent_replay: true
+          });
+        }
+      } catch (lookupErr) {
+        const errMsg =
+          lookupErr instanceof Error ? lookupErr.message : String(lookupErr);
+        if (/no such column.*idempotency_key/i.test(errMsg)) {
+          console.warn(
+            "[claim.idempotent] column missing — skipping dedup (apply schema migration)"
+          );
+        } else {
+          console.warn(
+            `[claim.idempotent] lookup failed (proceeding without dedup): ${errMsg}`
+          );
+        }
+      }
+    }
+
     // Brief 32 — email is now required. Worker re-validates after the form's
     // HTML5 + inline-script gates because programmatic JSON callers can
     // bypass them. Same simple regex used in sysadmin-worker per Brief 24/27.
@@ -2545,6 +2613,9 @@ async function handleClaimSubmission(request: Request, env: Env): Promise<Respon
         damage_other: claimData.damageOther || null,
         initial_status: initialStatus,
         submitted_at: claimData.submittedAt,
+        // Brief 138 Phase 3 — persist the client-supplied UUID so a future
+        // retry hits getClaimByIdempotencyKey above and dedups onto this row.
+        idempotency_key: idempotencyKey,
         photos: claimData.photos.map((p) => ({
           photoType: p.photoType,
           fileName: p.fileName,

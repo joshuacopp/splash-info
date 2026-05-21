@@ -83,6 +83,14 @@ export interface ClaimInsert {
   initial_status: ClaimStatus;
   submitted_at: string;
 
+  /**
+   * Brief 138 — client-generated UUID v4 used to dedup retried submissions.
+   * Backed by a partial unique index on `claims.idempotency_key`. Null when
+   * the client didn't supply one (pre-Brief-138 callers; programmatic JSON
+   * callers that skip the key).
+   */
+  idempotency_key?: string | null;
+
   photos: ReadonlyArray<ClaimPhotoInsert>;
 }
 
@@ -126,8 +134,9 @@ export async function writeClaimBatch(db: D1Database, c: ClaimInsert): Promise<v
         lifecycle_state,
         claim_status,
         status_updated_by,
-        submitted_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Open', ?, ?, ?)`
+        submitted_at,
+        idempotency_key
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Open', ?, ?, ?, ?)`
     )
     .bind(
       c.claim_id,
@@ -153,7 +162,8 @@ export async function writeClaimBatch(db: D1Database, c: ClaimInsert): Promise<v
       c.damage_other,
       c.initial_status,
       c.submitted_by,
-      c.submitted_at
+      c.submitted_at,
+      c.idempotency_key ?? null
     );
 
   const photoStmt = db.prepare(
@@ -273,6 +283,27 @@ export async function listClaims(
     .bind(...params)
     .all();
   return (result.results ?? []) as ClaimsListRow[];
+}
+
+/**
+ * Brief 138 — point-read by `claims.idempotency_key`. Returns the matching
+ * claim_id when a row exists for the supplied key, null otherwise.
+ *
+ * Used by the customer claim submit path to dedup retried submissions
+ * (network blip, lost-response retry, Phase-4 backoff retry) before any
+ * side effects fire. Worker catches "no such column" and falls through to
+ * the no-dedup path during the brief window between code push and the
+ * operator-applied D1 migration.
+ */
+export async function getClaimByIdempotencyKey(
+  db: D1Database,
+  idempotencyKey: string
+): Promise<{ claim_id: string } | null> {
+  const row = await db
+    .prepare("SELECT claim_id FROM claims WHERE idempotency_key = ? LIMIT 1")
+    .bind(idempotencyKey)
+    .first<{ claim_id: string }>();
+  return row ?? null;
 }
 
 /**
