@@ -133,7 +133,8 @@ import {
   fireInternalNewClaimWebhook,
   resolveInternalRecipients,
   type ClaimPhotoForWebhook,
-  type InternalNewClaimPayload
+  type InternalNewClaimPayload,
+  fireD1FailureAlert
 } from "./notifications.js";
 import {
   buildCheckRequestFields,
@@ -273,7 +274,7 @@ const ALLOWED_DAMAGE_TYPES: ReadonlySet<string> = new Set([
 ]);
 
 export default {
-  async fetch(request: Request, env: Env, _ctx: ExecutionContext): Promise<Response> {
+  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
     const path = url.pathname.replace(/^\/+/, "");
     const parts = path.split("/").filter(Boolean);
@@ -285,7 +286,7 @@ export default {
        * ============================================================ */
 
       if (path === "claims-api/submit-claim" && method === "POST") {
-        return handleClaimSubmission(request, env);
+        return handleClaimSubmission(request, env, ctx);
       }
 
       if (parts[0] === "claims-api" && parts[1] === "photo" && parts.length >= 3 && method === "GET") {
@@ -2342,7 +2343,11 @@ interface ClaimSubmissionPayload {
   maintainxWorkorderId: number | null;
 }
 
-async function handleClaimSubmission(request: Request, env: Env): Promise<Response> {
+async function handleClaimSubmission(
+  request: Request,
+  env: Env,
+  ctx: ExecutionContext
+): Promise<Response> {
   // Brief 23: dual-mode response shape.
   //   - Browser submit (Accept: text/html...): 302 to /claims/{slug}/thanks?id=...
   //     on success or /claims/{slug}?error=... on failure.
@@ -2571,6 +2576,10 @@ async function handleClaimSubmission(request: Request, env: Env): Promise<Respon
     // post-D1 update of claimData.locationPretty so the PA POST sees the
     // canonical value.
     let d1Success = false;
+    // Brief 140 — capture the D1 throw's message for the truthful 500
+    // response + the INCIDENTS_EMAIL alert. Truncated to 500 chars at the
+    // helper boundary; null when D1 succeeded.
+    let d1ErrorMessage: string | null = null;
     try {
       const initialStatus = determinationToClaimStatus(claimData.determination);
       const phoneDigits = claimData.customerPhone.replace(/\D/g, "") || null;
@@ -2801,6 +2810,8 @@ async function handleClaimSubmission(request: Request, env: Env): Promise<Respon
       }
     } catch (d1Error) {
       console.error("D1 write failed:", d1Error);
+      d1ErrorMessage =
+        d1Error instanceof Error ? d1Error.message : String(d1Error);
     }
 
     // 6. POST to Power Automate. Body shape MUST match legacy claimData
@@ -2908,6 +2919,60 @@ async function handleClaimSubmission(request: Request, env: Env): Promise<Respon
       console.error(
         `Claim summary PDF pipeline failed for ${claimData.claimId}:`,
         pdfErr
+      );
+    }
+
+    // Brief 140 — when D1 failed, the customer must NOT see the success card.
+    // Fire an INCIDENTS_EMAIL alert so an operator can manually backfill from
+    // the R2 submission JSON, then return a truthful 500. claim_id +
+    // summary_pdf_url ride along on the body so the customer can still
+    // download their PDF copy and the operator has a recovery handle.
+    if (!d1Success) {
+      if (env.INTERNAL_NEW_CLAIM_WEBHOOK_URL) {
+        const alertPromise = fireD1FailureAlert({
+          env,
+          claimData,
+          summaryPdfUrl,
+          errorMessage: d1ErrorMessage ?? "(unknown D1 error)"
+        }).catch((alertErr) => {
+          console.error(
+            `[d1-failure] alert pipeline threw for ${claimData.claimId}:`,
+            alertErr
+          );
+        });
+        ctx.waitUntil(alertPromise);
+      }
+
+      const userMessage =
+        "Claim was received but not persisted to admin storage. Please notify a manager and save your claim ID for reference.";
+
+      if (browserMode) {
+        // Browser submit can't really consume a 500 the way the form's JS
+        // fetch caller does — the form's fetch path is the only retry-aware
+        // surface. For browser-direct (non-JS) submitters we still bounce
+        // back to the form with the error so they see SOMETHING actionable;
+        // their submission is recoverable from R2.
+        const slug =
+          encodeURIComponent(claimData.location || "") || "unknown";
+        const target = new URL(
+          `${baseOrigin}/claims/${slug}?error=${encodeURIComponent(userMessage)}`
+        );
+        return Response.redirect(target.toString(), 303);
+      }
+
+      return json(
+        {
+          ok: false,
+          d1Success: false,
+          claim_id: claimData.claimId,
+          success: false,
+          claimId: claimData.claimId,
+          powerAutomateSuccess,
+          photosUploaded: claimData.photos.length,
+          error: userMessage,
+          ...(summaryPdfUrl ? { summary_pdf_url: summaryPdfUrl } : {})
+        },
+        500
       );
     }
 

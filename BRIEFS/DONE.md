@@ -136,3 +136,5 @@
 - 2026-05-15 08:11:50 brief-137-claim-form-mailing-address-hint-removal.md (success)
 - 2026-05-21 12:30:15 brief-138-claim-form-submit-resilience.md (success)
 - 2026-05-21 12:38:26 brief-139-claim-form-persist-idempotency-key-in-draft.md (success)
+- 2026-05-21 14:06:30 brief-140-claim-submit-truthful-d1-failure-response.md (success)
+- 2026-05-21 14:17:10 brief-141-claim-form-retry-hardening.md (success)

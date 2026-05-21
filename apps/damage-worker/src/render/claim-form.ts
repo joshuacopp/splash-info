@@ -1187,15 +1187,40 @@ const FORM_SCRIPT = `(function () {
   // ---- Brief 138 Phase 4 — retry with exponential backoff ---------------
   //
   // Wraps fetch in a retry loop covering transient network failures + HTTP
-  // 408/502/503/504. The submitting overlay stays up across attempts;
+  // 408/500/502/503/504. The submitting overlay stays up across attempts;
   // overlay text shows attempt count for the second + later attempts.
-  // navigator.onLine === false during a backoff sleep holds the next
-  // attempt pending the 'online' event (Phase 2 listener).
   // The worker dedups using idempotency_key (Phase 3), so a re-fired
   // attempt after a lost-response success collapses to the original
   // claim's response shape — no duplicate row.
-  var RETRYABLE_STATUS = { 408: true, 502: true, 503: true, 504: true };
+  // Brief 140 widened the retryable set to include 500. Brief 140
+  // redefines 500 to mean "transient D1 failure" (the worker now returns
+  // 500 with a truthful error message when d1Success === false). Risk: a
+  // true deterministic 500 (unhandled exception) gets retried 3 times
+  // pointlessly. Acceptable — the worker's idempotency dedup collapses
+  // the duplicate attempts.
+  // Brief 141 dropped the navigator.onLine retry gate from
+  // scheduleNextAttempt — empirical fetch failure is the authoritative
+  // signal that the network is unreachable to our origin; navigator.onLine
+  // is unreliable on Windows when any interface is "up" (VPN, sleeping
+  // Ethernet, virtual adapter). The amber offline banner still uses it
+  // as a visual hint, but the retry loop trusts the fetch result. Brief
+  // 141 also lengthened the backoff to 2s/5s/15s with +/-20% jitter
+  // (computeBackoffDelay below) to give flaky networks more time to
+  // recover before the bounded retry exhausts; total elapsed across
+  // 3 attempts is ~7s vs Brief 138's ~3s.
+  var RETRYABLE_STATUS = { 408: true, 500: true, 502: true, 503: true, 504: true };
   function isRetryableStatus(n) { return RETRYABLE_STATUS[n] === true; }
+  function computeBackoffDelay(attempt) {
+    // attempt is 1-indexed; this is the delay BEFORE the next attempt
+    // (called from scheduleNextAttempt after attempt N fails, before
+    // attempt N+1 starts). Schedule: 2s, 5s, 15s. +/-20% jitter so
+    // concurrent submits from multiple devices don't synchronize.
+    var BACKOFF_SCHEDULE_MS = [2000, 5000, 15000];
+    var idx = Math.min(attempt - 1, BACKOFF_SCHEDULE_MS.length - 1);
+    var base = BACKOFF_SCHEDULE_MS[idx];
+    var jitter = base * 0.2 * (Math.random() * 2 - 1);
+    return Math.max(500, Math.round(base + jitter));
+  }
   function submitWithRetry(fd, maxAttempts) {
     var attempt = 0;
     return new Promise(function (resolve, reject) {
@@ -1236,20 +1261,117 @@ const FORM_SCRIPT = `(function () {
         });
       }
       function scheduleNextAttempt() {
-        var delay = Math.pow(2, attempt - 1) * 1000; // 1s, 2s, 4s
-        if (!navigator.onLine) {
-          // Hold the next attempt until reconnection (Phase 2 'online'
-          // listener fires it immediately on reconnect). If multiple
-          // retries pile up we only hold the most recent — earlier ones
-          // are discarded; that's correct because all retries reuse the
-          // same FormData + idempotency_key.
-          pendingOnlineRetry = tryOnce;
-        } else {
-          setTimeout(tryOnce, delay);
-        }
+        var delay = computeBackoffDelay(attempt);
+        setTimeout(tryOnce, delay);
       }
       tryOnce();
     });
+  }
+
+  // ---- Brief 141 Phase 3 — post-exhaustion watchdog ---------------------
+  //
+  // After submitWithRetry's bounded loop exhausts (3 attempts, ~7s total),
+  // we don't give up entirely — we attach a long-lived listener that fires
+  // one-shot retry attempts as connectivity recovers. Two triggers:
+  // (a) browser fires an 'online' event (reliable in the offline->online
+  // direction even when navigator.onLine was wrong about being offline);
+  // (b) a periodic 60s timer fires, up to 30 attempts (30 minutes max),
+  // catching cases where the browser never sees an offline transition but
+  // the network is actually broken-then-restored.
+  //
+  // submitOnceForWatchdog is a one-shot fetch (no retry, no backoff) so a
+  // 30-minute watchdog window doesn't spawn nested retry loops. Worker
+  // dedup via idempotency_key (Brief 138) collapses any repeats.
+  //
+  // activeWatchdogTeardown is a closure var set by startWatchdog; the
+  // submit handler tears it down before running a fresh manual submit.
+  var activeWatchdogTeardown = null;
+  function submitOnceForWatchdog(fd) {
+    var controller = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+    var timer = setTimeout(function () {
+      if (controller) controller.abort();
+    }, 30000);
+    var fetchOpts = {
+      method: 'POST',
+      body: fd,
+      headers: { 'Accept': 'application/json' }
+    };
+    if (controller) fetchOpts.signal = controller.signal;
+    return fetch('/claims-api/submit-claim', fetchOpts).then(function (r) {
+      return r.text().then(function (text) {
+        var body = null;
+        try { body = JSON.parse(text); } catch (_) { body = null; }
+        return { status: r.status, ok: r.ok, body: body, raw: text };
+      });
+    }).then(function (out) {
+      clearTimeout(timer);
+      return out;
+    }, function (err) {
+      clearTimeout(timer);
+      throw err;
+    });
+  }
+  function startWatchdog(fd) {
+    var WATCHDOG_INTERVAL_MS = 60000;
+    var WATCHDOG_MAX_ATTEMPTS = 30;
+    var watchdogAttempts = 0;
+    var watchdogTimer = null;
+    var displayTimer = null;
+    var lastAttemptStartMs = Date.now();
+    var armed = true;
+
+    function updateBannerCopy() {
+      if (!armed || !submitError) return;
+      var elapsedSec = Math.max(0, Math.round((Date.now() - lastAttemptStartMs) / 1000));
+      submitError.textContent =
+        "Network unstable — we'll keep trying every minute. You can also click Submit manually. (Last attempt: "
+        + elapsedSec + 's ago)';
+      submitError.hidden = false;
+    }
+    function fireWatchdogAttempt() {
+      if (!armed) return;
+      watchdogAttempts += 1;
+      if (watchdogAttempts > WATCHDOG_MAX_ATTEMPTS) {
+        if (submitError) {
+          submitError.textContent =
+            "Network unstable — please click Submit to retry manually.";
+          submitError.hidden = false;
+        }
+        teardown();
+        return;
+      }
+      lastAttemptStartMs = Date.now();
+      updateBannerCopy();
+      submitOnceForWatchdog(fd).then(function (out) {
+        if (!armed) return;
+        if (out.ok && out.body && out.body.ok && out.body.d1Success !== false) {
+          showOutcome(
+            out.body.claim_id || out.body.claimId || '',
+            out.body.summary_pdf_url || ''
+          );
+          clearDraft();
+          submissionId = generateSubmissionId();
+          teardown();
+        }
+        // Non-success — wait for next tick or online event. Banner stays.
+      }).catch(function () {
+        // Same — wait for next tick.
+      });
+    }
+    function teardown() {
+      armed = false;
+      if (watchdogTimer) { clearInterval(watchdogTimer); watchdogTimer = null; }
+      if (displayTimer) { clearInterval(displayTimer); displayTimer = null; }
+      window.removeEventListener('online', fireWatchdogAttempt);
+      if (activeWatchdogTeardown === teardown) activeWatchdogTeardown = null;
+    }
+
+    window.addEventListener('online', fireWatchdogAttempt);
+    watchdogTimer = setInterval(fireWatchdogAttempt, WATCHDOG_INTERVAL_MS);
+    displayTimer = setInterval(updateBannerCopy, 1000);
+    updateBannerCopy();
+    activeWatchdogTeardown = teardown;
+    return teardown;
   }
   function showOutcome(claimId, summaryPdfUrl) {
     setSubmitting(false);
@@ -1293,6 +1415,14 @@ const FORM_SCRIPT = `(function () {
   form.addEventListener('submit', function (e) {
     e.preventDefault();
     if (!validateBeforeSubmit()) return;
+    // Brief 141 — tear down any watchdog left running from a prior failed
+    // submit before starting a fresh attempt. The new attempt's success
+    // or exhaustion either way ends the watchdog cycle. Idempotency key
+    // is reused across both, so even a race where the watchdog's in-flight
+    // fetch lands alongside the new submit collapses at the worker.
+    if (typeof activeWatchdogTeardown === 'function') {
+      try { activeWatchdogTeardown(); } catch (_) {}
+    }
     // Brief 138 reversed Brief 136/122's optimistic-clear (option B) in favor
     // of a post-success clear (option A). clearDraft() now fires inside the
     // success branch below, after showOutcome(...) paints. Rationale: a
@@ -1329,7 +1459,13 @@ const FORM_SCRIPT = `(function () {
 
     setSubmitting(true);
     submitWithRetry(fd, 3).then(function (out) {
-      if (out.ok && out.body && out.body.ok) {
+      // Brief 140 — d1Success !== false guard. The worker returns 500
+      // when D1 fails (Brief 140 Phase 2); on the rare path where the
+      // worker returns 200 with d1Success: false (older worker version
+      // or a future regression), the explicit-false check still blocks
+      // the success card from painting. Permissive on missing/undefined
+      // so older workers that don't ship d1Success still succeed.
+      if (out.ok && out.body && out.body.ok && out.body.d1Success !== false) {
         showOutcome(
           out.body.claim_id || out.body.claimId || '',
           out.body.summary_pdf_url || ''
@@ -1346,13 +1482,27 @@ const FORM_SCRIPT = `(function () {
         var errMsg = (out.body && out.body.error)
           || (out.body && out.body.message)
           || ('Submission failed (status ' + out.status + ').');
-        showError(errMsg + ' Please retry.');
         setSubmitting(false);
+        // Brief 141 — only watchdog on retryable-exhausted (transient).
+        // A deterministic 4xx (e.g., 400 validation) gets the standard
+        // error banner with "Please retry" copy; the customer must act.
+        // isRetryableStatus(out.status) === true means submitWithRetry
+        // burned through all 3 attempts on a transient 5xx/408 — kick
+        // off the watchdog and let it overwrite the banner.
+        if (isRetryableStatus(out.status)) {
+          startWatchdog(fd);
+        } else {
+          showError(errMsg + ' Please retry.');
+        }
       }
-    }).catch(function (err) {
-      var msg = (err && err.message) ? err.message : 'unknown';
-      showError('Network error: ' + msg + '. Please check your connection and retry.');
+    }).catch(function (_err) {
       setSubmitting(false);
+      // Brief 141 — fetch reject after retry exhaustion is the canonical
+      // "network is down" signal. Start the watchdog; it overwrites the
+      // banner with the post-exhaustion copy + last-attempt timer.
+      // showError is intentionally NOT called here — the watchdog's
+      // updateBannerCopy paints the banner immediately on start.
+      startWatchdog(fd);
     });
   });
 })();`;

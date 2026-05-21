@@ -267,3 +267,102 @@ export async function fireInternalNewClaimWebhook(
     );
   }
 }
+
+/* ============================================================
+ * Brief 140 — D1-failure operator alert
+ * ============================================================
+ *
+ * Fired by `handleClaimSubmission` when the D1 INSERT batch threw and
+ * `d1Success` stayed false. Shares the `INTERNAL_NEW_CLAIM_WEBHOOK_URL`
+ * with the Brief 102 internal new-claim notification; PA branches on the
+ * top-level `alert_type` discriminator field to choose the right email
+ * template ("new claim received" vs "D1 failure — orphan claim, manual
+ * backfill required").
+ *
+ * Recipients are intentionally narrow: ONLY `INCIDENTS_EMAIL`. This is
+ * an internal infra alert ("the claim wasn't persisted to admin
+ * storage"), not a field-side claim notification — looping the
+ * location's RM / GM in would just confuse them.
+ *
+ * Same fail-soft + 15s `AbortSignal` posture as the Brief 101 / 102
+ * helpers. Returns void; never throws. Callers should wrap in
+ * `ctx.waitUntil()` so the customer response isn't blocked on the
+ * webhook round-trip.
+ */
+
+export interface D1FailureAlertPayload {
+  alert_type: "d1_failed";
+  claim_id: string;
+  location_code: string;
+  customer_name: string;
+  customer_email: string;
+  /**
+   * The R2 key for the canonical submission JSON archive
+   * (`submissions/{claim_id}.json`) — the operator's recovery source for
+   * a one-off backfill INSERT. No HTTP serve endpoint today; pasted into
+   * the R2 bucket UI to retrieve.
+   */
+  r2_submission_url: string;
+  /**
+   * Customer-facing PDF copy. Omitted when PDF generation also failed
+   * (vanishingly rare — would mean both D1 and PDF pipelines threw).
+   */
+  summary_pdf_url?: string;
+  /** D1 throw message, truncated to 500 chars for log-friendly emails. */
+  error_message: string;
+  /**
+   * Resolved server-side. Single-entry array when INCIDENTS_EMAIL is
+   * bound; empty array means "fire was attempted but no incidents inbox
+   * configured" and PA no-ops.
+   */
+  recipients: string[];
+}
+
+export async function fireD1FailureAlert(args: {
+  env: { INTERNAL_NEW_CLAIM_WEBHOOK_URL?: string; INCIDENTS_EMAIL?: string };
+  claimData: {
+    claimId: string;
+    location: string;
+    customerName: string;
+    customerEmail: string;
+  };
+  summaryPdfUrl?: string;
+  errorMessage: string;
+}): Promise<void> {
+  const { env, claimData, summaryPdfUrl, errorMessage } = args;
+  if (!env.INTERNAL_NEW_CLAIM_WEBHOOK_URL) return;
+
+  const incidents = (env.INCIDENTS_EMAIL ?? "").trim().toLowerCase();
+  const recipients = incidents ? [incidents] : [];
+
+  const payload: D1FailureAlertPayload = {
+    alert_type: "d1_failed",
+    claim_id: claimData.claimId,
+    location_code: claimData.location,
+    customer_name: claimData.customerName,
+    customer_email: claimData.customerEmail,
+    r2_submission_url: `submissions/${claimData.claimId}.json`,
+    ...(summaryPdfUrl ? { summary_pdf_url: summaryPdfUrl } : {}),
+    error_message: errorMessage.slice(0, 500),
+    recipients
+  };
+
+  try {
+    const res = await fetch(env.INTERNAL_NEW_CLAIM_WEBHOOK_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(15_000)
+    });
+    if (!res.ok) {
+      console.error(
+        `[d1-failure] POST failed for ${claimData.claimId}: status ${res.status}`
+      );
+    }
+  } catch (err) {
+    console.error(
+      `[d1-failure] POST error for ${claimData.claimId}:`,
+      err
+    );
+  }
+}

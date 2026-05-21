@@ -2241,6 +2241,37 @@ URL-based — service bindings don't apply to those.
   Resume banner's Start over handler regenerates the key after
   `clearDraft()` so a discarded draft's prior key can't leak into a
   genuinely new submission.
+  Brief 140 (2026-05-21) extended the column-missing tolerance to the
+  WRITE path: `writeClaimBatch` in `@splash/db-d1` now wraps
+  `db.batch([...])` in try/catch, and on a thrown error matching
+  `/no such column.*idempotency_key/i` rebuilds the INSERT with a
+  legacy column-list-and-VALUES that drops `idempotency_key` (D1
+  prepared statements can't be rebound after a failed batch — second
+  batch needs fresh statement objects for the photos + activity row
+  too). Loud log `[claim.d1] idempotency_key column missing — fell
+  back to legacy INSERT shape (apply schema migration)`. Any other
+  D1 throw rethrows so the worker can surface a truthful 500. Belt-
+  and-suspenders for future schema rollouts that land code before
+  SQL. Brief 140 also redefined the d1Success response contract:
+  when the D1 INSERT throws (any cause — schema drift, D1 outage,
+  constraint violation), the worker now returns 500 with
+  `{ok: false, d1Success: false, claim_id, summary_pdf_url,
+  error: "Claim was received but not persisted to admin storage..."}`
+  instead of the prior 200 with `d1Success: false`. Photos / R2
+  submission JSON / PDF / Power Automate webhook still fire — the
+  R2 submission JSON at `submissions/{claim_id}.json` is the
+  canonical operator backfill source. The client success guard in
+  `claim-form.ts` now requires `out.body.d1Success !== false`
+  explicitly (missing/undefined still succeeds for back-compat with
+  older worker versions). Brief 138's `RETRYABLE_STATUS` map widened
+  to include 500. The `fireD1FailureAlert` helper in
+  `apps/damage-worker/src/notifications.ts` POSTs to the existing
+  `INTERNAL_NEW_CLAIM_WEBHOOK_URL` with discriminator
+  `alert_type: "d1_failed"` (recipients = `INCIDENTS_EMAIL` only —
+  internal infra alert, narrow scope) so an operator can do the
+  manual backfill from R2. `handleClaimSubmission`'s signature
+  widened to accept `ExecutionContext` so the alert fire is
+  `ctx.waitUntil`-ed (doesn't block the customer's 500 response).
 - **Daily summary** - Brief 65's once-a-day digest of open damage
   claims emitted by damage-worker's `scheduled` handler at 13:00 UTC
   (8 AM ET). Recipients are every gm / rm / admin / super_admin in

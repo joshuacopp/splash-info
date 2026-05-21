@@ -105,6 +105,12 @@ export interface ClaimInsert {
  *
  * Per gotcha #254: D1 batches are atomic per-statement, not per-batch.
  * Partial writes are recoverable from the R2 submission JSON.
+ *
+ * Brief 140 — when the first batch fails with `no such column.*idempotency_key`
+ * (the brief window between code push and operator-applied D1 migration), the
+ * batch is retried with a legacy INSERT shape that drops the column. Any other
+ * D1 error rethrows so the outer try/catch in `handleClaimSubmission` can
+ * stamp `d1Success: false` and the worker can return a truthful 500.
  */
 export async function writeClaimBatch(db: D1Database, c: ClaimInsert): Promise<void> {
   const claimInsert = db
@@ -183,7 +189,99 @@ export async function writeClaimBatch(db: D1Database, c: ClaimInsert): Promise<v
     )
     .bind(c.claim_id, c.initial_status, c.submitted_by);
 
-  await db.batch([claimInsert, ...photoInserts, activityInsert]);
+  try {
+    await db.batch([claimInsert, ...photoInserts, activityInsert]);
+  } catch (err) {
+    const errMsg = err instanceof Error ? err.message : String(err);
+    if (/no such column.*idempotency_key/i.test(errMsg)) {
+      console.warn(
+        "[claim.d1] idempotency_key column missing — fell back to legacy INSERT shape (apply schema migration)"
+      );
+      const legacyClaimInsert = db
+        .prepare(
+          `INSERT INTO claims (
+            claim_id,
+            location_code,
+            location_pretty,
+            customer_name,
+            customer_phone,
+            customer_email,
+            customer_mailing_address,
+            vehicle_year,
+            vehicle_make,
+            vehicle_model,
+            vehicle_color,
+            license_plate,
+            damage_description,
+            preexisting_damage,
+            staff_notes,
+            determination,
+            submitted_by,
+            equipment_related,
+            equipment_piece,
+            damage_type,
+            damage_other,
+            lifecycle_state,
+            claim_status,
+            status_updated_by,
+            submitted_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Open', ?, ?, ?)`
+        )
+        .bind(
+          c.claim_id,
+          c.location_code,
+          c.location_pretty,
+          c.customer_name,
+          c.customer_phone,
+          c.customer_email,
+          c.customer_mailing_address,
+          c.vehicle_year,
+          c.vehicle_make,
+          c.vehicle_model,
+          c.vehicle_color,
+          c.license_plate,
+          c.damage_description,
+          c.preexisting_damage,
+          c.staff_notes,
+          c.determination,
+          c.submitted_by,
+          c.equipment_related,
+          c.equipment_piece,
+          c.damage_type,
+          c.damage_other,
+          c.initial_status,
+          c.submitted_by,
+          c.submitted_at
+        );
+      // Rebuild photo + activity statements — D1 prepared statements
+      // can't be rebound after a failed batch.
+      const legacyPhotoStmt = db.prepare(
+        `INSERT INTO claim_photos (
+          claim_id, photo_type, filename, r2_key, content_type, size_bytes, uploaded_by
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)`
+      );
+      const legacyPhotoInserts = c.photos.map((p) =>
+        legacyPhotoStmt.bind(c.claim_id, p.photoType, p.fileName, p.r2Key, p.contentType, p.fileSize, c.submitted_by)
+      );
+      const legacyActivityInsert = db
+        .prepare(
+          `INSERT INTO claim_activity (
+            claim_id, activity_type, status_from, status_to, notes, actor_name
+          ) VALUES (?, 'status_change', NULL, ?, 'Initial submission', ?)`
+        )
+        .bind(c.claim_id, c.initial_status, c.submitted_by);
+      try {
+        await db.batch([legacyClaimInsert, ...legacyPhotoInserts, legacyActivityInsert]);
+        return;
+      } catch (retryErr) {
+        // Surface the ORIGINAL column-missing error so callers know which
+        // failure they're recovering from; the retry error is a downstream
+        // symptom.
+        throw err;
+      }
+    }
+    throw err;
+  }
 }
 
 /* ============================================================
