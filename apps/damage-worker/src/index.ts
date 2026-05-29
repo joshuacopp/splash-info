@@ -152,6 +152,7 @@ import {
   type ClaimSummaryPdfInput
 } from "./render/claim-summary-pdf.js";
 import { createMaintainXWorkOrder, type MaintainXResult } from "./maintainx.js";
+import { resolveAdminBase } from "./admin-url.js";
 import { ASSETS } from "@splash/storage-r2";
 
 interface Env extends SupabaseEnv {
@@ -1417,6 +1418,7 @@ async function handleAddNote(
   if (env.CLAIM_UPDATE_WEBHOOK_URL) {
     void notifyClaimUpdate({
       env,
+      request,
       changeType: "note",
       claim: guard.claim,
       actorEmail: session.email,
@@ -1717,6 +1719,7 @@ async function handleStatusTransition(
   if (env.CLAIM_UPDATE_WEBHOOK_URL) {
     void notifyClaimUpdate({
       env,
+      request,
       changeType: "status",
       claim,
       actorEmail: session.email,
@@ -1739,6 +1742,7 @@ async function handleStatusTransition(
   if (applyEquipmentOverride) {
     const mx = await tryCreateMaintainXIfMissing({
       env,
+      request,
       claim,
       finalTo,
       overrideEquipmentPiece,
@@ -1853,6 +1857,9 @@ async function handleStatusTransition(
 
 interface TryCreateMaintainXIfMissingInput {
   env: Env;
+  /** Inbound request — used to derive the apps/web admin base URL
+   *  embedded in the MaintainX WO description (Brief 145). */
+  request: Request;
   claim: ClaimRow;
   finalTo: ClaimStatus;
   overrideEquipmentPiece: string;
@@ -1867,7 +1874,7 @@ interface TryCreateMaintainXIfMissingResult {
 async function tryCreateMaintainXIfMissing(
   input: TryCreateMaintainXIfMissingInput
 ): Promise<TryCreateMaintainXIfMissingResult> {
-  const { env, claim, finalTo, overrideEquipmentPiece, actorEmail } = input;
+  const { env, request, claim, finalTo, overrideEquipmentPiece, actorEmail } = input;
 
   if (!env.MAINTAINX_API_KEY) {
     console.warn(
@@ -1920,8 +1927,12 @@ async function tryCreateMaintainXIfMissing(
 
   const mxMode = env.MAINTAINX_MODE ?? "test";
   const mxBaseUrl = env.MAINTAINX_BASE_URL ?? "https://api.getmaintainx.com/v1";
-  const mxAppsWebBaseUrl =
-    env.APPS_WEB_BASE_URL ?? "https://splashcarwashes.info";
+  // Brief 145 — derive apps/web admin base from the inbound request origin so
+  // a staging-test transition (operator working from
+  // staging.splashcarwashes.info) embeds a staging admin link in the WO
+  // description, not a production link that 404s for D1 rows that only
+  // exist in staging.
+  const mxAppsWebBaseUrl = resolveAdminBase(request, env);
 
   const ctrl = new AbortController();
   const timeoutId = setTimeout(() => ctrl.abort(), 8000);
@@ -2731,8 +2742,10 @@ async function handleClaimSubmission(
 
           const mxMode = env.MAINTAINX_MODE ?? "test";
           const mxBaseUrl = env.MAINTAINX_BASE_URL ?? "https://api.getmaintainx.com/v1";
-          const mxAppsWebBaseUrl =
-            env.APPS_WEB_BASE_URL ?? "https://splashcarwashes.info";
+          // Brief 145 — derive apps/web admin base from the inbound request
+          // origin so a staging-test submission embeds a staging admin link in
+          // the WO description (not a production link that 404s).
+          const mxAppsWebBaseUrl = resolveAdminBase(request, env);
 
           const ctrl = new AbortController();
           const timeoutId = setTimeout(() => ctrl.abort(), 8000);
@@ -2902,6 +2915,7 @@ async function handleClaimSubmission(
           try {
             await fireInternalNewClaimNotification({
               env,
+              request,
               pdfBytes,
               summaryPdfUrl,
               claimData,
@@ -3499,12 +3513,15 @@ async function fireCustomerClaimWebhook(
  */
 async function fireInternalNewClaimNotification(args: {
   env: Env;
+  /** Inbound request — used by Brief 145's `resolveAdminBase` so staging
+   *  submissions get a staging admin link in the webhook payload. */
+  request: Request;
   pdfBytes: Uint8Array;
   summaryPdfUrl: string;
   claimData: ClaimSubmissionPayload;
   baseOrigin: string;
 }): Promise<void> {
-  const { env, pdfBytes, summaryPdfUrl, claimData, baseOrigin } = args;
+  const { env, request, pdfBytes, summaryPdfUrl, claimData, baseOrigin } = args;
   if (!env.INTERNAL_NEW_CLAIM_WEBHOOK_URL) return;
 
   // Contacts. Fail-soft: any throw collapses to all-nulls; the webhook
@@ -3575,7 +3592,10 @@ async function fireInternalNewClaimNotification(args: {
       : claimData.vehicleColor.trim();
   }
 
-  const baseUrl = env.APPS_WEB_BASE_URL ?? "https://splashcarwashes.info";
+  // Brief 145 — request-origin-derived; workers.dev rewrites to production,
+  // staging.splashcarwashes.info passes through so operator emails land on
+  // the same host the claim was submitted against.
+  const baseUrl = resolveAdminBase(request, env);
   const adminUrl = `${baseUrl}/admin/damage/${encodeURIComponent(
     claimData.claimId
   )}`;
@@ -3628,6 +3648,9 @@ async function fireInternalNewClaimNotification(args: {
  */
 async function notifyClaimUpdate(args: {
   env: Env;
+  /** Inbound request — used by Brief 145's `resolveAdminBase` so a
+   *  staging note/transition embeds a staging admin link. */
+  request: Request;
   changeType: ClaimUpdateChangeType;
   claim: ClaimRow;
   actorEmail: string;
@@ -3638,6 +3661,7 @@ async function notifyClaimUpdate(args: {
 }): Promise<void> {
   const {
     env,
+    request,
     changeType,
     claim,
     actorEmail,
@@ -3679,8 +3703,9 @@ async function notifyClaimUpdate(args: {
 
     const recipients = resolveRecipients(notifies, contacts, actorEmail);
 
-    const baseUrl =
-      env.APPS_WEB_BASE_URL ?? "https://splashcarwashes.info";
+    // Brief 145 — request-origin-derived; workers.dev rewrites to production,
+    // staging passes through.
+    const baseUrl = resolveAdminBase(request, env);
     const adminUrl = `${baseUrl}/admin/damage/${encodeURIComponent(
       claim.claim_id
     )}`;

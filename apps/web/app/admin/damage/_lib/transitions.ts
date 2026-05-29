@@ -154,7 +154,8 @@ export const CLAIM_TRANSITIONS_UI: readonly UITransition[] = [
     from: "No Responsibility — Pending Review",
     to: "Pending GM Review",
     label: "Reopen for GM Review",
-    role: "rm",
+    // Brief 145 — widened from rm to gm.
+    role: "gm",
     requiresNote: true,
     clearApprovalDetails: true
   }),
@@ -210,7 +211,8 @@ export const CLAIM_TRANSITIONS_UI: readonly UITransition[] = [
     from: "Pending RM Review",
     to: "Pending GM Review",
     label: "Send back to GM",
-    role: "rm",
+    // Brief 145 — widened from rm to gm.
+    role: "gm",
     requiresNote: true,
     clearApprovalDetails: true
   }),
@@ -327,11 +329,17 @@ export const CLAIM_TRANSITIONS_UI: readonly UITransition[] = [
   // three. The `Pending RM Quote Approval → Approved — Pending Quotes`
   // entry stays admin-only — it moves the claim FORWARD again past
   // where the RM might want to revert from.
+  //
+  // Brief 145 (2026-05-29) — two of the entries below (the two
+  // `→ Pending GM Review` revert paths) widened further from `rm` to
+  // `gm` so GMs can recall / un-approve their own claims without
+  // RM escalation. Mirrors the worker table.
   tx({
     from: "Approved — Pending Quotes",
     to: "Pending GM Review",
     label: "Send back to GM Review",
-    role: "rm",
+    // Brief 145 — widened to gm.
+    role: "gm",
     requiresNote: true,
     clearApprovalDetails: true
   }),
@@ -347,7 +355,8 @@ export const CLAIM_TRANSITIONS_UI: readonly UITransition[] = [
     from: "Pending RM Quote Approval",
     to: "Pending GM Review",
     label: "Send back to GM Review",
-    role: "rm",
+    // Brief 145 — widened to gm.
+    role: "gm",
     requiresNote: true,
     clearApprovalDetails: true
   }),

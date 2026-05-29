@@ -6,7 +6,16 @@ Thanks for testing. Two flows: **submit a claim** (customer side) and **work a c
 
 ## Part 1 — Submit a test claim (customer side)
 
-1. Open your phone browser. Go to `staging.splashcarwashes.info/claims/{your-site}` (replace `{your-site}` with your location slug, e.g. `oswego`).
+1. Open your phone browser. Go to `staging.splashcarwashes.info/claims/{your-site}` — replace `{your-site}` with your location slug:
+
+   - `northport`
+   - `plattsburgh`
+   - `milford`
+   - `bedford`
+   - `southbury`
+   - `fayetteville`
+   - `fairport`
+
 2. Fill out the form like a real customer would. Use **your own email** so you get the confirmation.
 3. Add **at least 2 damage photos** (any photo from your camera roll is fine).
 4. Hit submit. You should see a green confirmation card with a **Download a copy (PDF)** link.

@@ -137,7 +137,10 @@ export const CLAIM_TRANSITIONS: readonly ClaimTransitionDef[] = [
   tx({
     from: "No Responsibility — Pending Review",
     to: "Pending GM Review",
-    role: "rm",
+    // Brief 145 — GM-allowed revert. GMs may erroneously mark a claim as No
+    // Responsibility and need to bounce it back to themselves for re-review
+    // without RM escalation.
+    role: "gm",
     requiresNote: true,
     // Brief 20: "send back" path — clear approval columns defensively (no
     // approval should be present at this stage, but clearing is a no-op
@@ -168,7 +171,9 @@ export const CLAIM_TRANSITIONS: readonly ClaimTransitionDef[] = [
   tx({
     from: "Pending RM Review",
     to: "Pending GM Review",
-    role: "rm",
+    // Brief 145 — GM-allowed revert. GMs may auto-route a claim to RM and
+    // need to recall it before RM acts.
+    role: "gm",
     requiresNote: true,
     // Brief 20: "send back" path. Defensive clear.
     clearApprovalDetails: true
@@ -279,10 +284,21 @@ export const CLAIM_TRANSITIONS: readonly ClaimTransitionDef[] = [
   // above, alongside the other forward transitions for those statuses,
   // not here. Keeping pre-approval reverts here as a mixed-role group
   // because they share the same clearApprovalDetails posture.
+  //
+  // Brief 145 (2026-05-29) — the four pre-approval revert paths to
+  // Pending GM Review widened from `rm` to `gm` so GMs can recall /
+  // un-approve their own claims without RM escalation. The two entries
+  // immediately below (Approved — Pending Quotes → Pending GM Review,
+  // Pending RM Quote Approval → Pending GM Review) plus the two
+  // entries in the per-from blocks above (No Responsibility → Pending
+  // GM Review, Pending RM Review → Pending GM Review) cover all four.
+  // The three admin-only paths below stay admin-only; they involve
+  // work-in-progress, closed, or finance-touched claims.
   tx({
     from: "Approved — Pending Quotes",
     to: "Pending GM Review",
-    role: "rm",
+    // Brief 145 — widened to gm.
+    role: "gm",
     requiresNote: true,
     clearApprovalDetails: true
   }),
@@ -296,7 +312,8 @@ export const CLAIM_TRANSITIONS: readonly ClaimTransitionDef[] = [
   tx({
     from: "Pending RM Quote Approval",
     to: "Pending GM Review",
-    role: "rm",
+    // Brief 145 — widened to gm.
+    role: "gm",
     requiresNote: true,
     clearApprovalDetails: true
   }),
