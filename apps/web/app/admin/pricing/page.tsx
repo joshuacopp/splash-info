@@ -10,6 +10,9 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { workerGetJson } from "./_lib/worker-fetch";
 import { SignupAdminTabs } from "../_components/SignupAdminTabs";
+import LocationSearchGrid, {
+  type LocationItem
+} from "../_components/LocationSearchGrid";
 
 interface LocationSummary {
   location_code: string;
@@ -62,6 +65,16 @@ export default async function PricingAdminPage() {
     redirect(`/admin/pricing/${locations[0]!.location_code}`);
   }
 
+  const items: LocationItem[] = locations.map((loc) => ({
+    location_code: loc.location_code,
+    location_pretty: loc.location_pretty,
+    secondaryLine: (
+      <span className="text-xs text-splash-navy/60">
+        Mode: {loc.pricing || "—"}
+      </span>
+    )
+  }));
+
   return (
     <section className="mx-auto w-full max-w-[820px] px-5 py-9">
       <SignupAdminTabs locationCode={null} active="pricing" />
@@ -69,36 +82,10 @@ export default async function PricingAdminPage() {
       <p style={{ color: "#6b7280", marginBottom: 18 }}>
         Pick a location to manage its MaxPass pricing.
       </p>
-      <div
-        style={{
-          display: "grid",
-          gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))",
-          gap: 12
-        }}
-      >
-        {locations.map((loc) => (
-          <a
-            key={loc.location_code}
-            href={`/admin/pricing/${loc.location_code}`}
-            style={{
-              display: "block",
-              padding: "16px 18px",
-              border: "1.5px solid #dbdbdb",
-              borderRadius: 10,
-              textDecoration: "none",
-              color: "#1c164e",
-              background: "white"
-            }}
-          >
-            <div style={{ fontWeight: 700, marginBottom: 4 }}>
-              {loc.location_pretty}
-            </div>
-            <div style={{ fontSize: 13, color: "#6b7280" }}>
-              Mode: {loc.pricing || "—"}
-            </div>
-          </a>
-        ))}
-      </div>
+      <LocationSearchGrid
+        locations={items}
+        hrefFor={(loc) => `/admin/pricing/${loc.location_code}`}
+      />
     </section>
   );
 }

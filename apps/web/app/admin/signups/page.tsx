@@ -7,6 +7,9 @@
 import Link from "next/link";
 import { workerGetJson } from "../pricing/_lib/worker-fetch";
 import { SignupAdminTabs } from "../_components/SignupAdminTabs";
+import LocationSearchGrid, {
+  type LocationItem
+} from "../_components/LocationSearchGrid";
 
 interface LocationSummary {
   location_code: string;
@@ -75,26 +78,20 @@ export default async function SignupsLandingPage() {
         Pick a location to see its recent customer submissions.
       </p>
 
-      <div
-        style={{
-          display: "grid",
-          gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))",
-          gap: 12
-        }}
-      >
-        {locations.map((loc) => (
-          <Link
-            key={loc.location_code}
-            href={`/admin/signups/${encodeURIComponent(loc.location_code)}`}
-            className="block rounded-splash-md border border-gray-light bg-white px-4 py-3 text-splash-navy hover:border-splash-blue/50 hover:shadow-splash-card-hover"
-          >
-            <div className="font-bold">{loc.location_pretty}</div>
-            <div className="mt-0.5 font-mono text-xs text-splash-navy/60">
+      <LocationSearchGrid
+        locations={locations.map<LocationItem>((loc) => ({
+          location_code: loc.location_code,
+          location_pretty: loc.location_pretty,
+          secondaryLine: (
+            <span className="font-mono text-xs text-splash-navy/60">
               {loc.location_code}
-            </div>
-          </Link>
-        ))}
-      </div>
+            </span>
+          )
+        }))}
+        hrefFor={(loc) =>
+          `/admin/signups/${encodeURIComponent(loc.location_code)}`
+        }
+      />
     </section>
   );
 }
