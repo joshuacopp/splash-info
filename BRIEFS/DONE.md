@@ -140,3 +140,4 @@
 - 2026-05-21 14:17:10 brief-141-claim-form-retry-hardening.md (success)
 - 2026-05-29 09:10:29 brief-142-signup-worker-bogo-parity.md (success)
 - 2026-05-29 10:36:17 brief-143-admin-location-grid-search.md (success)
+- 2026-05-29 11:01:02 brief-144-location-search-grid-server-client-fix.md (success)

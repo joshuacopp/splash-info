@@ -82,15 +82,13 @@ export default async function SignupsLandingPage() {
         locations={locations.map<LocationItem>((loc) => ({
           location_code: loc.location_code,
           location_pretty: loc.location_pretty,
+          href: `/admin/signups/${encodeURIComponent(loc.location_code)}`,
           secondaryLine: (
             <span className="font-mono text-xs text-splash-navy/60">
               {loc.location_code}
             </span>
           )
         }))}
-        hrefFor={(loc) =>
-          `/admin/signups/${encodeURIComponent(loc.location_code)}`
-        }
       />
     </section>
   );

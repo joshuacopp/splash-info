@@ -68,6 +68,7 @@ export default async function PricingAdminPage() {
   const items: LocationItem[] = locations.map((loc) => ({
     location_code: loc.location_code,
     location_pretty: loc.location_pretty,
+    href: `/admin/pricing/${loc.location_code}`,
     secondaryLine: (
       <span className="text-xs text-splash-navy/60">
         Mode: {loc.pricing || "—"}
@@ -82,10 +83,7 @@ export default async function PricingAdminPage() {
       <p style={{ color: "#6b7280", marginBottom: 18 }}>
         Pick a location to manage its MaxPass pricing.
       </p>
-      <LocationSearchGrid
-        locations={items}
-        hrefFor={(loc) => `/admin/pricing/${loc.location_code}`}
-      />
+      <LocationSearchGrid locations={items} />
     </section>
   );
 }

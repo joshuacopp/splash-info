@@ -27,6 +27,9 @@ import {
 export interface LocationItem {
   location_code: string;
   location_pretty: string;
+  /** Pre-resolved per-item link target — server component builds the
+   *  string so the client doesn't receive a non-serializable closure. */
+  href: string;
   /** Free-form secondary line. Pricing passes `Mode: <pricing>`;
    *  Signups passes the `location_code` slug. */
   secondaryLine: ReactNode;
@@ -34,15 +37,12 @@ export interface LocationItem {
 
 export interface LocationSearchGridProps {
   locations: LocationItem[];
-  /** Built once per item — e.g. `/admin/pricing/${code}`. */
-  hrefFor: (loc: LocationItem) => string;
   /** Optional placeholder; defaults to "Search locations…". */
   placeholder?: string;
 }
 
 export default function LocationSearchGrid({
   locations,
-  hrefFor,
   placeholder = "Search locations…"
 }: LocationSearchGridProps) {
   const [query, setQuery] = useState("");
@@ -108,7 +108,7 @@ export default function LocationSearchGrid({
           {filtered.map((loc) => (
             <Link
               key={loc.location_code}
-              href={hrefFor(loc)}
+              href={loc.href}
               className="block rounded-splash-md border border-gray-light bg-white px-4 py-3 text-splash-navy hover:border-splash-blue/50 hover:shadow-splash-card-hover"
             >
               <div className="font-bold">{loc.location_pretty}</div>
