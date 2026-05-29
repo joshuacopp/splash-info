@@ -12,7 +12,7 @@ import type { PricingSimpleResolvedRow } from "@splash/types/pricing";
 import type { Env } from "../env.js";
 import { renderPicker } from "../render/picker.js";
 import { renderSignupForm } from "../render/form.js";
-import { addMonthsClamp, buildTermsText, isFamilyPlan, mmddyyyy } from "./terms.js";
+import { addMonthsClamp, buildTermsText, isFamilyPlan, mmddyyyy, yyyymmdd } from "./terms.js";
 
 /** Marker for the dispatch registry. Mirrors JOTFORM_MODE_ID in jotform.ts. */
 export const INLINE_MODE_ID = "inline" as const;
@@ -55,22 +55,56 @@ export function renderInlineSignupForm(args: {
 }): Response {
   const today = Number(args.row.today ?? 0);
   const monthly = Number(args.row.ongoing ?? 0);
-  const todayDate = new Date();
+
+  // ET wall-clock dates. Previously this used `new Date()` directly, which
+  // produces UTC wall-clock in the Workers runtime — for late-evening ET
+  // submissions that flipped the displayed date forward a day. Mirror the
+  // legacy worker's pattern: convert "now" through an en-US toLocaleString
+  // in the America/New_York zone to get the local Y/M/D, then construct
+  // a fresh local Date from those components.
+  const tz = "America/New_York";
+  const localNow = new Date(new Date().toLocaleString("en-US", { timeZone: tz }));
+  const todayDate = new Date(
+    localNow.getFullYear(),
+    localNow.getMonth(),
+    localNow.getDate()
+  );
   const nextDate = addMonthsClamp(todayDate, 1);
+
+  const isBogo = args.row.bogo === true;
+  const month3Date = isBogo ? addMonthsClamp(todayDate, 2) : null;
+  const month3Str = month3Date ? mmddyyyy(month3Date) : "";
+  const month3Iso = month3Date ? yyyymmdd(month3Date) : "";
+  const todayStr = mmddyyyy(todayDate);
+  const nextBillingStr = mmddyyyy(nextDate);
 
   const termsText = buildTermsText({
     todayPrice: today,
     monthlyPrice: monthly,
-    todayStr: mmddyyyy(todayDate),
-    nextBillingStr: mmddyyyy(nextDate),
-    familyPlan: isFamilyPlan(args.packageCode)
+    todayStr,
+    nextBillingStr,
+    familyPlan: isFamilyPlan(args.packageCode),
+    bogo: isBogo,
+    month3Str
   });
+
+  const priceTextToday = `$${today} plus tax`;
+  const priceTextMonthly = isFamilyPlan(args.packageCode)
+    ? `$${monthly} + $0.01 per additional vehicle, plus tax`
+    : `$${monthly} plus tax`;
 
   const html = renderSignupForm({
     locationCode: args.locationCode,
     packageCode: args.packageCode,
     row: args.row,
-    termsText
+    termsText,
+    isBogo,
+    todayStr,
+    nextBillingStr,
+    month3Str,
+    month3Iso,
+    priceTextToday,
+    priceTextMonthly
   });
   return htmlResponse(html);
 }

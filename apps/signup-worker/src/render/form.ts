@@ -25,16 +25,56 @@ export interface SignupFormRenderArgs {
    *  worker generated terms inline at render time and re-read it from the
    *  hidden form field on submit; the new worker preserves that contract. */
   termsText: string;
+  /** BOGO ("Buy One Get One") schedule modifier. When true, the form renders
+   *  the yellow 3-step callout between .package-info and the form, and the
+   *  hidden `is_bogo` / `recurring_start_date` fields carry true / the
+   *  month-3 ISO date back to the submit handler. */
+  isBogo: boolean;
+  /** Today's date MM-DD-YYYY — shown in the BOGO callout. */
+  todayStr: string;
+  /** Today + 1 month MM-DD-YYYY — "second month FREE" in the BOGO callout. */
+  nextBillingStr: string;
+  /** Today + 2 months MM-DD-YYYY — recurring-billing-starts date in the
+   *  BOGO callout. Empty string when isBogo === false. */
+  month3Str: string;
+  /** Today + 2 months YYYY-MM-DD — value of the hidden `recurring_start_date`
+   *  input. Empty string when isBogo === false. */
+  month3Iso: string;
+  /** "${todayPrice} plus tax" — line 1 of the BOGO callout. */
+  priceTextToday: string;
+  /** "${monthlyPrice} plus tax" (or family-plan variant) — line 3 of the BOGO callout. */
+  priceTextMonthly: string;
 }
 
 export function renderSignupForm({
   locationCode,
   packageCode,
   row,
-  termsText
+  termsText,
+  isBogo,
+  todayStr,
+  nextBillingStr,
+  month3Str,
+  month3Iso,
+  priceTextToday,
+  priceTextMonthly
 }: SignupFormRenderArgs): string {
   const today = Number(row.today ?? 0).toFixed(2);
   const monthly = Number(row.ongoing ?? 0).toFixed(2);
+
+  // Yellow 3-step BOGO callout — rendered between .package-info and the
+  // form when row.bogo is true. Verbatim port of the legacy worker's
+  // bogoCallout block (legacy/signup_worker_with_BOGO.js line 2225-2233).
+  const bogoCallout = isBogo
+    ? `<div class="bogo-callout">
+        <div class="bogo-banner">BOGO — Buy One, Get One Free</div>
+        <ol class="bogo-steps">
+          <li><strong>Today (${escHtml(todayStr)}):</strong> ${escHtml(priceTextToday)}</li>
+          <li><strong>${escHtml(nextBillingStr)}:</strong> Second month <strong>FREE</strong></li>
+          <li><strong>${escHtml(month3Str)}:</strong> Recurring billing begins at ${escHtml(priceTextMonthly)}</li>
+        </ol>
+      </div>`
+    : "";
 
   return `<!doctype html>
 <html lang="en"><head>
@@ -68,6 +108,8 @@ ${FORM_CSS}
         </div>
       </div>
 
+      ${bogoCallout}
+
       <form id="signupForm" novalidate>
         <input type="hidden" name="location" value="${escHtml(locationCode)}"/>
         <input type="hidden" name="location_pretty" value="${escHtml(row.location_pretty)}"/>
@@ -76,6 +118,8 @@ ${FORM_CSS}
         <input type="hidden" name="today_price" value="${escHtml(today)}"/>
         <input type="hidden" name="monthly_price" value="${escHtml(monthly)}"/>
         <input type="hidden" name="terms" id="termsInput"/>
+        <input type="hidden" name="is_bogo" value="${isBogo ? "true" : "false"}"/>
+        <input type="hidden" name="recurring_start_date" value="${escHtml(month3Iso)}"/>
 
         <div class="field">
           <label for="phone">Phone Number</label>
@@ -313,7 +357,12 @@ ${FORM_CSS}
           email: emailInput.value.trim(),
           terms: termsText,
           terms_agreed: agree.checked,
-          timestamp: new Date().toISOString()
+          timestamp: new Date().toISOString(),
+          // BOGO fields — defensive defaults so non-BOGO signups and older
+          // clients (which don't post these fields) land as is_bogo=false /
+          // recurring_start_date=null without breaking the insert.
+          is_bogo: form.is_bogo.value === 'true',
+          recurring_start_date: form.recurring_start_date.value || null
         };
       }
 

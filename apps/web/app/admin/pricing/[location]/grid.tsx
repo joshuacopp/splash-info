@@ -22,6 +22,7 @@
 
 import { useState } from "react";
 import { PackagePickerModal, type PickerMode } from "./_components/PackagePickerModal";
+import { BogoModal } from "./_components/BogoModal";
 
 interface PricingSimpleRow {
   location_code: string;
@@ -33,6 +34,7 @@ interface PricingSimpleRow {
   site_email: string | null;
   am_email: string | null;
   rm_email: string | null;
+  bogo?: boolean;
 }
 interface PricingResolvedRow {
   location_pretty: string;
@@ -42,6 +44,7 @@ interface PricingResolvedRow {
   today: number | null;
   ongoing: number | null;
   sort: number | null;
+  bogo?: boolean;
 }
 
 export interface PricingGridProps {
@@ -81,6 +84,7 @@ export function PricingGrid(props: PricingGridProps) {
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
   const [pickerMode, setPickerMode] = useState<PickerMode | null>(null);
+  const [bogoOpen, setBogoOpen] = useState(false);
 
   const resolvedByPkg = new Map(resolved.map((r) => [r.pkg.toLowerCase(), r]));
 
@@ -190,6 +194,47 @@ export function PricingGrid(props: PricingGridProps) {
     }
   }
 
+  async function applySetBogo(args: { selectedPkgs: string[] }) {
+    setBusy(true);
+    setError(null);
+    setSuccess(null);
+    try {
+      const resp = await fetch(
+        `/admin/api/locations/${encodeURIComponent(props.locationCode)}/set-bogo`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "same-origin",
+          body: JSON.stringify({ pkgList: args.selectedPkgs })
+        }
+      );
+      const result = (await resp.json().catch(() => ({}))) as {
+        ok?: boolean;
+        packages?: PricingSimpleRow[];
+        resolved?: PricingResolvedRow[];
+        error?: string;
+      };
+      if (!resp.ok || !result.ok) {
+        setError(result.error ?? `BOGO update failed (${resp.status}).`);
+        return;
+      }
+      if (result.packages) setPackages(result.packages);
+      if (result.resolved) setResolved(result.resolved);
+      setSuccess(`Updated ${props.locationCode} BOGO.`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Network error");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  // Per-package BOGO state for the modal — pre-checks rows currently on.
+  const bogoPackages = packages.map((p) => ({
+    pkg: p.pkg,
+    pretty_pkg: resolvedByPkg.get(p.pkg.toLowerCase())?.pretty_pkg ?? p.pkg,
+    on: p.bogo === true
+  }));
+
   /* ============================================================
    * Render
    * ============================================================ */
@@ -283,7 +328,10 @@ export function PricingGrid(props: PricingGridProps) {
                     {r?.ongoing != null ? `$${Number(r.ongoing).toFixed(2)}` : "—"}
                   </td>
                   <td style={{ padding: "14px 16px" }}>
-                    <ModeBadge mode={p.pricing} />
+                    <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+                      <ModeBadge mode={p.pricing} />
+                      {p.bogo === true ? <BogoBadge /> : null}
+                    </span>
                   </td>
                 </tr>
               );
@@ -334,6 +382,31 @@ export function PricingGrid(props: PricingGridProps) {
         })}
       </div>
 
+      {/* Toggle BOGO — full-width row beneath the 3×2 mode grid, yellow promo accent.
+          BOGO is a schedule modifier (orthogonal to pricing modes); a package can be
+          in flash5 AND bogo simultaneously. */}
+      <button
+        type="button"
+        disabled={busy}
+        onClick={() => setBogoOpen(true)}
+        style={{
+          width: "100%",
+          marginTop: 10,
+          padding: "14px 18px",
+          fontSize: 14,
+          fontWeight: 700,
+          color: "#1c164e",
+          border: "1.5px solid #f1c61e",
+          borderRadius: 10,
+          cursor: busy ? "wait" : "pointer",
+          background: "#f1c61e",
+          boxShadow: "0 2px 6px rgba(241, 198, 30, 0.35)",
+          transition: "filter 0.1s ease, box-shadow 0.18s ease"
+        }}
+      >
+        Toggle BOGO
+      </button>
+
       <PackagePickerModal
         open={pickerMode !== null}
         mode={pickerMode}
@@ -347,7 +420,36 @@ export function PricingGrid(props: PricingGridProps) {
           }
         }}
       />
+
+      <BogoModal
+        open={bogoOpen}
+        packages={bogoPackages}
+        onCancel={() => setBogoOpen(false)}
+        onApply={({ selectedPkgs }) => {
+          setBogoOpen(false);
+          applySetBogo({ selectedPkgs });
+        }}
+      />
     </div>
+  );
+}
+
+function BogoBadge() {
+  return (
+    <span
+      style={{
+        display: "inline-block",
+        padding: "4px 12px",
+        borderRadius: 999,
+        fontSize: 11,
+        fontWeight: 700,
+        letterSpacing: "0.05em",
+        background: "#f1c61e",
+        color: "#1c164e"
+      }}
+    >
+      BOGO
+    </span>
   );
 }
 

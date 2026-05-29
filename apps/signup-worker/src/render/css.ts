@@ -171,6 +171,35 @@ export const FORM_CSS = `
   }
   .pricing { font-size: 14px; color: ${SPLASH_COLORS.grayDark}; margin-top: 6px; }
   .pricing .amount { color: ${SPLASH_COLORS.blue}; font-weight: 700; }
+  /* BOGO callout — visible 3-step schedule between .package-info and the form.
+     Yellow gradient + brand-navy text + heavy banner heading. Mirrors the
+     legacy worker's .bogo-callout block. */
+  .bogo-callout {
+    background: linear-gradient(135deg, #fef3c7 0%, #fde68a 100%);
+    border: 2px solid #f1c61e;
+    border-radius: 12px;
+    padding: 18px 22px;
+    margin: 0 24px 18px;
+    box-shadow: 0 4px 12px rgba(241, 198, 30, 0.25);
+  }
+  .bogo-banner {
+    font-size: 16px;
+    font-weight: 800;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: ${SPLASH_COLORS.navy};
+    text-align: center;
+    margin-bottom: 10px;
+  }
+  .bogo-steps {
+    margin: 0;
+    padding-left: 22px;
+    color: ${SPLASH_COLORS.navy};
+    font-size: 14px;
+    line-height: 1.55;
+  }
+  .bogo-steps li { margin-bottom: 4px; }
+  .bogo-steps strong { font-weight: 700; }
   form { padding: 24px; }
   .field { margin-bottom: 14px; }
   .field label {

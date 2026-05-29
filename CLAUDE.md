@@ -2453,6 +2453,58 @@ URL-based — service bindings don't apply to those.
   pattern is `user_permissions`-specific; future helpers touching
   the dc_role / dc_locations tables must not model their writes
   after `setRole`'s payload shape.
+- **BOGO** (Brief 142) - "Buy One Get One" schedule modifier on
+  signup-worker. Customer pays today's price (whatever the active
+  pricing mode resolves to — `full` / `same` / `flash5` / `flash2` /
+  `special`), month 2 is FREE, recurring billing at the `ongoing`
+  price starts on month 3 (today + 2 months). **BOGO is orthogonal
+  to pricing modes** — a package can be in `flash5` AND `bogo`
+  simultaneously, with `today_price = $5` and `recurring_start_date
+  = today + 2 months`. BOGO writes via
+  `POST /admin/api/locations/{loc}/set-bogo` NEVER touch the
+  `pricing` column; mode writes via `/set-mode` / `/flip` NEVER
+  touch the `bogo` column. **Persistence.** Single boolean
+  `pricing_simple.bogo` (defaults false); `pricing_simple_resolved`
+  view passes it through; per-signup snapshot captured in
+  `maxpass_signups.is_bogo` (boolean) and `maxpass_signups.recurring_start_date`
+  (date YYYY-MM-DD) — sourced from the customer-facing terms text
+  so the signed text and stored date never diverge. The
+  `recurring_start_date` ISO is built from LOCAL getFullYear/getMonth/getDate
+  via the `yyyymmdd` helper in `apps/signup-worker/src/signature/terms.ts`,
+  NOT `.toISOString()` — the Date objects represent ET wall-clock
+  and UTC conversion could shift the day across midnight for
+  late-evening submissions. **Render.** Yellow callout block
+  between `.package-info` and the form on `/signup/{loc}/{pkg}`
+  (3-step schedule: Today, second-month-FREE, recurring-from-month-3).
+  Hidden form inputs `is_bogo` (true/false) + `recurring_start_date`
+  (YYYY-MM-DD or empty) ride along to the submit handler. Terms
+  text swaps the FIRST recurring sentence to the 3-step variant;
+  rest of the body (cancellation, fleet exclusion, Promotional
+  Pricing + Presale Offer appendix) stays IDENTICAL across BOGO /
+  non-BOGO. Family Plan BOGO branch keeps the per-vehicle clause.
+  **Admin UI.** `/admin/pricing/{loc}` renders a yellow `BOGO` pill
+  next to the existing mode pill when `bogo === true`, plus a
+  full-width "Toggle BOGO" button below the 3×2 mode grid (NOT in
+  the mutually-exclusive mode group). Button opens `BogoModal` —
+  checkbox per package pre-checked from current state; zero-checked
+  apply is valid (means "turn BOGO off everywhere here"). POST body
+  = `{ pkgList: <checked> }`. **Cache.** Cached payload in
+  `apps/signup-worker/src/pricing/cache.ts` carries `bogo` per row;
+  `CACHE_VERSION` bumped 1 → 2 in Brief 142 so stale Workers Cache
+  entries get re-fetched cleanly post-deploy. Admin writes call
+  `invalidatePricingCache(locationCode)` after success (same
+  per-location key scheme as `setPricingMode`). **Audit.** Writes
+  one `sysadmin_audit_log` row per BOGO toggle with
+  `action = "pricing_set_bogo"` and `after->>'packages_on'` = the
+  per-location intent (the list of packages turned ON; empty array
+  = "BOGO off everywhere"). **Power Automate.** Confirmation email
+  branches on `is_bogo` — BOGO renders a yellow 3-step block; all
+  three BOGO email dates derive from `recurring_start_date` for
+  consistency with the signed `terms_text`. Customer-facing URL
+  contracts (`/signup/{loc}`, `/q/{loc}`, `/join/{loc}`) are
+  UNCHANGED — BOGO is additive within the existing URL contract.
+  BOGO renders only on the per-package signup form (`/signup/{loc}/{pkg}`),
+  NOT on the `/signup/{loc}` package-picker index.
 - **inline mode** - signup-worker's default `SIGNATURE_MODE`. Renders
   the form HTML and POSTs straight to `maxpass_signups`.
 - **jotform mode** - signup-worker's alternative `SIGNATURE_MODE`. 302

@@ -14,6 +14,7 @@
 //   GET  /admin/api/locations/{loc}/signups.csv?from=&to=     — CSV export (Brief 84)
 //   POST /admin/api/locations/{loc}/set-mode           — set mode (some/all pkgs)
 //   POST /admin/api/locations/{loc}/flip               — quick-flip full↔same
+//   POST /admin/api/locations/{loc}/set-bogo           — toggle BOGO on/off per pkg
 //   POST /admin/api/bulk-set-mode                      — super_admin only
 //
 //   All admin routes: authenticate + checkToolAccess(session, "pricing").
@@ -37,6 +38,7 @@ import {
   handleFlip,
   handleGetAdminLocation,
   handleListAdminLocations,
+  handleSetBogo,
   handleSetMode
 } from "./handlers/admin-pricing.js";
 import {
@@ -185,6 +187,7 @@ async function handleSignupForm(
  *   /admin/api/locations/{loc}/signups.csv?from=&to= (GET) — Brief 84
  *   /admin/api/locations/{loc}/set-mode           (POST)
  *   /admin/api/locations/{loc}/flip               (POST)
+ *   /admin/api/locations/{loc}/set-bogo           (POST) — Brief 142
  *   /admin/api/bulk-set-mode                      (POST)
  *
  * Auth + scope checks live INSIDE each handler — kept there for clear
@@ -229,6 +232,7 @@ async function dispatchAdminApi(
       if (segs.length === 3 && method === "POST") {
         if (segs[2] === "set-mode") return handleSetMode(request, env, loc);
         if (segs[2] === "flip") return handleFlip(request, env, loc);
+        if (segs[2] === "set-bogo") return handleSetBogo(request, env, loc);
       }
     }
   }

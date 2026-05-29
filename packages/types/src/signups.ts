@@ -36,6 +36,12 @@ export interface MaxpassSignupRow {
   city: string;
   region: string;
   email: string | null;
+  /** BOGO ("Buy One Get One") schedule modifier captured at signup time. */
+  is_bogo?: boolean | null;
+  /** Date (YYYY-MM-DD) when recurring billing begins. Equals `submitted_at + 2 months`
+   *  on BOGO signups; null on non-BOGO. Sourced from the customer-facing terms text
+   *  so signed text and stored date never diverge. */
+  recurring_start_date?: string | null;
   /** Set by Power Automate after the confirmation email goes out. */
   email_sent?: boolean | null;
   email_sent_at?: string | null;

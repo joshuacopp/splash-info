@@ -18,6 +18,7 @@
 // Writes (isOriginAllowed CSRF check at top):
 //   POST /admin/api/locations/{loc}/set-mode           — { mode, pkgList?, specialPrice? }
 //   POST /admin/api/locations/{loc}/flip               — quick-flip full↔same
+//   POST /admin/api/locations/{loc}/set-bogo           — { pkgList } (Brief 142)
 //   POST /admin/api/bulk-set-mode                      — super_admin only
 //                                                        { locationCodes[], mode, pkgList?, specialPrice? }
 //
@@ -55,6 +56,7 @@ import {
   listDistinctLocations,
   listLocationPkgs,
   logSysadminAudit,
+  setBogo,
   setPricingMode,
   type SupabaseClient
 } from "@splash/db-supabase";
@@ -323,6 +325,72 @@ export async function handleFlip(
   return json({ ok: true, mode: nextMode, packages, resolved });
 }
 
+interface SetBogoBody {
+  /** Packages to turn BOGO **on**. Every other package at the location gets
+   *  turned OFF — matches the legacy full-intent modal contract. Empty
+   *  array = "turn BOGO off everywhere at this location". */
+  pkgList: string[];
+}
+
+/**
+ * POST /admin/api/locations/{loc}/set-bogo
+ *
+ * Body:
+ *   { pkgList: string[] }
+ *
+ * BOGO is a schedule modifier and orthogonal to `pricing`. Never touches
+ * the pricing column. Submits the full intent — packages listed get BOGO
+ * on, the rest at this location get BOGO off. Zero in the list is valid.
+ *
+ * Cache: invalidatePricingCache(locationCode) on success.
+ * Audit: logPricingAudit with action="pricing_set_bogo" on success.
+ * Refresh: returns both `packages` and `resolved` so the UI updates without
+ *   follow-up GETs.
+ */
+export async function handleSetBogo(
+  request: Request,
+  env: Env,
+  locationCode: string
+): Promise<Response> {
+  if (!isOriginAllowed(request)) return jsonError(403, "bad origin");
+
+  const gate = await adminGate(request, env);
+  if (!gate.ok) return gate.response;
+  if (!userCanAccessLocation(gate.session, locationCode)) {
+    return jsonError(403, "forbidden");
+  }
+
+  let body: SetBogoBody;
+  try {
+    body = (await request.json()) as SetBogoBody;
+  } catch {
+    return jsonError(400, "Invalid JSON");
+  }
+  if (!Array.isArray(body.pkgList)) {
+    return jsonError(400, "pkgList must be an array");
+  }
+  const onPkgs: string[] = body.pkgList.filter(
+    (p): p is string => typeof p === "string" && p.length > 0
+  );
+
+  const loc = locationCode.toLowerCase();
+  const ok = await setBogo(gate.sb, { locationCode: loc, onPkgs });
+  if (!ok) return jsonError(500, "BOGO update failed");
+
+  await invalidatePricingCache(locationCode);
+  const [packages, resolved] = await Promise.all([
+    listLocationPkgs(gate.sb, [loc]),
+    fetchPricingResolvedByLocation(gate.sb, loc)
+  ]);
+  await logPricingAudit(gate.sb, gate.session, {
+    action: "pricing_set_bogo",
+    target_id: loc,
+    after: { packages_on: onPkgs }
+  });
+
+  return json({ ok: true, packages, resolved });
+}
+
 interface BulkSetModeBody {
   locationCodes: string[];
   mode: PricingMode;
@@ -437,6 +505,13 @@ interface PricingAuditAfter {
   special_price?: number;
 }
 
+/** BOGO-audit detail shape — separate from mode-change audits because BOGO
+ *  is orthogonal to `pricing` and never carries a mode. */
+interface BogoAuditAfter {
+  /** Packages with BOGO toggled ON post-write. Empty = BOGO off everywhere. */
+  packages_on: string[];
+}
+
 /** Pricing-audit `before` shape — only "mode" today, but jsonb in Postgres. */
 interface PricingAuditBefore {
   mode: string | null;
@@ -470,10 +545,10 @@ async function logPricingAudit(
   client: SupabaseClient,
   session: Session,
   args: {
-    action: "pricing_set_mode" | "pricing_flip" | "pricing_bulk_set_mode";
+    action: "pricing_set_mode" | "pricing_flip" | "pricing_bulk_set_mode" | "pricing_set_bogo";
     target_id: string;
     before?: PricingAuditBefore;
-    after: PricingAuditAfter;
+    after: PricingAuditAfter | BogoAuditAfter;
   }
 ): Promise<void> {
   await logSysadminAudit(client, {

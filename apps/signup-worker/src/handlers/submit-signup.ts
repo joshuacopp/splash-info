@@ -41,6 +41,11 @@ interface SubmitBody {
   user_confirmed?: boolean;
   /** Set by the form's MonitorModal "This is My Phone Number" handler. */
   monitor_acknowledged?: boolean;
+  /** BOGO ("Buy One Get One") schedule modifier captured at signup time.
+   *  Defensive default = false when absent (older clients). */
+  is_bogo?: boolean;
+  /** YYYY-MM-DD date recurring billing starts. Null on non-BOGO. */
+  recurring_start_date?: string | null;
 }
 
 
@@ -299,7 +304,12 @@ export async function handleSignupSubmission(
     country: ctx.country,
     city: ctx.city,
     region: ctx.region,
-    email: body.email ?? null
+    email: body.email ?? null,
+    // BOGO fields — defensive defaults so non-BOGO signups and older clients
+    // (which don't post these fields) land as is_bogo=false / recurring_start_date=null
+    // without breaking the insert.
+    is_bogo: body.is_bogo === true,
+    recurring_start_date: body.recurring_start_date || null
   };
 
   try {

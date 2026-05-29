@@ -51,6 +51,11 @@ export interface PricingSimpleRow {
   am_email: string | null;
   /** Email of regional manager. */
   rm_email: string | null;
+  /** BOGO ("Buy One Get One") schedule modifier. Orthogonal to `pricing` —
+   *  customer pays today's price, month 2 is free, recurring starts month 3.
+   *  Optional in the type so unaware callers still typecheck; the column
+   *  defaults to false in Supabase so rows always carry a boolean. */
+  bogo?: boolean;
 }
 
 /**
@@ -72,6 +77,10 @@ export interface PricingSimpleResolvedRow {
   ongoing: number | null;
   /** Sort order for the package picker. */
   sort: number | null;
+  /** BOGO schedule modifier. Same column as on pricing_simple — the view
+   *  passes it through unchanged. Orthogonal to `today`/`ongoing` (BOGO
+   *  stacks on any pricing mode). Optional for unaware callers. */
+  bogo?: boolean;
 }
 
 /**

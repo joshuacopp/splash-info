@@ -19,7 +19,7 @@ import type {
  * Reads
  * ============================================================ */
 
-const RESOLVED_COLS = "location_pretty,location_code,pkg,pretty_pkg,today,ongoing,sort";
+const RESOLVED_COLS = "location_pretty,location_code,pkg,pretty_pkg,today,ongoing,sort,bogo";
 
 /**
  * Read the entire `pricing_simple_resolved` view. Roughly 70 locations × N
@@ -87,7 +87,7 @@ export async function listLocationPkgs(
   if (locationCodes.length === 0) return [];
   const { data, error } = await client
     .from("pricing_simple")
-    .select("location_code,location_pretty,pkg,pricing,special,site_email,am_email,rm_email,updated_at")
+    .select("location_code,location_pretty,pkg,pricing,special,site_email,am_email,rm_email,updated_at,bogo")
     .in("location_code", locationCodes)
     .order("location_pretty", { ascending: true })
     .order("pkg", { ascending: true });
@@ -229,6 +229,57 @@ export async function setPricingMode(
   if (error) {
     console.error("setPricingMode failed:", error);
     return false;
+  }
+  return true;
+}
+
+/**
+ * BOGO ("Buy One Get One") writer — orthogonal to `pricing`. Never touches
+ * the `pricing` column. The admin modal submits the full intent (checked vs
+ * unchecked across every package at the location), so this is applied as
+ * two PATCHes: clear all → set the chosen subset. End state matches the
+ * modal checkboxes exactly.
+ *
+ * Source: legacy/signup_worker_with_BOGO.js setBogo.
+ *
+ * Zero in `onPkgs` is valid — it means "turn BOGO off everywhere at this
+ * location". Pass 2 is skipped in that case.
+ *
+ * NOTE: cache invalidation is the caller's job — mirrors setPricingMode.
+ */
+export async function setBogo(
+  client: SupabaseClient,
+  args: {
+    locationCode: string;
+    onPkgs: readonly string[];
+  }
+): Promise<boolean> {
+  const safeOn = args.onPkgs.filter(
+    (p): p is string => typeof p === "string" && p.length > 0
+  );
+  const nowIso = new Date().toISOString();
+
+  // Pass 1: clear bogo across every package at this location.
+  const clearRes = await client
+    .from("pricing_simple")
+    .update({ bogo: false, updated_at: nowIso })
+    .eq("location_code", args.locationCode);
+  if (clearRes.error) {
+    console.error("setBogo clear failed:", clearRes.error);
+    return false;
+  }
+
+  // Pass 2: set bogo=true on the chosen subset. Skip when nothing was checked.
+  if (safeOn.length > 0) {
+    const setRes = await client
+      .from("pricing_simple")
+      .update({ bogo: true, updated_at: nowIso })
+      .eq("location_code", args.locationCode)
+      .in("pkg", safeOn as string[]);
+    if (setRes.error) {
+      console.error("setBogo set failed:", setRes.error);
+      return false;
+    }
   }
   return true;
 }

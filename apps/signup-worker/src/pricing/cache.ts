@@ -36,8 +36,8 @@ import { fetchPricingResolvedByLocation } from "@splash/db-supabase";
 import type { SupabaseClient } from "@splash/db-supabase";
 import type { PricingSimpleResolvedRow } from "@splash/types/pricing";
 
-/** Bump only when the cached payload shape changes. */
-const CACHE_VERSION = 1;
+/** Bump only when the cached payload shape changes. Brief 142 added `bogo`. */
+const CACHE_VERSION = 2;
 const FRESH_TTL_SECONDS = 5 * 60; // 5 min
 const STALE_TTL_SECONDS = 24 * 60 * 60; // 24 h
 

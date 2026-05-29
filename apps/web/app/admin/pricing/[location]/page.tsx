@@ -24,6 +24,7 @@ interface PricingSimpleRow {
   site_email: string | null;
   am_email: string | null;
   rm_email: string | null;
+  bogo?: boolean;
 }
 
 interface PricingResolvedRow {
@@ -34,6 +35,7 @@ interface PricingResolvedRow {
   today: number | null;
   ongoing: number | null;
   sort: number | null;
+  bogo?: boolean;
 }
 
 interface LocationDetailResponse {

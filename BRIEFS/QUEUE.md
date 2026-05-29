@@ -124,3 +124,5 @@
 
 
 
+
+# brief-142-signup-worker-bogo-parity.md  (completed 2026-05-29)
