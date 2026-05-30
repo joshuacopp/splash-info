@@ -664,6 +664,69 @@ URL-based — service bindings don't apply to those.
 
 ## Glossary
 
+- **claim photo upload pipeline** (Brief 146) - The out-of-band photo
+  upload + JSON-submit flow for the public customer claim form at
+  `/claims/{site}`. Closes the cellular-upload failure mode where
+  3-8 MB phone-camera JPEGs bundled into a single multipart submit
+  outlasted carrier idle timeouts. Three components: (1) **Client
+  resize.** `apps/damage-worker/src/render/claim-form.ts resizeImage`
+  decodes via `createImageBitmap` (EXIF orientation honored natively
+  on iOS Safari 14+ + modern Chrome), scales to 2048 px long edge,
+  re-encodes JPEG q=0.90 via `<canvas>.toBlob`. Files ≤2048 px skip
+  resize; HEIC/HEIF + decode failures fall through to upload-as-is.
+  Typical 4032×3024 phone photo drops from 3-8 MB raw to 200-800 KB.
+  (2) **OOB upload endpoint.** `POST /claims-api/upload` (handler in
+  `apps/damage-worker/src/uploads.ts`, public/same posture as
+  submit-claim) takes multipart with `pending_submission_id` (UUID v4,
+  same value as the Brief 138/139 `idempotency_key` — one key serves
+  both purposes), optional `field` discriminator, and a single `file`
+  part. Limits: 8 MB hard cap (413), `file-type` sniff first ~4 KB
+  rejecting non-image with 415, accepts image/jpeg|png|heic|heif (+
+  -sequence). R2 key shape: `claim-uploads/{pendingSubmissionId}/
+  {nanoid}.{ext}` where nanoid is 12 chars URL-safe from
+  `crypto.getRandomValues`. Response `{ok, r2_key, mime, size_bytes,
+  original_filename}`. CSRF via `isOriginAllowed`. Three transparent
+  auto-retries client-side on 500ms/1500ms/3500ms backoff; red retry
+  icon on exhaustion. (3) **JSON submit.** `POST /claims-api/submit-
+  claim` dispatches on Content-Type: `application/json` reads
+  `photo_refs: { fourCornersPhotos: [{r2_key, original_filename}],
+  vinPhoto: [...], damagePhotos: [...], platePhoto: [...] }`, HEADs
+  each ref against R2 to capture authoritative size + mime, rejects
+  missing with 422 `photo_not_found`; legacy multipart path preserved
+  for ~14-day back-compat window with `[claim.submit] legacy multipart
+  path used` log on every hit. Defensive: only r2_keys with the
+  `claim-uploads/` prefix are accepted as photo refs. **R2 key
+  storage policy.** Upload keys are stored verbatim on `claim_photos`
+  rows (Brief 92 pattern); rewrite to `claims/{claim_id}/...` after
+  insert is a v2 candidate. **Photo serve.** The existing
+  `GET /claims-api/photo/{rest}` route detects the `claim-uploads/`
+  prefix and routes to `serveR2KeyDirect` (no `claims/` prepend);
+  legacy `claims/...` keys continue through `serveClaimPhoto`.
+  apps/web's `damagePhotoUrl` continues to work for both because the
+  strip-`claims/`-prefix logic is a no-op on `claim-uploads/...`
+  keys. **Brief 136 draft extension.** The `claims.draft.{location_
+  code}` localStorage payload carries `photoRefs` alongside `values`
+  + `savedAt` + `idempotencyKey`; only entries with `r2_key` set are
+  persisted. On Resume the client repopulates photoRefs and repaints
+  each photo section with placeholder "✓ Uploaded" tiles (the File
+  objects don't survive JSON.stringify — Resumed customers wanting to
+  swap a photo must Remove + re-add). **Daily R2 orphan sweep.**
+  `runClaimUploadsCleanup` in `apps/damage-worker/src/uploads.ts`
+  fires from the existing 13:00 UTC cron alongside the Brief 65 daily
+  summary: lists `claim-uploads/`, groups by pendingSubmissionId,
+  joins against `claims.idempotency_key`, deletes objects older than
+  24h with no matching row. Hard cap 50 pages × 1000 = 50K/run.
+  Mirrors Brief 97's forms-worker pattern. Tolerates the
+  `idempotency_key` column being absent (logs and exits cleanly).
+  **Submit button gating.** The submit button stays `disabled` until
+  every visible photo entry carries an `r2_key` — closures track each
+  entry by reference rather than index so concurrent uploads finishing
+  around a customer-removed photo don't write to the wrong slot
+  (index-shift bug class). **Back-compat removal cadence.** Legacy
+  multipart `/claims-api/submit-claim` path stays full-fat until the
+  operator observes zero `[claim.submit] legacy multipart path used`
+  hits for 14 days, then removable in a follow-up brief.
+
 - **jotform-worker** (Brief 107) - JotForm Enterprise submission ingest
   + admin read API. The ninth worker in the monorepo (JS not TS;
   mirrors fleet-inquiry-worker shape per Brief 81). Worker name on

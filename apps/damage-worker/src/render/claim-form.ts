@@ -268,6 +268,32 @@ const SHARED_STYLES = `
     display: inline-block; margin-left: 6px;
   }
 
+  /* Brief 146 — per-photo upload state badges */
+  .photo-thumb .photo-state {
+    position: absolute; top: 4px; left: 4px;
+    background: rgba(15, 23, 42, 0.78); color: white;
+    padding: 2px 8px; border-radius: 999px;
+    font-size: 11px; font-weight: 700; letter-spacing: 0.04em;
+    text-transform: uppercase;
+  }
+  .photo-thumb .photo-state.state-ok { background: rgba(5, 150, 105, 0.85); }
+  .photo-thumb .photo-state.state-uploading { background: rgba(30, 58, 138, 0.85); }
+  .photo-thumb .photo-state.state-failed { background: rgba(220, 38, 38, 0.9); }
+  .photo-thumb .photo-retry {
+    display: block; text-align: center; padding: 6px 4px;
+    font-size: 12px; font-weight: 700; color: white;
+    background: #dc2626; text-decoration: none; cursor: pointer;
+  }
+  .photo-thumb .photo-retry:hover { background: #b91c1c; }
+  .photo-thumb.is-placeholder {
+    background: #eff6ff; min-height: 110px;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .photo-thumb.is-placeholder .placeholder-text {
+    color: #1e3a8a; font-weight: 700; font-size: 13px; text-align: center;
+    padding: 8px;
+  }
+
   /* Brief 136 — localStorage autosave resume banner (mirrors Brief 122
      palette on the splash-forms public renderer) */
   .resume-banner {
@@ -340,7 +366,7 @@ export function renderClaimForm(args: RenderClaimFormArgs): string {
         <p>Vehicle Issue Report</p>
       </div>
 
-      <form id="claimForm" action="/claims-api/submit-claim" method="POST" enctype="multipart/form-data" novalidate>
+      <form id="claimForm" action="/claims-api/submit-claim" method="POST" novalidate>
         ${errorBanner}
         <div class="banner-error" role="alert" id="submitError" hidden></div>
         <div class="banner-offline" role="status" aria-live="polite" id="offlineBanner" hidden>You're offline — your form is saved on this device. Submit will retry automatically when the connection comes back.</div>
@@ -618,7 +644,23 @@ export function renderClaimForm(args: RenderClaimFormArgs): string {
 // short-lived token or similar).
 const FORM_SCRIPT = `(function () {
   var STAFF_PIN = '1981';
+  // Brief 146 — photoRefs is the authoritative submit payload (R2 keys for
+  // OOB-uploaded photos). photos[] still holds File handles for the in-
+  // session preview thumbnail and (when needed) retry-upload bytes, but the
+  // submit POST no longer carries the File bytes. photoRefs entries align
+  // 1:1 with photos[] by index.
+  var FIELDS = ['fourCornersPhotos', 'vinPhoto', 'damagePhotos', 'platePhoto'];
   var photos = {
+    fourCornersPhotos: [],
+    vinPhoto: [],
+    damagePhotos: [],
+    platePhoto: []
+  };
+  // Each entry: { r2_key, mime, size_bytes, original_filename } OR
+  // { pending: true, retryCount: number, error: msg } during upload OR
+  // { failed: true, retryCount: number, error: msg } after exhausted retries.
+  // The submit-eligibility check requires every entry to have r2_key set.
+  var photoRefs = {
     fourCornersPhotos: [],
     vinPhoto: [],
     damagePhotos: [],
@@ -769,7 +811,127 @@ const FORM_SCRIPT = `(function () {
     });
   }
 
-  // ---- Photo widgets -----------------------------------------------------
+  // ---- Photo widgets (Brief 146 — OOB upload + client-side resize) -------
+  //
+  // On file pick:
+  //   1. Resize the image to a 2048 px long edge at JPEG q=0.90 via
+  //      createImageBitmap → <canvas> → canvas.toBlob. createImageBitmap
+  //      honors EXIF orientation natively on iOS Safari 14+ and modern
+  //      Chrome; on older Android we accept the small upright-rotation
+  //      risk (the resized JPEG still embeds the original orientation
+  //      metadata). Images already ≤ 2048 px long edge skip resize.
+  //   2. POST the resized blob to /claims-api/upload with the per-form
+  //      pending_submission_id (== the idempotency key). Worker returns
+  //      { ok, r2_key, mime, size_bytes, original_filename }.
+  //   3. On success, store the r2_key in photoRefs[field]; render a
+  //      thumbnail with a green ✓ badge.
+  //   4. On failure (network, non-2xx), three transparent auto-retries
+  //      with 500ms / 1500ms / 3500ms backoff, then surface a red retry
+  //      icon. Manual retry click re-fires uploadOne with another bounded
+  //      retry budget.
+  //   5. Submit button disables until every visible photo entry has an
+  //      r2_key (no pending or failed uploads).
+  //
+  // Removed photos leave R2 orphans — the daily cleanup cron sweeps
+  // claim-uploads/{pendingId}/... entries with no matching claim row,
+  // so client-side delete is a no-op on R2.
+
+  function fileExt(name) {
+    var dot = name.lastIndexOf('.');
+    return dot >= 0 ? name.slice(dot + 1).toLowerCase() : '';
+  }
+
+  // Resize via canvas. Returns a Blob (JPEG q=0.90) when scaling was
+  // applied, the original File when no scaling was needed, or null if
+  // anything in the pipeline failed (caller falls through to upload the
+  // original File).
+  function resizeImage(file) {
+    var MAX_EDGE = 2048;
+    var JPEG_QUALITY = 0.90;
+    // HEIC isn't decodable by createImageBitmap in most browsers — punt
+    // straight to upload-as-is. Worker accepts heic/heif passthrough.
+    var name = (file.name || '').toLowerCase();
+    if (name.indexOf('.heic') >= 0 || name.indexOf('.heif') >= 0 ||
+        (file.type || '').indexOf('heic') >= 0 ||
+        (file.type || '').indexOf('heif') >= 0) {
+      return Promise.resolve(file);
+    }
+    if (typeof createImageBitmap !== 'function') return Promise.resolve(file);
+    return createImageBitmap(file).then(function (bmp) {
+      var w = bmp.width;
+      var h = bmp.height;
+      var longEdge = Math.max(w, h);
+      if (longEdge <= MAX_EDGE) {
+        try { bmp.close && bmp.close(); } catch (_) {}
+        return file;
+      }
+      var scale = MAX_EDGE / longEdge;
+      var tw = Math.round(w * scale);
+      var th = Math.round(h * scale);
+      var canvas = document.createElement('canvas');
+      canvas.width = tw;
+      canvas.height = th;
+      var ctx = canvas.getContext('2d');
+      ctx.drawImage(bmp, 0, 0, tw, th);
+      try { bmp.close && bmp.close(); } catch (_) {}
+      return new Promise(function (resolve) {
+        canvas.toBlob(function (blob) {
+          if (!blob) {
+            resolve(file); // fall through to original
+            return;
+          }
+          // Stamp a synthetic name so the worker has something to log.
+          try {
+            var renamed = new File([blob], (file.name || 'photo') + '.jpg',
+              { type: 'image/jpeg' });
+            resolve(renamed);
+          } catch (_) {
+            resolve(blob);
+          }
+        }, 'image/jpeg', JPEG_QUALITY);
+      });
+    }).catch(function (_err) {
+      // createImageBitmap can throw on weird/corrupt inputs — upload as-is.
+      return file;
+    });
+  }
+
+  var BACKOFF_MS = [500, 1500, 3500];
+  var MAX_AUTO_RETRIES = 3;
+
+  function uploadOne(field, blob) {
+    var fd = new FormData();
+    fd.append('pending_submission_id', currentPendingId());
+    fd.append('field', field);
+    fd.append('file', blob, (blob && blob.name) || 'photo.jpg');
+    var controller = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+    var timer = setTimeout(function () {
+      if (controller) controller.abort();
+    }, 60000);
+    var opts = { method: 'POST', body: fd, headers: { 'Accept': 'application/json' } };
+    if (controller) opts.signal = controller.signal;
+    return fetch('/claims-api/upload', opts).then(function (r) {
+      clearTimeout(timer);
+      if (!r.ok) {
+        return r.text().then(function (t) {
+          var parsed = null;
+          try { parsed = JSON.parse(t); } catch (_) {}
+          var msg = (parsed && parsed.error) || ('upload failed (' + r.status + ')');
+          throw new Error(msg);
+        });
+      }
+      return r.json();
+    }, function (err) {
+      clearTimeout(timer);
+      throw err;
+    });
+  }
+
+  function currentPendingId() {
+    // Defined after this section; reads the closure variable below.
+    return submissionId;
+  }
+
   function setupPhotoSection(section) {
     var field = section.getAttribute('data-field');
     var multi = section.getAttribute('data-multi') === 'true';
@@ -789,32 +951,105 @@ const FORM_SCRIPT = `(function () {
         }
       );
       thumbsEl.innerHTML = '';
-      photos[field].forEach(function (file, idx) {
-        var url = URL.createObjectURL(file);
-        thumbUrls.push(url);
+      var entries = photoRefs[field];
+      entries.forEach(function (entry, idx) {
         var tile = document.createElement('div');
         tile.className = 'photo-thumb';
-        var img = document.createElement('img');
-        img.src = url;
-        img.alt = '';
-        img.setAttribute('data-blob-url', url);
-        var rm = document.createElement('a');
-        rm.className = 'photo-remove';
-        rm.href = '#';
-        rm.textContent = 'Remove';
-        rm.addEventListener('click', function (e) {
-          e.preventDefault();
-          photos[field].splice(idx, 1);
-          renderThumbs();
-          updateBtnLabel();
-        });
-        tile.appendChild(img);
-        tile.appendChild(rm);
+        // Thumbnail. Prefer the in-session File from photos[field][idx]; on
+        // a Resume restore where photos[] is empty but photoRefs has r2_keys,
+        // show a placeholder tile.
+        var file = photos[field][idx] || null;
+        if (file && typeof URL.createObjectURL === 'function') {
+          var url = URL.createObjectURL(file);
+          thumbUrls.push(url);
+          var img = document.createElement('img');
+          img.src = url;
+          img.alt = '';
+          img.setAttribute('data-blob-url', url);
+          tile.appendChild(img);
+        } else {
+          tile.classList.add('is-placeholder');
+          var ph = document.createElement('div');
+          ph.className = 'placeholder-text';
+          ph.textContent = entry && entry.r2_key
+            ? '✓ Uploaded'
+            : (entry && entry.failed ? 'Upload failed' : 'Uploading…');
+          tile.appendChild(ph);
+        }
+        // State badge.
+        var state = document.createElement('span');
+        state.className = 'photo-state';
+        if (entry && entry.r2_key) {
+          state.classList.add('state-ok');
+          state.textContent = '✓';
+        } else if (entry && entry.failed) {
+          state.classList.add('state-failed');
+          state.textContent = '!';
+        } else {
+          state.classList.add('state-uploading');
+          state.textContent = '…';
+        }
+        tile.appendChild(state);
+        // Remove or retry action.
+        if (entry && entry.failed) {
+          var retry = document.createElement('a');
+          retry.className = 'photo-retry';
+          retry.href = '#';
+          retry.textContent = 'Retry';
+          (function (capturedIdx, capturedEntry) {
+            retry.addEventListener('click', function (e) {
+              e.preventDefault();
+              // Find the current idx — array may have shifted since render.
+              var currentIdx = photoRefs[field].indexOf(capturedEntry);
+              if (currentIdx < 0) return;
+              var f = photos[field][currentIdx];
+              if (!f) {
+                // No File in session (post-Resume retry on a previously-failed
+                // upload). Force the customer to re-add the photo.
+                photos[field].splice(currentIdx, 1);
+                photoRefs[field].splice(currentIdx, 1);
+                renderThumbs();
+                updateBtnLabel();
+                updateSubmitGate();
+                return;
+              }
+              capturedEntry.pending = true;
+              capturedEntry.failed = false;
+              capturedEntry.retryCount = 0;
+              capturedEntry.error = undefined;
+              renderThumbs();
+              updateSubmitGate();
+              uploadWithRetries(field, capturedEntry, f);
+            });
+          })(idx, entry);
+          tile.appendChild(retry);
+        } else {
+          var rm = document.createElement('a');
+          rm.className = 'photo-remove';
+          rm.href = '#';
+          rm.textContent = 'Remove';
+          (function (capturedEntry) {
+            rm.addEventListener('click', function (e) {
+              e.preventDefault();
+              // Find current idx — earlier splices may have shifted it.
+              var currentIdx = photoRefs[field].indexOf(capturedEntry);
+              if (currentIdx < 0) return;
+              photos[field].splice(currentIdx, 1);
+              photoRefs[field].splice(currentIdx, 1);
+              renderThumbs();
+              updateBtnLabel();
+              updateSubmitGate();
+              // Persist the updated photoRefs into the draft.
+              scheduleSave();
+            });
+          })(entry);
+          tile.appendChild(rm);
+        }
         thumbsEl.appendChild(tile);
       });
     }
     function updateBtnLabel() {
-      if (photos[field].length === 0) {
+      if (photoRefs[field].length === 0) {
         btn.textContent = '+ Add photo';
       } else if (multi) {
         btn.textContent = '+ Add another photo';
@@ -829,17 +1064,120 @@ const FORM_SCRIPT = `(function () {
     input.addEventListener('change', function (e) {
       var f = e.target.files && e.target.files[0];
       if (!f) return;
+      var entry = { pending: true, retryCount: 0 };
       if (multi) {
         photos[field].push(f);
+        photoRefs[field].push(entry);
       } else {
+        // Single-photo widget — replacing wipes the existing entry and
+        // its uploaded ref (orphan cleanup sweeps R2 later).
         photos[field] = [f];
+        photoRefs[field] = [entry];
       }
       e.target.value = '';
       renderThumbs();
       updateBtnLabel();
+      updateSubmitGate();
+      uploadWithRetries(field, entry, f);
     });
+
+    // Expose renderThumbs/updateBtnLabel via section so restoreFromDraft
+    // can repaint after Resume.
+    section.__renderThumbs = renderThumbs;
+    section.__updateBtnLabel = updateBtnLabel;
     updateBtnLabel();
   }
+
+  function uploadWithRetries(field, entry, file) {
+    // Resize first, then upload. Resize failure falls through to upload
+    // the original file (resizeImage handles its own errors).
+    resizeImage(file).then(function (blob) {
+      attemptUpload(field, entry, blob, 0);
+    });
+  }
+  // Closure-captured entry reference is the authoritative state owner.
+  // When the customer removes a photo the entry gets spliced out of
+  // photoRefs[field] but the in-flight handler still holds a reference
+  // to it; we mutate the orphaned object harmlessly and skip the
+  // repaint when entry is no longer in the array. Avoids index-shift
+  // bugs that an idx-based scheme would inherit from parallel uploads.
+  function entryStillTracked(field, entry) {
+    var arr = photoRefs[field];
+    for (var i = 0; i < arr.length; i++) {
+      if (arr[i] === entry) return true;
+    }
+    return false;
+  }
+  function attemptUpload(field, entry, blob, attempt) {
+    if (!entry.pending) return;
+    if (!entryStillTracked(field, entry)) return;
+    uploadOne(field, blob).then(function (out) {
+      if (!entryStillTracked(field, entry)) return;
+      if (out && out.ok && out.r2_key) {
+        entry.pending = false;
+        entry.r2_key = out.r2_key;
+        entry.mime = out.mime;
+        entry.size_bytes = out.size_bytes;
+        entry.original_filename = out.original_filename;
+        repaintSection(field);
+        updateSubmitGate();
+        scheduleSave();
+      } else {
+        markFailedOrRetry(field, entry, blob, attempt, 'upload returned ok=false');
+      }
+    }).catch(function (err) {
+      markFailedOrRetry(field, entry, blob, attempt, err && err.message || 'upload error');
+    });
+  }
+  function markFailedOrRetry(field, entry, blob, attempt, errMsg) {
+    if (!entry.pending) return;
+    if (!entryStillTracked(field, entry)) return;
+    var nextAttempt = attempt + 1;
+    if (nextAttempt < MAX_AUTO_RETRIES) {
+      var delay = BACKOFF_MS[nextAttempt - 1] || BACKOFF_MS[BACKOFF_MS.length - 1];
+      entry.retryCount = nextAttempt;
+      setTimeout(function () { attemptUpload(field, entry, blob, nextAttempt); }, delay);
+      return;
+    }
+    entry.pending = false;
+    entry.failed = true;
+    entry.retryCount = nextAttempt;
+    entry.error = errMsg;
+    repaintSection(field);
+    updateSubmitGate();
+  }
+  function repaintSection(field) {
+    var section = document.querySelector('[data-photo-section][data-field="' + field + '"]');
+    if (section && section.__renderThumbs) {
+      section.__renderThumbs();
+      if (section.__updateBtnLabel) section.__updateBtnLabel();
+    }
+  }
+  // Submit button is disabled until every visible photo entry has r2_key.
+  // Also disabled when no photos at all (validateBeforeSubmit catches it,
+  // but disabling avoids the customer scrolling back to see the banner).
+  function allPhotosReady() {
+    var anyPending = false;
+    for (var i = 0; i < FIELDS.length; i++) {
+      var entries = photoRefs[FIELDS[i]];
+      for (var j = 0; j < entries.length; j++) {
+        var e = entries[j];
+        if (!e || !e.r2_key) { anyPending = true; break; }
+      }
+      if (anyPending) break;
+    }
+    return !anyPending;
+  }
+  function updateSubmitGate() {
+    if (!submitBtn) return;
+    submitBtn.disabled = !allPhotosReady();
+    if (submitBtn.disabled) {
+      submitBtn.title = 'Waiting for photo uploads to finish…';
+    } else {
+      submitBtn.removeAttribute('title');
+    }
+  }
+
   Array.prototype.forEach.call(
     document.querySelectorAll('[data-photo-section]'),
     setupPhotoSection
@@ -890,10 +1228,43 @@ const FORM_SCRIPT = `(function () {
       var idemKey = (typeof parsed.idempotencyKey === 'string' && idemRe.test(parsed.idempotencyKey))
         ? parsed.idempotencyKey
         : null;
+      // Brief 146: surface persisted photoRefs. Drafts saved by pre-
+      // Brief-146 builds won't have the field; init falls through to
+      // empty arrays per category.
+      var photoRefsRestored = null;
+      if (parsed.photoRefs && typeof parsed.photoRefs === 'object') {
+        photoRefsRestored = {};
+        for (var k = 0; k < FIELDS.length; k++) {
+          var fld = FIELDS[k];
+          var arr = parsed.photoRefs[fld];
+          if (Array.isArray(arr)) {
+            // Filter to entries with valid r2_key shape — defense against
+            // tampered localStorage.
+            var filtered = [];
+            for (var m = 0; m < arr.length; m++) {
+              var ent = arr[m];
+              if (ent && typeof ent === 'object' &&
+                  typeof ent.r2_key === 'string' &&
+                  ent.r2_key.indexOf('claim-uploads/') === 0) {
+                filtered.push({
+                  r2_key: ent.r2_key,
+                  mime: typeof ent.mime === 'string' ? ent.mime : 'image/jpeg',
+                  size_bytes: typeof ent.size_bytes === 'number' ? ent.size_bytes : 0,
+                  original_filename: typeof ent.original_filename === 'string' ? ent.original_filename : ''
+                });
+              }
+            }
+            photoRefsRestored[fld] = filtered;
+          } else {
+            photoRefsRestored[fld] = [];
+          }
+        }
+      }
       return {
         values: parsed.values,
         savedAt: parsed.savedAt,
-        idempotencyKey: idemKey
+        idempotencyKey: idemKey,
+        photoRefs: photoRefsRestored
       };
     } catch (_) { return null; }
   }
@@ -903,10 +1274,33 @@ const FORM_SCRIPT = `(function () {
       // Brief 139: persist the current submissionId alongside the typed
       // values so a tab-close + reload + Resume reuses the same key,
       // letting the worker dedup any duplicate-submit-after-lost-response.
+      // Brief 146: persist the photoRefs map so a Resume picks up the
+      // already-uploaded photos without re-prompting the customer. Only
+      // successfully-uploaded entries (r2_key set) are stored — pending /
+      // failed entries die with the page session.
+      var photoRefsPersist = {};
+      for (var k = 0; k < FIELDS.length; k++) {
+        var fld = FIELDS[k];
+        var arr = photoRefs[fld];
+        var keep = [];
+        for (var m = 0; m < arr.length; m++) {
+          var ent = arr[m];
+          if (ent && ent.r2_key) {
+            keep.push({
+              r2_key: ent.r2_key,
+              mime: ent.mime,
+              size_bytes: ent.size_bytes,
+              original_filename: ent.original_filename
+            });
+          }
+        }
+        photoRefsPersist[fld] = keep;
+      }
       window.localStorage.setItem(draftKey, JSON.stringify({
         values: values,
         savedAt: Date.now(),
-        idempotencyKey: submissionId
+        idempotencyKey: submissionId,
+        photoRefs: photoRefsPersist
       }));
     } catch (_) {
       // Quota exceeded, storage disabled, etc. — degrade silently.
@@ -1060,6 +1454,22 @@ const FORM_SCRIPT = `(function () {
     resumeBtn.textContent = 'Resume';
     resumeBtn.addEventListener('click', function () {
       restoreForm(draft.values);
+      // Brief 146: restore the persisted photoRefs and repaint every photo
+      // section with placeholder tiles for each. photos[] (File handles)
+      // stays empty — customers re-add the File only if they want to
+      // change a photo; the r2_key alone is sufficient for submit.
+      if (draft.photoRefs) {
+        for (var k = 0; k < FIELDS.length; k++) {
+          var fld = FIELDS[k];
+          var restoredArr = draft.photoRefs[fld] || [];
+          photoRefs[fld] = restoredArr.slice();
+          // Pad photos[] with nulls so indexes line up; renderThumbs
+          // tolerates null and falls back to a placeholder tile.
+          photos[fld] = new Array(restoredArr.length);
+          repaintSection(fld);
+        }
+        updateSubmitGate();
+      }
       removeBanner();
     });
     var startOverBtn = document.createElement('button');
@@ -1072,6 +1482,15 @@ const FORM_SCRIPT = `(function () {
       // attempt is treated as a genuinely new claim, not a retry of the
       // discarded draft's prior key.
       submissionId = generateSubmissionId();
+      // Brief 146: also wipe any photoRefs hanging around in memory. The
+      // associated R2 objects (under the prior submissionId prefix) get
+      // swept by the daily orphan cleanup.
+      for (var k = 0; k < FIELDS.length; k++) {
+        photoRefs[FIELDS[k]] = [];
+        photos[FIELDS[k]] = [];
+        repaintSection(FIELDS[k]);
+      }
+      updateSubmitGate();
       removeBanner();
     });
     actions.appendChild(resumeBtn);
@@ -1221,7 +1640,7 @@ const FORM_SCRIPT = `(function () {
     var jitter = base * 0.2 * (Math.random() * 2 - 1);
     return Math.max(500, Math.round(base + jitter));
   }
-  function submitWithRetry(fd, maxAttempts) {
+  function submitWithRetry(jsonBody, maxAttempts) {
     var attempt = 0;
     return new Promise(function (resolve, reject) {
       function tryOnce() {
@@ -1233,8 +1652,11 @@ const FORM_SCRIPT = `(function () {
         }, 30000);
         var fetchOpts = {
           method: 'POST',
-          body: fd,
-          headers: { 'Accept': 'application/json' }
+          body: JSON.stringify(jsonBody),
+          headers: {
+            'Accept': 'application/json',
+            'Content-Type': 'application/json'
+          }
         };
         if (controller) fetchOpts.signal = controller.signal;
         fetch('/claims-api/submit-claim', fetchOpts).then(function (r) {
@@ -1286,15 +1708,18 @@ const FORM_SCRIPT = `(function () {
   // activeWatchdogTeardown is a closure var set by startWatchdog; the
   // submit handler tears it down before running a fresh manual submit.
   var activeWatchdogTeardown = null;
-  function submitOnceForWatchdog(fd) {
+  function submitOnceForWatchdog(jsonBody) {
     var controller = (typeof AbortController !== 'undefined') ? new AbortController() : null;
     var timer = setTimeout(function () {
       if (controller) controller.abort();
     }, 30000);
     var fetchOpts = {
       method: 'POST',
-      body: fd,
-      headers: { 'Accept': 'application/json' }
+      body: JSON.stringify(jsonBody),
+      headers: {
+        'Accept': 'application/json',
+        'Content-Type': 'application/json'
+      }
     };
     if (controller) fetchOpts.signal = controller.signal;
     return fetch('/claims-api/submit-claim', fetchOpts).then(function (r) {
@@ -1311,7 +1736,7 @@ const FORM_SCRIPT = `(function () {
       throw err;
     });
   }
-  function startWatchdog(fd) {
+  function startWatchdog(jsonBody) {
     var WATCHDOG_INTERVAL_MS = 60000;
     var WATCHDOG_MAX_ATTEMPTS = 30;
     var watchdogAttempts = 0;
@@ -1342,7 +1767,7 @@ const FORM_SCRIPT = `(function () {
       }
       lastAttemptStartMs = Date.now();
       updateBannerCopy();
-      submitOnceForWatchdog(fd).then(function (out) {
+      submitOnceForWatchdog(jsonBody).then(function (out) {
         if (!armed) return;
         if (out.ok && out.body && out.body.ok && out.body.d1Success !== false) {
           showOutcome(
@@ -1435,30 +1860,38 @@ const FORM_SCRIPT = `(function () {
     // might see a stale resume banner on next visit. The inverse trade-off
     // vs option B — the failure-preserves-draft case is the high-value one.
 
+    // Brief 146 — submit body is JSON-only. Field values flow through the
+    // existing FormData → object conversion (one path for both the wire
+    // shape and the autosave draft) and photo_refs carries the r2_keys
+    // collected by uploadOne. No File bytes ride along — the bytes are
+    // already in R2 from the OOB upload pass.
     var fd = new FormData(form);
     fd.delete('__equipmentRelated');
-    // When the equipment toggle is No, equipmentInvolved is hidden and the
-    // form serializes it as empty (or the field is absent); ensure the
-    // worker sees an empty string so equipment_related derives to 0.
     var checked = document.querySelector('input[name="__equipmentRelated"]:checked');
     if (!checked || checked.value === 'no') {
       fd.set('equipmentInvolved', '');
     }
-    // Brief 138 Phase 3 — append the client-generated idempotency key so the
-    // worker can dedup retried submissions (Phase 4) AND any customer manual
-    // retry after a lost-response failure. Reused across every retry attempt
-    // of THIS form instance; regenerated only on successful submit.
-    fd.append('idempotency_key', submissionId);
-    // Append photos under the canonical worker field names. The worker uses
-    // formData.getAll(field) so multiple appends per key land cleanly.
-    ['fourCornersPhotos', 'vinPhoto', 'damagePhotos', 'platePhoto'].forEach(function (field) {
-      photos[field].forEach(function (file) {
-        fd.append(field, file, file.name);
-      });
+    var jsonBody = {};
+    fd.forEach(function (value, key) {
+      // Skip File parts (none expected — photo inputs use [hidden]) and
+      // dedupe to last-write-wins for keys with multiple entries.
+      if (typeof value === 'string') {
+        jsonBody[key] = value;
+      }
     });
+    jsonBody['idempotency_key'] = submissionId;
+    var refsPayload = {};
+    FIELDS.forEach(function (field) {
+      refsPayload[field] = photoRefs[field]
+        .filter(function (e) { return e && e.r2_key; })
+        .map(function (e) {
+          return { r2_key: e.r2_key, original_filename: e.original_filename || '' };
+        });
+    });
+    jsonBody['photo_refs'] = refsPayload;
 
     setSubmitting(true);
-    submitWithRetry(fd, 3).then(function (out) {
+    submitWithRetry(jsonBody, 3).then(function (out) {
       // Brief 140 — d1Success !== false guard. The worker returns 500
       // when D1 fails (Brief 140 Phase 2); on the rare path where the
       // worker returns 200 with d1Success: false (older worker version
@@ -1490,7 +1923,7 @@ const FORM_SCRIPT = `(function () {
         // burned through all 3 attempts on a transient 5xx/408 — kick
         // off the watchdog and let it overwrite the banner.
         if (isRetryableStatus(out.status)) {
-          startWatchdog(fd);
+          startWatchdog(jsonBody);
         } else {
           showError(errMsg + ' Please retry.');
         }
@@ -1502,7 +1935,7 @@ const FORM_SCRIPT = `(function () {
       // banner with the post-exhaustion copy + last-attempt timer.
       // showError is intentionally NOT called here — the watchdog's
       // updateBannerCopy paints the banner immediately on start.
-      startWatchdog(fd);
+      startWatchdog(jsonBody);
     });
   });
 })();`;

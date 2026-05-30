@@ -24,8 +24,16 @@
 //                                                            Accept: text/html and 302s to
 //                                                            /claims/{slug}/thanks?id=... or
 //                                                            /claims/{slug}?error=...; programmatic
-//                                                            JSON callers continue to receive JSON.)
-//   GET  /claims-api/photo/{r2-key-suffix...}               — serve R2 photo
+//                                                            JSON callers continue to receive JSON.
+//                                                            Brief 146: now accepts EITHER multipart
+//                                                            /form-data (legacy back-compat) OR
+//                                                            application/json with `photo_refs`
+//                                                            pointing at OOB-uploaded R2 keys.)
+//   POST /claims-api/upload                                 — Brief 146 OOB per-photo upload
+//                                                            (multipart, returns r2_key)
+//   GET  /claims-api/photo/{r2-key-suffix...}               — serve R2 photo (handles both
+//                                                            legacy `claims/...` keys and
+//                                                            Brief 146 `claim-uploads/...` keys)
 //
 // AUTH-GATED (checkToolAccess "claims" — super-admin bypasses):
 //   POST /manage/api/claim/{id}/note                        — add note
@@ -154,6 +162,10 @@ import {
 import { createMaintainXWorkOrder, type MaintainXResult } from "./maintainx.js";
 import { resolveAdminBase } from "./admin-url.js";
 import { ASSETS } from "@splash/storage-r2";
+import {
+  handleClaimPhotoUpload,
+  runClaimUploadsCleanup
+} from "./uploads.js";
 
 interface Env extends SupabaseEnv {
   DB: D1Database;
@@ -290,6 +302,14 @@ export default {
         return handleClaimSubmission(request, env, ctx);
       }
 
+      // Brief 146 — out-of-band per-photo upload for the customer claim
+      // form. Public (same posture as /claims-api/submit-claim); client
+      // pays the upload cost upfront on file-pick so the final submit is
+      // a tiny JSON POST that survives flaky cellular.
+      if (path === "claims-api/upload" && method === "POST") {
+        return handleClaimPhotoUpload(request, env);
+      }
+
       if (parts[0] === "claims-api" && parts[1] === "photo" && parts.length >= 3 && method === "GET") {
         const photoKey = parts.slice(2).join("/");
         // Public read of customer photos. Legacy/damagemanager.js:5666 has
@@ -297,6 +317,14 @@ export default {
         // suffix in the claim_id (e.g., BIN-20260502-143055-AB12) which
         // provides obscurity but not real access control. If this becomes
         // a concern, add auth-gating in a follow-up.
+        //
+        // Brief 146 — also handle the new `claim-uploads/{pendingId}/...`
+        // prefix. serveClaimPhoto prepends `claims/` before lookup, which
+        // is correct for the legacy key shape but wrong for the new
+        // OOB-upload prefix. Detect the prefix and serve directly.
+        if (photoKey.startsWith("claim-uploads/")) {
+          return serveR2KeyDirect(env.R2_BUCKET, photoKey);
+        }
         return serveClaimPhoto(env.R2_BUCKET, photoKey);
       }
 
@@ -356,8 +384,15 @@ export default {
   // Brief 65 — daily open-claims summary cron. Wrangler trigger
   // `0 13 * * *` (13:00 UTC = 8 AM ET) fires this handler once a day. See
   // runDailySummaryCron below for the per-recipient digest pipeline.
+  //
+  // Brief 146 — same cron also runs the claim-uploads orphan sweep. Both
+  // passes are independent; the summary pass doesn't depend on the upload
+  // sweep finishing. Sequencing the sweep AFTER the summary makes the
+  // summary fire-and-forget — even if upload cleanup runs long, the digest
+  // emails have already gone out.
   async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
     ctx.waitUntil(runDailySummaryCron(env));
+    ctx.waitUntil(runClaimUploadsCleanup(env).then(() => undefined));
   }
 } satisfies ExportedHandler<Env>;
 
@@ -2354,6 +2389,119 @@ interface ClaimSubmissionPayload {
   maintainxWorkorderId: number | null;
 }
 
+/**
+ * Brief 146 — unified accessor over either a parsed JSON body or a
+ * multipart FormData. The submit handler reads scalar fields via
+ * `inputs.get(name)` and dispatches the photo loop on `inputs.mode`.
+ *
+ * Both modes are guaranteed to surface every form field as a string
+ * (defaults to empty when absent) — same posture as the pre-Brief-146
+ * `String(formData.get(name) ?? "")` pattern.
+ */
+type SubmitInputs =
+  | {
+      mode: "json";
+      get: (name: string) => string;
+      photoRefs: Record<
+        string,
+        ReadonlyArray<{ r2_key: string; original_filename?: string }>
+      >;
+      multipartFiles?: undefined;
+    }
+  | {
+      mode: "multipart";
+      get: (name: string) => string;
+      multipartFiles: FormData;
+      photoRefs?: undefined;
+    };
+
+const PHOTO_REF_FIELDS = new Set([
+  "fourCornersPhotos",
+  "vinPhoto",
+  "damagePhotos",
+  "platePhoto"
+]);
+
+async function parseSubmitMultipart(request: Request): Promise<SubmitInputs> {
+  const formData = await request.formData();
+  return {
+    mode: "multipart",
+    get: (name: string) => String(formData.get(name) ?? ""),
+    multipartFiles: formData
+  };
+}
+
+async function parseSubmitJson(request: Request): Promise<SubmitInputs> {
+  let body: unknown;
+  try {
+    body = await request.json();
+  } catch (_) {
+    throw new Error("Invalid JSON body");
+  }
+  if (!body || typeof body !== "object") {
+    throw new Error("Submit body must be an object");
+  }
+  const obj = body as Record<string, unknown>;
+  const photoRefsRaw = obj["photo_refs"];
+  const photoRefs: Record<
+    string,
+    Array<{ r2_key: string; original_filename?: string }>
+  > = {};
+  if (photoRefsRaw && typeof photoRefsRaw === "object") {
+    const rawObj = photoRefsRaw as Record<string, unknown>;
+    for (const field of PHOTO_REF_FIELDS) {
+      const arr = rawObj[field];
+      if (!Array.isArray(arr)) continue;
+      const refs: Array<{ r2_key: string; original_filename?: string }> = [];
+      for (const item of arr) {
+        if (!item || typeof item !== "object") continue;
+        const r2_key = (item as Record<string, unknown>)["r2_key"];
+        if (typeof r2_key !== "string" || !r2_key) continue;
+        // Defense: must look like the worker's own key shape so a
+        // malicious caller can't substitute an arbitrary R2 path.
+        if (!r2_key.startsWith("claim-uploads/")) continue;
+        const original_filename = (item as Record<string, unknown>)[
+          "original_filename"
+        ];
+        refs.push({
+          r2_key,
+          original_filename:
+            typeof original_filename === "string"
+              ? original_filename
+              : undefined
+        });
+      }
+      if (refs.length > 0) photoRefs[field] = refs;
+    }
+  }
+  return {
+    mode: "json",
+    get: (name: string) => {
+      const v = obj[name];
+      if (v == null) return "";
+      if (typeof v === "string") return v;
+      if (typeof v === "boolean") return v ? "true" : "false";
+      if (typeof v === "number") return String(v);
+      return "";
+    },
+    photoRefs
+  };
+}
+
+/** Map content-type → file extension for naming claim_photos rows. */
+function extForMime(mime: string): string | null {
+  const map: Record<string, string> = {
+    "image/jpeg": "jpg",
+    "image/jpg": "jpg",
+    "image/png": "png",
+    "image/heic": "heic",
+    "image/heif": "heif",
+    "image/heic-sequence": "heic",
+    "image/heif-sequence": "heif"
+  };
+  return map[mime.toLowerCase()] ?? null;
+}
+
 async function handleClaimSubmission(
   request: Request,
   env: Env,
@@ -2372,35 +2520,65 @@ async function handleClaimSubmission(
   const requestUrl = new URL(request.url);
   const baseOrigin = `${requestUrl.protocol}//${requestUrl.host}`;
 
+  // Brief 146 — dual-mode submit body. JSON callers (modern client post-
+  // Brief-146 with OOB-uploaded photos) send Content-Type: application/json
+  // with a `photo_refs` map keyed by the canonical category field. Legacy
+  // browser-cached clients continue sending multipart/form-data with file
+  // parts — that path is preserved for the back-compat window (~14 days
+  // post-deploy) so users on stale HTML don't break. The legacy multipart
+  // path tags every successful submit with `[claim.submit] legacy multipart
+  // path used` so we can confirm the tail is dead before removing it.
+  const contentType = request.headers.get("Content-Type") ?? "";
+  const jsonMode = contentType.toLowerCase().includes("application/json");
+
   try {
-    const formData = await request.formData();
+    let inputs: SubmitInputs;
+    try {
+      inputs = jsonMode
+        ? await parseSubmitJson(request)
+        : await parseSubmitMultipart(request);
+    } catch (parseErr) {
+      const message =
+        parseErr instanceof Error ? parseErr.message : "invalid request body";
+      if (browserMode) {
+        const target = new URL(
+          `${baseOrigin}/claims/unknown?error=${encodeURIComponent(message)}`
+        );
+        return Response.redirect(target.toString(), 303);
+      }
+      return json({ ok: false, error: message, success: false }, 400);
+    }
+
+    if (inputs.mode === "multipart") {
+      console.log("[claim.submit] legacy multipart path used");
+    }
 
     // 1. Parse form fields. CamelCase keys match legacy/damagemanager.js:84
     // EXACTLY — Power Automate's Parse JSON action consumes these names
     // and any drift breaks the SharePoint write.
     const claimData: ClaimSubmissionPayload = {
-      customerName: String(formData.get("customerName") ?? ""),
-      customerPhone: String(formData.get("customerPhone") ?? ""),
-      customerEmail: String(formData.get("customerEmail") ?? ""),
-      mailingAddress: String(formData.get("mailingAddress") ?? ""),
-      licensePlate: String(formData.get("licensePlate") ?? ""),
-      vehicleMake: String(formData.get("vehicleMake") ?? ""),
-      vehicleModel: String(formData.get("vehicleModel") ?? ""),
-      vehicleYear: String(formData.get("vehicleYear") ?? ""),
-      vehicleColor: String(formData.get("vehicleColor") ?? ""),
-      issueDescription: String(formData.get("issueDescription") ?? ""),
-      employeeName: String(formData.get("employeeName") ?? ""),
-      location: String(formData.get("location") ?? ""),
-      locationPretty: String(formData.get("locationPretty") ?? ""),
-      membershipNumber: String(formData.get("membershipNumber") ?? ""),
-      preExistingDamage: String(formData.get("preExistingDamage") ?? ""),
-      damageType: String(formData.get("damageType") ?? ""),
-      damageOther: String(formData.get("damageOther") ?? ""),
-      equipmentInvolved: String(formData.get("equipmentInvolved") ?? ""),
-      equipmentMalfunction: String(formData.get("equipmentMalfunction") ?? "") === "true",
-      determination: String(formData.get("determination") ?? ""),
-      customerTold: String(formData.get("customerTold") ?? ""),
-      customerDemeanor: String(formData.get("customerDemeanor") ?? ""),
+      customerName: inputs.get("customerName"),
+      customerPhone: inputs.get("customerPhone"),
+      customerEmail: inputs.get("customerEmail"),
+      mailingAddress: inputs.get("mailingAddress"),
+      licensePlate: inputs.get("licensePlate"),
+      vehicleMake: inputs.get("vehicleMake"),
+      vehicleModel: inputs.get("vehicleModel"),
+      vehicleYear: inputs.get("vehicleYear"),
+      vehicleColor: inputs.get("vehicleColor"),
+      issueDescription: inputs.get("issueDescription"),
+      employeeName: inputs.get("employeeName"),
+      location: inputs.get("location"),
+      locationPretty: inputs.get("locationPretty"),
+      membershipNumber: inputs.get("membershipNumber"),
+      preExistingDamage: inputs.get("preExistingDamage"),
+      damageType: inputs.get("damageType"),
+      damageOther: inputs.get("damageOther"),
+      equipmentInvolved: inputs.get("equipmentInvolved"),
+      equipmentMalfunction: inputs.get("equipmentMalfunction") === "true",
+      determination: inputs.get("determination"),
+      customerTold: inputs.get("customerTold"),
+      customerDemeanor: inputs.get("customerDemeanor"),
       submittedAt: new Date().toISOString(),
       ipAddress: request.headers.get("CF-Connecting-IP") ?? "Unknown",
       userAgent: request.headers.get("User-Agent") ?? "Unknown",
@@ -2421,7 +2599,7 @@ async function handleClaimSubmission(
     // (logged, but no 400 — the goal is dedup, not authn). Tolerates the
     // column being absent (between code push and operator D1 migration)
     // by catching the "no such column" error and falling through.
-    const idempotencyKeyRaw = String(formData.get("idempotency_key") ?? "").trim();
+    const idempotencyKeyRaw = inputs.get("idempotency_key").trim();
     const idempotencyKeyValid =
       idempotencyKeyRaw.length === 36 &&
       /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(idempotencyKeyRaw);
@@ -2550,29 +2728,92 @@ async function handleClaimSubmission(
     // 2. Generate claim_id.
     claimData.claimId = generateClaimId(claimData.location);
 
-    // 3. Upload photos to R2 (4 categories).
-    for (const category of PHOTO_CATEGORIES) {
-      const files = formData.getAll(category.field);
-      for (let i = 0; i < files.length; i++) {
-        const f = files[i];
-        if (!(f instanceof File) || f.size === 0) continue;
-        const result = await uploadClaimPhoto({
-          bucket: env.R2_BUCKET,
-          file: f,
-          claimId: claimData.claimId,
-          photoType: category.type,
-          index: i,
-          images: env.IMAGES
-        });
-        if (result) {
+    // 3. Resolve photos.
+    //
+    // Brief 146 JSON mode: photos were uploaded out-of-band to R2 before
+    // submit. Worker HEADs each referenced key to confirm existence +
+    // capture authoritative size/mime, then attaches the metadata to
+    // claimData.photos. Missing refs → 422 photo_not_found (the customer
+    // can re-add the failing photo from the form's retry icon).
+    //
+    // Legacy multipart mode: per-category file parts are streamed to R2
+    // here via uploadClaimPhoto (HEIC→JPEG via the Images binding when
+    // bound). Same code path the form has used since legacy/damagemanager.js
+    // shipped; preserved until the back-compat window closes.
+    if (inputs.mode === "json") {
+      const missing: string[] = [];
+      for (const category of PHOTO_CATEGORIES) {
+        const refs = inputs.photoRefs[category.field] ?? [];
+        for (let i = 0; i < refs.length; i++) {
+          const ref = refs[i]!;
+          let head: R2Object | null;
+          try {
+            head = await env.R2_BUCKET.head(ref.r2_key);
+          } catch (headErr) {
+            console.warn("[claim.submit] R2 head failed", ref.r2_key, headErr);
+            head = null;
+          }
+          if (!head) {
+            missing.push(ref.r2_key);
+            continue;
+          }
+          const mime =
+            head.httpMetadata?.contentType ?? "application/octet-stream";
+          const ext = extForMime(mime) ?? (ref.r2_key.split(".").pop() ?? "jpg");
           const sanitizedType = category.type.replace(/\s+/g, "_").toLowerCase();
           claimData.photos.push({
-            r2Key: result.key,
+            r2Key: ref.r2_key,
             photoType: category.type,
-            fileName: `${claimData.claimId}_${sanitizedType}_${i + 1}.${result.ext}`,
-            fileSize: f.size,
-            contentType: result.contentType
+            fileName:
+              ref.original_filename ||
+              `${claimData.claimId}_${sanitizedType}_${i + 1}.${ext}`,
+            fileSize: head.size,
+            contentType: mime
           });
+        }
+      }
+      if (missing.length > 0) {
+        const message = "photo_not_found";
+        if (browserMode) {
+          const slug =
+            encodeURIComponent(claimData.location || "") || "unknown";
+          const target = new URL(
+            `${baseOrigin}/claims/${slug}?error=${encodeURIComponent(
+              "Some photos failed to upload. Please re-add them and submit again."
+            )}`
+          );
+          return Response.redirect(target.toString(), 303);
+        }
+        return json(
+          { ok: false, error: message, success: false, missing },
+          422
+        );
+      }
+    } else {
+      // Legacy multipart path. Same loop as pre-Brief-146.
+      for (const category of PHOTO_CATEGORIES) {
+        const files = inputs.multipartFiles.getAll(category.field);
+        for (let i = 0; i < files.length; i++) {
+          const f = files[i];
+          if (!(f instanceof File) || f.size === 0) continue;
+          const result = await uploadClaimPhoto({
+            bucket: env.R2_BUCKET,
+            file: f,
+            claimId: claimData.claimId,
+            photoType: category.type,
+            index: i,
+            images: env.IMAGES
+          });
+          if (result) {
+            const sanitizedType = category.type.replace(/\s+/g, "_").toLowerCase();
+            claimData.photos.push({
+              r2Key: result.key,
+              photoType: category.type,
+              fileName: `${claimData.claimId}_${sanitizedType}_${i + 1}.${result.ext}`,
+              fileSize: f.size,
+              contentType: result.contentType
+            });
+          }
         }
       }
     }
@@ -3273,6 +3514,35 @@ async function handleCheckRequestPreview(
  * mirroring the photo-serving security posture. Customers reach this URL
  * via the post-submit outcome card and the customer-email webhook.
  * ============================================================ */
+
+/**
+ * Brief 146 — serve an R2 object whose key was provided verbatim (no
+ * prefix-prepend). Used for `claim-uploads/{pendingId}/{nanoid}.{ext}`
+ * objects written by the OOB upload endpoint. Same cache + headers
+ * posture as `serveClaimPhoto` so admin viewers don't need a separate
+ * code path.
+ */
+async function serveR2KeyDirect(
+  bucket: R2Bucket,
+  key: string
+): Promise<Response> {
+  try {
+    const obj = await bucket.get(key);
+    if (!obj) {
+      return new Response("Photo not found", { status: 404 });
+    }
+    const headers = new Headers();
+    headers.set(
+      "Content-Type",
+      obj.httpMetadata?.contentType ?? "image/jpeg"
+    );
+    headers.set("Cache-Control", "public, max-age=86400");
+    return new Response(obj.body, { headers });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "unknown error";
+    return new Response("Error fetching photo: " + message, { status: 500 });
+  }
+}
 
 async function handleServeClaimSummary(
   env: Env,
