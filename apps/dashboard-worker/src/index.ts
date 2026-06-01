@@ -188,10 +188,38 @@ async function handleForcedReset(request: Request, env: Env): Promise<Response> 
     return jsonError(500, err instanceof Error ? err.message : "Password update failed");
   }
 
-  // Successful reset — redirect to the original target.
   const safeNext = sanitizeRedirect(next);
   const target = new URL(safeNext, request.url).toString();
-  return Response.redirect(target, 302);
+
+  // Brief 147 — re-issue session cookies. Supabase invalidates the
+  // previously-issued access_token when the password changes, so the
+  // sb-access-token cookie attached to this request is now stale. Without
+  // re-issuing, the next request to a protected page (e.g. /admin/damage)
+  // carries a stale token, authenticate() returns "unauthenticated", and
+  // the page renders its no-access branch — the failure mode 3/3 beta
+  // testers hit on iOS Safari. Logging the user back in with the new
+  // password yields a fresh access_token + refresh_token; we emit them as
+  // Set-Cookie headers with the same attributes as /api/login so the next
+  // request authenticates cleanly.
+  const headers = new Headers();
+  try {
+    const fresh = await supabasePasswordLogin(env, session.email, newPassword);
+    for (const c of buildAuthCookies(fresh.access_token, fresh.refresh_token)) {
+      headers.append("Set-Cookie", c);
+    }
+  } catch {
+    // Password DID change in Supabase, but re-login failed. Safest
+    // recovery: clear cookies and bounce to /login so the user
+    // authenticates with the new password.
+    for (const c of buildLogoutCookies()) {
+      headers.append("Set-Cookie", c);
+    }
+    headers.set("Location", `/login?return=${encodeURIComponent(safeNext)}`);
+    return new Response("", { status: 302, headers });
+  }
+
+  headers.set("Location", target);
+  return new Response("", { status: 302, headers });
 }
 
 async function handleMe(request: Request, env: Env): Promise<Response> {

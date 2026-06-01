@@ -45,7 +45,17 @@ function clearCookieHeader(name: string): string {
 function logoutResponse(request: NextRequest): NextResponse {
   const url = request.nextUrl.clone();
   url.pathname = "/login";
-  url.search = "";
+  // Brief 147 — preserve ?return= through the logout round-trip so callers
+  // that send the user through /logout to clear a stale cookie (e.g. the
+  // "Sign in again" CTA on /admin/damage) can route back to where they
+  // started. /login validates the return path against the same allowlist
+  // as the dashboard-worker, so a tampered value lands at the default.
+  const returnParam = request.nextUrl.searchParams.get("return");
+  if (returnParam && returnParam.startsWith("/") && !returnParam.startsWith("//")) {
+    url.search = `?return=${encodeURIComponent(returnParam)}`;
+  } else {
+    url.search = "";
+  }
   const response = NextResponse.redirect(url, 302);
   response.headers.append("Set-Cookie", clearCookieHeader(ACCESS_TOKEN_COOKIE));
   response.headers.append("Set-Cookie", clearCookieHeader(REFRESH_TOKEN_COOKIE));

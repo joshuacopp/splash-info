@@ -14,7 +14,7 @@
 // peek the helper currently throws away; flagged for 5b if it matters.
 
 import Link from "next/link";
-import { damageGetJson } from "./_lib/worker-fetch";
+import { damageGetJson, damageGetJsonOrStatus } from "./_lib/worker-fetch";
 import { LifecycleBadge } from "./_components/LifecycleBadge";
 import { AgePill } from "./_components/AgePill";
 import { DamageTabs } from "./_components/DamageTabs";
@@ -118,13 +118,22 @@ export default async function DamageClaimsListPage({ searchParams }: PageProps) 
   if (submittedToParam) qs.set("submitted_to", submittedToParam);
   const workerPath = `/manage/api/claims${qs.toString() ? `?${qs.toString()}` : ""}`;
 
-  let claims: ClaimListRow[] | null = null;
-  let fetchError: string | null = null;
+  // Use damageGetJsonOrStatus for the claims fetch so we can distinguish
+  // 401 (no/invalid cookie — typically a stale session post forced-reset;
+  // Brief 147) from 403 (cookie valid, but no claims tool or no dc_role).
+  // The roster fetches keep the null-on-401/403 shape — they're decorative
+  // and don't drive routing.
+  let claimsResult:
+    | { kind: "ok"; data: ClaimListRow[] }
+    | { kind: "denied" }
+    | { kind: "session_stale" }
+    | { kind: "error"; message: string }
+    | null = null;
   let rdRoster: ContactRosterEntry[] = [];
   let rmRoster: ContactRosterEntry[] = [];
   try {
-    [claims, rdRoster, rmRoster] = await Promise.all([
-      damageGetJson<ClaimListRow[]>(workerPath),
+    const [claimsRaw, rd, rm] = await Promise.all([
+      damageGetJsonOrStatus<ClaimListRow[]>(workerPath),
       damageGetJson<ContactRosterEntry[]>(
         "/manage/api/contact-roster?role=regional_director"
       ).then((r) => r ?? []),
@@ -132,13 +141,36 @@ export default async function DamageClaimsListPage({ searchParams }: PageProps) 
         "/manage/api/contact-roster?role=regional_manager"
       ).then((r) => r ?? [])
     ]);
+    rdRoster = rd;
+    rmRoster = rm;
+    if ("data" in claimsRaw) {
+      claimsResult = { kind: "ok", data: claimsRaw.data };
+    } else if (claimsRaw.status === 401) {
+      claimsResult = { kind: "session_stale" };
+    } else if (claimsRaw.status === 403) {
+      claimsResult = { kind: "denied" };
+    } else {
+      claimsResult = {
+        kind: "error",
+        message: `Worker GET ${workerPath} failed: ${claimsRaw.status}`
+      };
+    }
   } catch (err) {
-    fetchError = err instanceof Error ? err.message : "Unknown error fetching claims.";
+    claimsResult = {
+      kind: "error",
+      message: err instanceof Error ? err.message : "Unknown error fetching claims."
+    };
   }
 
-  // No-access branch (401/403). Encode the return path including its query
-  // string so filters survive a sign-in round-trip.
-  if (claims === null && !fetchError) {
+  // Brief 147 — split the legacy "no access" branch into two:
+  //   401 → session-not-loaded (stale cookie, common iOS Safari case post
+  //         forced-reset). Surface a "Sign in again" CTA that hard-navs to
+  //         /logout (clears cookies, then bounces to /login), which is the
+  //         user-recoverable path. Old copy implied "your administrator
+  //         needs to do something" — wrong + scary for the common case.
+  //   403 → genuinely no access (no claims tool grant or no dc_role).
+  //         Keep the operational "contact your administrator" copy.
+  if (claimsResult && claimsResult.kind !== "ok" && claimsResult.kind !== "error") {
     const currentQs = new URLSearchParams();
     if (search) currentQs.set("search", search);
     if (locationParam && locationParam !== "All") currentQs.set("location", locationParam);
@@ -149,6 +181,29 @@ export default async function DamageClaimsListPage({ searchParams }: PageProps) 
     if (submittedFromParam) currentQs.set("submitted_from", submittedFromParam);
     if (submittedToParam) currentQs.set("submitted_to", submittedToParam);
     const returnPath = `/admin/damage${currentQs.toString() ? `?${currentQs.toString()}` : ""}`;
+
+    if (claimsResult.kind === "session_stale") {
+      return (
+        <section className="mx-auto w-full max-w-[1100px] px-5 py-9">
+          <DamageTabs active="claims" />
+          <PageBanner />
+          <div className="rounded-splash-lg border border-gray-light bg-white p-6 shadow-splash-card">
+            <p className="mb-4 text-splash-navy/80">
+              Session expired or hasn&rsquo;t fully loaded. Try refreshing
+              the page or signing out and back in.
+            </p>
+            <Link
+              href={`/logout?return=${encodeURIComponent(returnPath)}`}
+              className="inline-flex items-center gap-1.5 rounded-splash-sm bg-splash-blue px-5 py-2.5 text-sm font-bold text-white shadow-splash-btn transition-colors hover:bg-splash-blue-dark"
+            >
+              Sign in again
+            </Link>
+          </div>
+        </section>
+      );
+    }
+
+    // claimsResult.kind === "denied"
     return (
       <section className="mx-auto w-full max-w-[1100px] px-5 py-9">
         <DamageTabs active="claims" />
@@ -168,6 +223,11 @@ export default async function DamageClaimsListPage({ searchParams }: PageProps) 
       </section>
     );
   }
+
+  const fetchError =
+    claimsResult && claimsResult.kind === "error" ? claimsResult.message : null;
+  const claims =
+    claimsResult && claimsResult.kind === "ok" ? claimsResult.data : null;
 
   // Error branch (5xx / network / malformed). Page reload retries.
   if (fetchError) {

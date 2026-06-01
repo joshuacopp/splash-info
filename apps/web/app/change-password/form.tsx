@@ -58,12 +58,19 @@ export function ChangePasswordForm({ required, next }: ChangePasswordFormProps) 
         credentials: "include"
       });
 
-      // The worker returns 302 on success; fetch follows transparently.
-      // We always navigate to the apps/web destination ourselves rather
-      // than r.url so cross-origin dev (r.url ends on workers.dev) still
-      // lands at the right apps/web path.
+      // The worker returns 302 on success; fetch follows transparently and
+      // the worker attaches fresh Set-Cookie headers (Brief 147) so the
+      // browser commits the new sb-access-token / sb-refresh-token before
+      // we navigate. We always navigate to the apps/web destination
+      // ourselves rather than r.url so cross-origin dev (r.url ends on
+      // workers.dev) still lands at the right apps/web path.
+      //
+      // window.location.assign (vs router.push) forces a full browser
+      // navigation — Safari iOS only commits the freshly-Set-Cookie'd
+      // session to subsequent requests on a real navigation boundary,
+      // not on a client-side route transition.
       if (r.ok || r.redirected) {
-        window.location.href = next || DEFAULT_AUTHED_LANDING;
+        window.location.assign(next || DEFAULT_AUTHED_LANDING);
         return;
       }
       if (r.status === 401) {
@@ -71,7 +78,7 @@ export function ChangePasswordForm({ required, next }: ChangePasswordFormProps) 
         // with the change-password URL preserved as the return target.
         const requiredFlag = required ? "true" : "false";
         const cpUrl = `/change-password?required=${requiredFlag}&next=${encodeURIComponent(next || DEFAULT_AUTHED_LANDING)}`;
-        window.location.href = `/login?return=${encodeURIComponent(cpUrl)}`;
+        window.location.assign(`/login?return=${encodeURIComponent(cpUrl)}`);
         return;
       }
       const errBody = (await r.json().catch(() => ({}))) as { error?: string };
