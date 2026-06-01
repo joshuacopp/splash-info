@@ -79,6 +79,7 @@ const ADMIN_KNOWN_SUBPATHS = new Set<string>([
   "my-requests",
   "performance",
   "pricing",
+  "scorm-builder",
   "signups",
   "sysadmin",
   "api",

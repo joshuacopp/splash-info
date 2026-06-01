@@ -144,3 +144,4 @@
 - 2026-05-29 12:15:34 brief-145-damage-staging-admin-url-and-gm-send-back.md (success)
 - 2026-05-29 16:10:25 brief-146-claim-photo-cellular-resilience.md (success)
 - 2026-06-01 08:30:25 brief-147-forced-reset-session-refresh-and-damage-gate.md (success)
+- 2026-06-01 09:36:20 brief-148-scorm-builder-into-apps-web.md (success)

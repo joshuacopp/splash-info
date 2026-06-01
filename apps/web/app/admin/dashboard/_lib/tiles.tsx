@@ -176,6 +176,14 @@ const mailIcon: ReactNode = (
   </svg>
 );
 
+const graduationCapIcon: ReactNode = (
+  <svg {...SvgProps}>
+    <path d="M22 10 12 4 2 10l10 6 10-6z" />
+    <path d="M6 12v5c0 1.7 2.7 3 6 3s6-1.3 6-3v-5" />
+    <path d="M22 10v6" />
+  </svg>
+);
+
 const settingsGearIcon: ReactNode = (
   <svg {...SvgProps}>
     <circle cx="12" cy="12" r="3" />
@@ -301,6 +309,16 @@ export const TILES: ReadonlyArray<Tile> = [
     description: "Build and manage admin-built forms.",
     href: "/admin/forms",
     icon: clipboardListIcon,
+    visibleTo: isAdminTier
+  },
+  {
+    id: "scorm-builder",
+    group: "admin",
+    eyebrow: "Training",
+    title: "SCORM Package Builder",
+    description: "Build training packages — video + quiz — for upload to your LMS.",
+    href: "/admin/scorm-builder",
+    icon: graduationCapIcon,
     visibleTo: isAdminTier
   },
   {

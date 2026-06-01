@@ -2739,6 +2739,35 @@ URL-based — service bindings don't apply to those.
   column determines whether worker code can mutate the row.
 - **phone_usage_log** - Per-attempt log of every signup submission,
   including outcome (allowed / blocked / warned / monitored).
+- **SCORM Package Builder** (Brief 148) - Admin-tier apps/web page at
+  `/admin/scorm-builder` for building SCORM 1.2 training packages
+  (video + multiple-choice / true-false quiz) entirely in the browser
+  via JSZip. Ported from the standalone `scorm-builder.html` at repo
+  root (which stays as a fallback / preview — the two coexist
+  intentionally). Same admin-tier gate as `/admin/forms`
+  (`session.role === "super_admin"` OR `session.dcRole === "admin" |
+  "super_admin"`). v1 scope: SCORM 1.2 only (not 2004); single-SCO
+  packaging; client-side build (no R2 upload, no DB persistence — the
+  operator's browser holds the video bytes and the zip blob);
+  Splash-branded player (splash-navy gradient header bar with the
+  white-script logo at `pub-88f136a47a5846d5b7e47fbce605719b.r2.dev/
+  SplashScriptWhite_RedCar.png` — the same public R2 asset Brief 32 /
+  134 use). The generated package contains
+  `imsmanifest.xml` / `index.html` (with course config inlined as JSON
+  + the player JS) / `scorm.js` (SCORM 1.2 API wrapper that walks
+  `window.parent.API`) / `style.css` / `video.{ext}`. Pass threshold
+  configurable; failing learners get a Retry button; passing learners
+  get a Finish button that calls `LMSCommit` + `LMSFinish`. The
+  builder UI sits at
+  `apps/web/app/admin/scorm-builder/_components/ScormBuilderClient.tsx`;
+  the verbatim-ported manifest / player / build helpers live in
+  `_lib/{manifest,player,build,validate,types}.ts`. JSZip 3.10.1 is
+  bundled into the route chunk (NOT loaded from CDN); the route's
+  First-Load JS sits at ~151 kB. Future executors extending this
+  should keep helpers pure (no `window` / React inside `_lib/`) and
+  generated SCORM contracts byte-for-byte stable across briefs — LMS
+  imports are byte-sensitive (any whitespace / encoding change to
+  `imsmanifest.xml` can fail validation on stricter LMSs).
 
 ---
 
