@@ -1,20 +1,21 @@
-// Brief 109 — JotForm admin no-access card.
+// Brief 109 / Brief 151 — JotForm admin sign-in card.
 //
-// Renders on the index page when a caller lacks admin-tier access
-// (super_admin role OR dcRole admin/super_admin). Mirrors the
-// /admin/forms NoAccessCard (Brief 95). Per-form URLs at
-// /admin/jotform/{form_id} are still navigable for RM / RD / GM users
-// — the worker scopes their rows automatically via
-// accessibleSiteNumbersForSession (Brief 107).
+// Renders on every /admin/jotform/* page when the caller is unauthenticated.
+// Brief 151 widened all three jotform routes to any-session (the index,
+// the per-form list, and the per-submission detail), so the prior
+// admin-tier "forbidden" branch became unreachable and was removed.
+// Per-row scoping is enforced server-side via
+// accessibleSiteNumbersForSession (Brief 107) — a signed-in user with no
+// matching locations sees a friendly empty-state on the index instead
+// of this card.
 
 import Link from "next/link";
 
 interface Props {
-  reason: "signin" | "forbidden";
   returnPath?: string;
 }
 
-export default function NoAccessCard({ reason, returnPath }: Props) {
+export default function NoAccessCard({ returnPath }: Props) {
   return (
     <section className="mx-auto w-full max-w-[720px] px-5 py-9">
       <div className="mb-6">
@@ -25,40 +26,18 @@ export default function NoAccessCard({ reason, returnPath }: Props) {
       </div>
 
       <div className="rounded-splash-lg border-[1.5px] border-gray-light bg-white p-7 shadow-splash-card">
-        {reason === "signin" ? (
-          <>
-            <p className="mb-3 text-base font-semibold text-splash-navy">
-              Sign in required.
-            </p>
-            <p className="mb-5 text-[0.9375rem] leading-relaxed text-splash-navy/80">
-              JotForm submissions are restricted. Sign in to continue.
-            </p>
-            <Link
-              href={`/login?return=${encodeURIComponent(returnPath ?? "/admin/jotform")}`}
-              className="inline-flex items-center gap-1.5 rounded-splash-sm bg-splash-blue px-5 py-2.5 text-sm font-bold text-white shadow-splash-btn transition-colors hover:bg-splash-blue-dark"
-            >
-              Sign In
-            </Link>
-          </>
-        ) : (
-          <>
-            <p className="mb-3 text-base font-semibold text-splash-navy">
-              Access denied.
-            </p>
-            <p className="mb-5 text-[0.9375rem] leading-relaxed text-splash-navy/80">
-              The JotForm index requires super_admin or admin. RM / RD / GM
-              users can still open a per-form view by direct link — your
-              submissions are scoped automatically. Contact a super_admin if
-              you need broader access.
-            </p>
-            <Link
-              href="/admin/dashboard"
-              className="inline-flex items-center gap-1.5 rounded-splash-sm bg-splash-blue px-5 py-2.5 text-sm font-bold text-white shadow-splash-btn transition-colors hover:bg-splash-blue-dark"
-            >
-              Back to Dashboard
-            </Link>
-          </>
-        )}
+        <p className="mb-3 text-base font-semibold text-splash-navy">
+          Sign in required.
+        </p>
+        <p className="mb-5 text-[0.9375rem] leading-relaxed text-splash-navy/80">
+          JotForm submissions are restricted. Sign in to continue.
+        </p>
+        <Link
+          href={`/login?return=${encodeURIComponent(returnPath ?? "/admin/jotform")}`}
+          className="inline-flex items-center gap-1.5 rounded-splash-sm bg-splash-blue px-5 py-2.5 text-sm font-bold text-white shadow-splash-btn transition-colors hover:bg-splash-blue-dark"
+        >
+          Sign In
+        </Link>
       </div>
     </section>
   );

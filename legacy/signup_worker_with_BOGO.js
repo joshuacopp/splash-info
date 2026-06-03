@@ -7,6 +7,19 @@
   var TABLE_RESOLVED = "pricing_simple_resolved";
   var CACHE_TTL = 300;
   var STALE_TTL = 86400;
+  // Brief 152: pragmatic email validation. Canonical helper lives in
+  // packages/types/src/email-validate.ts (isValidEmail). This worker is
+  // legacy JS not part of the workspace, so the regex is duplicated here.
+  // Must reject leading/trailing/consecutive dots in local-part. If you
+  // change one, change the other.
+  function isValidEmail(s) {
+    if (!s) return false;
+    const trimmed = String(s).trim();
+    if (trimmed.length === 0 || trimmed.length > 254) return false;
+    const re = /^(?:[A-Za-z0-9]|[A-Za-z0-9](?:[A-Za-z0-9_+-]|\.(?!\.))*[A-Za-z0-9])@(?:[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?\.)+[A-Za-z]{2,}$/;
+    return re.test(trimmed);
+  }
+  __name(isValidEmail, "isValidEmail");
   addEventListener("fetch", (event) => event.respondWith(handle(event.request, event)));
   async function handle(request, event) {
     const url = new URL(request.url);
@@ -191,6 +204,15 @@
         return new Response(JSON.stringify({
           denied: true,
           error: "This number is invalid. Please enter a valid phone number."
+        }), {
+          status: 400,
+          headers: { "Content-Type": "application/json" }
+        });
+      }
+      if (!isValidEmail(data.email)) {
+        return new Response(JSON.stringify({
+          denied: true,
+          error: "Please enter a valid email address."
         }), {
           status: 400,
           headers: { "Content-Type": "application/json" }
@@ -2732,7 +2754,7 @@
 
         function validateEmail() {
             const val = emailInput.value.trim();
-            const isValid = /^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(val);
+            const isValid = val.length > 0 && val.length <= 254 && /^(?:[A-Za-z0-9]|[A-Za-z0-9](?:[A-Za-z0-9_+-]|\\.(?!\\.))*[A-Za-z0-9])@(?:[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?\\.)+[A-Za-z]{2,}$/.test(val);
 
             if (val && !isValid) {
                 emailInput.classList.add('error');
@@ -2751,7 +2773,7 @@
             const phoneDigits = phoneInput.value.replace(/\\D/g, '');
             const phoneValid = phoneDigits.length === 10;
             const emailVal = emailInput.value.trim();
-            const emailValid = /^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(emailVal);
+            const emailValid = emailVal.length > 0 && emailVal.length <= 254 && /^(?:[A-Za-z0-9]|[A-Za-z0-9](?:[A-Za-z0-9_+-]|\\.(?!\\.))*[A-Za-z0-9])@(?:[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?\\.)+[A-Za-z]{2,}$/.test(emailVal);
             const termsAgreed = agreeCheckbox.checked;
             submitBtn.disabled = !(phoneValid && emailValid && termsAgreed);
         }

@@ -16,7 +16,11 @@
 import { z } from "zod";
 import type { Field } from "../types.js";
 
-const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
+// Brief 152: pragmatic email regex. Mirrors EMAIL_REGEX in
+// @splash/types/email-validate (isValidEmail). Rejects RFC-invalid
+// local-part dot positions (leading / trailing / consecutive). If you
+// change one, change the other.
+const EMAIL_RE = /^[A-Za-z0-9](?:[A-Za-z0-9_+-]|\.(?=[A-Za-z0-9_+-]))*@(?:[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?\.)+[A-Za-z]{2,}$/;
 const PHONE_RE = /^\d{10}$/;
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const TIME_RE = /^\d{2}:\d{2}$/;

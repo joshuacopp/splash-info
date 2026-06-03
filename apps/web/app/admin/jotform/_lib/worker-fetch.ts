@@ -27,6 +27,13 @@ export interface JotformForm {
 
 export interface JotformFormsResponse {
   forms: JotformForm[];
+  /**
+   * Brief 151 — `"scoped"` when the caller is RM / RD / GM / location_admin
+   * and per-form counts reflect only `site_number`s in their accessible
+   * set. `"all"` for admin-tier callers (super_admin / admin / dcRole
+   * admin/super_admin) where counts are unscoped totals.
+   */
+  scope?: "all" | "scoped";
 }
 
 /**

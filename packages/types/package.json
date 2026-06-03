@@ -13,7 +13,8 @@
     "./auth": "./src/auth.ts",
     "./locations": "./src/locations.ts",
     "./performance": "./src/performance.ts",
-    "./session": "./src/session.ts"
+    "./session": "./src/session.ts",
+    "./email-validate": "./src/email-validate.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

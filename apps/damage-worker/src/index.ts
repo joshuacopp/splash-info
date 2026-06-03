@@ -110,6 +110,7 @@ import {
   type SupabaseEnv
 } from "@splash/db-supabase";
 import { isOriginAllowed, json, jsonError, readForm } from "@splash/http";
+import { isValidEmail } from "@splash/types/email-validate";
 import {
   generateClaimId,
   type ImagesBinding,
@@ -2656,12 +2657,15 @@ async function handleClaimSubmission(
 
     // Brief 32 — email is now required. Worker re-validates after the form's
     // HTML5 + inline-script gates because programmatic JSON callers can
-    // bypass them. Same simple regex used in sysadmin-worker per Brief 24/27.
-    // The DB column stays nullable for back-compat with any historical rows;
-    // this is a contract change at the surface, not at the storage level.
+    // bypass them. The DB column stays nullable for back-compat with any
+    // historical rows; this is a contract change at the surface, not at the
+    // storage level.
+    // Brief 152 — tightened from the loose `[^@\s]+@[^@\s]+\.[^@\s]+` to the
+    // canonical isValidEmail helper. Rejects RFC-invalid local-part dot
+    // positions (trailing/leading/consecutive) that Exchange Online refuses
+    // during recipient resolution.
     const emailTrimmed = claimData.customerEmail.trim();
-    const emailValid = /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(emailTrimmed);
-    if (!emailTrimmed || !emailValid) {
+    if (!emailTrimmed || !isValidEmail(emailTrimmed)) {
       const message = "Email required";
       if (browserMode) {
         let slug = encodeURIComponent(claimData.location || "") || "unknown";

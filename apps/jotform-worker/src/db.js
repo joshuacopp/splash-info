@@ -68,13 +68,26 @@ export async function listForms(env) {
  * COUNT(*) for jotform_submissions WHERE form_id = ?. Reads
  * `Content-Range` from a `Prefer: count=exact, limit=0` response so no
  * rows transfer over the wire — only the header.
+ *
+ * `siteNumbers` (Brief 151) — optional `Set<string>` of accepted
+ * `site_number` strings to scope the count by. Pass `"all"` or omit to
+ * count every row. Empty `Set` short-circuits to 0 without hitting
+ * Supabase. The strings must already carry both padded + unpadded
+ * variants if needed (mirrors `listSubmissions`).
  */
-export async function countSubmissionsForForm(env, formId) {
+export async function countSubmissionsForForm(env, formId, siteNumbers) {
   if (!env.SUPABASE_URL || !env.SUPABASE_SERVICE_KEY) return 0;
+  if (siteNumbers instanceof Set && siteNumbers.size === 0) return 0;
   const url = new URL("/rest/v1/jotform_submissions", env.SUPABASE_URL);
   url.searchParams.set("form_id", `eq.${formId}`);
   url.searchParams.set("select", "id");
   url.searchParams.set("limit", "0");
+  if (siteNumbers instanceof Set) {
+    url.searchParams.append(
+      "site_number",
+      `in.(${[...siteNumbers].map(quoteForIn).join(",")})`
+    );
+  }
 
   let resp;
   try {

@@ -145,3 +145,7 @@
 - 2026-05-29 16:10:25 brief-146-claim-photo-cellular-resilience.md (success)
 - 2026-06-01 08:30:25 brief-147-forced-reset-session-refresh-and-damage-gate.md (success)
 - 2026-06-01 09:36:20 brief-148-scorm-builder-into-apps-web.md (success)
+- 2026-06-03 07:57:05 brief-149-create-user-set-dc-role-when-claims-granted.md (success)
+- 2026-06-03 08:05:10 brief-150-password-ux-show-toggle-and-live-validation.md (success)
+- 2026-06-03 08:17:55 brief-151-jotform-index-scoped-to-any-session.md (success)
+- 2026-06-03 08:35:59 brief-152-email-validation-tighten-trailing-leading-consecutive-dot.md (success)

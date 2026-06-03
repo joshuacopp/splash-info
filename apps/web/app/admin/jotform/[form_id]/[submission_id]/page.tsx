@@ -43,7 +43,6 @@ export default async function JotformSubmissionDetailPage({
   if (!session) {
     return (
       <NoAccessCard
-        reason="signin"
         returnPath={`/admin/jotform/${encodeURIComponent(form_id)}/${encodeURIComponent(submission_id)}`}
       />
     );

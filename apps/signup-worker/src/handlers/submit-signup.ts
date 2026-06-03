@@ -20,6 +20,7 @@ import {
   updateUsageCount
 } from "@splash/db-supabase";
 import { json, jsonError } from "@splash/http";
+import { isValidEmail } from "@splash/types/email-validate";
 import type { MaxpassSignupInsert, SuspiciousPhoneTier } from "@splash/types/signups";
 import type { Env } from "../env.js";
 
@@ -132,6 +133,19 @@ export async function handleSignupSubmission(
 
   const phone = (body.phone ?? "").trim();
   if (!phone) return jsonError(400, "phone required");
+
+  // Brief 152: tighten email validation to reject RFC-invalid local-part
+  // shapes (trailing/leading/consecutive dots) that Exchange Online refuses
+  // during recipient resolution on the PA confirmation-email flow.
+  if (!isValidEmail(body.email)) {
+    return json(
+      {
+        denied: true,
+        error: "Please enter a valid email address."
+      },
+      400
+    );
+  }
 
   const ctx = captureRequestContext(request);
   const sb = createServiceClient(env);

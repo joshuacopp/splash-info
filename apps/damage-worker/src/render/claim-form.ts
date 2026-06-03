@@ -14,6 +14,7 @@
 // employeeName); worker is source of truth.
 
 import { ASSETS } from "@splash/storage-r2";
+import { EMAIL_REGEX_SOURCE } from "@splash/types/email-validate";
 
 const EQUIPMENT_CHOICES = [
   "Top Brush",
@@ -644,6 +645,19 @@ export function renderClaimForm(args: RenderClaimFormArgs): string {
 // short-lived token or similar).
 const FORM_SCRIPT = `(function () {
   var STAFF_PIN = '1981';
+
+  // Brief 152 — pragmatic email regex compiled from EMAIL_REGEX_SOURCE in
+  // @splash/types/email-validate so this client-side gate matches the
+  // server-side isValidEmail check exactly. DO NOT EDIT inline — fix the
+  // canonical source. Rejects trailing/leading/consecutive dots in
+  // local-part that pass HTML5 type="email" + the legacy loose regex.
+  var EMAIL_RE = new RegExp(${JSON.stringify(EMAIL_REGEX_SOURCE)});
+  function validateCustomerEmail(input) {
+    if (!input) return true;
+    var v = (input.value || '').trim();
+    if (v.length === 0 || v.length > 254) return false;
+    return EMAIL_RE.test(v);
+  }
   // Brief 146 — photoRefs is the authoritative submit payload (R2 keys for
   // OOB-uploaded photos). photos[] still holds File handles for the in-
   // session preview thumbnail and (when needed) retry-upload bytes, but the
@@ -726,6 +740,23 @@ const FORM_SCRIPT = `(function () {
             if (typeof field.focus === 'function') field.focus();
             return;
           }
+        }
+        // Brief 152: explicit email-regex check on top of HTML5 validity.
+        // The browser's type="email" validator accepts trailing-dot
+        // local-parts (e.g. "name.@gmail.com") which Exchange Online
+        // rejects during recipient resolution. Surface the customError
+        // bubble at the customerEmail field if so.
+        var emailField = document.getElementById('customerEmail');
+        if (emailField && !validateCustomerEmail(emailField)) {
+          if (typeof emailField.setCustomValidity === 'function') {
+            emailField.setCustomValidity('Please enter a valid email address.');
+          }
+          emailField.reportValidity();
+          if (typeof emailField.setCustomValidity === 'function') {
+            emailField.setCustomValidity('');
+          }
+          if (typeof emailField.focus === 'function') emailField.focus();
+          return;
         }
       }
       openPinModal();
@@ -1823,6 +1854,16 @@ const FORM_SCRIPT = `(function () {
     // gates are covered without explicit checks here.
     if (!form.checkValidity()) {
       form.reportValidity();
+      return false;
+    }
+    // Brief 152: defense-in-depth re-check on the email regex at final
+    // submit time. The Continue-button gate already runs the same check
+    // before revealing the staff section, but a programmatic / a11y path
+    // that bypasses Continue would otherwise reach here unchecked.
+    var emailField = document.getElementById('customerEmail');
+    if (emailField && !validateCustomerEmail(emailField)) {
+      showError('Please enter a valid email address.');
+      if (typeof emailField.focus === 'function') emailField.focus();
       return false;
     }
     var missing = [];

@@ -72,7 +72,36 @@ function readChanged(body: unknown): boolean {
 
 /* ============================================================
  * Create user
+ *
+ * Brief 149 — when `claims` is among the tool grants AND the operator
+ * picked a dc_role on the inline CreateUserToolsAndDcRole island, chase
+ * the create-user response with a second POST to
+ * /sysadmin/api/users/{newUserId}/dc-role so the new user lands on
+ * /admin/damage without a separate Set-DC-Role pass.
+ *
+ * The two writes target different table domains (Create User owns
+ * auth.users + user_permissions + user_tool_access; Set DC Role owns
+ * damage_claim_user_roles + damage_claim_user_locations), so chaining
+ * apps/web-side keeps both worker handlers scoped and the audit log
+ * records both `create_user` and `set_dc_role` rows naturally (no
+ * worker change required).
+ *
+ * If the second POST fails after Create succeeded, the form surfaces a
+ * partial-success message rather than reporting a fresh failure — the
+ * user IS created and the half-state is recoverable via the standalone
+ * Set DC Role card. An orphaned half-created auth.users row would not
+ * be recoverable through the UI.
  * ============================================================ */
+
+// DcRoleValue is declared once at module scope in the Set DC Role section
+// below; reused here via TS's whole-file type resolution.
+
+const VALID_DC_ROLES_CLIENT: ReadonlySet<DcRoleValue> = new Set([
+  "gm",
+  "rm",
+  "admin",
+  "super_admin"
+]);
 
 interface CreateUserBody {
   email: string;
@@ -81,6 +110,23 @@ interface CreateUserBody {
   /** Brief 18 — forwarded only when role === "location_admin". */
   location_code?: string;
   tools?: string[];
+}
+
+interface SetDcRoleBodyForChain {
+  role: DcRoleValue;
+  location_codes: string[];
+}
+
+function readUserIdFromBody(body: unknown): string | null {
+  if (
+    body &&
+    typeof body === "object" &&
+    "user_id" in body &&
+    typeof (body as { user_id?: unknown }).user_id === "string"
+  ) {
+    return (body as { user_id: string }).user_id;
+  }
+  return null;
 }
 
 export async function createUserAction(
@@ -96,6 +142,7 @@ export async function createUserAction(
     .getAll("tools")
     .map((v) => (typeof v === "string" ? v : ""))
     .filter((v) => v.length > 0);
+  const dcRoleRaw = fieldString(formData, "dc_role");
 
   const body: CreateUserBody = { email, password };
   if (roleRaw.length > 0) {
@@ -122,6 +169,48 @@ export async function createUserAction(
     typeof (result.body as { email?: unknown }).email === "string"
       ? (result.body as { email: string }).email
       : email;
+  const newUserId = readUserIdFromBody(result.body);
+
+  // Brief 149 — chase with the dc-role write when claims is granted AND
+  // the operator picked a dc_role. The island enforces dc_role-required
+  // when claims is checked via HTML5 `required`; this branch is a no-op
+  // for non-claims users.
+  const includesClaims = tools.includes("claims");
+  if (
+    includesClaims &&
+    dcRoleRaw.length > 0 &&
+    VALID_DC_ROLES_CLIENT.has(dcRoleRaw as DcRoleValue) &&
+    newUserId
+  ) {
+    const dcRole = dcRoleRaw as DcRoleValue;
+    // dc_locations mirrors the existing Location field for gm/rm; admin
+    // and super_admin bypass scoping per Brief 61's worker contract.
+    const locationCodes: string[] =
+      (dcRole === "gm" || dcRole === "rm") && locationCode !== undefined
+        ? [locationCode]
+        : [];
+
+    const dcBody: SetDcRoleBodyForChain = {
+      role: dcRole,
+      location_codes: locationCodes
+    };
+
+    const dcResult = await sysadminPostJson(
+      `/sysadmin/api/users/${encodeURIComponent(newUserId)}/dc-role`,
+      dcBody
+    );
+
+    if (!dcResult.ok) {
+      // Partial-success: user exists, DC role write failed. Don't roll
+      // back — a missing dc_role is recoverable via the standalone Set
+      // DC Role card; an orphaned auth.users row is not.
+      revalidatePath(PAGE_PATH);
+      return {
+        ok: true,
+        message: `User created: ${respEmail} — but DC role write failed (${dcResult.error}). Set it manually via the Set DC Role card.`
+      };
+    }
+  }
 
   revalidatePath(PAGE_PATH);
   return { ok: true, message: `User created: ${respEmail}` };

@@ -664,6 +664,41 @@ URL-based — service bindings don't apply to those.
 
 ## Glossary
 
+- **email validation** (Brief 152) - Canonical email validator for every
+  customer-facing form in the monorepo. Lives at
+  `packages/types/src/email-validate.ts` and exports
+  `isValidEmail(s: string): boolean` + `EMAIL_REGEX` + `EMAIL_REGEX_SOURCE`
+  (the regex source string, used by worker-rendered HTML forms that need
+  to compile the same regex inside an inline `<script>` tag without
+  serializing a function across the worker → browser boundary).
+  **Rejects** RFC-invalid local-part shapes that Office 365's Send Email V2
+  connector refuses during recipient resolution: leading dot
+  (`.name@domain.com`), trailing dot (`name.@domain.com`), consecutive
+  dots (`na..me@domain.com`), and various malformed domain shapes
+  (leading/trailing dot or hyphen, missing TLD, TLD < 2 chars). **Accepts**
+  all common shapes including single-character local-parts (`a@b.co`).
+  Regex source:
+  `^[A-Za-z0-9](?:[A-Za-z0-9_+-]|\.(?=[A-Za-z0-9_+-]))*@(?:[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?\.)+[A-Za-z]{2,}$`.
+  The `\.(?=[A-Za-z0-9_+-])` rule simultaneously rejects trailing dots
+  (lookahead fails when next char is `@`) and consecutive dots
+  (lookahead fails when next char is `.`). Customer-facing forms using
+  it (client + server gates, both): apps/signup-worker (TS port),
+  legacy/signup_worker_with_BOGO.js (production signup; regex
+  duplicated inline with a "must match canonical" comment because the
+  legacy file is not part of the TS workspace), apps/damage-worker
+  customer claim form, apps/fleet-inquiry-worker, apps/forms-worker
+  email field type (HTML5 `pattern` attribute + Zod `.regex(EMAIL_RE,
+  ...)` in `packages/forms-schema/src/validators/payload.ts`).
+  Operator-facing surfaces (sysadmin user email management,
+  PersonAutosuggest in the forms Workflow builder, jotform-worker
+  filter sanitizer) still use the legacy loose regex — they're not
+  in the bug class (no PA send to a customer-supplied address), but
+  candidates for a follow-up alignment brief. NOT a full RFC-5321
+  validator — quoted local-parts, IP-literal domains, and
+  internationalized addresses are out of scope (haven't been
+  observed in production traffic; edge cases can come in via a
+  follow-up brief if a real customer hits one).
+
 - **claim photo upload pipeline** (Brief 146) - The out-of-band photo
   upload + JSON-submit flow for the public customer claim form at
   `/claims/{site}`. Closes the cellular-upload failure mode where
@@ -942,6 +977,36 @@ URL-based — service bindings don't apply to those.
   — NEVER falls back to `locations.location` (postal address).
   Closes the bug class Brief 111 patched with a client-side
   address-shape heuristic in FilterBar; that heuristic is removed.
+  Brief 151 (2026-06-03): `GET /admin/jotform/api/forms` widened
+  from admin-tier to any authenticated session. Per-form
+  `submission_count` values are now pre-scoped server-side by
+  `accessibleSiteNumbersForSession` — admin-tier callers
+  (super_admin / dcRole admin/super_admin) still see unscoped
+  totals; RM / RD / GM / location_admin see counts filtered to
+  their accessible `site_number` set (both padded + unpadded
+  variants per the Brief 107 widget convention). Response carries
+  a new `scope: "all" | "scoped"` field so apps/web can render
+  scope-aware copy ("{N} submissions at your locations" vs the
+  prior "{N} submissions on record"). `countSubmissionsForForm`
+  in `apps/jotform-worker/src/db.js` gained an optional
+  `siteNumbers` arg (`Set<string> | undefined`); empty Set
+  short-circuits to 0 without hitting Supabase, non-empty Set
+  appends `site_number=in.(...)` via the existing `quoteForIn`
+  helper, undefined keeps unscoped behavior. Reverses the
+  Brief 109 "RM/RD/GM users can still open per-form URLs by
+  direct link" framing — beta testers (e.g., location_admin
+  assigned to Cicero with claims + pricing tools) reported they
+  couldn't reach per-form URLs because they didn't know which
+  forms existed or what they were named. apps/web `/admin/jotform`
+  is now any-session; an empty-scope caller sees a friendly
+  callout above a muted card grid (still showing form names,
+  not a full empty-state replacement). The per-form pages
+  (`/admin/jotform/[form_id]` and `[form_id]/[submission_id]`)
+  were already any-session per Brief 107; only the index gate
+  changed. `_components/NoAccessCard.tsx` dropped its
+  unreachable `forbidden` branch — every callsite is signin-only
+  now. `authenticateAdminOrHigher` in `auth-gate.js` has zero
+  callers post-Brief-151 but stays exported for future surfaces.
 
 - **JotForm submissions** (Brief 107) - The four onboarded JotForm
   forms (rewash, salt-log, retention, time-card-edit) all share a

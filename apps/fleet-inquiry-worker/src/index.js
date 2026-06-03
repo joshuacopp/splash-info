@@ -13,6 +13,19 @@ const CACHE_TTL = 300;
 const STALE_TTL = 86400;
 const FIVESTAR_RADIUS_MI = 25;
 
+// Brief 152: pragmatic email validation. Canonical helper lives at
+// packages/types/src/email-validate.ts (isValidEmail). This worker is
+// verbatim-lifted JS not part of the TS workspace, so the regex source is
+// duplicated here. Must reject leading/trailing/consecutive dots in
+// local-part. If you change one, change the other.
+const EMAIL_REGEX = /^[A-Za-z0-9](?:[A-Za-z0-9_+-]|\.(?=[A-Za-z0-9_+-]))*@(?:[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?\.)+[A-Za-z]{2,}$/;
+function isValidEmail(s) {
+  if (!s) return false;
+  const trimmed = String(s).trim();
+  if (trimmed.length === 0 || trimmed.length > 254) return false;
+  return EMAIL_REGEX.test(trimmed);
+}
+
 export default {
   async fetch(request, env, ctx) {
     return handle(request, env, ctx);
@@ -316,8 +329,8 @@ async function handleFleetSubmit(request, env, ctx) {
       return jsonResponse(400, { error: "Please select at least one package or request a detailing quote." });
     }
 
-    // Basic email validation
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(data.email)) {
+    // Brief 152: tightened email validation. Canonical helper above.
+    if (!isValidEmail(data.email)) {
       return jsonResponse(400, { error: "Please enter a valid email address." });
     }
 
@@ -1784,7 +1797,12 @@ function renderFleetForm(env) {
             var nameValid = nameInput.value.trim().length > 0;
             var phoneDigits = phoneInput.value.replace(/\\D/g, '');
             var phoneValid = phoneDigits.length === 10;
-            var emailValid = /^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(emailInput.value.trim());
+            // Brief 152: client-side gate matches the server-side isValidEmail.
+            // DO NOT EDIT inline — fix packages/types/src/email-validate.ts and
+            // mirror here. Rejects trailing/leading/consecutive dots in local-part.
+            var __emailVal = emailInput.value.trim();
+            var emailValid = __emailVal.length > 0 && __emailVal.length <= 254 &&
+                /^[A-Za-z0-9](?:[A-Za-z0-9_+-]|\\.(?=[A-Za-z0-9_+-]))*@(?:[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?\\.)+[A-Za-z]{2,}$/.test(__emailVal);
             var locationValid = selectedLocation !== null;
             var packagesValid = selectedPackages.length > 0 || detailingRequested;
 

@@ -8,6 +8,10 @@
 // server-side, so client validation is UX, not security.
 
 import { useState, type FormEvent } from "react";
+import PasswordInput from "../_components/PasswordInput";
+import PasswordRequirements from "./_components/PasswordRequirements";
+import PasswordMatchHint from "./_components/PasswordMatchHint";
+import { isMinimumMet } from "./_lib/password-rules";
 
 // Forced-reset posts to /api/forced-reset as a same-origin path. Production:
 // apps/web and dashboard-worker share splashcarwashes.info. Dev: apps/web's
@@ -25,19 +29,23 @@ export interface ChangePasswordFormProps {
 
 export function ChangePasswordForm({ required, next }: ChangePasswordFormProps) {
   const [password, setPassword] = useState("");
-  const [confirm, setConfirm] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+
+  const meetsMinimum = isMinimumMet(password);
+  const matches = password === confirmPassword;
+  const submitDisabled = submitting || !meetsMinimum || !matches;
 
   const onSubmit = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     setError(null);
 
-    if (password.length < 8) {
+    if (!meetsMinimum) {
       setError("Password must be at least 8 characters");
       return;
     }
-    if (password !== confirm) {
+    if (!matches) {
       setError("Passwords do not match");
       return;
     }
@@ -48,7 +56,7 @@ export function ChangePasswordForm({ required, next }: ChangePasswordFormProps) 
       // primary content-type branch (same as /api/login).
       const body = new URLSearchParams();
       body.set("new_password", password);
-      body.set("confirm_password", confirm);
+      body.set("confirm_password", confirmPassword);
       body.set("next", next || DEFAULT_AUTHED_LANDING);
 
       const r = await fetch("/api/forced-reset", {
@@ -91,61 +99,58 @@ export function ChangePasswordForm({ required, next }: ChangePasswordFormProps) 
   };
 
   return (
-    <section style={{ padding: 24, maxWidth: 480, margin: "60px auto", color: "#1c164e" }}>
-      <h1 style={{ marginBottom: 8 }}>Change Password</h1>
+    <section className="mx-auto my-16 max-w-md px-6 text-splash-navy">
+      <h1 className="mb-2 text-2xl font-bold">Change Password</h1>
       {required ? (
-        <p style={{ color: "#dc2626", marginTop: 0, marginBottom: 16 }}>
+        <p className="mt-0 mb-4 text-sm text-splash-deny">
           Your account requires a password change before continuing.
         </p>
       ) : (
-        <p style={{ color: "#6b7280", marginTop: 0, marginBottom: 16 }}>
+        <p className="mt-0 mb-4 text-sm text-gray-dark">
           Enter a new password for your account.
         </p>
       )}
       <form onSubmit={onSubmit}>
-        <label style={{ display: "block", marginBottom: 12 }}>
-          <span style={{ display: "block", fontWeight: 600, marginBottom: 4 }}>New Password</span>
-          <input
-            type="password"
+        <div className="mb-3">
+          <label htmlFor="new-password" className="mb-1 block text-sm font-semibold">
+            New Password
+          </label>
+          <PasswordInput
+            id="new-password"
             value={password}
-            onChange={(e) => setPassword(e.target.value)}
+            onChange={setPassword}
             required
-            minLength={8}
             autoFocus
             autoComplete="new-password"
-            style={{ width: "100%", padding: "8px 12px", height: 40, border: "1.5px solid #dbdbdb", borderRadius: 6 }}
+            describedBy="password-requirements"
           />
-        </label>
-        <label style={{ display: "block", marginBottom: 16 }}>
-          <span style={{ display: "block", fontWeight: 600, marginBottom: 4 }}>Confirm Password</span>
-          <input
-            type="password"
-            value={confirm}
-            onChange={(e) => setConfirm(e.target.value)}
+          <PasswordRequirements password={password} />
+        </div>
+        <div className="mb-4">
+          <label htmlFor="confirm-password" className="mb-1 block text-sm font-semibold">
+            Confirm Password
+          </label>
+          <PasswordInput
+            id="confirm-password"
+            value={confirmPassword}
+            onChange={setConfirmPassword}
             required
-            minLength={8}
             autoComplete="new-password"
-            style={{ width: "100%", padding: "8px 12px", height: 40, border: "1.5px solid #dbdbdb", borderRadius: 6 }}
           />
-        </label>
+          <PasswordMatchHint password={password} confirm={confirmPassword} />
+        </div>
         {error ? (
-          <p role="alert" style={{ color: "#dc2626", marginTop: 0, marginBottom: 12 }}>
+          <p
+            role="alert"
+            className="mb-3 rounded-splash-sm border border-red-200 bg-red-50 px-3 py-2 text-sm font-medium text-splash-deny"
+          >
             {error}
           </p>
         ) : null}
         <button
           type="submit"
-          disabled={submitting}
-          style={{
-            width: "100%",
-            height: 44,
-            background: "#2b3491",
-            color: "white",
-            border: "none",
-            borderRadius: 6,
-            fontWeight: 700,
-            cursor: submitting ? "wait" : "pointer"
-          }}
+          disabled={submitDisabled}
+          className="h-11 w-full rounded-splash-sm bg-splash-blue font-bold text-white shadow-splash-btn transition-colors hover:bg-splash-blue-dark disabled:cursor-not-allowed disabled:opacity-60"
         >
           {submitting ? "Updating…" : "Change Password"}
         </button>

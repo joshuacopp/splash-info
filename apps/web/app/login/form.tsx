@@ -19,6 +19,7 @@
 // (mandatory cross-origin in dev; harmless same-origin post-cutover).
 
 import { useState, type FormEvent } from "react";
+import PasswordInput from "../_components/PasswordInput";
 
 // Login posts to /api/login as a same-origin path. In production, apps/web
 // and dashboard-worker share splashcarwashes.info so the browser sends the
@@ -119,17 +120,18 @@ export function LoginForm({ returnPath }: LoginFormProps) {
             className="block h-10 w-full rounded-splash-sm border-[1.5px] border-gray-light px-3 text-base outline-none focus:border-splash-blue focus:ring-2 focus:ring-sudsy-blue/30"
           />
         </label>
-        <label className="mb-4 block">
-          <span className="mb-1 block text-sm font-semibold">Password</span>
-          <input
-            type="password"
+        <div className="mb-4">
+          <label htmlFor="login-password" className="mb-1 block text-sm font-semibold">
+            Password
+          </label>
+          <PasswordInput
+            id="login-password"
             value={password}
-            onChange={(e) => setPassword(e.target.value)}
+            onChange={setPassword}
             required
             autoComplete="current-password"
-            className="block h-10 w-full rounded-splash-sm border-[1.5px] border-gray-light px-3 text-base outline-none focus:border-splash-blue focus:ring-2 focus:ring-sudsy-blue/30"
           />
-        </label>
+        </div>
         {error ? (
           <p
             role="alert"

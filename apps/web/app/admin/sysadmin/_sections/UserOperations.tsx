@@ -18,6 +18,7 @@ import {
   inputClass,
   submitClass
 } from "../_components/OperationCard";
+import { CreateUserToolsAndDcRole } from "../_components/CreateUserToolsAndDcRole";
 import { LocationCodePicker } from "../_components/LocationCodePicker";
 import { SetDcRoleCard } from "../_components/SetDcRoleCard";
 import { UserPicker } from "../_components/UserPicker";
@@ -107,7 +108,7 @@ function CreateUserCard() {
         <div>
           <FieldLabel
             htmlFor="create-location-code"
-            helper="Required only for location_admin role — search by site #, name, or code"
+            helper="Required for location_admin role; also used as dc_locations when DC role is gm/rm"
           >
             Location
           </FieldLabel>
@@ -120,30 +121,7 @@ function CreateUserCard() {
           </p>
         </div>
 
-        <fieldset>
-          <FieldLabel htmlFor="create-tools-pricing" helper="Multi-select">
-            Initial tool grants
-          </FieldLabel>
-          <div className="flex flex-wrap gap-x-4 gap-y-1.5">
-            <label className="inline-flex items-center gap-2 text-sm text-splash-navy">
-              <input
-                id="create-tools-pricing"
-                type="checkbox"
-                name="tools"
-                value="pricing"
-              />
-              pricing
-            </label>
-            <label className="inline-flex items-center gap-2 text-sm text-splash-navy">
-              <input type="checkbox" name="tools" value="claims" />
-              claims
-            </label>
-            <label className="inline-flex items-center gap-2 text-sm text-splash-navy">
-              <input type="checkbox" name="tools" value="pertrack" />
-              pertrack
-            </label>
-          </div>
-        </fieldset>
+        <CreateUserToolsAndDcRole />
 
         <div className="pt-1">
           <button type="submit" className={submitClass}>

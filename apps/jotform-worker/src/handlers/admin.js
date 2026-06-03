@@ -3,10 +3,13 @@
 // Six routes under /admin/jotform/api/*:
 //
 //   GET  /admin/jotform/api/forms
-//     Returns [{form_id, slug, display_name, enabled, submission_count}]
-//     for all enabled forms. Admin-or-higher only (super_admin OR dcRole
-//     admin/super_admin); RM/RD/GM see no value here since they jump
-//     straight to per-form views.
+//     Returns {forms: [{form_id, slug, display_name, enabled,
+//     submission_count}], scope: "all" | "scoped"} for all enabled
+//     forms. Any authenticated session passes (Brief 151 widened from
+//     admin-tier). Per-form counts are scoped by
+//     `accessibleSiteNumbersForSession` — admin-tier sees unscoped
+//     totals, RM/RD/GM/location_admin see counts filtered to their
+//     accessible site_number set.
 //
 //   GET  /admin/jotform/api/{form_id}/submissions
 //     Paginated list with date range + optional site_number filter.
@@ -45,7 +48,6 @@
 
 import { isOriginAllowed, jsonError } from "@splash/http";
 import {
-  authenticateAdminOrHigher,
   authenticateForAdminApi,
   authenticateSuperAdmin,
   accessibleSiteNumbersForSession
@@ -149,17 +151,38 @@ export async function handleAdminApi(request, env, ctx) {
 
 /* ============================================================
  * GET /admin/jotform/api/forms
+ *
+ * Any authenticated session (Brief 151). Counts scope to the caller's
+ * `accessibleSiteNumbersForSession`:
+ *   - super_admin / admin / dcRole admin/super_admin → "all" (unscoped)
+ *   - RM / RD / GM / location_admin (anyone else)   → Set<site_number>
+ *     filter; counts reflect only rows the caller can see at
+ *     `/admin/jotform/{form_id}`.
+ *   - Empty accessible set → every count short-circuits to 0; the
+ *     form rows still render so apps/web can show a friendly empty
+ *     state instead of an empty page or 403.
+ *
+ * Response carries `scope: "all" | "scoped"` so apps/web can render
+ * the appropriate empty-state copy.
  * ============================================================ */
 
 async function handleListForms(request, env) {
-  const gate = await authenticateAdminOrHigher(request, env);
+  const gate = await authenticateForAdminApi(request, env);
   if (!gate.ok) return gate.response;
+
+  const scope = await accessibleSiteNumbersForSession(env, gate.session);
+  const siteNumbersFilter = scope === "all" ? undefined : scope;
+  const scopeKind = scope === "all" ? "all" : "scoped";
 
   const forms = await listForms(env);
   const enabled = forms.filter((f) => f.enabled !== false);
   const out = [];
   for (const form of enabled) {
-    const count = await countSubmissionsForForm(env, form.form_id);
+    const count = await countSubmissionsForForm(
+      env,
+      form.form_id,
+      siteNumbersFilter
+    );
     out.push({
       form_id: form.form_id,
       slug: form.slug,
@@ -168,7 +191,7 @@ async function handleListForms(request, env) {
       submission_count: count
     });
   }
-  return jsonOk({ forms: out });
+  return jsonOk({ forms: out, scope: scopeKind });
 }
 
 /* ============================================================

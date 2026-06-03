@@ -91,26 +91,26 @@ export default async function JotformFormPage({
   if (!session) {
     return (
       <NoAccessCard
-        reason="signin"
         returnPath={`/admin/jotform/${encodeURIComponent(form_id)}`}
       />
     );
   }
 
-  // Resolve form display_name via admin-tier listForms() when available;
-  // RM/RD/GM fall through to the submission fetch (which 404s for
-  // unknown/disabled forms) so a stale link still gets a proper chrome.
+  // Brief 151 — listForms() is any-session, so all callers resolve a
+  // proper display_name + early 404 on stale links (was admin-tier
+  // gated in Brief 109, with non-admin falling through to the
+  // submissions fetch for the 404 chrome).
   let formMeta: JotformForm | null = null;
-  if (isAdminTier(session)) {
-    try {
-      const formsResp = await listForms();
-      formMeta = formsResp?.forms.find((f) => f.form_id === form_id) ?? null;
-      if (formsResp !== null && formMeta === null) {
-        notFound();
-      }
-    } catch {
-      /* Non-fatal — drop through. */
+  let formsScope: "all" | "scoped" | undefined;
+  try {
+    const formsResp = await listForms();
+    formMeta = formsResp?.forms.find((f) => f.form_id === form_id) ?? null;
+    formsScope = formsResp?.scope;
+    if (formsResp !== null && formMeta === null) {
+      notFound();
     }
+  } catch {
+    /* Non-fatal — drop through. */
   }
 
   const today = todayEstYmd();
@@ -159,8 +159,8 @@ export default async function JotformFormPage({
     fetchError = err instanceof Error ? err.message : String(err);
   }
 
-  // Unknown / disabled form → 404 chrome for non-admin callers (admin
-  // already 404'd above via listForms).
+  // Unknown / disabled form → 404 chrome when listForms threw + the
+  // submissions fetch also produced nothing usable.
   if (
     grouped === null &&
     countOnly === null &&
@@ -196,7 +196,8 @@ export default async function JotformFormPage({
         {formMeta && (
           <p className="mt-1 text-sm text-splash-navy/70">
             <code>{formMeta.slug}</code> ·{" "}
-            {formMeta.submission_count.toLocaleString()} submissions on record
+            {formMeta.submission_count.toLocaleString()} submissions
+            {formsScope === "scoped" ? " at your locations" : " on record"}
           </p>
         )}
       </div>

@@ -12,6 +12,7 @@
 
 import { ASSETS } from "@splash/storage-r2/assets";
 import type { PricingSimpleResolvedRow } from "@splash/types/pricing";
+import { EMAIL_REGEX_SOURCE } from "@splash/types/email-validate";
 import { BUBBLE_BACKGROUND_CSS, BUBBLES_HTML, FORM_CSS } from "./css.js";
 import { cap, escHtml } from "./escape.js";
 
@@ -175,6 +176,13 @@ ${FORM_CSS}
       var submitBtn    = document.getElementById('submitBtn');
       var form         = document.getElementById('signupForm');
 
+      // Brief 152: email regex compiled from EMAIL_REGEX_SOURCE in
+      // @splash/types/email-validate so the client-side gate matches the
+      // server-side isValidEmail check exactly. DO NOT EDIT inline — fix
+      // the canonical source. Rejects trailing/leading/consecutive dots
+      // in local-part that pass the legacy /^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$/.
+      var EMAIL_RE = new RegExp(${JSON.stringify(EMAIL_REGEX_SOURCE)});
+
       // Phone auto-format: (XXX)XXX-XXXX, no space after closing paren —
       // matches the documented format used by phone_usage_log + JotForm prefill.
       phoneInput.addEventListener('input', function(e){
@@ -201,7 +209,7 @@ ${FORM_CSS}
       }
       function validateEmail(){
         var v = emailInput.value.trim();
-        var ok = /^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(v);
+        var ok = v.length > 0 && v.length <= 254 && EMAIL_RE.test(v);
         emailInput.classList.toggle('error', !!v && !ok);
         emailError.classList.toggle('show', !!v && !ok);
         return ok;
