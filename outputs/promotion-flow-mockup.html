@@ -1,0 +1,1493 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Promotion Creation — Splash Mockup</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Asap:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+<style>
+  :root {
+    --splash-blue: #2b3491;
+    --splash-blue-dark: #20276e;
+    --splash-navy: #1c164e;
+    --sudsy-blue: #3dbeee;
+    --sudsy-blue-soft: #d6f1fb;
+    --cream: #f5eedd;
+    --yellow: #f1c61e;
+    --racecar-red: #dc3e26;
+    --gray-light: #dbdbdb;
+    --gray-dark: #3a3f47;
+    --splash-success: #059669;
+    --splash-deny: #dc2626;
+    --splash-warn: #f59e0b;
+    --shadow-card: 0 10px 30px rgba(28, 22, 78, 0.18);
+    --shadow-card-hover: 0 14px 40px rgba(28, 22, 78, 0.28);
+    --shadow-btn: 0 4px 12px rgba(43, 52, 145, 0.25);
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    font-family: "Asap", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    background: #f6f7fb;
+    color: var(--splash-navy);
+    min-height: 100vh;
+  }
+  a { color: var(--splash-blue); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  /* Header bar (matches the app's white-script-on-navy header band) */
+  header.app-header {
+    background: var(--splash-navy);
+    color: #fff;
+    padding: 14px 24px;
+    display: flex;
+    align-items: center;
+    gap: 24px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+  }
+  .logo-script {
+    font-family: "Asap", sans-serif;
+    font-weight: 800;
+    font-style: italic;
+    font-size: 22px;
+    color: #fff;
+    letter-spacing: 0.5px;
+  }
+  .logo-script .red { color: var(--racecar-red); }
+  .header-nav {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+    margin-left: auto;
+  }
+  .header-nav button {
+    background: rgba(255,255,255,0.08);
+    color: #fff;
+    border: 1px solid rgba(255,255,255,0.18);
+    padding: 7px 12px;
+    border-radius: 6px;
+    font-family: inherit;
+    font-size: 12.5px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 120ms ease;
+  }
+  .header-nav button:hover { background: rgba(255,255,255,0.16); }
+  .header-nav button.active {
+    background: var(--sudsy-blue);
+    color: var(--splash-navy);
+    border-color: var(--sudsy-blue);
+  }
+
+  /* Page layout */
+  main {
+    max-width: 1100px;
+    margin: 0 auto;
+    padding: 36px 20px 80px;
+  }
+  .page-eyebrow {
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.18em;
+    color: var(--sudsy-blue);
+    margin-bottom: 4px;
+  }
+  h1.page-title {
+    font-size: 24px;
+    font-weight: 700;
+    color: var(--splash-navy);
+    margin: 0 0 6px 0;
+  }
+  .page-sub {
+    color: rgba(28, 22, 78, 0.7);
+    font-size: 14.5px;
+    margin: 0 0 28px 0;
+  }
+
+  /* Card */
+  .card {
+    background: #fff;
+    border: 3px solid var(--splash-navy);
+    border-radius: 16px;
+    box-shadow: var(--shadow-card);
+    overflow: hidden;
+    margin-bottom: 20px;
+  }
+  .card-head {
+    background: linear-gradient(135deg, var(--splash-blue), var(--splash-navy));
+    color: #fff;
+    padding: 16px 20px;
+  }
+  .card-head .eyebrow {
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.16em;
+    color: var(--sudsy-blue);
+    margin: 0 0 2px 0;
+  }
+  .card-head h2 {
+    margin: 0;
+    font-size: 18px;
+    font-weight: 700;
+    color: #fff;
+  }
+  .card-body { padding: 22px 20px; }
+
+  /* Forms */
+  .field { margin-bottom: 16px; }
+  .field label {
+    display: block;
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--splash-navy);
+    margin-bottom: 6px;
+  }
+  .field .hint {
+    font-size: 12px;
+    color: rgba(28, 22, 78, 0.55);
+    margin-top: 4px;
+  }
+  .field input[type=text],
+  .field input[type=date],
+  .field input[type=email],
+  .field input[type=number],
+  .field select,
+  .field textarea {
+    width: 100%;
+    padding: 9px 11px;
+    font-family: inherit;
+    font-size: 14px;
+    color: var(--splash-navy);
+    border: 2px solid var(--gray-light);
+    border-radius: 8px;
+    background: #fff;
+    transition: border-color 120ms ease;
+  }
+  .field input:focus,
+  .field select:focus,
+  .field textarea:focus {
+    outline: none;
+    border-color: var(--splash-blue);
+  }
+  .field textarea { min-height: 80px; resize: vertical; }
+  .field select[multiple] { min-height: 140px; }
+
+  .field-row { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  @media (max-width: 600px) { .field-row { grid-template-columns: 1fr; } }
+
+  /* Buttons */
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    padding: 10px 18px;
+    font-family: inherit;
+    font-size: 14px;
+    font-weight: 700;
+    border-radius: 8px;
+    cursor: pointer;
+    border: 2px solid transparent;
+    transition: all 120ms ease;
+  }
+  .btn-primary {
+    background: var(--splash-blue);
+    color: #fff;
+    box-shadow: var(--shadow-btn);
+  }
+  .btn-primary:hover { background: var(--splash-blue-dark); }
+  .btn-secondary {
+    background: #fff;
+    color: var(--splash-navy);
+    border-color: var(--splash-navy);
+  }
+  .btn-secondary:hover { background: #f3f3f8; }
+  .btn-ghost {
+    background: transparent;
+    color: var(--splash-blue);
+    padding: 6px 10px;
+  }
+  .btn-ghost:hover { background: rgba(43, 52, 145, 0.08); }
+  .btn-success {
+    background: var(--splash-success);
+    color: #fff;
+  }
+  .btn-success:hover { filter: brightness(0.95); }
+  .actions { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 6px; }
+
+  /* Badges / pills */
+  .pill {
+    display: inline-flex;
+    align-items: center;
+    padding: 3px 9px;
+    font-size: 11.5px;
+    font-weight: 700;
+    border-radius: 999px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    white-space: nowrap;
+  }
+  .pill-neutral { background: #e6e7ec; color: #3a3f47; }
+  .pill-blue { background: #dde0f5; color: var(--splash-blue); }
+  .pill-amber { background: #fef3c7; color: #92400e; }
+  .pill-teal { background: #ccfbf1; color: #115e59; }
+  .pill-green { background: #d1fae5; color: #065f46; }
+  .pill-gray { background: #e5e7eb; color: #4b5563; }
+  .pill-red { background: #fee2e2; color: #991b1b; }
+
+  .priority-high { background: #fee2e2; color: #991b1b; }
+  .priority-medium { background: #fef3c7; color: #92400e; }
+  .priority-low { background: #d1fae5; color: #065f46; }
+
+  /* Tables */
+  table.data {
+    width: 100%;
+    border-collapse: collapse;
+  }
+  table.data th, table.data td {
+    text-align: left;
+    padding: 11px 14px;
+    border-bottom: 1px solid #eceef4;
+    font-size: 13.5px;
+    vertical-align: middle;
+  }
+  table.data th {
+    background: #f7f8fc;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: rgba(28, 22, 78, 0.65);
+    font-weight: 700;
+  }
+  table.data tbody tr { cursor: pointer; transition: background 90ms ease; }
+  table.data tbody tr:hover { background: #f5f7fc; }
+  table.data .row-title { font-weight: 700; color: var(--splash-navy); }
+
+  /* Pipeline / stepper */
+  .pipeline {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    flex-wrap: wrap;
+    margin: 6px 0 18px 0;
+  }
+  .pipeline .step {
+    padding: 6px 14px;
+    background: #eef0f7;
+    color: rgba(28, 22, 78, 0.55);
+    font-size: 12px;
+    font-weight: 700;
+    border-radius: 999px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+  .pipeline .step.done {
+    background: var(--sudsy-blue-soft);
+    color: var(--splash-navy);
+  }
+  .pipeline .step.current {
+    background: var(--splash-blue);
+    color: #fff;
+  }
+  .pipeline .arrow {
+    color: rgba(28, 22, 78, 0.35);
+    font-size: 14px;
+  }
+
+  /* Key/value rows */
+  .kv-grid {
+    display: grid;
+    grid-template-columns: 180px 1fr;
+    gap: 10px 18px;
+    font-size: 14px;
+  }
+  .kv-grid dt {
+    color: rgba(28, 22, 78, 0.6);
+    font-weight: 600;
+    font-size: 12.5px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+  .kv-grid dd { margin: 0; color: var(--splash-navy); }
+
+  /* Filters bar */
+  .toolbar {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+    align-items: center;
+    margin-bottom: 14px;
+  }
+  .toolbar select,
+  .toolbar input {
+    padding: 7px 10px;
+    font-family: inherit;
+    font-size: 13px;
+    border: 2px solid var(--gray-light);
+    border-radius: 6px;
+    color: var(--splash-navy);
+    background: #fff;
+  }
+
+  /* Modal */
+  .modal-backdrop {
+    position: fixed;
+    inset: 0;
+    background: rgba(28, 22, 78, 0.5);
+    display: none;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+    z-index: 50;
+  }
+  .modal-backdrop.open { display: flex; }
+  .modal {
+    background: #fff;
+    border-radius: 16px;
+    border: 3px solid var(--splash-navy);
+    box-shadow: var(--shadow-card);
+    width: 100%;
+    max-width: 640px;
+    max-height: 90vh;
+    overflow: auto;
+  }
+  .modal-head {
+    background: linear-gradient(135deg, var(--splash-blue), var(--splash-navy));
+    color: #fff;
+    padding: 14px 18px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .modal-head h3 { margin: 0; font-size: 16px; font-weight: 700; }
+  .modal-head .close {
+    background: transparent;
+    color: #fff;
+    border: none;
+    font-size: 22px;
+    cursor: pointer;
+    padding: 0 4px;
+  }
+  .modal-body { padding: 18px; }
+
+  /* Materials chips */
+  .materials-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 8px;
+  }
+  .material-chip {
+    background: #eef0f7;
+    border: 1px solid #d8dbeb;
+    border-radius: 8px;
+    padding: 8px 10px;
+    font-size: 13px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .material-chip label {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    cursor: pointer;
+  }
+  .material-chip .x {
+    background: transparent;
+    border: none;
+    color: rgba(28, 22, 78, 0.5);
+    cursor: pointer;
+    font-size: 14px;
+    padding: 0 2px;
+  }
+  .material-chip .x:hover { color: var(--racecar-red); }
+
+  /* Banner */
+  .banner {
+    background: var(--sudsy-blue-soft);
+    border-left: 4px solid var(--sudsy-blue);
+    padding: 12px 14px;
+    border-radius: 8px;
+    font-size: 13.5px;
+    color: var(--splash-navy);
+    margin-bottom: 18px;
+  }
+  .banner-warn {
+    background: #fef3c7;
+    border-left-color: var(--splash-warn);
+  }
+  .banner-success {
+    background: #d1fae5;
+    border-left-color: var(--splash-success);
+  }
+
+  /* Helper text */
+  .muted { color: rgba(28, 22, 78, 0.55); }
+  .small { font-size: 12.5px; }
+  .empty-state {
+    padding: 30px;
+    text-align: center;
+    color: rgba(28, 22, 78, 0.6);
+    font-size: 14px;
+  }
+
+  section.screen { display: none; }
+  section.screen.active { display: block; }
+
+  /* Breadcrumb */
+  .breadcrumb {
+    font-size: 12.5px;
+    color: rgba(28, 22, 78, 0.6);
+    margin-bottom: 10px;
+  }
+  .breadcrumb a { color: var(--splash-blue); font-weight: 600; }
+</style>
+</head>
+<body>
+
+<header class="app-header">
+  <div class="logo-script">Splash<span class="red">.</span></div>
+  <div class="header-nav" id="nav">
+    <button data-screen="create" class="active">Promotion creation</button>
+    <button data-screen="dash">Promo dash</button>
+    <button data-screen="tickets">IT tickets</button>
+    <button data-screen="sample-live">Sample live view</button>
+    <button data-screen="sample-ticket">Sample IT ticket</button>
+  </div>
+</header>
+
+<main>
+  <!-- SCREEN 1: Promotion Creation form -->
+  <section id="screen-create" class="screen active">
+    <p class="page-eyebrow">Internal tools</p>
+    <h1 class="page-title">Promotion creation</h1>
+    <p class="page-sub">Single source of truth — submitting this form opens an IT ticket and creates a promo record everyone can watch.</p>
+
+    <div class="card">
+      <div class="card-head">
+        <p class="eyebrow">New promotion</p>
+        <h2>Request details</h2>
+      </div>
+      <div class="card-body">
+        <form id="create-form">
+          <div class="field">
+            <label for="f-title">Promotion title</label>
+            <input type="text" id="f-title" required placeholder="e.g. Memorial Day BOGO" />
+          </div>
+
+          <div class="field">
+            <label for="f-locations">Locations affected</label>
+            <select id="f-locations" multiple required></select>
+            <p class="hint">Hold Ctrl / Cmd to select multiple. Recipients of the announcement email are derived from these locations.</p>
+          </div>
+
+          <div class="field-row">
+            <div class="field">
+              <label for="f-start">Proposed start date</label>
+              <input type="date" id="f-start" required />
+            </div>
+            <div class="field">
+              <label for="f-end">Proposed end date</label>
+              <input type="date" id="f-end" required />
+            </div>
+          </div>
+
+          <div class="field">
+            <label for="f-type">Promo type</label>
+            <select id="f-type" required>
+              <option value="">Select…</option>
+              <option>Same</option>
+              <option>BOGO</option>
+              <option>Add-ons</option>
+              <option>Discount</option>
+              <option>Other</option>
+            </select>
+            <p class="hint">Same / BOGO / Add-ons / Discount etc.</p>
+          </div>
+
+          <div class="field">
+            <label for="f-pos">Kiosk/POS behavior</label>
+            <textarea id="f-pos" required placeholder="Exactly what the kiosk/POS must do."></textarea>
+          </div>
+
+          <div class="field-row">
+            <div class="field">
+              <label for="f-golive">Requested go-live date</label>
+              <input type="date" id="f-golive" required />
+            </div>
+            <div class="field">
+              <label for="f-priority">Priority</label>
+              <select id="f-priority" required>
+                <option value="High">High</option>
+                <option value="Medium" selected>Medium</option>
+                <option value="Low">Low</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="actions">
+            <button type="submit" class="btn btn-primary">Submit request</button>
+            <button type="button" class="btn btn-secondary" id="seed-fill">Fill with sample data</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </section>
+
+  <!-- SCREEN 2: IT Ticket (sample / detail) -->
+  <section id="screen-ticket" class="screen">
+    <p class="breadcrumb"><a href="#" data-go="tickets">← All tickets</a></p>
+    <p class="page-eyebrow">IT ticketing</p>
+    <h1 class="page-title" id="ticket-title">IT ticket</h1>
+    <p class="page-sub" id="ticket-sub"></p>
+
+    <div class="card">
+      <div class="card-head">
+        <p class="eyebrow">Submitted request</p>
+        <h2>Promotion details (read-only)</h2>
+      </div>
+      <div class="card-body">
+        <dl class="kv-grid" id="ticket-promo-readonly"></dl>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-head">
+        <p class="eyebrow">IT response</p>
+        <h2>Scoping &amp; assignment</h2>
+      </div>
+      <div class="card-body">
+        <form id="ticket-form">
+          <div class="field-row">
+            <div class="field">
+              <label for="t-readyby">Ready by</label>
+              <input type="date" id="t-readyby" />
+            </div>
+            <div class="field">
+              <label for="t-assignee">Assigned to</label>
+              <select id="t-assignee">
+                <option value="">Unassigned</option>
+                <option>Josh Copp</option>
+                <option>Noah</option>
+                <option>Alexandro</option>
+                <option>Jacob</option>
+                <option>rwilliams</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="field">
+            <label for="t-roadblocks">Limiting factors / roadblocks</label>
+            <textarea id="t-roadblocks" placeholder="What might delay or block this?"></textarea>
+            <p class="hint">Visible on the promo live view (ops/marketing can see this).</p>
+          </div>
+
+          <div class="field">
+            <label for="t-note">Internal IT note / process</label>
+            <textarea id="t-note" placeholder="Process notes, technical implementation details, links to internal docs. IT-only."></textarea>
+            <p class="hint">Stays on this ticket. <strong>Never</strong> shown on the promo live view.</p>
+          </div>
+
+          <div class="actions">
+            <button type="submit" class="btn btn-primary">Save ticket</button>
+            <button type="button" class="btn btn-secondary" id="ticket-view-live">Open promo live view →</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </section>
+
+  <!-- SCREEN 3: Promo Live View -->
+  <section id="screen-live" class="screen">
+    <p class="breadcrumb"><a href="#" data-go="dash">← All promos</a></p>
+    <p class="page-eyebrow">Live promo</p>
+    <h1 class="page-title" id="live-title"></h1>
+    <p class="page-sub" id="live-sub"></p>
+
+    <div class="card">
+      <div class="card-head">
+        <p class="eyebrow">Status</p>
+        <h2>Pipeline</h2>
+      </div>
+      <div class="card-body">
+        <div class="pipeline" id="live-pipeline"></div>
+        <div class="field" style="margin-top: 6px; margin-bottom: 0;">
+          <label for="live-status">Change status</label>
+          <select id="live-status" style="max-width: 240px;">
+            <option>Submitted</option>
+            <option>Scoped</option>
+            <option>Building</option>
+            <option>Tested</option>
+            <option>Live</option>
+            <option>Ended</option>
+          </select>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-head">
+        <p class="eyebrow">Promo</p>
+        <h2>Details</h2>
+      </div>
+      <div class="card-body">
+        <dl class="kv-grid" id="live-details"></dl>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-head">
+        <p class="eyebrow">Materials</p>
+        <h2>Assets &amp; PTP</h2>
+      </div>
+      <div class="card-body">
+        <p class="muted small" style="margin-top:0;">Attach digital assets. Each item is individually selectable when composing the announcement email.</p>
+        <div class="actions" style="margin-bottom: 10px;">
+          <button type="button" class="btn btn-secondary" id="add-material">+ Add material</button>
+          <button type="button" class="btn btn-secondary" id="open-ptp">+ Build PTP</button>
+        </div>
+        <div class="materials-list" id="materials-list"></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-head">
+        <p class="eyebrow">Announcement</p>
+        <h2>Email to affected locations</h2>
+      </div>
+      <div class="card-body">
+        <p class="muted small" style="margin-top:0;">Recipients are derived from the locations on this promo (RDs / RMs / sites).</p>
+        <div class="actions">
+          <button type="button" class="btn btn-primary" id="open-email">Compose announcement email</button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- SCREEN 4: Promo Dashboard -->
+  <section id="screen-dash" class="screen">
+    <p class="page-eyebrow">Internal tools</p>
+    <h1 class="page-title">Promotion dashboard</h1>
+    <p class="page-sub">All promotions across statuses. Click a row to open its live view.</p>
+
+    <div class="toolbar">
+      <label class="small muted">Filter status:</label>
+      <select id="dash-status-filter">
+        <option value="">All</option>
+        <option>Submitted</option>
+        <option>Scoped</option>
+        <option>Building</option>
+        <option>Tested</option>
+        <option>Live</option>
+        <option>Ended</option>
+      </select>
+      <label class="small muted">Priority:</label>
+      <select id="dash-priority-filter">
+        <option value="">All</option>
+        <option>High</option>
+        <option>Medium</option>
+        <option>Low</option>
+      </select>
+    </div>
+
+    <div class="card">
+      <div class="card-head">
+        <p class="eyebrow">All promos</p>
+        <h2>Active &amp; recent</h2>
+      </div>
+      <table class="data">
+        <thead>
+          <tr>
+            <th>Title</th>
+            <th>Priority</th>
+            <th>Locations</th>
+            <th>Proposed window</th>
+            <th>Go-live</th>
+            <th>IT done-by</th>
+            <th>IT assigned</th>
+            <th>Status</th>
+          </tr>
+        </thead>
+        <tbody id="dash-tbody"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- SCREEN 5: IT Ticketing System (queue) -->
+  <section id="screen-tickets" class="screen">
+    <p class="page-eyebrow">IT</p>
+    <h1 class="page-title">IT ticket queue</h1>
+    <p class="page-sub">Every promotion ticket. Click to open and scope.</p>
+
+    <div class="toolbar">
+      <label class="small muted">Assignee:</label>
+      <select id="tix-assignee-filter">
+        <option value="">All</option>
+        <option>Unassigned</option>
+        <option>Josh Copp</option>
+        <option>Noah</option>
+        <option>Alexandro</option>
+        <option>Jacob</option>
+        <option>rwilliams</option>
+      </select>
+      <label class="small muted">Priority:</label>
+      <select id="tix-priority-filter">
+        <option value="">All</option>
+        <option>High</option>
+        <option>Medium</option>
+        <option>Low</option>
+      </select>
+    </div>
+
+    <div class="card">
+      <div class="card-head">
+        <p class="eyebrow">Queue</p>
+        <h2>Open IT tickets</h2>
+      </div>
+      <table class="data">
+        <thead>
+          <tr>
+            <th>Promo</th>
+            <th>Priority</th>
+            <th>Assignee</th>
+            <th>Ready by</th>
+            <th>Status</th>
+            <th>Roadblocks</th>
+          </tr>
+        </thead>
+        <tbody id="tix-tbody"></tbody>
+      </table>
+    </div>
+  </section>
+</main>
+
+<!-- PTP modal -->
+<div class="modal-backdrop" id="ptp-modal">
+  <div class="modal">
+    <div class="modal-head">
+      <h3>PTP builder — Purpose, Tools, Process</h3>
+      <button class="close" data-close="ptp-modal">×</button>
+    </div>
+    <div class="modal-body">
+      <div class="field">
+        <label for="ptp-purpose">Purpose</label>
+        <textarea id="ptp-purpose" placeholder="Why are we doing this? What problem does it solve?"></textarea>
+      </div>
+      <div class="field">
+        <label for="ptp-tools">Tools</label>
+        <textarea id="ptp-tools" placeholder="What systems / hardware / software / vendors are involved?"></textarea>
+      </div>
+      <div class="field">
+        <label for="ptp-process">Process</label>
+        <textarea id="ptp-process" placeholder="Step-by-step execution plan."></textarea>
+      </div>
+      <div class="actions">
+        <button class="btn btn-primary" id="save-ptp">Save PTP</button>
+        <button class="btn btn-secondary" data-close="ptp-modal">Cancel</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Material modal -->
+<div class="modal-backdrop" id="material-modal">
+  <div class="modal">
+    <div class="modal-head">
+      <h3>Add promo material</h3>
+      <button class="close" data-close="material-modal">×</button>
+    </div>
+    <div class="modal-body">
+      <div class="field">
+        <label for="mat-name">Material name</label>
+        <input type="text" id="mat-name" placeholder="e.g. Kiosk hero image (1080x1920)" />
+      </div>
+      <div class="field">
+        <label for="mat-kind">Kind</label>
+        <select id="mat-kind">
+          <option>Image</option>
+          <option>Video</option>
+          <option>Copy / messaging</option>
+          <option>Signage</option>
+          <option>Email asset</option>
+          <option>Other</option>
+        </select>
+      </div>
+      <div class="actions">
+        <button class="btn btn-primary" id="save-material">Add</button>
+        <button class="btn btn-secondary" data-close="material-modal">Cancel</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Email composer modal -->
+<div class="modal-backdrop" id="email-modal">
+  <div class="modal" style="max-width: 720px;">
+    <div class="modal-head">
+      <h3>Announcement email</h3>
+      <button class="close" data-close="email-modal">×</button>
+    </div>
+    <div class="modal-body">
+      <div class="banner small" id="email-recipients-banner"></div>
+
+      <div class="field">
+        <label>Attachments — pick which items to include</label>
+        <div class="materials-list" id="email-attachment-picker"></div>
+      </div>
+
+      <div class="field">
+        <label for="email-subject">Subject</label>
+        <input type="text" id="email-subject" />
+      </div>
+      <div class="field">
+        <label for="email-body">Body preview</label>
+        <textarea id="email-body" style="min-height: 180px;"></textarea>
+      </div>
+      <div class="actions">
+        <button class="btn btn-success" id="send-email">Send announcement (mock)</button>
+        <button class="btn btn-secondary" data-close="email-modal">Cancel</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+/* ============================================================
+   Promotion creation prototype — client-side state only
+   ============================================================ */
+
+const LOCATIONS = [
+  "Auburn", "Batavia", "Binghamton", "Cicero", "Elmira Heights",
+  "Geneva", "Ithaca", "Liverpool", "Milford", "Oswego",
+  "Penfield", "Rochester", "Syracuse", "Utica", "Watertown"
+];
+
+const STATUSES = ["Submitted", "Scoped", "Building", "Tested", "Live", "Ended"];
+
+const STATUS_PILL = {
+  Submitted: "pill-neutral",
+  Scoped:    "pill-blue",
+  Building:  "pill-amber",
+  Tested:    "pill-teal",
+  Live:      "pill-green",
+  Ended:     "pill-gray"
+};
+
+const PRIORITY_PILL = {
+  High: "priority-high",
+  Medium: "priority-medium",
+  Low: "priority-low"
+};
+
+// ---------- Seed data ----------
+function makeSeed() {
+  const today = new Date();
+  const isoOffset = (d) => {
+    const dt = new Date(today);
+    dt.setDate(dt.getDate() + d);
+    return dt.toISOString().slice(0,10);
+  };
+
+  return [
+    {
+      id: "p-001",
+      title: "Memorial Day BOGO",
+      locations: ["Auburn", "Geneva", "Ithaca", "Oswego"],
+      proposedStart: isoOffset(10),
+      proposedEnd: isoOffset(17),
+      promoType: "BOGO",
+      posBehavior: "Apply a free second month to any Top Wash signup. Tax remains on month 1. Auto-renew at full price from month 3.",
+      goLiveDate: isoOffset(8),
+      priority: "High",
+      status: "Building",
+      ticket: {
+        id: "t-001",
+        readyBy: isoOffset(6),
+        roadblocks: "Kiosk firmware version 4.2.1 required at Geneva — scheduled push tonight.",
+        assignedTo: "Josh Copp",
+        internalNote: "Use existing BOGO flag in pricing_simple. Validate trg_sync_pricing_simple still fires on the BOGO toggle. Smoke test on staging.splashcarwashes.info first."
+      },
+      materials: [
+        { id: "m-1", name: "Kiosk hero image (1080x1920)", kind: "Image" },
+        { id: "m-2", name: "Copy block — short", kind: "Copy / messaging" },
+        { id: "m-3", name: "Site signage PDF", kind: "Signage" }
+      ],
+      ptp: {
+        purpose: "Drive monthly-pass signups over the holiday weekend by offering a second month free on any Top Wash subscription.",
+        tools: "MaxPass kiosk firmware ≥ 4.2.1, signup-worker (BOGO flag), Power Automate confirmation email branch, in-bay signage.",
+        process: "1) Operator flips BOGO toggle in /admin/pricing/{loc} for affected sites. 2) Kiosk pulls fresh pricing_simple_resolved cache. 3) Signups capture is_bogo=true + recurring_start_date. 4) PA confirmation email branches to 3-step schedule. 5) RM verifies signage installed Friday."
+      }
+    },
+    {
+      id: "p-002",
+      title: "Spring Cleaning Add-On Discount",
+      locations: ["Rochester", "Penfield", "Liverpool"],
+      proposedStart: isoOffset(2),
+      proposedEnd: isoOffset(30),
+      promoType: "Add-ons",
+      posBehavior: "20% off ceramic-coat add-on at the kiosk only. Excludes fleet accounts.",
+      goLiveDate: isoOffset(2),
+      priority: "Medium",
+      status: "Live",
+      ticket: {
+        id: "t-002",
+        readyBy: isoOffset(1),
+        roadblocks: "",
+        assignedTo: "Noah",
+        internalNote: "Discount applied at line-item level in POS. Watch out for combo logic with monthly-pass holders — should NOT stack."
+      },
+      materials: [
+        { id: "m-4", name: "Kiosk banner — 728x90", kind: "Image" },
+        { id: "m-5", name: "Email subject A/B", kind: "Copy / messaging" }
+      ],
+      ptp: {
+        purpose: "Move excess ceramic-coat inventory by encouraging upsell at the kiosk.",
+        tools: "POS line-item discount engine; kiosk banner ad slot.",
+        process: "Configure discount in POS, push kiosk banner, monitor uptake daily."
+      }
+    },
+    {
+      id: "p-003",
+      title: "Summer Fleet Onboarding Push",
+      locations: ["Syracuse", "Utica", "Watertown", "Auburn", "Cicero"],
+      proposedStart: isoOffset(21),
+      proposedEnd: isoOffset(60),
+      promoType: "Discount",
+      posBehavior: "10% off fleet account first invoice. Sales rep entered code at signup.",
+      goLiveDate: isoOffset(18),
+      priority: "Medium",
+      status: "Scoped",
+      ticket: {
+        id: "t-003",
+        readyBy: isoOffset(14),
+        roadblocks: "Need fleet-inquiry-worker flag to capture promo code on lead form.",
+        assignedTo: "Alexandro",
+        internalNote: ""
+      },
+      materials: [],
+      ptp: null
+    },
+    {
+      id: "p-004",
+      title: "July 4th Same-Price Weekend",
+      locations: ["Binghamton", "Elmira Heights", "Ithaca"],
+      proposedStart: isoOffset(28),
+      proposedEnd: isoOffset(31),
+      promoType: "Same",
+      posBehavior: "All wash tiers priced at $10 for the weekend. Auto-revert Tuesday.",
+      goLiveDate: isoOffset(25),
+      priority: "Low",
+      status: "Submitted",
+      ticket: {
+        id: "t-004",
+        readyBy: "",
+        roadblocks: "",
+        assignedTo: "",
+        internalNote: ""
+      },
+      materials: [],
+      ptp: null
+    },
+    {
+      id: "p-005",
+      title: "Earth Day Wash &amp; Plant",
+      locations: ["Milford", "Geneva"],
+      proposedStart: isoOffset(-30),
+      proposedEnd: isoOffset(-23),
+      promoType: "Other",
+      posBehavior: "Customer received seed packet at exit. No POS change.",
+      goLiveDate: isoOffset(-32),
+      priority: "Low",
+      status: "Ended",
+      ticket: {
+        id: "t-005",
+        readyBy: isoOffset(-34),
+        roadblocks: "",
+        assignedTo: "Jacob",
+        internalNote: "Seed packets sourced from a local nursery — keep contact on file."
+      },
+      materials: [
+        { id: "m-6", name: "Exit-handout PDF", kind: "Signage" }
+      ],
+      ptp: {
+        purpose: "Community goodwill + light brand activation.",
+        tools: "Seed packets, exit handout PDF.",
+        process: "RMs distributed packets Monday; site team handed out at exit."
+      }
+    }
+  ];
+}
+
+const STORAGE_KEY = "splash_promo_mockup_v1";
+
+function loadState() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (raw) return JSON.parse(raw);
+  } catch (_) {}
+  return { promos: makeSeed() };
+}
+
+function saveState() {
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch (_) {}
+}
+
+let state = loadState();
+let currentPromoId = null;
+let currentTicketPromoId = null;
+
+// ---------- Helpers ----------
+function $(id) { return document.getElementById(id); }
+function escHtml(s) {
+  if (s == null) return "";
+  return String(s)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+function fmtDate(iso) {
+  if (!iso) return "—";
+  try {
+    const d = new Date(iso + "T00:00:00");
+    return d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+  } catch (_) { return iso; }
+}
+function locSummary(arr) {
+  if (!arr || arr.length === 0) return "—";
+  if (arr.length <= 2) return arr.join(", ");
+  return `${arr.slice(0,2).join(", ")} +${arr.length - 2}`;
+}
+
+// ---------- Locations multi-select ----------
+function populateLocations() {
+  const sel = $("f-locations");
+  sel.innerHTML = LOCATIONS.map(l => `<option value="${l}">${l}</option>`).join("");
+}
+
+// ---------- Navigation ----------
+function show(screen, ctx) {
+  document.querySelectorAll(".screen").forEach(s => s.classList.remove("active"));
+  document.querySelectorAll("#nav button").forEach(b => b.classList.remove("active"));
+
+  let mapped = screen;
+  if (screen === "sample-live") {
+    mapped = "live";
+    currentPromoId = state.promos[0].id; // sample = first seed
+  } else if (screen === "sample-ticket") {
+    mapped = "ticket";
+    currentTicketPromoId = state.promos[0].id;
+  } else if (screen === "live") {
+    if (ctx) currentPromoId = ctx;
+  } else if (screen === "ticket") {
+    if (ctx) currentTicketPromoId = ctx;
+  }
+
+  const target = document.getElementById("screen-" + mapped);
+  if (target) target.classList.add("active");
+
+  // Reflect on nav
+  const navBtn = document.querySelector(`#nav button[data-screen="${screen}"]`);
+  if (navBtn) navBtn.classList.add("active");
+
+  // Render destination
+  if (mapped === "dash") renderDash();
+  else if (mapped === "tickets") renderTickets();
+  else if (mapped === "live") renderLive();
+  else if (mapped === "ticket") renderTicket();
+
+  window.scrollTo(0, 0);
+}
+
+document.querySelectorAll("#nav button").forEach(btn => {
+  btn.addEventListener("click", () => show(btn.dataset.screen));
+});
+
+document.addEventListener("click", (e) => {
+  const goTarget = e.target.closest("[data-go]");
+  if (goTarget) {
+    e.preventDefault();
+    show(goTarget.dataset.go, goTarget.dataset.goId);
+  }
+});
+
+// ---------- Screen 1: Create form ----------
+$("seed-fill").addEventListener("click", () => {
+  $("f-title").value = "Back-to-School Top Wash Discount";
+  const sel = $("f-locations");
+  ["Syracuse", "Liverpool", "Cicero"].forEach(loc => {
+    const opt = Array.from(sel.options).find(o => o.value === loc);
+    if (opt) opt.selected = true;
+  });
+  const t = new Date();
+  const iso = (d) => {
+    const dt = new Date(t); dt.setDate(dt.getDate() + d);
+    return dt.toISOString().slice(0,10);
+  };
+  $("f-start").value = iso(7);
+  $("f-end").value = iso(21);
+  $("f-type").value = "Discount";
+  $("f-pos").value = "$5 off Top Wash signup at kiosk and POS. Stack with monthly-pass = no. Auto-revert at end date.";
+  $("f-golive").value = iso(5);
+  $("f-priority").value = "Medium";
+});
+
+$("create-form").addEventListener("submit", (e) => {
+  e.preventDefault();
+  const sel = $("f-locations");
+  const selected = Array.from(sel.selectedOptions).map(o => o.value);
+  if (selected.length === 0) { alert("Pick at least one location."); return; }
+
+  const nextNum = (state.promos.length + 1).toString().padStart(3, "0");
+  const promo = {
+    id: "p-" + nextNum,
+    title: $("f-title").value.trim(),
+    locations: selected,
+    proposedStart: $("f-start").value,
+    proposedEnd: $("f-end").value,
+    promoType: $("f-type").value,
+    posBehavior: $("f-pos").value.trim(),
+    goLiveDate: $("f-golive").value,
+    priority: $("f-priority").value,
+    status: "Submitted",
+    ticket: {
+      id: "t-" + nextNum,
+      readyBy: "",
+      roadblocks: "",
+      assignedTo: "",
+      internalNote: ""
+    },
+    materials: [],
+    ptp: null
+  };
+  state.promos.unshift(promo);
+  saveState();
+  $("create-form").reset();
+
+  // Show success banner via small alert + jump to live view
+  currentPromoId = promo.id;
+  show("live");
+  // Light visual confirmation
+  const titleEl = $("live-title");
+  if (titleEl) {
+    titleEl.insertAdjacentHTML("afterend",
+      '<div class="banner banner-success small" id="just-created-banner">Promo created and IT ticket opened. Status starts at <strong>Submitted</strong>.</div>'
+    );
+    setTimeout(() => { const b = $("just-created-banner"); if (b) b.remove(); }, 4500);
+  }
+});
+
+// ---------- Screen 2: IT Ticket detail ----------
+function renderTicket() {
+  const promo = state.promos.find(p => p.id === currentTicketPromoId);
+  if (!promo) {
+    $("ticket-title").textContent = "Ticket not found";
+    return;
+  }
+  $("ticket-title").textContent = `Ticket ${promo.ticket.id} — ${promo.title}`;
+  $("ticket-sub").innerHTML = `Promo <code>${promo.id}</code> · Priority <span class="pill ${PRIORITY_PILL[promo.priority]}">${promo.priority}</span> · Current status <span class="pill ${STATUS_PILL[promo.status]}">${promo.status}</span>`;
+
+  // Read-only promo
+  $("ticket-promo-readonly").innerHTML = `
+    <dt>Title</dt><dd>${escHtml(promo.title)}</dd>
+    <dt>Locations</dt><dd>${escHtml(promo.locations.join(", "))}</dd>
+    <dt>Proposed window</dt><dd>${fmtDate(promo.proposedStart)} → ${fmtDate(promo.proposedEnd)}</dd>
+    <dt>Promo type</dt><dd>${escHtml(promo.promoType)}</dd>
+    <dt>Kiosk/POS behavior</dt><dd style="white-space: pre-wrap;">${escHtml(promo.posBehavior)}</dd>
+    <dt>Requested go-live</dt><dd>${fmtDate(promo.goLiveDate)}</dd>
+    <dt>Priority</dt><dd><span class="pill ${PRIORITY_PILL[promo.priority]}">${promo.priority}</span></dd>
+  `;
+
+  $("t-readyby").value = promo.ticket.readyBy || "";
+  $("t-roadblocks").value = promo.ticket.roadblocks || "";
+  $("t-assignee").value = promo.ticket.assignedTo || "";
+  $("t-note").value = promo.ticket.internalNote || "";
+}
+
+$("ticket-form").addEventListener("submit", (e) => {
+  e.preventDefault();
+  const promo = state.promos.find(p => p.id === currentTicketPromoId);
+  if (!promo) return;
+  promo.ticket.readyBy = $("t-readyby").value;
+  promo.ticket.roadblocks = $("t-roadblocks").value.trim();
+  promo.ticket.assignedTo = $("t-assignee").value;
+  promo.ticket.internalNote = $("t-note").value.trim();
+  // Submitted → Scoped on save (if assignee + readyBy are set)
+  if (promo.status === "Submitted" && promo.ticket.assignedTo && promo.ticket.readyBy) {
+    promo.status = "Scoped";
+  }
+  saveState();
+  renderTicket();
+  // Flash a confirmation banner
+  const card = document.querySelector("#screen-ticket .card:nth-of-type(2) .card-body");
+  if (card) {
+    const b = document.createElement("div");
+    b.className = "banner banner-success small";
+    b.textContent = "Ticket saved. Ready-by / roadblocks / assignee propagated to the promo live view.";
+    card.prepend(b);
+    setTimeout(() => b.remove(), 4500);
+  }
+});
+
+$("ticket-view-live").addEventListener("click", () => {
+  currentPromoId = currentTicketPromoId;
+  show("live");
+});
+
+// ---------- Screen 3: Live view ----------
+function renderLive() {
+  const promo = state.promos.find(p => p.id === currentPromoId);
+  if (!promo) {
+    $("live-title").textContent = "Promo not found";
+    return;
+  }
+  $("live-title").textContent = promo.title;
+  $("live-sub").innerHTML = `Promo <code>${promo.id}</code> · IT ticket <a href="#" data-go="ticket" data-go-id="${promo.id}"><code>${promo.ticket.id}</code></a>`;
+
+  // Pipeline
+  const idx = STATUSES.indexOf(promo.status);
+  $("live-pipeline").innerHTML = STATUSES.map((s, i) => {
+    const cls = i < idx ? "done" : i === idx ? "current" : "";
+    const arrow = i < STATUSES.length - 1 ? '<span class="arrow">→</span>' : "";
+    return `<span class="step ${cls}">${s}</span>${arrow}`;
+  }).join("");
+
+  $("live-status").value = promo.status;
+
+  // Details (no internal IT note)
+  $("live-details").innerHTML = `
+    <dt>Priority</dt><dd><span class="pill ${PRIORITY_PILL[promo.priority]}">${promo.priority}</span></dd>
+    <dt>Locations</dt><dd>${escHtml(promo.locations.join(", "))}</dd>
+    <dt>Promo type</dt><dd>${escHtml(promo.promoType)}</dd>
+    <dt>Kiosk/POS behavior</dt><dd style="white-space: pre-wrap;">${escHtml(promo.posBehavior)}</dd>
+    <dt>Proposed window</dt><dd>${fmtDate(promo.proposedStart)} → ${fmtDate(promo.proposedEnd)}</dd>
+    <dt>Go-live date</dt><dd>${fmtDate(promo.goLiveDate)}</dd>
+    <dt>IT done-by</dt><dd>${fmtDate(promo.ticket.readyBy)}</dd>
+    <dt>IT assigned</dt><dd>${escHtml(promo.ticket.assignedTo || "Unassigned")}</dd>
+    <dt>Limiting factors / roadblocks</dt><dd style="white-space: pre-wrap;">${escHtml(promo.ticket.roadblocks) || '<span class="muted">None noted.</span>'}</dd>
+  `;
+
+  // Materials
+  renderMaterials();
+}
+
+$("live-status").addEventListener("change", (e) => {
+  const promo = state.promos.find(p => p.id === currentPromoId);
+  if (!promo) return;
+  promo.status = e.target.value;
+  saveState();
+  renderLive();
+});
+
+function renderMaterials() {
+  const promo = state.promos.find(p => p.id === currentPromoId);
+  if (!promo) return;
+  const items = [...promo.materials];
+  if (promo.ptp) items.push({ id: "ptp", name: "PTP doc", kind: "PTP", isPtp: true });
+
+  if (items.length === 0) {
+    $("materials-list").innerHTML = '<p class="muted small">No materials yet.</p>';
+    return;
+  }
+  $("materials-list").innerHTML = items.map(m => `
+    <div class="material-chip">
+      <span><strong>${escHtml(m.name)}</strong> <span class="muted small">· ${escHtml(m.kind)}</span></span>
+      ${m.isPtp ? '' : `<button class="x" title="Remove" data-remove-material="${m.id}">×</button>`}
+    </div>
+  `).join("");
+
+  // Wire up remove handlers
+  document.querySelectorAll("[data-remove-material]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const id = btn.getAttribute("data-remove-material");
+      promo.materials = promo.materials.filter(m => m.id !== id);
+      saveState();
+      renderMaterials();
+    });
+  });
+}
+
+// ---------- Material modal ----------
+$("add-material").addEventListener("click", () => openModal("material-modal"));
+$("save-material").addEventListener("click", () => {
+  const promo = state.promos.find(p => p.id === currentPromoId);
+  if (!promo) return;
+  const name = $("mat-name").value.trim();
+  const kind = $("mat-kind").value;
+  if (!name) { alert("Material name required."); return; }
+  promo.materials.push({
+    id: "m-" + Date.now(),
+    name, kind
+  });
+  saveState();
+  $("mat-name").value = "";
+  closeModal("material-modal");
+  renderMaterials();
+});
+
+// ---------- PTP modal ----------
+$("open-ptp").addEventListener("click", () => {
+  const promo = state.promos.find(p => p.id === currentPromoId);
+  $("ptp-purpose").value = promo?.ptp?.purpose || "";
+  $("ptp-tools").value = promo?.ptp?.tools || "";
+  $("ptp-process").value = promo?.ptp?.process || "";
+  openModal("ptp-modal");
+});
+$("save-ptp").addEventListener("click", () => {
+  const promo = state.promos.find(p => p.id === currentPromoId);
+  if (!promo) return;
+  promo.ptp = {
+    purpose: $("ptp-purpose").value.trim(),
+    tools: $("ptp-tools").value.trim(),
+    process: $("ptp-process").value.trim()
+  };
+  saveState();
+  closeModal("ptp-modal");
+  renderMaterials();
+});
+
+// ---------- Email modal ----------
+$("open-email").addEventListener("click", () => {
+  const promo = state.promos.find(p => p.id === currentPromoId);
+  if (!promo) return;
+
+  // Recipients (mocked from locations)
+  const recipients = promo.locations.map(loc => {
+    const slug = loc.toLowerCase().replace(/\s+/g, "");
+    return `rd-${slug}@splashcarwashes.com, rm-${slug}@splashcarwashes.com, ${slug}@splashcarwashes.com`;
+  }).join("; ");
+  $("email-recipients-banner").innerHTML = `<strong>To:</strong> ${escHtml(recipients)}`;
+
+  // Attachment picker
+  const items = [...promo.materials];
+  if (promo.ptp) items.push({ id: "ptp", name: "PTP doc", kind: "PTP" });
+  if (items.length === 0) {
+    $("email-attachment-picker").innerHTML = '<p class="muted small">No materials available. Add some on the promo live view first.</p>';
+  } else {
+    $("email-attachment-picker").innerHTML = items.map(m => `
+      <div class="material-chip">
+        <label><input type="checkbox" checked data-att="${m.id}" /> ${escHtml(m.name)} <span class="muted small">· ${escHtml(m.kind)}</span></label>
+      </div>
+    `).join("");
+  }
+
+  $("email-subject").value = `[${promo.priority}] ${promo.title} — go-live ${fmtDate(promo.goLiveDate)}`;
+  $("email-body").value =
+`Hi team,
+
+A new promotion is queued for your locations:
+
+  Title: ${promo.title}
+  Type: ${promo.promoType}
+  Locations: ${promo.locations.join(", ")}
+  Proposed window: ${fmtDate(promo.proposedStart)} → ${fmtDate(promo.proposedEnd)}
+  Go-live: ${fmtDate(promo.goLiveDate)}
+  IT done-by: ${fmtDate(promo.ticket.readyBy)}
+  Assigned: ${promo.ticket.assignedTo || "Unassigned"}
+
+Kiosk/POS behavior:
+${promo.posBehavior}
+
+Attachments are listed above — please confirm receipt and flag any issues by the go-live date.
+
+— Splash Promotions`;
+
+  openModal("email-modal");
+});
+
+$("send-email").addEventListener("click", () => {
+  const checked = Array.from(document.querySelectorAll('[data-att]:checked')).map(c => c.getAttribute("data-att"));
+  closeModal("email-modal");
+  alert(`Mock send: announcement queued with ${checked.length} attachment(s).`);
+});
+
+// ---------- Screen 4: Dashboard ----------
+function renderDash() {
+  const sf = $("dash-status-filter").value;
+  const pf = $("dash-priority-filter").value;
+  const rows = state.promos
+    .filter(p => !sf || p.status === sf)
+    .filter(p => !pf || p.priority === pf);
+
+  if (rows.length === 0) {
+    $("dash-tbody").innerHTML = '<tr><td colspan="8" class="empty-state">No promos match those filters.</td></tr>';
+    return;
+  }
+
+  $("dash-tbody").innerHTML = rows.map(p => `
+    <tr data-go="live" data-go-id="${p.id}">
+      <td class="row-title">${escHtml(p.title)}</td>
+      <td><span class="pill ${PRIORITY_PILL[p.priority]}">${p.priority}</span></td>
+      <td>${escHtml(locSummary(p.locations))}</td>
+      <td class="small muted">${fmtDate(p.proposedStart)} → ${fmtDate(p.proposedEnd)}</td>
+      <td>${fmtDate(p.goLiveDate)}</td>
+      <td>${fmtDate(p.ticket.readyBy)}</td>
+      <td>${escHtml(p.ticket.assignedTo || "—")}</td>
+      <td><span class="pill ${STATUS_PILL[p.status]}">${p.status}</span></td>
+    </tr>
+  `).join("");
+}
+
+$("dash-status-filter").addEventListener("change", renderDash);
+$("dash-priority-filter").addEventListener("change", renderDash);
+
+// ---------- Screen 5: IT ticket queue ----------
+function renderTickets() {
+  const af = $("tix-assignee-filter").value;
+  const pf = $("tix-priority-filter").value;
+  const rows = state.promos
+    .filter(p => {
+      if (!af) return true;
+      if (af === "Unassigned") return !p.ticket.assignedTo;
+      return p.ticket.assignedTo === af;
+    })
+    .filter(p => !pf || p.priority === pf);
+
+  if (rows.length === 0) {
+    $("tix-tbody").innerHTML = '<tr><td colspan="6" class="empty-state">No tickets match those filters.</td></tr>';
+    return;
+  }
+
+  $("tix-tbody").innerHTML = rows.map(p => `
+    <tr data-go="ticket" data-go-id="${p.id}">
+      <td>
+        <div class="row-title">${escHtml(p.title)}</div>
+        <div class="small muted">${escHtml(p.ticket.id)} · ${escHtml(locSummary(p.locations))}</div>
+      </td>
+      <td><span class="pill ${PRIORITY_PILL[p.priority]}">${p.priority}</span></td>
+      <td>${escHtml(p.ticket.assignedTo || "Unassigned")}</td>
+      <td>${fmtDate(p.ticket.readyBy)}</td>
+      <td><span class="pill ${STATUS_PILL[p.status]}">${p.status}</span></td>
+      <td class="small">${escHtml(p.ticket.roadblocks) || '<span class="muted">—</span>'}</td>
+    </tr>
+  `).join("");
+}
+
+$("tix-assignee-filter").addEventListener("change", renderTickets);
+$("tix-priority-filter").addEventListener("change", renderTickets);
+
+// ---------- Modal helpers ----------
+function openModal(id) { $(id).classList.add("open"); }
+function closeModal(id) { $(id).classList.remove("open"); }
+document.querySelectorAll("[data-close]").forEach(btn => {
+  btn.addEventListener("click", () => closeModal(btn.getAttribute("data-close")));
+});
+document.querySelectorAll(".modal-backdrop").forEach(bk => {
+  bk.addEventListener("click", (e) => {
+    if (e.target === bk) bk.classList.remove("open");
+  });
+});
+
+// ---------- Boot ----------
+populateLocations();
+// Default screen: create
+show("create");
+</script>
+</body>
+</html>

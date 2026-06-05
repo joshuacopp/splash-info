@@ -99,6 +99,16 @@ service = "splash-forms"
 binding = "JOTFORM_WORKER"
 service = "splash-jotform"
 
+# Brief 153 — promo-worker (promotions feature foundation). Worker name
+# on Cloudflare: `splash-promo`. Path-carved on `/promo/*`. Internal
+# tooling only; no public-customer surface. Workers.dev only at Brief
+# 153; production routes operator-driven post-cutover. apps/web admin
+# pages (`/admin/promotions/*`) will land in Brief 154+ and call this
+# worker via the binding for SSR.
+[[services]]
+binding = "PROMO_WORKER"
+service = "splash-promo"
+
 # OpenNext static asset binding (CSS/JS/public/).
 [assets]
 directory = ".open-next/assets"

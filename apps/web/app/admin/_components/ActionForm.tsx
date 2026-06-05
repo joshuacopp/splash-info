@@ -30,8 +30,8 @@ import { useActionState, useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
 
 export type ActionResult =
-  | { ok: true; message?: string }
-  | { ok: false; error: string };
+  | { ok: true; message?: string; data?: unknown }
+  | { ok: false; error: string; fields?: Record<string, string> };
 
 interface ActionFormProps {
   action: (

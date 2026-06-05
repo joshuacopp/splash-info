@@ -191,6 +191,21 @@ const settingsGearIcon: ReactNode = (
   </svg>
 );
 
+const megaphoneIcon: ReactNode = (
+  <svg {...SvgProps}>
+    <path d="M3 11v2a2 2 0 0 0 2 2h1l4 4V5L6 9H5a2 2 0 0 0-2 2z" />
+    <path d="M14 7a5 5 0 0 1 0 10" />
+    <path d="M18 5a9 9 0 0 1 0 14" />
+  </svg>
+);
+
+const ticketIcon: ReactNode = (
+  <svg {...SvgProps}>
+    <path d="M3 8a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v2a2 2 0 0 0 0 4v2a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-2a2 2 0 0 0 0-4z" />
+    <line x1="13" y1="6" x2="13" y2="18" />
+  </svg>
+);
+
 // ---------------------------------------------------------------------------
 // Tile registry.
 // ---------------------------------------------------------------------------
@@ -288,6 +303,33 @@ export const TILES: ReadonlyArray<Tile> = [
     href: "/admin/performance",
     icon: barChartIcon,
     visibleTo: hasPerformanceAccess
+  },
+  // Brief 158a — Promotions feature. Visible to any user with a promo_role
+  // (super_admin / it / marketing / ops); page-level gate re-checks at the
+  // destination. IT Queue is the work-queue surface for super_admin / it
+  // only — pre-filtered to "Assigned to me" by default.
+  {
+    id: "promotions",
+    group: "operations",
+    eyebrow: "Campaigns",
+    title: "Promotions",
+    description:
+      "Plan, scope, and run promotional campaigns across locations.",
+    href: "/admin/promotions",
+    icon: megaphoneIcon,
+    visibleTo: (s: Session | null) => s?.promoRole != null
+  },
+  {
+    id: "promotions-queue",
+    group: "operations",
+    eyebrow: "IT",
+    title: "IT Promotions Queue",
+    description:
+      "Items waiting on the IT team for scoping or build.",
+    href: "/admin/promotions/queue",
+    icon: ticketIcon,
+    visibleTo: (s: Session | null) =>
+      s?.promoRole === "super_admin" || s?.promoRole === "it"
   },
 
   // ---- Admin group ----

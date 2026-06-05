@@ -1,0 +1,36 @@
+# Splash Promotions Worker — Brief 153.
+#
+# Hosts the internal-tooling JSON API for the promotions feature.
+# See Briefs 153+ for the complete feature scope.
+#
+# DEPLOY STRATEGY: workers.dev only until cutover (CLAUDE.md constraint
+# #6). Production routes stay commented; staging route is path-carved.
+
+name = "splash-promo"
+main = "src/index.ts"
+compatibility_date = "2026-06-05"
+compatibility_flags = ["nodejs_compat"]
+upload_source_maps = true
+workers_dev = true
+
+routes = [
+  { pattern = "staging.splashcarwashes.info/promo/*", zone_name = "splashcarwashes.info" }
+]
+
+# routes = [
+#   { pattern = "splashcarwashes.info/promo/*", zone_name = "splashcarwashes.info" }
+# ]
+
+[vars]
+SUPABASE_URL = "https://rewokyofschtvqgxrxwl.supabase.co"
+
+[[r2_buckets]]
+binding     = "PROMO_FILES"
+bucket_name = "splash-promo-files"
+
+[limits]
+cpu_ms = 30000
+
+[observability.logs]
+enabled = true
+invocation_logs = true

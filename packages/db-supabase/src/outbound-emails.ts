@@ -30,9 +30,13 @@ export interface OutboundEmailAttachment {
    *  forms bucket (`FORMS_FILES`) when the claim endpoint inlines the
    *  attachment. Future workers writing into the queue with attachments
    *  in a different bucket should populate this so the claim endpoint
-   *  knows where to fetch. v1 only supports `"FORMS_FILES"`; non-forms
-   *  buckets are a v2 extension point. */
-  bucket?: "FORMS_FILES";
+   *  knows where to fetch. Brief 157 added `"PROMO_FILES"` for promo
+   *  announcement materials — forms-worker's claim endpoint dispatches
+   *  on this string to pick the right R2 binding. Adding a new bucket
+   *  requires (a) widening this union, (b) binding the bucket on
+   *  forms-worker's wrangler.toml, and (c) extending the dispatch in
+   *  `apps/forms-worker/src/email-queue/attachments.ts`. */
+  bucket?: "FORMS_FILES" | "PROMO_FILES";
 }
 
 export interface OutboundEmailPayload {

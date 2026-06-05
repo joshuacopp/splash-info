@@ -23,6 +23,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { ToolName, UserRole } from "@splash/types/auth";
 import type { DamageRole } from "@splash/types/claims";
+import type { PromoRole } from "@splash/types/promo";
 import type { Session } from "@splash/types/session";
 
 /** Raw row shape returned by the view. Mapped to camelCase Session below. */
@@ -35,6 +36,7 @@ interface AuthUnifiedRow {
   tools: string[] | null;
   dc_role: DamageRole | null;
   dc_locations: string[] | null;
+  promo_role: PromoRole | null;
 }
 
 /**
@@ -52,7 +54,7 @@ export async function getAuthContext(
   const { data, error } = await client
     .from("auth_unified")
     .select(
-      "user_id,email,role,locations,must_change_password,tools,dc_role,dc_locations"
+      "user_id,email,role,locations,must_change_password,tools,dc_role,dc_locations,promo_role"
     )
     .eq("user_id", userId)
     .maybeSingle();
@@ -68,6 +70,7 @@ export async function getAuthContext(
     tools: (row.tools ?? []) as ToolName[],
     locations: row.locations ?? [],
     dcRole: row.dc_role,
-    dcLocations: row.dc_locations ?? []
+    dcLocations: row.dc_locations ?? [],
+    promoRole: row.promo_role
   };
 }

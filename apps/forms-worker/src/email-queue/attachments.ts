@@ -20,7 +20,11 @@ export interface QueueAttachment {
   size_bytes: number;
   r2_key?: string;
   base64?: string;
-  bucket?: "FORMS_FILES";
+  /** Brief 157 widened from `"FORMS_FILES"` to `"FORMS_FILES" | "PROMO_FILES"`
+   *  so promo-worker can enqueue announcement attachments that live in
+   *  the `splash-promo-files` bucket. The dispatch below maps the string
+   *  to the bound R2 binding on `env`. */
+  bucket?: "FORMS_FILES" | "PROMO_FILES";
 }
 
 /** 5 MB per attachment, base64-encoded as a string. Cloudflare Worker
@@ -75,12 +79,20 @@ export async function inlineAttachments(
       );
       continue;
     }
-    const bucket = att.bucket === "FORMS_FILES" || !att.bucket
-      ? env.FORMS_FILES
-      : null;
+    // Brief 157 — dispatch on bucket name. Missing / "FORMS_FILES" → forms
+    // bucket (existing behavior). "PROMO_FILES" → promo bucket (added for
+    // promo announcement materials). Unknown bucket name OR an unbound
+    // PROMO_FILES (forms-worker not yet redeployed with the binding) skips
+    // the attachment with a log line — the email still sends without it.
+    let bucket: R2Bucket | null = null;
+    if (att.bucket === "PROMO_FILES") {
+      bucket = env.PROMO_FILES ?? null;
+    } else if (att.bucket === "FORMS_FILES" || !att.bucket) {
+      bucket = env.FORMS_FILES;
+    }
     if (!bucket) {
       console.warn(
-        `[forms.email-queue] attachment ${filename} on row ${rowId} references unsupported bucket ${String(att.bucket)}; skipping`
+        `[forms.email-queue] attachment ${filename} on row ${rowId} references unsupported or unbound bucket ${String(att.bucket)}; skipping`
       );
       continue;
     }

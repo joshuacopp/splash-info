@@ -48,6 +48,13 @@ apps/
                              super_admin-only backfill endpoint; reads
                              scoped by RM/RD/GM email-on-locations match.
                              Brief 107.
+  apps/promo-worker          Promotions feature (Brief 153) — internal-
+                             tooling JSON API at /promo/api/*. Worker
+                             name on Cloudflare: `splash-promo`. Path-
+                             carved on splashcarwashes.info/promo/*.
+                             At Brief 153, scaffolding only; promo CRUD,
+                             material upload, and announcement send land
+                             in Brief 154+.
   apps/web                   Next.js (App Router), deploys via OpenNext to
                              Cloudflare Workers. Consumer of the workers'
                              JSON APIs.
@@ -646,7 +653,9 @@ URL-based — service bindings don't apply to those.
 - `packages/db-supabase` - service-role-key Supabase client factory
   (`createServiceClient`), helpers for `user_permissions`,
   `suspicious_phones` immutability, customer-URL slug resolution
-  (`getActiveLocationByCode` against pricing_simple — Brief 33), etc.
+  (`getActiveLocationByCode` against pricing_simple — Brief 33),
+  `promo.ts` (Brief 153 — `gatePromoRole` server-side role gate +
+  `PromoAuthGate` shape; promo CRUD helpers land in Brief 154+), etc.
 - `packages/db-d1` - D1 helpers for damage-worker. Brief 33 retired the
   D1 `locations` table; this package now scopes to claim-related tables
   only (claims, claim_photos, claim_activity_log).
@@ -761,6 +770,518 @@ URL-based — service bindings don't apply to those.
   multipart `/claims-api/submit-claim` path stays full-fat until the
   operator observes zero `[claim.submit] legacy multipart path used`
   hits for 14 days, then removable in a follow-up brief.
+
+- **promo-worker** (Brief 153) - Promotions feature runtime. Tenth
+  worker in the monorepo; TS, mirrors the forms-worker shape per Brief
+  89. Worker name on Cloudflare: `splash-promo`. Path-carved on
+  `splashcarwashes.info/promo/*` (chosen over subdomain for the same
+  reasons forms-worker did: cookie domain works automatically, no
+  Brief 88-style proxy needed for downloads, no bare-`/api/*` collision
+  with apps/web staging that fleet had to subdomain around). Internal
+  tooling only — no public-customer surface. Workers.dev only at brief
+  land; production routes operator-driven post-cutover (constraint #6).
+  Bindings: `SUPABASE_URL` (var) + `SUPABASE_SERVICE_KEY` +
+  `SUPABASE_ANON_KEY` (secrets) + `PROMO_FILES` R2 bucket
+  (`splash-promo-files`, single bucket today owning the
+  `promo-materials/{promo_id}/{material_id}.{ext}` namespace, room for
+  siblings later — e.g. `promo-announcement-attachments/` if
+  announcement archival materializes). `[observability.logs]` block on
+  day one (Brief 63 pattern). Permission domain: new `promo_role`
+  column on `auth_unified` (`super_admin | it | marketing | ops |
+  null`) surfaced via `Session.promoRole` (Brief 153 widened the
+  `Session` type + `getAuthContext`). Worker handlers gate via
+  `gatePromoRole(session.promoRole, [...])` in `@splash/db-supabase`
+  going forward (same posture as fleet/damage worker `dcRole` gates).
+  At Brief 153 the only live endpoint is `GET /promo/api/ping` (smoke
+  check returning the four binding flags); promo CRUD, material upload,
+  and announcement send are deferred to Brief 154+. Service binding
+  `PROMO_WORKER` declared in `apps/web/wrangler.toml` (9th
+  `[[services]]` entry); no apps/web consumer yet, the binding exists
+  so subsequent briefs can wire a worker-fetch helper without
+  retouching the wrangler config. No cron at this brief; no webhook
+  secrets at this brief. See PRE_DEPLOY_PROMO.md for the deploy
+  checklist + smoke tests.
+  Brief 154 (2026-06-05) added the first three operator-facing endpoints
+  for the promotions feature:
+  `GET /promo/api/promos` (list with filters + counts — any non-null
+  `promoRole`; query params `status` (comma-separated allow-list),
+  `priority` (single `High|Medium|Low`), `assigned_to_me` (`1` filters
+  to promos where the caller's user_id is in `promo_ticket_assignees`),
+  `search` (case-insensitive substring on `title` via PostgREST
+  `ilike.*{q}*` with `%_\` escape), `limit` (default 100, max 500),
+  `offset` (default 0); response shape `{promos: [{id, title, promoType,
+  priority, status, proposedStartDate, proposedEndDate,
+  requestedGoLiveDate, createdAt, updatedAt, readyByDate, locationCount,
+  locationCodes[], assigneeCount, completedLocationCount}], total,
+  limit, offset}` where `total` comes from PostgREST's `Content-Range`
+  header via `Prefer: count=estimated`; rows ordered `created_at.desc`),
+  `POST /promo/api/promos` (create promo + seed ticket + seed locations
+  + log; `super_admin | it | marketing` only; `isOriginAllowed` CSRF
+  gate first; body `{title, promoType, posBehavior?, proposedStartDate,
+  proposedEndDate, requestedGoLiveDate, priority, locationCodes[]}`;
+  `posBehavior` is required when `promoType ∈ {BOGO, Add-ons, Discount}`
+  and optional for `Same | Other`; `requestedGoLiveDate <=
+  proposedStartDate` is a soft preference per the brief and NOT
+  enforced; sequence is promotions → promo_tickets → promo_locations →
+  promo_activity_log with best-effort rollback (DELETE of the
+  promotions row, CASCADE cleans children) on intermediate failure;
+  201 response mirrors the detail shape including `ticket` /
+  `locations` / `materials` / `ptp` / `activity` so apps/web can
+  navigate straight to the detail page),
+  `GET /promo/api/promos/{id}` (deep detail tree; any non-null
+  `promoRole`; single PostgREST GET with embeds for `promo_tickets!left`
+  + `promo_ticket_assignees` + `promo_locations` + `promo_materials`
+  + `promo_ptp` + `promo_activity_log` (latest 20 entries ordered
+  desc); `internal_note` is stripped from the response when the
+  caller's `promoRole` is NOT `super_admin` and NOT `it` —
+  defense-in-depth at the worker seam so a curl'd response can't leak
+  IT-only context to marketing/ops; 404 returns `{"error":
+  "promo_not_found"}` for missing UUIDs and malformed ones alike).
+  Standard error codes returned: `unauthorized` (401), `forbidden`
+  (403), `bad_request` (400 — validation failures include
+  `fields: {fieldName: 'error_code'}`), `promo_not_found` (404),
+  `promo_create_failed` (500 — includes `orphan_id` when rollback
+  also failed). Handlers live in
+  `apps/promo-worker/src/handlers/promos.ts`; dispatch from
+  `apps/promo-worker/src/index.ts`. PostgREST direct fetch() with the
+  service-role key, same pattern as `apps/forms-worker/src/db/admin-forms.ts`.
+  Brief 155 (2026-06-05) added the IT-side write surfaces — five new
+  endpoints under `/promo/api/promos/{id}/...`. **`PATCH .../ticket`**
+  (super_admin / it) — partial update of `ready_by_date` (ISO YYYY-MM-DD
+  or null), `roadblocks` (≤10 000 chars, trimmed, empty→null), and
+  `internal_note` (≤10 000 chars, trimmed, empty→null). Unknown body
+  keys → 400 `bad_request`; per-field validation errors collapse to
+  `400 {error:"bad_request", fields:{...}}`. The handler reads
+  before-state, PATCHes only fields present in the body, stamps
+  `ready_by_updated_{at,by}` together with any `ready_by_date` write,
+  bumps `promo_tickets.updated_at`, and computes deltas vs. the
+  before-state to drive activity logging: ONE umbrella `ticket_updated`
+  row whose `details.fields` lists every changed-field name, PLUS
+  separate `roadblocks_updated` / `internal_note_updated` rows when
+  those specific fields actually changed value (per-field-typed rows
+  let the future timeline filter "show only the things I can see"
+  without inspecting JSONB). No-op (no fields present, or all fields
+  unchanged) emits no activity row. Response carries `{ok, ticket,
+  promoStatus}` — `internal_note` stripped from the ticket payload for
+  non-IT callers at the seam (defense in depth). **`PATCH .../status`**
+  (super_admin / it / marketing — marketing widened in for campaign-end
+  `Ended` flips) — required `status` enum-validated against the six
+  values; no skip-step enforcement (UI suggests next, this endpoint is
+  authoritative); unchanged-value short-circuit returns 200
+  `{ok, status, unchanged: true}` with NO activity row; changed value
+  PATCHes `promotions.status` + stamps `status_updated_{at,by}` + emits
+  `status_changed` with `{from, to, auto: false}`; response carries
+  `{ok, status, previousStatus}`. **`POST .../assignees`**
+  (super_admin / it) — body `{userId}` validated as UUID-v4 shape.
+  Target must have a non-null `auth_unified.promo_role` — stops
+  accidentally adding a non-promo user to the IT queue; missing /
+  null surfaces as 400 `target_no_promo_role`. INSERT with
+  `Prefer: return=minimal`; PK collision (`PRIMARY KEY (promo_id,
+  user_id)`) detected via HTTP 409 OR substring `23505` → 409
+  `already_assigned`. Emits `assignment_changed` with `{action:"added",
+  userId, assignedByEmail}` — email-on-actor for the dashboard
+  timeline readability (UUIDs are unreadable in raw form). Response
+  201 carries `{ok, assignee, promoStatus}`. **`DELETE
+  .../assignees/{userId}`** (super_admin / it) — `Prefer:
+  return=representation` counts affected rows; zero affected → 404
+  `not_assigned` (covers both promo-missing and not-actually-assigned);
+  emits `assignment_changed` with `{action:"removed", userId,
+  removedByEmail}`. NO auto-status reversal on last-assignee-removed
+  — manual `PATCH status` covers the rare bounce-back case.
+  **`PATCH .../locations/{locationCode}`** (super_admin / it) —
+  required `isComplete` boolean. `locationCode` URL segment is opaque
+  text per Brief 153 convention (route regex `[a-z0-9_-]+`, defense-
+  in-depth re-check in the handler). On `isComplete=true` stamps
+  `completed_at = now()` + `completed_by = session.userId`; on false
+  clears both back to null. Zero affected rows → 404
+  `location_not_on_promo`. Emits `location_marked_complete` or
+  `location_marked_incomplete` with `{locationCode}`. Response 200
+  `{ok, locationCode, isComplete, completedAt}`. **Auto-status
+  advance** — mirrors Brief 131's terminal-outcome auto-flip in
+  forms-worker. After a successful `PATCH .../ticket` OR
+  `POST .../assignees`, if `promotions.status === "Submitted"` AND the
+  new assignee count ≥ 1 AND `ready_by_date IS NOT NULL`, the worker
+  PATCHes `promotions.status = "Scoped"` + stamps `status_updated_
+  {at,by}` + emits a synthetic `status_changed` row with `{from:
+  "Submitted", to:"Scoped", auto:true, trigger:"ticket_ready" |
+  "assignee_added"}`. The trigger and synthetic rows are BOTH written
+  (one umbrella per trigger plus the auto-flip's `status_changed` =
+  two rows total). Auto-flip failure on the promotions PATCH or the
+  synthetic activity insert is logged but does NOT fail the parent
+  write (the trigger write already succeeded). The response carries
+  `promoStatus` reflecting the post-flip status so apps/web doesn't
+  need a second GET to re-render the pipeline. **Shared
+  `logActivity` helper** at `apps/promo-worker/src/handlers/_activity.ts`
+  is the single insert point for `promo_activity_log` — fail-soft on
+  every insert error (logged, swallowed) because the activity log is
+  observability not correctness, and a failed log row should never
+  roll back a real state change. Allow-list `PromoActivityType` enum
+  mirrors the table's CHECK constraint (12 values, no new values
+  added at Brief 155). Standard error codes returned: `unauthorized`
+  (401), `forbidden` (403), `bad_origin` (403), `bad_request` (400),
+  `target_no_promo_role` (400), `promo_not_found` (404),
+  `not_assigned` (404), `location_not_on_promo` (404),
+  `already_assigned` (409), `patch_failed` (500), `ticket_missing`
+  (500 — invariant guard: promo exists but its 1:1 `promo_tickets`
+  row doesn't). Handlers live in
+  `apps/promo-worker/src/handlers/promo-writes.ts`; dispatch from
+  `apps/promo-worker/src/index.ts`.
+  Brief 156 (2026-06-05) added the materials lifecycle + PTP upsert —
+  four new endpoints. **`POST /promo/api/promos/{id}/materials`**
+  (super_admin / it / marketing) — multipart upload. Required form
+  fields: `name` (trimmed, ≤500 chars), `kind`
+  (∈ `{image, video, copy_messaging, signage, email_asset, other}`),
+  `file`. HARD_LIMITS: 50 MB per file (vs. 25 MB on forms; high-DPI
+  / short video room), 20 materials per promo (soft cap; operator
+  can sysadmin past it via SQL). Sniffs MIME via `file-type` from
+  first ~4 KB; client `Content-Type` is ignored entirely.
+  Deny-list rejects `text/html`, Windows executables
+  (`application/x-msdownload`, `application/x-msi`), shell scripts
+  (`application/x-sh`, `application/x-executable`) — sniffed MIMEs
+  in the deny-list return 415 `unsupported_mime`. R2 path
+  `promo-materials/{promoId}/{materialId}.{ext}` (verbatim from
+  the column comment on `promo_materials.r2_key`) with extension
+  derived from sniffed MIME via the lookup table in
+  `apps/promo-worker/src/handlers/_mime.ts`; unknown MIMEs land
+  with no extension (the row's `file_mime` column stays
+  authoritative). Sequence: validate → R2 PUT → DB INSERT →
+  activity log (`material_added` with `{materialId, name, kind,
+  sizeBytes}`). DB INSERT failure triggers inline best-effort R2
+  DELETE rollback; if R2 DELETE also throws, logs loud
+  `[promo.materials] orphan — manual R2 cleanup required for {key}`
+  and returns 500 `material_create_failed` with `{orphan_r2_key}`
+  in the body. Activity log failure is fail-soft per `_activity.ts`.
+  **`DELETE /promo/api/promos/{id}/materials/{materialId}`**
+  (super_admin / it / marketing) — inverted vs. upload: DELETE DB
+  row first, then best-effort R2 delete. Rationale: the upload's
+  worst-case is "DB miss after R2 succeeds" (orphan R2 object —
+  harmless), the delete's worst-case is "R2 succeeds, DB still has
+  the row" (dangling pointer — read path 404s). 404
+  `material_not_found` when `(promo_id, material_id)` doesn't match
+  a row. Emits `material_removed` with `{materialId, name, kind}`.
+  **`GET /promo/api/promos/{id}/materials/{materialId}/file`** (any
+  non-null `promoRole`; no CSRF gate per read-only spec) — reads
+  the row first to validate `(promo_id, material_id)` together
+  (anti-leak: out-of-scope OR missing both return 404,
+  indistinguishably; stops cross-promo material-id guessing). R2
+  `.get()` miss after a row-hit logs the drift and 404s. Streams
+  the body with `Content-Type: row.file_mime ||
+  'application/octet-stream'`, `Cache-Control: private, max-age=300`,
+  `X-Content-Type-Options: nosniff`,
+  `Content-Disposition: inline; filename="{name}"` for `image/*`
+  MIME, `attachment; filename="{name}"` otherwise (mirrors
+  forms-worker's admin serve route). No activity log entry on read.
+  **`PUT /promo/api/promos/{id}/ptp`** (super_admin / it /
+  marketing) — JSON body `{purpose, tools, process}`; all three
+  required (can be empty strings; schema default is `''`), trimmed,
+  max 10 000 chars each. Unknown body keys → 400 `bad_request`.
+  Upsert via PostgREST `on_conflict=promo_id` +
+  `Prefer: resolution=merge-duplicates,return=representation` — PK
+  on `promo_id` so INSERT branch handles the first save, UPDATE
+  branch handles subsequent saves. Stamps `updated_by` =
+  session.userId + `updated_at` = now(). Activity log:
+  `ptp_updated` with `details.fields = [...]` listing fields that
+  actually changed value vs. before-state — missing prior row
+  treats every non-empty field as a change; no-op submit (all three
+  unchanged) emits no row. Standard error codes: `unauthorized`
+  (401), `forbidden` (403), `bad_origin` (403), `bad_request`
+  (400), `promo_not_found` (404), `material_not_found` (404),
+  `unsupported_mime` (415), `file_too_large` (413),
+  `material_limit_reached` (409), `material_create_failed` (500),
+  `delete_failed` (500), `serve_failed` (500), `ptp_save_failed`
+  (500), `r2_write_failed` (500). Shared `_mime.ts` is the single
+  source of truth for the sniffed-MIME → extension lookup AND the
+  deny-list — adding a new accepted type is a one-file append.
+  Handlers in `apps/promo-worker/src/handlers/materials.ts` and
+  `apps/promo-worker/src/handlers/ptp.ts`; dispatch from
+  `apps/promo-worker/src/index.ts`. `file-type@^19.6.0` added to
+  `apps/promo-worker/package.json` (same version as forms-worker;
+  bundle dedupe). Daily R2 orphan sweep cron deferred to v2 —
+  inline rollback handles 99% of orphan creation; if orphans
+  accumulate operationally, follow the Brief 97 forms-worker
+  pattern.
+  Brief 157 (2026-06-05) added the announcement send surface —
+  one new endpoint plus a detail-response extension.
+  **`POST /promo/api/promos/{id}/announce`** (super_admin / it /
+  marketing; CSRF gate). JSON body `{subject, bodyText,
+  recipientEmails[], selectedMaterialIds[]?, includePtp?}` with
+  unknown-keys rejection (400 `bad_request`). Field-level
+  validation: `subject` trimmed, required, ≤500 chars; `bodyText`
+  required (not trimmed — operators may use leading/trailing
+  whitespace for letterhead-style formatting), ≤50 000 chars;
+  `recipientEmails` required non-empty array ≤500 entries, each
+  validated via `@splash/types/email-validate isValidEmail`
+  (Brief 152) with 400 `invalid_recipients` listing the failing
+  entries, case-insensitive dedup preserving first-occurrence
+  casing; `selectedMaterialIds` optional UUID-v4-shape array
+  deduped + membership-checked against this promo (400
+  `material_not_on_promo` with `missing[]` for offenders);
+  `includePtp` optional boolean default false. Sequence: validate
+  → INSERT `promo_announcements` snapshot (subject + raw operator
+  body WITHOUT the PTP block + recipient_emails +
+  included_material_ids + included_ptp + sent_by = session.userId;
+  captures `announcement_id` + `sent_at`) → loop recipients with
+  `enqueueOutboundEmail({source_worker: 'promo-worker', source_kind:
+  'promo-announcement', source_id: announcement_id, recipient,
+  subject, body_text: <rendered with the PTP block appended when
+  opted in>, attachments: [{filename: material.name, mime:
+  material.file_mime, size_bytes: material.file_size_bytes, r2_key:
+  material.r2_key, bucket: 'PROMO_FILES'}]})` — per-recipient
+  errors caught individually, logged as `[promo.announce] enqueue
+  failed for {recipient}: {error}`, and collected into
+  `failedRecipients[]` so partial fan-out is acceptable (operator
+  retries via Brief 128 admin email-queue viewer). When
+  `includePtp` is true the handler reads `promo_ptp` for the promo;
+  missing PTP row uses `(none)` placeholders for purpose/tools/
+  process (permissive v1 — alternative was 400 `ptp_not_set`).
+  Activity-log fire (via `ctx.waitUntil` + `logActivity`):
+  `announcement_sent` with `{announcementId, recipientCount,
+  enqueuedCount, failedRecipientCount, materialCount, includedPtp,
+  subject}`. Response 201 `{ok, announcementId, enqueuedCount,
+  failedRecipients, sentAt}`. The snapshot's `body_text` column
+  stores the operator's raw body WITHOUT the appended PTP block —
+  `included_ptp = true` + the joined PTP row at read time covers
+  it. What gets enqueued on `outbound_emails.body_text` includes
+  the appended PTP block because that's what actually gets sent.
+  Two intentionally divergent views: operator-facing snapshot vs.
+  delivered email. If the snapshot INSERT itself fails, return 500
+  `announcement_create_failed` and skip the fan-out entirely. NO
+  transaction wrapping snapshot + fan-out — PostgREST doesn't
+  transact across multi-row inserts cleanly; partial fan-out is
+  the explicit accepted-risk.
+  **Detail-response extension on `GET /promo/api/promos/{id}`** —
+  replaces Brief 154's `announcements: []` placeholder with a real
+  PostgREST embed (`promo_announcements(id, sent_at, sent_by,
+  subject, body_text, recipient_emails, included_material_ids,
+  included_ptp)`) ordered `sent_at.desc` and capped at 20.
+  `body_html` is intentionally omitted from the embed (always null
+  at v1; would inflate the payload). A future paginated history
+  endpoint (`GET /promo/api/promos/{id}/announcements`) is a v2
+  candidate when operators need to browse beyond 20. Standard
+  error codes: `unauthorized` (401), `forbidden` (403),
+  `bad_origin` (403), `bad_request` (400), `invalid_recipients`
+  (400 with `invalid: [...]`), `material_not_on_promo` (400 with
+  `missing: [...]`), `promo_not_found` (404),
+  `announcement_create_failed` (500), `service_key_unbound` (503).
+  **Cross-worker bucket widening.** `OutboundEmailAttachment.bucket`
+  in `@splash/db-supabase` widened from `"FORMS_FILES"` to
+  `"FORMS_FILES" | "PROMO_FILES"`. forms-worker's `inlineAttachments`
+  dispatch in `apps/forms-worker/src/email-queue/attachments.ts`
+  now picks `env.PROMO_FILES` when `attachment.bucket ===
+  "PROMO_FILES"`; the binding is optional on forms-worker's `Env`
+  so an unbound `PROMO_FILES` (forms-worker not yet redeployed
+  with the binding) skips the attachment with a
+  `[forms.email-queue] attachment ... references unsupported or
+  unbound bucket PROMO_FILES; skipping` log — the email still
+  sends without the attachment. Adding a third cross-worker bucket
+  to this dispatch is a three-file change: (a) widen the
+  `OutboundEmailAttachment.bucket` union in
+  `packages/db-supabase/src/outbound-emails.ts`; (b) widen the
+  `QueueAttachment.bucket` union + add the dispatch case in
+  `apps/forms-worker/src/email-queue/attachments.ts`; (c) add the
+  optional bucket binding to forms-worker's `Env` interface +
+  document the `[[r2_buckets]]` block the operator must add to
+  `apps/forms-worker/wrangler.toml`. Handler lives in
+  `apps/promo-worker/src/handlers/announce.ts`; dispatch from
+  `apps/promo-worker/src/index.ts`. No new dependencies — reuses
+  `enqueueOutboundEmail` from `@splash/db-supabase` (Brief 127)
+  and `isValidEmail` from `@splash/types/email-validate`
+  (Brief 152). v2 candidates explicitly out of scope: operator-
+  authored HTML bodies (today the queue row's `body_html` is
+  null); auto-derived recipient lists from `pricing_simple.am_email
+  / rm_email / site_email` per affected location (apps/web Brief
+  158 will resolve and present an editable to-list per-send); PDF
+  rendering of the snapshot for archive; "resend to a subset of
+  failed recipients" — today the operator copy-pastes subject/body
+  into a new POST; per-announcement attachment-count rendering in
+  the live activity-log timeline (captured in `details` JSONB at
+  send time; apps/web Brief 158 surfaces it).
+  Brief 158a (2026-06-05) landed the apps/web read surfaces for the
+  promotions feature — four pages under `/admin/promotions/*`, all
+  SSR-fetched via the Brief 153 `PROMO_WORKER` service binding.
+  `/admin/promotions` (any non-null `promoRole`) renders a filterable
+  responsive card grid (status / priority / search / assigned-to-me
+  driven by URL params; offset-pagination footer; "+ New promotion"
+  button visible to super_admin / it / marketing — links to
+  `/admin/promotions/new` which lands in Brief 158b).
+  `/admin/promotions/queue` (super_admin | it only — `NoAccessCard`
+  "IT only" state otherwise) renders a work-queue table sorted
+  priority desc → requested_go_live_date asc; "Assigned to me"
+  defaults ON (URL-overridable). `/admin/promotions/{id}` (any
+  non-null `promoRole`) is the multi-card live view: header +
+  status pipeline + details + locations + materials + PTP +
+  announcements (with inline history viewer via the `<details>`
+  pattern) + activity timeline. "Open IT ticket →" link visible to
+  super_admin | it only; every "+" write affordance is a disabled
+  stub at 158a. `/admin/promotions/{id}/ticket` (super_admin | it
+  only) is the IT ticket view — submitted-request read-only card +
+  IT-response card surfacing `ticket.readyByDate` / assignees /
+  roadblocks / `ticket.internalNote` (rendered in an amber-tinted
+  "IT only" callout — the worker already strips the field for
+  non-IT callers at the seam, defense in depth on the apps/web
+  side). Two new tiles register in `apps/web/app/admin/dashboard/
+  _lib/tiles.tsx` under the Operations group: "Promotions"
+  (`visibleTo: s?.promoRole != null`) + "IT Promotions Queue"
+  (`visibleTo: s?.promoRole === 'super_admin' || 'it'`). New
+  `"promotions"` entry added to `ADMIN_KNOWN_SUBPATHS` in
+  `apps/web/middleware.ts` per the CLAUDE.md mandatory rule.
+  Shared components live in `apps/web/app/admin/promotions/
+  _components/`: `PromoStatusPill` (six-state palette) /
+  `PromoPriorityPill` (three-state) / `PromoStatusPipeline`
+  (horizontal six-step stepper) / `LocationProgress` (read-only
+  checkbox grid, sort: incomplete-first-alphabetical) /
+  `MaterialChip` (image thumbnails inline + name/kind/size +
+  download link to the Brief 156 serve route) / `ActivityTimeline`
+  (vertical timeline with per-activity-type icon dot — color tier
+  per category) / `PromoFilterBar` (URL-driven client island) /
+  `AnnouncementHistoryButton` (click-to-expand inline history) /
+  `NoAccessCard` (three-state: signin / no-promo-role / it-only).
+  Worker-fetch helper at `apps/web/app/admin/promotions/_lib/
+  worker-fetch.ts` follows the Brief 94/109 service-binding-first
+  pattern. Types at `apps/web/app/admin/promotions/_lib/types.ts`
+  mirror the Brief 154+157 worker wire shapes; re-exports
+  `PromoRole` from `@splash/types/promo`. **Phase 7 user-name
+  resolution intentionally stubbed at 158a** — the brief's
+  prescribed `@supabase/supabase-js createClient` path requires
+  adding the dep to apps/web AND a `SUPABASE_SERVICE_KEY` binding
+  on `splash-web` (neither exists today). Stub at `_lib/
+  user-lookup.ts` returns an empty map; UI falls back to a
+  shortened `user_id` snippet (`shortenUserId`). Future brief
+  should add a `GET /promo/api/users?ids=...` endpoint to the
+  promo-worker (or widen `auth_unified` to expose `full_name`) +
+  switch the stub's body to call it. Write affordances (create
+  form, status PATCH, ticket field edits, assignee add/remove,
+  per-location toggle, material upload modal, PTP modal,
+  announcement compose modal) all land in Brief 158b — every read
+  page exposes disabled stubs in the right positions.
+  Brief 158b (2026-06-05) wired the ten write affordances and added
+  three small read endpoints on splash-promo to side-step apps/web's
+  lack of a Supabase service-key binding:
+  `GET /promo/api/locations` (5000-row cap; ordered by
+  location_pretty; powers the create-form multi-select),
+  `GET /promo/api/locations/recipients?codes=loc1,loc2,...`
+  (any-non-null-promoRole; 200-code cap; parallel
+  `getLocationContactInfo` fan-out; dedup case-insensitive
+  preserving first-occurrence casing + sorted; powers the
+  announcement modal's pre-populated recipient list),
+  `GET /promo/api/users/search?q=...` (super_admin/it-only; reads
+  `auth_unified WHERE promo_role IS NOT NULL` via PostgREST ilike on
+  email; 20-row cap; powers the IT ticket page's assignee
+  autocomplete). All three live in
+  `apps/promo-worker/src/handlers/recipients.ts` (file name predates
+  the user-search expansion; covers all three reads). New apps/web
+  routes: `/admin/promotions/new` (create form — super_admin / it /
+  marketing only; multi-select locations; POS-behavior textarea
+  auto-disabled when promoType ∈ {Same, Other}). New apps/web
+  components in `_components/`: `StatusEditor` (wired into both
+  live-view status pipeline card + IT ticket header — surfaces
+  `unchanged: true` as a quiet success banner per Brief 155's
+  no-op short-circuit), `MaterialUploadModal` (overlay; multipart
+  form; 50 MB client-side check matching the worker's hard cap),
+  `MaterialDeleteButton` (Brief 128 `window.confirm()` pattern;
+  wired into `MaterialChip` via new `canDelete` prop),
+  `PtpEditModal` (three textareas pre-populated from `promo.ptp`),
+  `AnnouncementComposeModal` (chip-style recipient list with × +
+  ad-hoc email input validated via `@splash/types/email-validate
+  isValidEmail` + materials checklist defaulting all-checked +
+  include-PTP toggle disabled with tooltip when `ptp === null` +
+  failed-recipients amber sub-banner reading `data.failedRecipients`
+  from the action result), `TicketFieldsForm` (single-Save form
+  diffing current values against hidden `initial*` fields so only
+  changed fields PATCH; auto-flip echo "Status auto-advanced to
+  Scoped" surfaces in the success banner when Brief 155's Submitted
+  → Scoped trigger fires server-side), `AssigneesEditor`
+  (search-as-you-type autocomplete fetching
+  `/promo/api/users/search` from the browser — same-origin
+  path-carve makes this a relative URL; chips with remove-with-
+  confirm; add fires `addAssigneeAction` which echoes auto-flip
+  when applicable), `LocationProgressToggleable` (React 19
+  `useOptimistic` + `useTransition` — checkbox flips immediately on
+  click; server action runs in background via
+  `toggleLocationProgressAction` (a free function, NOT a
+  `(prev, formData)` form action); on failure the optimistic state
+  expires on next `router.refresh()` and an error banner surfaces).
+  Live view's `<StubButton>`s all swapped for real islands;
+  MaterialChip gained `canDelete` prop. Worker-fetch helper at
+  `_lib/worker-fetch.ts` grew the ten write helpers + two new read
+  helpers (`listAllLocations`, `resolveRecipientsByLocations`); the
+  prior `promoGet` was replaced with a shared `callPromo`
+  dispatcher supporting `jsonBody` / `formData` / GET on the same
+  path. Shared types: `WorkerWriteResult<T>`. Shared action
+  helpers at `_lib/action-helpers.ts` (`toActionResult` with a
+  humanized error-code map + per-field summary suffix; coordinated
+  `revalidatePromoPaths` that touches list/queue/live-view/ticket
+  segments together). **`ActionResult` type widened (additively)**
+  in `apps/web/app/admin/_components/ActionForm.tsx`: `{ok: true;
+  message?; data?: unknown}` and `{ok: false; error; fields?:
+  Record<string,string>}`. Brief 95's saveDraftAction "OK:{slug}"
+  sentinel pattern is documented as superseded for new redirect-
+  on-success actions — use `data: {...}` instead and read it in
+  the client's `onResult` callback. Server actions live under
+  `apps/web/app/admin/promotions/_actions/` (createActions,
+  statusActions, materialActions, ptpActions, announceActions,
+  ticketActions); every action calls `revalidatePromoPaths()` for
+  segment invalidation + returns ActionResult via `toActionResult`
+  for failed-write surfaces. Validation: typecheck 19/19; build
+  succeeded with `/admin/promotions/[id]` at 5.39 kB / 113 kB and
+  `/admin/promotions/[id]/ticket` at 3.67 kB / 111 kB —
+  client-island bulk is the announcement modal + assignees editor.
+  Promo feature is functionally complete end-to-end pending
+  Brief 159 (sysadmin "Set Promo Role" card so role grants live
+  in-UI rather than SQL-only).
+
+- **Promotions feature** (Briefs 153–158b) - End-to-end "plan,
+  scope, and run a promotional campaign" flow on the internal
+  tooling. The tenth monorepo worker (`splash-promo`) plus four
+  apps/web routes under `/admin/promotions/*` deliver the
+  cross-team workflow surfaced in the operator's mockup. Roles
+  live in `auth_unified.promo_role` (`super_admin | it | marketing
+  | ops | null`) and surface to apps/web via `Session.promoRole`
+  (Brief 153). The flow:
+  1. **Marketing / IT / super_admin submits a promo** via
+     `/admin/promotions/new` (Brief 158b) → POST `/promo/api/promos`
+     (Brief 154) → row lands in `promotions` with status `Submitted`,
+     1:1 `promo_tickets`, N `promo_locations` (one per affected
+     location), and an `created` `promo_activity_log` entry.
+  2. **IT scopes it** via `/admin/promotions/{id}/ticket` (Brief
+     158b) → PATCH `/promo/api/promos/{id}/ticket` sets `readyByDate`
+     + optional roadblocks / internalNote → POST `.../assignees`
+     adds IT engineers → when `readyByDate` is non-null AND ≥1
+     assignee, Brief 155's auto-flip advances `status` to `Scoped`
+     in the same write path + emits a `status_changed` row with
+     `auto: true`.
+  3. **IT builds** — uploads materials via the live-view modal
+     (Brief 156 `POST /promo/api/promos/{id}/materials` multipart;
+     50 MB cap; MIME sniff via `file-type`) + writes PTP via
+     `PUT /promo/api/promos/{id}/ptp` (Brief 156). IT marks
+     individual locations complete via the IT ticket page's
+     toggleable per-location checkboxes (Brief 155 PATCH
+     `.../locations/{code}` with `useOptimistic` UI). Status flips
+     forward via the StatusEditor (`Building` → `Tested` → `Live`).
+  4. **Marketing announces** via the live-view announcement
+     compose modal (Brief 157 `POST /promo/api/promos/{id}/announce`)
+     → snapshot lands in `promo_announcements` → per-recipient rows
+     fan out onto the Brief 127 `outbound_emails` queue with
+     `source_kind='promo-announcement'` → one PA flow drains the
+     queue and delivers (attachments inlined from `PROMO_FILES`
+     R2 bucket via forms-worker's queue claim handler). PTP
+     appends to the email body when opted in.
+  5. **End of campaign** — Marketing flips status to `Ended` via
+     the StatusEditor (marketing-tier widening on Brief 155's
+     status PATCH).
+  Role-by-role permission table:
+  | Role | List/detail | Create | Status PATCH | Ticket PATCH | Assign | Locations | Materials | PTP | Announce | IT queue |
+  |---|---|---|---|---|---|---|---|---|---|---|
+  | super_admin | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+  | it | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+  | marketing | ✓ | ✓ | ✓ | — | — | — | ✓ | ✓ | ✓ | — |
+  | ops | ✓ | — | — | — | — | — | — | — | — | — |
+  | null | — | — | — | — | — | — | — | — | — | — |
+  Every write is gated server-side via `gatePromoRole` (Brief 153);
+  apps/web's UI gates are convenience hints (worker re-validates).
+  internalNote is stripped at the GET-detail seam for non-IT
+  callers (defense in depth — apps/web also hides it on the live
+  view; only the IT ticket page renders it).
 
 - **jotform-worker** (Brief 107) - JotForm Enterprise submission ingest
   + admin read API. The ninth worker in the monorepo (JS not TS;
@@ -2064,6 +2585,17 @@ URL-based — service bindings don't apply to those.
   per operator scope and continue to work via their existing PA
   flows. Future migrations: import the helper, render the email,
   call it. PA flow build guide at `PA_FLOWS_BRIEF_127.md`.
+  `source_kind='promo-announcement'` writers (Brief 157):
+  promo-worker via `handleSendAnnouncement` in
+  `apps/promo-worker/src/handlers/announce.ts`; `source_id` is the
+  `promo_announcements.id` (NOT the promo_id) so re-firing the
+  same announcement is a no-op via the dedup index while a future
+  announcement on the same promo to the same recipient lands
+  cleanly. Promo announcement attachments carry `bucket:
+  'PROMO_FILES'` — forms-worker's claim-time `inlineAttachments`
+  dispatch reads from `env.PROMO_FILES` (optional binding); when
+  unbound the attachment is skipped with a log line but the email
+  still sends.
   Brief 128 (2026-05-14) landed the admin viewer at
   `/admin/email-queue` (apps/web, admin-tier — `super_admin` OR
   `dcRole admin/super_admin`; tile in the Admin dashboard group).

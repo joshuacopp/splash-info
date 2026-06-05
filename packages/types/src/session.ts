@@ -7,6 +7,7 @@
 
 import type { ToolName, UserRole } from "./auth.js";
 import type { DamageRole } from "./claims.js";
+import type { PromoRole } from "./promo.js";
 
 export interface Session {
   /** UUID — auth.users.id / user_permissions.user_id. */
@@ -37,4 +38,9 @@ export interface Session {
   /** Damage workflow location scope. Only populated for gm/rm; empty {}
    *  for admin/super_admin (their dcRole implies global). */
   dcLocations: string[];
+
+  /** Promotions workflow role. Null when the user has no row in
+   *  promo_user_roles. Brief 153 — surfaced via the `auth_unified`
+   *  view's `promo_role` column. */
+  promoRole: PromoRole | null;
 }

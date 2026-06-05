@@ -129,6 +129,18 @@ export interface Env {
    *  safely; the queue idles until PA flow + token are wired. */
   FORMS_EMAIL_QUEUE_TOKEN?: string;
   FORMS_FILES: R2Bucket;
+  /** Brief 157 — optional cross-worker R2 binding for promo announcement
+   *  attachments. promo-worker enqueues `outbound_emails` rows whose
+   *  attachments live in the `splash-promo-files` bucket; the
+   *  claim-endpoint inliner (`email-queue/attachments.ts`) dispatches on
+   *  `attachment.bucket === "PROMO_FILES"` to read from this binding. When
+   *  unbound (forms-worker not yet redeployed with the binding) the
+   *  attachment is skipped with a log line; the email still sends without
+   *  it. Operator must add an `[[r2_buckets]] binding="PROMO_FILES"
+   *  bucket_name="splash-promo-files"` block to forms-worker's
+   *  wrangler.toml before promo announcements with attachments land
+   *  cleanly. */
+  PROMO_FILES?: R2Bucket;
 }
 
 export default {

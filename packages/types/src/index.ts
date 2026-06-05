@@ -12,3 +12,4 @@ export * from "./locations.js";
 export * from "./performance.js";
 export * from "./session.js";
 export * from "./email-validate.js";
+export * from "./promo.js";

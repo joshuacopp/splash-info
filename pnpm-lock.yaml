@@ -207,6 +207,40 @@ importers:
         specifier: ^4.86.0
         version: 4.87.0(@cloudflare/workers-types@4.20260502.1)
 
+  apps/promo-worker:
+    dependencies:
+      '@splash/auth':
+        specifier: workspace:*
+        version: link:../../packages/auth
+      '@splash/db-supabase':
+        specifier: workspace:*
+        version: link:../../packages/db-supabase
+      '@splash/http':
+        specifier: workspace:*
+        version: link:../../packages/http
+      '@splash/storage-r2':
+        specifier: workspace:*
+        version: link:../../packages/storage-r2
+      '@splash/types':
+        specifier: workspace:*
+        version: link:../../packages/types
+      file-type:
+        specifier: ^19.6.0
+        version: 19.6.0
+    devDependencies:
+      '@cloudflare/workers-types':
+        specifier: ^4.20250101.0
+        version: 4.20260502.1
+      '@splash/config':
+        specifier: workspace:*
+        version: link:../../packages/config
+      typescript:
+        specifier: ^5.6.0
+        version: 5.9.3
+      wrangler:
+        specifier: ^4.86.0
+        version: 4.87.0(@cloudflare/workers-types@4.20260502.1)
+
   apps/signup-worker:
     dependencies:
       '@splash/auth':
