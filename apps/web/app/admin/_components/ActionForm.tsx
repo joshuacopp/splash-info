@@ -57,6 +57,13 @@ interface ActionFormProps {
    * by the document-edit details to close itself on save.
    */
   onResult?: (result: ActionResult) => void;
+  /**
+   * Brief 160 — optional `id` passthrough so a sibling button (e.g., the
+   * AnnouncementComposeModal's Preview button) can read the form's
+   * FormData via document.getElementById without owning the form's
+   * state. Standard `<form id>` semantics.
+   */
+  id?: string;
 }
 
 export function ActionForm({
@@ -65,7 +72,8 @@ export function ActionForm({
   className,
   resetOnSuccess = true,
   encType,
-  onResult
+  onResult,
+  id
 }: ActionFormProps) {
   const [result, formAction, isPending] = useActionState(action, null);
   const router = useRouter();
@@ -100,6 +108,7 @@ export function ActionForm({
   return (
     <form
       key={formKey}
+      id={id}
       action={formAction}
       className={className}
       encType={encType}

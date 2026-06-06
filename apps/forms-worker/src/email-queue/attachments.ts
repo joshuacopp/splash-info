@@ -10,7 +10,9 @@
 // from the email) with a log line rather than failing the whole row —
 // the email still sends, just without that attachment. Operators can
 // see the skip in worker logs and re-render the source data with a
-// smaller attachment if needed.
+// smaller attachment if needed. NOTE (Brief 160): inline images count
+// against this cap too — don't relax it for "promo wants 8 MB images";
+// shrink the image instead.
 
 import type { Env } from "../index.js";
 
@@ -25,6 +27,14 @@ export interface QueueAttachment {
    *  the `splash-promo-files` bucket. The dispatch below maps the string
    *  to the bound R2 binding on `env`. */
   bucket?: "FORMS_FILES" | "PROMO_FILES";
+  /** Brief 160 — true when the attachment is referenced inline from the
+   *  body HTML via `<img src="cid:{content_id}" />`. Passed through to
+   *  PA verbatim; PA's Send Email V2 connector flips `IsInline` true +
+   *  `ContentId` populated. */
+  is_inline?: boolean;
+  /** Brief 160 — CID identifier matching the `src="cid:..."` reference
+   *  in the body HTML. */
+  content_id?: string;
 }
 
 /** 5 MB per attachment, base64-encoded as a string. Cloudflare Worker
@@ -63,8 +73,31 @@ export async function inlineAttachments(
       );
       continue;
     }
+    // Brief 160 — pass `is_inline` + `content_id` through verbatim. PA's
+    // Send Email V2 connector reads these on each attachment to flip
+    // IsInline + ContentId. The forms-worker queue claim handler does
+    // NOT enforce a `content_id` requirement when `is_inline` is true —
+    // an inline-flagged attachment missing its content_id just falls
+    // back to a regular attachment in PA. Logging that case here would
+    // be noise; the renderer that produced the row is the right place
+    // to enforce it.
+    const isInline = att.is_inline === true;
+    const contentId =
+      typeof att.content_id === "string" && att.content_id.length > 0
+        ? att.content_id
+        : undefined;
+    const passThroughFlags = {
+      ...(isInline ? { is_inline: true } : {}),
+      ...(contentId ? { content_id: contentId } : {})
+    };
     if (typeof att.base64 === "string" && att.base64.length > 0) {
-      out.push({ filename, mime, size_bytes: sizeBytes, base64: att.base64 });
+      out.push({
+        filename,
+        mime,
+        size_bytes: sizeBytes,
+        base64: att.base64,
+        ...passThroughFlags
+      });
       continue;
     }
     if (typeof att.r2_key !== "string" || att.r2_key.length === 0) {
@@ -125,7 +158,8 @@ export async function inlineAttachments(
       filename,
       mime: obj.httpMetadata?.contentType ?? mime,
       size_bytes: buffer.byteLength,
-      base64
+      base64,
+      ...passThroughFlags
     });
   }
   return out;

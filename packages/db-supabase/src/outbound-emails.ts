@@ -37,6 +37,18 @@ export interface OutboundEmailAttachment {
    *  forms-worker's wrangler.toml, and (c) extending the dispatch in
    *  `apps/forms-worker/src/email-queue/attachments.ts`. */
   bucket?: "FORMS_FILES" | "PROMO_FILES";
+  /** Brief 160 — When true, the attachment is rendered inline in the
+   *  email body via CID reference (`<img src="cid:{content_id}" />`).
+   *  PA's Send Email V2 connector flips `IsInline` true + `ContentId`
+   *  populated for inline-flagged attachments. Defaults false (regular
+   *  attachment). The forms-worker claim endpoint passes this flag
+   *  through to PA verbatim. */
+  is_inline?: boolean;
+  /** Brief 160 — CID identifier referenced from the body HTML. Required
+   *  when `is_inline` is true. Must be stable for re-fires (the same
+   *  logical email re-enqueued should reference the same CID so dedup
+   *  behaves). Convention used by promo-worker: `material-{materialId}`. */
+  content_id?: string;
 }
 
 export interface OutboundEmailPayload {

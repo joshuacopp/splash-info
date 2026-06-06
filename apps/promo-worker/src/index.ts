@@ -53,7 +53,10 @@ import {
   handleServeMaterialFile
 } from "./handlers/materials.js";
 import { handlePutPtp } from "./handlers/ptp.js";
-import { handleSendAnnouncement } from "./handlers/announce.js";
+import {
+  handleSendAnnouncement,
+  handlePreviewAnnouncement
+} from "./handlers/announce.js";
 import {
   handleResolveRecipients,
   handleListLocations,
@@ -216,6 +219,17 @@ export default {
     if (ptpMatch && ptpMatch[1]) {
       if (request.method === "PUT")
         return handlePutPtp(request, env, ptpMatch[1]);
+      return new Response("Method Not Allowed", { status: 405 });
+    }
+
+    // Brief 160 — announcement preview (no snapshot, no fan-out). Matched
+    // BEFORE the bare `/announce` route so the more specific path wins.
+    const announcePreviewMatch = url.pathname.match(
+      /^\/promo\/api\/promos\/([0-9a-f-]+)\/announce\/preview$/i
+    );
+    if (announcePreviewMatch && announcePreviewMatch[1]) {
+      if (request.method === "POST")
+        return handlePreviewAnnouncement(request, env, announcePreviewMatch[1]);
       return new Response("Method Not Allowed", { status: 405 });
     }
 

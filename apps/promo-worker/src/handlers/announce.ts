@@ -43,6 +43,7 @@ import { isValidEmail } from "@splash/types/email-validate";
 import type { PromoRole } from "@splash/types/promo";
 import type { Env } from "../index.js";
 import { logActivity } from "./_activity.js";
+import { renderAnnouncement } from "../announce/render-html.js";
 
 // =============================================================================
 // Shared constants + helpers
@@ -61,8 +62,16 @@ const KNOWN_BODY_KEYS = new Set([
   "bodyText",
   "recipientEmails",
   "selectedMaterialIds",
-  "includePtp"
+  "includePtp",
+  "materialModes"
 ]);
+
+// Brief 160 — material modes override.
+// Optional `materialModes: Record<materialId, "inline" | "attachment">`.
+// When present, overrides the auto-rule per material (image MIME → inline,
+// everything else → attachment). Defaults to auto-rule when absent or
+// when a material id is missing from the map.
+type MaterialMode = "inline" | "attachment";
 
 function pgHeaders(env: Env): HeadersInit {
   return {
@@ -125,18 +134,26 @@ function isPlainObject(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
 }
 
-async function promoExists(env: Env, promoId: string): Promise<boolean> {
+interface PromoMeta {
+  id: string;
+  title: string;
+}
+
+async function fetchPromoMeta(
+  env: Env,
+  promoId: string
+): Promise<PromoMeta | null> {
   const url = new URL("/rest/v1/promotions", env.SUPABASE_URL);
   url.searchParams.set("id", `eq.${promoId}`);
-  url.searchParams.set("select", "id");
+  url.searchParams.set("select", "id,title");
   url.searchParams.set("limit", "1");
   const resp = await fetch(url.toString(), { headers: pgHeaders(env) });
   if (!resp.ok) {
     const errText = await resp.text().catch(() => "");
-    throw new Error(`promoExists ${resp.status}: ${errText}`);
+    throw new Error(`fetchPromoMeta ${resp.status}: ${errText}`);
   }
-  const rows = (await resp.json().catch(() => [])) as Array<{ id: string }>;
-  return rows.length > 0;
+  const rows = (await resp.json().catch(() => [])) as PromoMeta[];
+  return rows[0] ?? null;
 }
 
 interface MaterialRowForAnnounce {
@@ -201,6 +218,7 @@ interface AnnounceBody {
   recipientEmails?: unknown;
   selectedMaterialIds?: unknown;
   includePtp?: unknown;
+  materialModes?: unknown;
 }
 
 interface ValidatedAnnouncePayload {
@@ -209,39 +227,43 @@ interface ValidatedAnnouncePayload {
   recipientEmails: string[];
   selectedMaterialIds: string[];
   includePtp: boolean;
+  materialModes: Record<string, MaterialMode>;
 }
 
-export async function handleSendAnnouncement(
+interface ValidateOk {
+  ok: true;
+  payload: ValidatedAnnouncePayload;
+}
+interface ValidateErr {
+  ok: false;
+  response: Response;
+}
+
+/**
+ * Shared body validation for send + preview. `opts.recipientsRequired`
+ * is true on send (recipients are the fan-out target) and false on
+ * preview (recipients are optional metadata; preview renders the same
+ * regardless).
+ */
+async function parseAndValidateBody(
   req: Request,
-  env: Env,
-  ctx: ExecutionContext,
-  promoId: string
-): Promise<Response> {
-  const sk = requireServiceKey(env);
-  if (sk) return sk;
-  if (!isOriginAllowed(req)) return jsonError(403, "bad_origin");
-
-  const gate = await gateCaller(env, req, ["super_admin", "it", "marketing"]);
-  if (!gate.ok) return gate.response;
-
-  if (!PROMO_ID_RE.test(promoId)) return jsonError(404, "promo_not_found");
-
-  // Parse body.
+  opts: { recipientsRequired: boolean }
+): Promise<ValidateOk | ValidateErr> {
   let body: AnnounceBody;
   try {
     const raw = await req.json();
-    if (!isPlainObject(raw)) return jsonError(400, "bad_request");
+    if (!isPlainObject(raw)) return { ok: false, response: jsonError(400, "bad_request") };
     body = raw as AnnounceBody;
   } catch {
-    return jsonError(400, "bad_request");
+    return { ok: false, response: jsonError(400, "bad_request") };
   }
 
-  // Reject unknown keys (defense in depth against future schema drift).
   for (const k of Object.keys(body)) {
-    if (!KNOWN_BODY_KEYS.has(k)) return jsonError(400, "bad_request");
+    if (!KNOWN_BODY_KEYS.has(k)) {
+      return { ok: false, response: jsonError(400, "bad_request") };
+    }
   }
 
-  // --- Field-level validation ----------------------------------------------
   const fields: Record<string, string> = {};
 
   let subject = "";
@@ -254,8 +276,6 @@ export async function handleSendAnnouncement(
 
   let bodyText = "";
   if (typeof body.bodyText === "string") bodyText = body.bodyText;
-  // bodyText is required but NOT trimmed — operators may legitimately use
-  // leading/trailing whitespace for letterhead-style formatting.
   if (!bodyText || bodyText.length === 0) {
     fields.bodyText = "required";
   } else if (bodyText.length > BODY_MAX_LEN) {
@@ -271,12 +291,14 @@ export async function handleSendAnnouncement(
     }
   }
 
-  // Recipients — non-empty array, capped at 500, each a valid email.
-  // Dedup case-insensitively, preserving first-occurrence casing.
   let recipientEmails: string[] = [];
   const invalidRecipients: string[] = [];
-  if (!Array.isArray(body.recipientEmails) || body.recipientEmails.length === 0) {
-    fields.recipientEmails = "required";
+  if (body.recipientEmails === undefined || body.recipientEmails === null) {
+    if (opts.recipientsRequired) fields.recipientEmails = "required";
+  } else if (!Array.isArray(body.recipientEmails)) {
+    fields.recipientEmails = opts.recipientsRequired ? "required" : "invalid";
+  } else if (body.recipientEmails.length === 0) {
+    if (opts.recipientsRequired) fields.recipientEmails = "required";
   } else if (body.recipientEmails.length > RECIPIENT_CAP) {
     fields.recipientEmails = "too_many";
   } else {
@@ -298,18 +320,15 @@ export async function handleSendAnnouncement(
       seen.add(dedupKey);
       cleaned.push(trimmed);
     }
-    if (invalidRecipients.length > 0) {
-      // Surface as a dedicated 400 below — keeps the response shape
-      // discoverable for apps/web's compose modal.
-    } else if (cleaned.length === 0) {
-      fields.recipientEmails = "required";
-    } else {
-      recipientEmails = cleaned;
+    if (invalidRecipients.length === 0) {
+      if (cleaned.length === 0 && opts.recipientsRequired) {
+        fields.recipientEmails = "required";
+      } else {
+        recipientEmails = cleaned;
+      }
     }
   }
 
-  // Material ids — optional array (default []). Each must be UUID v4 shape;
-  // membership against this promo is checked after the existence check.
   let selectedMaterialIds: string[] = [];
   const invalidMaterialIds: string[] = [];
   if (body.selectedMaterialIds !== undefined) {
@@ -335,41 +354,130 @@ export async function handleSendAnnouncement(
     }
   }
 
-  // Collapse field-level errors to one 400 if any. Invalid-recipient is a
-  // distinct error code so apps/web can render the per-recipient list.
+  // Brief 160 — materialModes override (optional). Map of materialId →
+  // "inline" | "attachment". Unknown materialIds (not present in
+  // selectedMaterialIds) are tolerated and ignored.
+  const materialModes: Record<string, MaterialMode> = {};
+  if (body.materialModes !== undefined) {
+    if (!isPlainObject(body.materialModes)) {
+      fields.materialModes = "invalid";
+    } else {
+      for (const [k, v] of Object.entries(body.materialModes)) {
+        if (!MATERIAL_ID_RE.test(k)) {
+          fields.materialModes = "invalid";
+          break;
+        }
+        if (v !== "inline" && v !== "attachment") {
+          fields.materialModes = "invalid";
+          break;
+        }
+        materialModes[k] = v;
+      }
+    }
+  }
+
   if (invalidRecipients.length > 0) {
-    return new Response(
-      JSON.stringify({
-        error: "invalid_recipients",
-        invalid: invalidRecipients
-      }),
-      { status: 400, headers: { "Content-Type": "application/json" } }
-    );
+    return {
+      ok: false,
+      response: new Response(
+        JSON.stringify({ error: "invalid_recipients", invalid: invalidRecipients }),
+        { status: 400, headers: { "Content-Type": "application/json" } }
+      )
+    };
   }
   if (Object.keys(fields).length > 0) {
-    return new Response(
-      JSON.stringify({ error: "bad_request", fields }),
-      { status: 400, headers: { "Content-Type": "application/json" } }
-    );
+    return {
+      ok: false,
+      response: new Response(
+        JSON.stringify({ error: "bad_request", fields }),
+        { status: 400, headers: { "Content-Type": "application/json" } }
+      )
+    };
   }
 
-  const payload: ValidatedAnnouncePayload = {
-    subject,
-    bodyText,
-    recipientEmails,
-    selectedMaterialIds,
-    includePtp
-  };
-
-  // --- Promo existence -----------------------------------------------------
-  try {
-    if (!(await promoExists(env, promoId))) {
-      return jsonError(404, "promo_not_found");
+  return {
+    ok: true,
+    payload: {
+      subject,
+      bodyText,
+      recipientEmails,
+      selectedMaterialIds,
+      includePtp,
+      materialModes
     }
+  };
+}
+
+/**
+ * Brief 160 — partition resolved materials into inline (image MIME →
+ * CID-referenced from the body HTML) and attachment (everything else →
+ * regular attachment in PA). Honors per-material `materialModes`
+ * override: operator can demote an image to attachment-only by sending
+ * `materialModes: {[id]: "attachment"}`. Demoting a non-image to
+ * "inline" is silently ignored (image renderers in email clients
+ * wouldn't display a PDF inline anyway).
+ */
+function partitionMaterialsForRender(
+  resolved: MaterialRowForAnnounce[],
+  materialModes: Record<string, MaterialMode>
+): {
+  inlineMaterials: Array<{ materialId: string; name: string; contentId: string }>;
+  attachmentMaterials: Array<{ materialId: string; name: string }>;
+} {
+  const inlineMaterials: Array<{ materialId: string; name: string; contentId: string }> = [];
+  const attachmentMaterials: Array<{ materialId: string; name: string }> = [];
+  for (const m of resolved) {
+    const isImage = (m.file_mime ?? "").startsWith("image/");
+    const overrideMode = materialModes[m.id];
+    let mode: MaterialMode;
+    if (overrideMode === "attachment") {
+      mode = "attachment";
+    } else if (overrideMode === "inline" && isImage) {
+      mode = "inline";
+    } else {
+      mode = isImage ? "inline" : "attachment";
+    }
+    if (mode === "inline") {
+      inlineMaterials.push({
+        materialId: m.id,
+        name: m.name,
+        contentId: `material-${m.id}`
+      });
+    } else {
+      attachmentMaterials.push({ materialId: m.id, name: m.name });
+    }
+  }
+  return { inlineMaterials, attachmentMaterials };
+}
+
+export async function handleSendAnnouncement(
+  req: Request,
+  env: Env,
+  ctx: ExecutionContext,
+  promoId: string
+): Promise<Response> {
+  const sk = requireServiceKey(env);
+  if (sk) return sk;
+  if (!isOriginAllowed(req)) return jsonError(403, "bad_origin");
+
+  const gate = await gateCaller(env, req, ["super_admin", "it", "marketing"]);
+  if (!gate.ok) return gate.response;
+
+  if (!PROMO_ID_RE.test(promoId)) return jsonError(404, "promo_not_found");
+
+  const validated = await parseAndValidateBody(req, { recipientsRequired: true });
+  if (!validated.ok) return validated.response;
+  const payload = validated.payload;
+
+  // --- Promo existence + title --------------------------------------------
+  let promoMeta: PromoMeta | null;
+  try {
+    promoMeta = await fetchPromoMeta(env, promoId);
   } catch (err) {
-    console.error("[promo.announce] promoExists threw", err);
+    console.error("[promo.announce] fetchPromoMeta threw", err);
     return jsonError(500, "announcement_create_failed");
   }
+  if (!promoMeta) return jsonError(404, "promo_not_found");
 
   // --- Resolve materials (and check membership) ----------------------------
   let resolvedMaterials: MaterialRowForAnnounce[] = [];
@@ -464,21 +572,49 @@ export async function handleSendAnnouncement(
     return jsonError(500, "announcement_create_failed");
   }
 
-  // --- Build the body that actually gets sent -----------------------------
-  // Snapshot body_text stays raw; queue body_text appends the PTP block when
-  // the operator opted in. Two intentionally divergent views.
-  const renderedBody = payload.includePtp
-    ? appendPtpBlock(payload.bodyText, ptpRow)
-    : payload.bodyText;
+  // --- Partition materials + render body ----------------------------------
+  // Brief 160: image MIME → inline (CID-referenced from the body HTML),
+  // everything else → regular attachment. Operator can demote an image
+  // to attachment-only via `materialModes: {[id]: "attachment"}`.
+  const partition = partitionMaterialsForRender(
+    resolvedMaterials,
+    payload.materialModes
+  );
+  const inlineMaterialMap = new Map(
+    partition.inlineMaterials.map((m) => [m.materialId, m])
+  );
+
+  const rendered = renderAnnouncement({
+    subject: payload.subject,
+    bodyText: payload.bodyText,
+    promoTitle: promoMeta.title,
+    includePtp: payload.includePtp,
+    ptp: ptpRow
+      ? { purpose: ptpRow.purpose, tools: ptpRow.tools, process: ptpRow.process }
+      : null,
+    inlineMaterials: partition.inlineMaterials,
+    attachmentMaterials: partition.attachmentMaterials
+  });
 
   // --- Build the attachments array (one per resolved material) ------------
-  const attachments: OutboundEmailAttachment[] = resolvedMaterials.map((m) => ({
-    filename: m.name,
-    mime: m.file_mime ?? "application/octet-stream",
-    size_bytes: m.file_size_bytes ?? 0,
-    r2_key: m.r2_key,
-    bucket: "PROMO_FILES"
-  }));
+  // Brief 160 — inline materials carry `is_inline: true` + `content_id`;
+  // attachment materials are plain. PA's Send Email V2 connector reads
+  // these per-attachment to flip `IsInline` + `ContentId`.
+  const attachments: OutboundEmailAttachment[] = resolvedMaterials.map((m) => {
+    const inlineEntry = inlineMaterialMap.get(m.id);
+    const base: OutboundEmailAttachment = {
+      filename: m.name,
+      mime: m.file_mime ?? "application/octet-stream",
+      size_bytes: m.file_size_bytes ?? 0,
+      r2_key: m.r2_key,
+      bucket: "PROMO_FILES"
+    };
+    if (inlineEntry) {
+      base.is_inline = true;
+      base.content_id = inlineEntry.contentId;
+    }
+    return base;
+  });
 
   // --- Fan out one outbound_emails row per recipient ----------------------
   const failedRecipients: string[] = [];
@@ -495,8 +631,8 @@ export async function handleSendAnnouncement(
         source_id: announcementId,
         recipient,
         subject: payload.subject,
-        body_text: renderedBody,
-        body_html: undefined,
+        body_text: rendered.plainText,
+        body_html: rendered.html,
         attachments
       });
       enqueuedCount += 1;
@@ -535,24 +671,109 @@ export async function handleSendAnnouncement(
   );
 }
 
-/**
- * Append the PTP block to the operator's body, separated by the brief's
- * specified `\n\n---\n\n` divider. Missing PTP row → "(none)" placeholders.
- * Permissive v1 per the brief — a future stricter mode could 400 with
- * `ptp_not_set` instead.
- */
-function appendPtpBlock(
-  bodyText: string,
-  ptp: PtpRowForAnnounce | null
-): string {
-  const purpose = ptp?.purpose?.trim() || "(none)";
-  const tools = ptp?.tools?.trim() || "(none)";
-  const process = ptp?.process?.trim() || "(none)";
-  return (
-    `${bodyText}\n\n---\n\n` +
-    `PTP (Purpose, Tools, Process)\n\n` +
-    `Purpose: ${purpose}\n` +
-    `Tools: ${tools}\n` +
-    `Process: ${process}`
+// =============================================================================
+// POST /promo/api/promos/{id}/announce/preview
+// =============================================================================
+// Brief 160 — render the same HTML + plain text that handleSendAnnouncement
+// would have produced, without snapshot insert, fan-out, or activity log.
+// Operator's "what will the recipient see" check before firing the send.
+
+export async function handlePreviewAnnouncement(
+  req: Request,
+  env: Env,
+  promoId: string
+): Promise<Response> {
+  const sk = requireServiceKey(env);
+  if (sk) return sk;
+  if (!isOriginAllowed(req)) return jsonError(403, "bad_origin");
+
+  const gate = await gateCaller(env, req, ["super_admin", "it", "marketing"]);
+  if (!gate.ok) return gate.response;
+
+  if (!PROMO_ID_RE.test(promoId)) return jsonError(404, "promo_not_found");
+
+  // Preview tolerates an empty/missing recipientEmails — the modal may
+  // call preview before recipients are filled in.
+  const validated = await parseAndValidateBody(req, { recipientsRequired: false });
+  if (!validated.ok) return validated.response;
+  const payload = validated.payload;
+
+  let promoMeta: PromoMeta | null;
+  try {
+    promoMeta = await fetchPromoMeta(env, promoId);
+  } catch (err) {
+    console.error("[promo.preview] fetchPromoMeta threw", err);
+    return jsonError(500, "announcement_preview_failed");
+  }
+  if (!promoMeta) return jsonError(404, "promo_not_found");
+
+  let resolvedMaterials: MaterialRowForAnnounce[] = [];
+  if (payload.selectedMaterialIds.length > 0) {
+    try {
+      resolvedMaterials = await fetchMaterialsForAnnounce(
+        env,
+        promoId,
+        payload.selectedMaterialIds
+      );
+    } catch (err) {
+      console.error("[promo.preview] fetchMaterialsForAnnounce threw", err);
+      return jsonError(500, "announcement_preview_failed");
+    }
+    const resolvedIds = new Set(resolvedMaterials.map((m) => m.id));
+    const missing = payload.selectedMaterialIds.filter(
+      (id) => !resolvedIds.has(id)
+    );
+    if (missing.length > 0) {
+      return new Response(
+        JSON.stringify({ error: "material_not_on_promo", missing }),
+        { status: 400, headers: { "Content-Type": "application/json" } }
+      );
+    }
+  }
+
+  let ptpRow: PtpRowForAnnounce | null = null;
+  if (payload.includePtp) {
+    try {
+      ptpRow = await fetchPtpForAnnounce(env, promoId);
+    } catch (err) {
+      console.warn("[promo.preview] fetchPtpForAnnounce threw (non-fatal)", err);
+      ptpRow = null;
+    }
+  }
+
+  const partition = partitionMaterialsForRender(
+    resolvedMaterials,
+    payload.materialModes
   );
+
+  const rendered = renderAnnouncement({
+    subject: payload.subject,
+    bodyText: payload.bodyText,
+    promoTitle: promoMeta.title,
+    includePtp: payload.includePtp,
+    ptp: ptpRow
+      ? { purpose: ptpRow.purpose, tools: ptpRow.tools, process: ptpRow.process }
+      : null,
+    inlineMaterials: partition.inlineMaterials,
+    attachmentMaterials: partition.attachmentMaterials
+  });
+
+  // Attachment summary — gives the operator a "2 inline, 1 attachment, 149 KB"
+  // sanity-check line in the preview footer before firing the real send.
+  let totalSizeBytes = 0;
+  for (const m of resolvedMaterials) {
+    totalSizeBytes += m.file_size_bytes ?? 0;
+  }
+  const attachmentSummary = {
+    inline_count: partition.inlineMaterials.length,
+    attachment_count: partition.attachmentMaterials.length,
+    total_size_bytes: totalSizeBytes
+  };
+
+  return jsonResponse({
+    ok: true,
+    html: rendered.html,
+    plain_text: rendered.plainText,
+    attachment_summary: attachmentSummary
+  });
 }

@@ -1282,6 +1282,62 @@ URL-based — service bindings don't apply to those.
   internalNote is stripped at the GET-detail seam for non-IT
   callers (defense in depth — apps/web also hides it on the live
   view; only the IT ticket page renders it).
+  Brief 160 (2026-06-06) added the branded HTML body + inline-image
+  embeds + Preview endpoint. The Brief 157 plain-text-only send path
+  now also writes `body_html` to every queue row via the new
+  `apps/promo-worker/src/announce/render-html.ts` renderer (wraps the
+  operator's body + optional PTP + per-material content in the shared
+  `@splash/email-shell` Splash envelope — same shell forms-worker
+  workflow emails use). Image-MIME materials are partitioned to
+  INLINE (CID-referenced from the body HTML) by default; non-image
+  materials stay as flat attachments. Operators can demote an image
+  to attachment-only via the new per-material radio in the compose
+  modal — apps/web ships a `materialMode[{materialId}]=inline|attachment`
+  FormData entry that the worker reads via the optional `materialModes`
+  body field. Inline attachments carry `is_inline:true` +
+  `content_id:"material-{materialId}"` on the queue row; PA's drain
+  flow needs an operator-side expression edit to map these to Send
+  Email V2's `IsInline` + `ContentId` (documented in
+  PRE_DEPLOY_PROMO.md §6.5). Until PA is edited, inline-flagged
+  images fall back to flat attachments — body HTML still ships, just
+  with a broken-image placeholder for the unresolved CID. New
+  endpoint `POST /promo/api/promos/{id}/announce/preview` (same role
+  gate as `/announce`; `recipientEmails` optional) returns the
+  rendered HTML + plain text + an attachment summary
+  `{inline_count, attachment_count, total_size_bytes}` for the
+  preview sub-modal — no snapshot, no fan-out, no activity log.
+  Preview shares `parseAndValidateBody` with send so the two paths
+  cannot diverge in rendering. Apps/web Preview button is sibling-
+  not-child of the send `<ActionForm>` and reads its FormData via
+  `document.getElementById` — `<ActionForm>` gained an additive
+  optional `id` prop. Preview sub-modal renders the HTML in
+  `<iframe srcdoc sandbox="allow-same-origin">` (no script
+  execution; styles render); minHeight 600px. Snapshot row in
+  `promo_announcements` still stores ONLY the operator's raw body
+  (Brief 157's intentional snapshot-vs-delivered divergence
+  preserved); HTML regenerates on every send. Brief 160 also lifted
+  the Brief 134 `workflow-email-shell.ts` from forms-worker into the
+  new shared `@splash/email-shell` package so both workers share one
+  canonical shell — forms-worker imports it as a workspace dep, file
+  deleted from `apps/forms-worker/src/`, behavior identical.
+
+- **@splash/email-shell** (Brief 160) - Shared workspace package at
+  `packages/email-shell/` hosting the Outlook-safe HTML email shell.
+  Exports `wrapInEmailShell(bodyHtml, opts)`, the `EmailShellOptions`
+  interface, and the `escapeHtml` / `escapeAttr` utilities (the
+  latter useful for any caller building inline-styled body HTML by
+  hand). Lifted verbatim from Brief 134's
+  `apps/forms-worker/src/workflow-email-shell.ts` so both forms-worker
+  (workflow email steps) and promo-worker (announcement send) render
+  the same Splash-branded HTML envelope without duplicating the
+  Outlook-safe table-soup. Logo source remains `ASSETS.logoWhite`
+  from `@splash/storage-r2` (the same public R2 image the damage
+  check-request PDF uses); no new dependencies. The package itself
+  has zero runtime deps beyond `@splash/storage-r2`. Consumers
+  today: forms-worker `apps/forms-worker/src/workflow-email-step.ts`,
+  promo-worker `apps/promo-worker/src/announce/render-html.ts`.
+  Future cross-worker email surfaces (damage, fleet, jotform PAs)
+  should import from here rather than spawning per-worker copies.
 
 - **jotform-worker** (Brief 107) - JotForm Enterprise submission ingest
   + admin read API. The ninth worker in the monorepo (JS not TS;
@@ -2494,8 +2550,10 @@ URL-based — service bindings don't apply to those.
   authoring plain-text `body_template` — the worker auto-derives an
   HTML body via the new `renderTemplateHtml` exported from
   `apps/forms-worker/src/workflow-email-step.ts` and wraps it in a
-  Splash-branded Outlook-safe shell from new
-  `apps/forms-worker/src/workflow-email-shell.ts` (navy header band
+  Splash-branded Outlook-safe shell originally housed at
+  `apps/forms-worker/src/workflow-email-shell.ts` (extracted by Brief 160
+  to the shared `@splash/email-shell` workspace package — file deleted,
+  behavior identical; navy header band
   with the public R2 white-script logo at `ASSETS.logoWhite`, 600px
   white content area, light-gray footer with "Splash Car Wash ·
   splashcarwashes.info" brand line + optional "View All Open
@@ -2555,7 +2613,14 @@ URL-based — service bindings don't apply to those.
   the queue does NO template substitution), `attachments` JSONB
   (each entry is `{filename, mime, size_bytes}` + either `r2_key` or
   `base64`; r2_key is preferred + inlined at claim time so queue
-  rows stay small), `scheduled_for` (defaults `now()`), `claimed_at`
+  rows stay small; Brief 160 added two optional per-attachment fields
+  `is_inline?: boolean` and `content_id?: string` — when set, PA's
+  Send Email V2 connector flips `IsInline` true + `ContentId`
+  populated for the matching attachment, so the recipient renders the
+  image inline in the body via `<img src="cid:{content_id}" />`
+  reference rather than seeing it in the attachment tray; convention
+  used by promo-worker is `content_id = "material-{materialId}"`),
+  `scheduled_for` (defaults `now()`), `claimed_at`
   + `claim_id` (lock state — 10-minute stale-claim window),
   `sent_at` (null until PA confirms send), `send_attempts` (drops
   out of eligible pool at >= 5), `last_error`. Indexes: unique dedup

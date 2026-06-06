@@ -500,6 +500,10 @@ export interface SendAnnouncementBody {
   recipientEmails: string[];
   selectedMaterialIds?: string[];
   includePtp?: boolean;
+  /** Brief 160 — per-material override of the default
+   *  image-MIME = inline rule. Map of materialId → "inline" | "attachment".
+   *  Omit a materialId to use the auto-rule. */
+  materialModes?: Record<string, "inline" | "attachment">;
 }
 
 export interface SendAnnouncementResponseData {
@@ -516,6 +520,39 @@ export async function sendPromoAnnouncement(
 ): Promise<WorkerWriteResult<SendAnnouncementResponseData>> {
   return writeJson<SendAnnouncementResponseData>(
     `/promo/api/promos/${encodeURIComponent(promoId)}/announce`,
+    "POST",
+    body
+  );
+}
+
+// ---- Announcement preview (Brief 160) ----------------------------------
+
+export interface PreviewAnnouncementBody {
+  subject: string;
+  bodyText: string;
+  recipientEmails?: string[];
+  selectedMaterialIds?: string[];
+  includePtp?: boolean;
+  materialModes?: Record<string, "inline" | "attachment">;
+}
+
+export interface PreviewAnnouncementResponseData {
+  ok: true;
+  html: string;
+  plain_text: string;
+  attachment_summary: {
+    inline_count: number;
+    attachment_count: number;
+    total_size_bytes: number;
+  };
+}
+
+export async function previewPromoAnnouncement(
+  promoId: string,
+  body: PreviewAnnouncementBody
+): Promise<WorkerWriteResult<PreviewAnnouncementResponseData>> {
+  return writeJson<PreviewAnnouncementResponseData>(
+    `/promo/api/promos/${encodeURIComponent(promoId)}/announce/preview`,
     "POST",
     body
   );

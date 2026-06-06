@@ -122,6 +122,9 @@ importers:
       '@splash/db-supabase':
         specifier: workspace:*
         version: link:../../packages/db-supabase
+      '@splash/email-shell':
+        specifier: workspace:*
+        version: link:../../packages/email-shell
       '@splash/forms-schema':
         specifier: workspace:*
         version: link:../../packages/forms-schema
@@ -215,6 +218,9 @@ importers:
       '@splash/db-supabase':
         specifier: workspace:*
         version: link:../../packages/db-supabase
+      '@splash/email-shell':
+        specifier: workspace:*
+        version: link:../../packages/email-shell
       '@splash/http':
         specifier: workspace:*
         version: link:../../packages/http
@@ -471,6 +477,22 @@ importers:
       '@supabase/supabase-js':
         specifier: ^2.45.0
         version: 2.105.1
+    devDependencies:
+      '@cloudflare/workers-types':
+        specifier: ^4.20250101.0
+        version: 4.20260502.1
+      '@splash/config':
+        specifier: workspace:*
+        version: link:../config
+      typescript:
+        specifier: ^5.6.0
+        version: 5.9.3
+
+  packages/email-shell:
+    dependencies:
+      '@splash/storage-r2':
+        specifier: workspace:*
+        version: link:../storage-r2
     devDependencies:
       '@cloudflare/workers-types':
         specifier: ^4.20250101.0

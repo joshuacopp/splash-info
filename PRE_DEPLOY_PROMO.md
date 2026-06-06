@@ -316,6 +316,48 @@ needed (slot inventory across the project: 11:00 UTC forms cleanup,
 11:30 UTC workorders MaintainX sync, 12:00 UTC forms approval digest,
 13:00 UTC damage daily summary).
 
+## 6.5 PA flow widening (Brief 160 — inline attachments)
+
+Brief 160 adds CID inline-image support to the announcement send path.
+Operator-side PA work is required before inline-flagged images render
+embedded in the body — without it, inline-flagged images degrade to
+regular attachments (the body HTML still ships, just without the
+embedded images).
+
+The shared "drain outbound_emails" flow (the one PA built for Brief
+127) needs two new expressions on the per-attachment loop that maps the
+queue row's `attachments[]` JSONB onto Send Email V2's `Attachments`
+array:
+
+- **IsInline (boolean)** — set to:
+  ```
+  @if(item()?['is_inline'], true, false)
+  ```
+- **ContentId (string)** — set to:
+  ```
+  @if(item()?['is_inline'], item()?['content_id'], null)
+  ```
+
+The existing `Name` / `ContentBytes` / `ContentType` mappings stay
+unchanged.
+
+**Behavior on a partially-widened flow.** If the operator has not yet
+edited PA, `is_inline` + `content_id` are just JSONB keys PA never
+reads; Send Email V2 treats every attachment as a regular attachment.
+The recipient gets the body HTML (with `<img src="cid:...">` that
+won't resolve — Outlook shows a broken-image placeholder, Gmail just
+hides it) AND the same image as a downloadable attachment. Not pretty,
+but the announcement still arrives. After PA is edited the
+broken-image placeholder disappears and the image renders embedded in
+the body.
+
+**Recipient client coverage.** CID inline attachments are the standard
+embed mechanism for transactional email and render in every modern
+client we support: Outlook desktop 365 / 2019 / 2016, Outlook on the
+web, Gmail (web + iOS + Android), Apple Mail (macOS + iOS), Yahoo,
+default Android Mail. The `<img>` is hidden if the attachment
+parsing fails (e.g., very old clients) — no broken-image marker.
+
 ## 7. Known limitations / v2 candidates
 
 - No promo CRUD endpoint at Brief 153 — landed Brief 154.

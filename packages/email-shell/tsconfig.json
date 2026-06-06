@@ -1,0 +1,9 @@
+{
+  "extends": "@splash/config/tsconfig.worker.json",
+  "compilerOptions": {
+    "outDir": "./dist",
+    "rootDir": "./src",
+    "noEmit": false
+  },
+  "include": ["src/**/*"]
+}

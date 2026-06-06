@@ -44,7 +44,7 @@ import {
 import type { Env } from "./index.js";
 import { resolveApproverEmails } from "./workflow-resolution.js";
 import { generateOrReuseCompletedPdf } from "./pdf/cascade-attach.js";
-import { wrapInEmailShell } from "./workflow-email-shell.js";
+import { wrapInEmailShell } from "@splash/email-shell";
 
 const MAX_CASCADE_DEPTH = 10;
 

@@ -1,10 +1,13 @@
 // Brief 134 — Outlook-safe HTML email shell.
+// Brief 160 — Extracted from apps/forms-worker into the shared
+// `@splash/email-shell` package so multiple workers (forms, promo, …)
+// can render the same branded HTML envelope without duplicating it.
 //
-// Wraps an operator-authored body fragment (already rendered via
-// `renderTemplateHtml`) in a Splash-branded HTML document with a navy
-// header band + white-script logo, a 600px white content area, and a
-// light-gray footer that carries the canonical brand line + optional
-// "View All Open Approvals" / "View My Requests" secondary CTAs.
+// Wraps an operator-authored body fragment in a Splash-branded HTML
+// document with a navy header band + white-script logo, a 600px white
+// content area, and a light-gray footer that carries the canonical
+// brand line + optional "View All Open Approvals" / "View My Requests"
+// secondary CTAs.
 //
 // Why all the table soup: Outlook's Word-rendering engine doesn't honor
 // modern flex/grid CSS and strips `<style>` blocks in some
@@ -122,7 +125,7 @@ function buildFooterLinks(opts: EmailShellOptions): string {
   return links.join(" &nbsp;·&nbsp; ");
 }
 
-function escapeHtml(s: string): string {
+export function escapeHtml(s: string): string {
   return s
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
@@ -131,6 +134,6 @@ function escapeHtml(s: string): string {
     .replace(/'/g, "&#39;");
 }
 
-function escapeAttr(s: string): string {
+export function escapeAttr(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/"/g, "&quot;");
 }
