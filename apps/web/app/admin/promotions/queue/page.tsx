@@ -5,9 +5,14 @@
 // columns hint at the data IT needs at a glance: priority, status, ready
 // by, assignees, locations done, roadblocks, internal note preview.
 //
-// "Assigned to me" defaults ON when the URL param is absent — mirrors
-// Brief 121's pending-approvals "Mine / All" toggle (operator hits the
-// page expecting to see their own work).
+// "Assigned to me" defaults OFF when the URL param is absent. Reasoning:
+// promo_tickets rows are auto-created at promo-creation time (Brief 154's
+// POST /promos seeds the 1:1 ticket alongside the promotion row), but
+// they're unassigned until someone in IT picks them up. If the queue
+// defaulted to "Assigned to me" ON, IT would never see incoming work —
+// the queue would always look empty until someone else assigned them.
+// Operators who want only their own plate toggle the checkbox or hit
+// /admin/promotions/queue?assigned_to_me=1.
 
 import Link from "next/link";
 import { getMe } from "../../../_lib/me";
@@ -53,11 +58,10 @@ export default async function PromoQueuePage({ searchParams }: PageProps) {
   const status = readStringParam(sp.status);
   const priority = readStringParam(sp.priority);
   const search = readStringParam(sp.search);
-  // Default to "Assigned to me" when the param is absent. Operators can
-  // explicitly set ?assigned_to_me=0 in the URL to see the full queue (or
-  // toggle the checkbox off via the filter bar).
-  const assignedToMe =
-    sp.assigned_to_me === undefined ? true : sp.assigned_to_me === "1";
+  // Default OFF when the param is absent so IT can see the unscoped backlog
+  // (auto-created tickets with no assignees yet). Set ?assigned_to_me=1 to
+  // narrow to just the caller's plate.
+  const assignedToMe = sp.assigned_to_me === "1";
 
   let response: PromoListResponse | null = null;
   let fetchError: string | null = null;
@@ -114,7 +118,7 @@ export default async function PromoQueuePage({ searchParams }: PageProps) {
         </p>
       </div>
 
-      <PromoFilterBar defaultAssignedToMe={true} />
+      <PromoFilterBar defaultAssignedToMe={false} />
 
       {fetchError && (
         <p className="mb-5 rounded-splash-md border border-racecar-red bg-white px-3 py-2 text-racecar-red">
