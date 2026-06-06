@@ -58,6 +58,17 @@ const nextConfig = {
   transpilePackages: ["@splash/storage-r2", "@splash/types", "@splash/ui"],
   reactStrictMode: true,
 
+  // Server actions default body limit is 1 MB. Promo material uploads
+  // (Brief 156) and any future multipart server-action surfaces (claims,
+  // forms) need significantly more headroom. Promo cap is 50 MB on the
+  // worker side; this matches with a little overhead for the multipart
+  // boundary and other form fields.
+  experimental: {
+    serverActions: {
+      bodySizeLimit: "55mb"
+    }
+  },
+
   async rewrites() {
     // Build the rewrite list. Skip entries whose env var isn't set (production
     // same-origin won't have NEXT_PUBLIC_*_WORKER_URL set, so the rewrites
