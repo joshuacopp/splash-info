@@ -1,15 +1,17 @@
-// Six user-management cards. Brief 30 split this out from page.tsx as
+// Seven user-management cards. Brief 30 split this out from page.tsx as
 // part of the two-mode hub restructure (Manage Users / Manage Tables).
 //
-// Cards (in order): Create user, Set role, Set DC Role (Brief 61), Grant
-// tool, Revoke tool, Reset password. All wrap their forms in <ActionForm>
-// and POST to /sysadmin/api/* via the actions in ../actions.ts. Brief 18
-// / 19 patterns intact (UserPicker + ActionForm).
+// Cards (in order): Create user, Set role, Set DC Role (Brief 61), Set
+// Promo Role (Brief 159), Grant tool, Revoke tool, Reset password. All
+// wrap their forms in <ActionForm> and POST to /sysadmin/api/* via the
+// actions in ../actions.ts. Brief 18 / 19 patterns intact (UserPicker +
+// ActionForm).
 //
-// Set Role (user_permissions) and Set DC Role (damage_claim_user_roles +
-// damage_claim_user_locations) are independent permission domains — both
-// must be set separately. Set DC Role is positioned right after Set Role
-// for visual symmetry.
+// Set Role (user_permissions), Set DC Role (damage_claim_user_roles +
+// damage_claim_user_locations), and Set Promo Role (promo_user_roles) are
+// three independent permission domains — all must be set separately. Set
+// DC Role and Set Promo Role are positioned right after Set Role for
+// visual symmetry.
 
 import { ActionForm } from "../../_components/ActionForm";
 import {
@@ -21,6 +23,7 @@ import {
 import { CreateUserToolsAndDcRole } from "../_components/CreateUserToolsAndDcRole";
 import { LocationCodePicker } from "../_components/LocationCodePicker";
 import { SetDcRoleCard } from "../_components/SetDcRoleCard";
+import { SetPromoRoleCard } from "../_components/SetPromoRoleCard";
 import { UserPicker } from "../_components/UserPicker";
 import {
   createUserAction,
@@ -36,6 +39,7 @@ export function UserOperations() {
       <CreateUserCard />
       <SetRoleCard />
       <SetDcRoleCard />
+      <SetPromoRoleCard />
       <GrantToolCard />
       <RevokeToolCard />
       <ResetPasswordCard />

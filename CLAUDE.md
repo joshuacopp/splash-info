@@ -3113,6 +3113,39 @@ URL-based — service bindings don't apply to those.
   pattern is `user_permissions`-specific; future helpers touching
   the dc_role / dc_locations tables must not model their writes
   after `setRole`'s payload shape.
+  Brief 159 added a seventh Manage Users card — **Set Promo Role** —
+  that writes the promotions permission domain (`promo_user_roles`)
+  via `POST /sysadmin/api/users/{userId}/promo-role`.
+  user_permissions.role, dc_role, and promo_role are **three**
+  independent permission domains and must be set separately: a user
+  can be `location_admin` for Oswego in user_permissions, `gm` for
+  Oswego in dc_role, AND `marketing` in promo_role; all three are
+  needed if the user is to surface in all three places.
+  `promo_user_roles` is a single-scalar table — no companion
+  locations table (promo_role is feature-level, not per-location),
+  so unlike Set DC Role this card has no companion sub-picker. Role
+  allow-list: `super_admin | it | marketing | ops | null`; the
+  per-role permission table lives in the "Promotions feature"
+  glossary entry below — keep the card's inline hint copy in sync
+  with that table. Setting `role=null` deletes the
+  `promo_user_roles` row, revoking all `/admin/promotions` access.
+  Audit-log allow-lists now include the `set_promo_role` action and
+  the `promo_user_roles` target_type; `USER_TARGET_TYPES_CSV`
+  includes `promo_user_roles` so the log's `audit_user_id` filter
+  surfaces promo-role rows alongside user_permissions /
+  user_tool_access / damage_claim_user_roles ones.
+  Schema note: `promo_user_roles` is `(user_id, promo_role)` with
+  `created_by` audit column. Email lives on `auth.users` and is
+  joined by the `auth_unified` view at read time — sysadmin writes
+  do NOT include `email`. Same Brief 64 caveat as dc_role; the
+  denormalization pattern is `user_permissions`-specific.
+  Cookie-refresh constraint: a newly-granted promo_role does NOT
+  surface on the affected user's `Session.promoRole` until they
+  sign out and back in. Same constraint as Set DC Role and Set Role
+  — the session is sourced from the access-token cookie set at
+  login. The Brief 158a dashboard tile-visibility predicate
+  (`visibleTo: s?.promoRole != null`) consumes the refreshed
+  session automatically; no separate dashboard wiring needed.
 - **BOGO** (Brief 142) - "Buy One Get One" schedule modifier on
   signup-worker. Customer pays today's price (whatever the active
   pricing mode resolves to — `full` / `same` / `flash5` / `flash2` /

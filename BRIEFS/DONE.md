@@ -156,3 +156,4 @@
 - 2026-06-05 11:18:39 brief-157-promo-announcement-send.md (success)
 - 2026-06-05 11:42:45 brief-158a-promo-apps-web-read-pages.md (success)
 - 2026-06-05 12:07:44 brief-158b-promo-apps-web-write-affordances.md (success)
+- 2026-06-06 09:09:15 brief-159-sysadmin-set-promo-role-tool.md (success)

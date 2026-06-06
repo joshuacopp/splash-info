@@ -8,6 +8,7 @@ import type {
   ToolName
 } from "@splash/types/auth";
 import type { DamageRole } from "@splash/types/claims";
+import type { PromoRole } from "@splash/types/promo";
 
 /**
  * dc_role + dc_locations are the damage-claim permission domain — separate
@@ -19,6 +20,12 @@ import type { DamageRole } from "@splash/types/claims";
  * read; `gm` / `rm` users are restricted to their dc_locations.
  */
 export type DcRole = DamageRole;
+
+/**
+ * Re-export of PromoRole so consumers can `import type { PromoRole } from
+ * "@splash/types/db-supabase"`-style alongside DcRole.
+ */
+export type { PromoRole } from "@splash/types/promo";
 
 /**
  * Compact user-search row returned by searchUsersByEmail. Drives the sysadmin
@@ -468,6 +475,94 @@ export async function setDcRole(
   return {
     before,
     after: { role: args.role, location_codes: afterLocs }
+  };
+}
+
+/* ============================================================
+ * promo_role  (Brief 159)
+ * ============================================================ */
+
+interface PromoRoleRow {
+  user_id: string;
+  promo_role: PromoRole;
+}
+
+/**
+ * Set a user's promo_role atomically. Mirrors setDcRole but for the
+ * promotions permission table. promo_user_roles is a single-scalar table —
+ * no companion locations table (promo_role is feature-level, not
+ * per-location).
+ *
+ *   - role !== null: upsert promo_user_roles with the new role.
+ *   - role === null: delete the row (revokes all /admin/promotions access).
+ *
+ * Schema note: writes to `promo_user_roles` pass only `(user_id,
+ * promo_role)` plus `created_by` for first-time inserts. Email lives on
+ * `auth.users` and is joined by `auth_unified` at read time — no `email`
+ * column on this table (mirrors the dc_role pattern fixed in Brief 64).
+ * `created_by` is an audit column on the table; we set it on upsert so a
+ * re-grant by a different super_admin overwrites it with the latest
+ * granter, which matches the table's intent ("who created this grant").
+ *
+ * Atomicity: Supabase JS doesn't expose transactions; calls run
+ * sequentially. If a step fails mid-flight, the helper throws and the
+ * caller's audit log captures whatever state it ended in.
+ */
+export async function setPromoRole(
+  client: SupabaseClient,
+  args: {
+    userId: string;
+    role: PromoRole | null;
+    /** auth.users.id of the super_admin performing the change; stamps
+     * promo_user_roles.created_by on upsert. */
+    createdBy?: string;
+  }
+): Promise<{
+  before: { role: PromoRole | null };
+  after: { role: PromoRole | null };
+}> {
+  // 1. Read current state for the audit-log before snapshot.
+  const beforeResp = await client
+    .from("promo_user_roles")
+    .select("user_id,promo_role")
+    .eq("user_id", args.userId)
+    .maybeSingle();
+  if (beforeResp.error) throw beforeResp.error;
+  const beforeRow = beforeResp.data as PromoRoleRow | null;
+  const before = {
+    role: (beforeRow?.promo_role ?? null) as PromoRole | null
+  };
+
+  // 2. Apply the change.
+  if (args.role === null) {
+    const del = await client
+      .from("promo_user_roles")
+      .delete()
+      .eq("user_id", args.userId);
+    if (del.error) throw new Error(`Clear promo_role failed: ${del.error.message}`);
+    return { before, after: { role: null } };
+  }
+
+  const upsertPayload: Record<string, unknown> = {
+    user_id: args.userId,
+    promo_role: args.role
+  };
+  if (args.createdBy) {
+    upsertPayload.created_by = args.createdBy;
+  }
+
+  const upsertResp = await client
+    .from("promo_user_roles")
+    .upsert(upsertPayload, { onConflict: "user_id" })
+    .select("user_id,promo_role")
+    .single();
+  if (upsertResp.error) {
+    throw new Error(`Set promo_role failed: ${upsertResp.error.message}`);
+  }
+
+  return {
+    before,
+    after: { role: args.role }
   };
 }
 

@@ -91,6 +91,15 @@
 //                                          bypass scoping). Audit action
 //                                          set_dc_role; target_type
 //                                          damage_claim_user_roles.
+//   POST  /sysadmin/api/users/{userId}/promo-role
+//                                        — Brief 159. Set/clear a user's
+//                                          promo_role atomically. Body:
+//                                          { role }. super_admin gate.
+//                                          Writes promo_user_roles (single-
+//                                          scalar table — no companion
+//                                          locations table). Audit action
+//                                          set_promo_role; target_type
+//                                          promo_user_roles.
 //   GET   /sysadmin/api/audit-log        — Brief 30. Filtered read of
 //                                          sysadmin_audit_log. Filters: actor
 //                                          (ilike substring), action (exact;
@@ -131,8 +140,10 @@ import {
   revokeTool,
   searchUsersByEmail,
   setDcRole,
+  setPromoRole,
   setRole,
   type DcRole,
+  type PromoRole,
   type SupabaseEnv
 } from "@splash/db-supabase";
 import { isOriginAllowed, json, jsonError } from "@splash/http";
@@ -143,9 +154,17 @@ type Env = SupabaseEnv;
 const VALID_TOOLS: ReadonlySet<ToolName> = new Set(["pricing", "claims", "pertrack"]);
 const VALID_ROLES: ReadonlySet<UserRole> = new Set(["super_admin", "location_admin"]);
 const VALID_DC_ROLES: ReadonlySet<DcRole> = new Set(["gm", "rm", "admin", "super_admin"]);
+const VALID_PROMO_ROLES: ReadonlySet<PromoRole> = new Set([
+  "super_admin",
+  "it",
+  "marketing",
+  "ops"
+]);
 
 const DC_ROLE_MAX_LOCATIONS = 50;
 const DC_ROLE_PATH_RE = /^\/sysadmin\/api\/users\/([^/]+)\/dc-role$/;
+// Brief 159 — second dynamic-path endpoint, sibling to DC_ROLE_PATH_RE.
+const PROMO_ROLE_PATH_RE = /^\/sysadmin\/api\/users\/([^/]+)\/promo-role$/;
 
 const OWNED_POST_PATHS = new Set([
   "/sysadmin/api/grant-tool",
@@ -182,11 +201,23 @@ export default {
     // Brief 61 — dynamic POST /sysadmin/api/users/{userId}/dc-role.
     const dcRolePathMatch = DC_ROLE_PATH_RE.exec(path);
     const isOwnedDcRolePost = dcRolePathMatch !== null;
-    if (!isOwnedPost && !isOwnedPatch && !isOwnedGet && !isOwnedDcRolePost) {
+    // Brief 159 — dynamic POST /sysadmin/api/users/{userId}/promo-role.
+    const promoRolePathMatch = PROMO_ROLE_PATH_RE.exec(path);
+    const isOwnedPromoRolePost = promoRolePathMatch !== null;
+    if (
+      !isOwnedPost &&
+      !isOwnedPatch &&
+      !isOwnedGet &&
+      !isOwnedDcRolePost &&
+      !isOwnedPromoRolePost
+    ) {
       return new Response("Not found", { status: 404 });
     }
 
-    if ((isOwnedPost || isOwnedDcRolePost) && method !== "POST") {
+    if (
+      (isOwnedPost || isOwnedDcRolePost || isOwnedPromoRolePost) &&
+      method !== "POST"
+    ) {
       return jsonError(405, "POST required");
     }
     if (isOwnedPatch && method !== "PATCH") {
@@ -238,6 +269,11 @@ export default {
       if (isOwnedDcRolePost && dcRolePathMatch) {
         const userId = decodeURIComponent(dcRolePathMatch[1] ?? "");
         return await handleSetDcRole(env, userId, body, actor);
+      }
+
+      if (isOwnedPromoRolePost && promoRolePathMatch) {
+        const userId = decodeURIComponent(promoRolePathMatch[1] ?? "");
+        return await handleSetPromoRole(env, userId, body, actor);
       }
 
       switch (path) {
@@ -506,6 +542,75 @@ async function handleSetDcRole(
     user_id: userId,
     role: after.role,
     location_codes: after.location_codes
+  });
+}
+
+/**
+ * Brief 159 — POST /sysadmin/api/users/{userId}/promo-role.
+ *
+ * Sets / clears a user's promo_role. promo_user_roles is a single-scalar
+ * table — no companion locations table (promo_role is feature-level, not
+ * per-location). Setting role=null deletes the row, revoking all
+ * /admin/promotions access.
+ *
+ * super_admin-only; the gate is at the top of fetch(). Audit action
+ * `set_promo_role`; target_type `promo_user_roles`.
+ *
+ * Cookie refresh: the new promo_role does NOT surface on the user's
+ * Session.promoRole until they sign out and back in. Same constraint as
+ * Set DC Role and Set Role — the session is sourced from the
+ * access-token cookie set at login.
+ */
+async function handleSetPromoRole(
+  env: Env,
+  userId: string,
+  body: Record<string, unknown>,
+  actor: { id: string; email: string }
+): Promise<Response> {
+  if (!UUID_RE.test(userId)) {
+    return jsonError(400, "Invalid user_id in path");
+  }
+
+  const roleRaw = body.role;
+  if (roleRaw !== null && typeof roleRaw !== "string") {
+    return jsonError(400, "role must be a string or null");
+  }
+  let role: PromoRole | null;
+  if (roleRaw === null) {
+    role = null;
+  } else if (VALID_PROMO_ROLES.has(roleRaw as PromoRole)) {
+    role = roleRaw as PromoRole;
+  } else {
+    return jsonError(400, `Invalid role: ${roleRaw}`);
+  }
+
+  // Defense in depth — confirm the user exists before writing. Mirrors
+  // handleSetDcRole's adminGetUser call (which doubles as the audit-log
+  // email source for that handler; we don't need the email here because
+  // promo_user_roles doesn't carry an email column).
+  const userObj = await adminGetUser(env, userId);
+  if (!userObj.email) return jsonError(400, "User has no email on file");
+
+  const sb = createServiceClient(env);
+  const { before, after } = await setPromoRole(sb, {
+    userId,
+    role,
+    createdBy: actor.id
+  });
+
+  await logSysadminAudit(sb, {
+    actor,
+    action: "set_promo_role",
+    target_type: "promo_user_roles",
+    target_id: userId,
+    before,
+    after
+  });
+
+  return json({
+    ok: true,
+    user_id: userId,
+    role: after.role
   });
 }
 
@@ -2007,6 +2112,7 @@ const ALLOWED_AUDIT_ACTIONS: ReadonlySet<string> = new Set([
   "set_role_location_admin",
   "clear_role",
   "set_dc_role",
+  "set_promo_role",
   "grant_tool",
   "grant_tool_noop",
   "revoke_tool",
@@ -2023,12 +2129,13 @@ const ALLOWED_AUDIT_TARGET_TYPES: ReadonlySet<string> = new Set([
   "user_tool_access",
   "auth.users",
   "damage_claim_user_roles",
+  "promo_user_roles",
   "pricing_simple",
   "locations"
 ]);
 
 const USER_TARGET_TYPES_CSV =
-  "user_permissions,user_tool_access,auth.users,damage_claim_user_roles";
+  "user_permissions,user_tool_access,auth.users,damage_claim_user_roles,promo_user_roles";
 const LOCATION_TARGET_TYPES_CSV = "pricing_simple,locations";
 
 const UUID_RE = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;

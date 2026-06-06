@@ -322,6 +322,68 @@ export async function setDcRoleAction(
 }
 
 /* ============================================================
+ * Set Promo Role (Brief 159)
+ *
+ * Writes promo_role via POST /sysadmin/api/users/{userId}/promo-role.
+ * promo_user_roles is a single-scalar table — no companion locations
+ * table, so unlike setDcRoleAction this action takes only the role.
+ *
+ * Body shape:
+ *   { role: "super_admin" | "it" | "marketing" | "ops" | null }
+ * role=null clears the row (revokes all /admin/promotions access).
+ *
+ * Cookie-refresh constraint: the new promo_role doesn't surface on
+ * Session.promoRole until the affected user signs out and back in.
+ * Same as Set DC Role / Set Role — the session is sourced from the
+ * access-token cookie set at login. The success-message copy makes
+ * this explicit so the operator doesn't wonder why the affected
+ * user's tile visibility hasn't updated yet.
+ * ============================================================ */
+
+type PromoRoleValue = "super_admin" | "it" | "marketing" | "ops";
+
+interface SetPromoRoleBody {
+  role: PromoRoleValue | null;
+}
+
+export async function setPromoRoleAction(
+  _prevState: ActionResult | null,
+  formData: FormData
+): Promise<ActionResult> {
+  const userId = fieldString(formData, "user_id");
+  if (userId.length === 0) {
+    return { ok: false, error: "Pick a user first." };
+  }
+
+  const roleRaw = fieldString(formData, "role");
+  const role: PromoRoleValue | null =
+    roleRaw.length === 0 ? null : (roleRaw as PromoRoleValue);
+
+  const body: SetPromoRoleBody = { role };
+
+  const result = await sysadminPostJson(
+    `/sysadmin/api/users/${encodeURIComponent(userId)}/promo-role`,
+    body
+  );
+  if (!result.ok) {
+    return { ok: false, error: result.error };
+  }
+
+  revalidatePath(PAGE_PATH);
+  if (role === null) {
+    return {
+      ok: true,
+      message:
+        "Cleared promo role. The user must sign out and back in to see the change take effect."
+    };
+  }
+  return {
+    ok: true,
+    message: `Set promo role ${role}. The user must sign out and back in to see the change take effect.`
+  };
+}
+
+/* ============================================================
  * Grant tool
  * ============================================================ */
 
