@@ -41,10 +41,18 @@ const PROMO_ID_RE =
 const PROMO_TYPES = ["Same", "BOGO", "Add-ons", "Discount", "Other"] as const;
 type PromoType = (typeof PROMO_TYPES)[number];
 
+// `Same` is the only self-explanatory promo type — today's pricing, no kiosk
+// behavior change. Every other type (including `Other`) needs operator copy
+// explaining what the kiosk / POS should actually do; without it, reviewers
+// can't tell what the promo is supposed to be.
+// Keep in sync with REQUIRES_POS_BEHAVIOR in
+// apps/web/app/admin/promotions/_actions/createActions.ts and
+// CreatePromoForm.tsx.
 const PROMO_TYPES_REQUIRING_POS_BEHAVIOR = new Set<PromoType>([
   "BOGO",
   "Add-ons",
-  "Discount"
+  "Discount",
+  "Other"
 ]);
 
 const PRIORITIES = ["High", "Medium", "Low"] as const;

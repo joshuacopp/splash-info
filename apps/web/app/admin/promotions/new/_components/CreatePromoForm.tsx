@@ -8,7 +8,7 @@
 
 "use client";
 
-import { useRef, useState } from "react";
+import { useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { ActionForm } from "../../../_components/ActionForm";
@@ -18,7 +18,16 @@ import type { PromoLocationOption } from "../../_lib/worker-fetch";
 
 const PROMO_TYPES = ["Same", "BOGO", "Add-ons", "Discount", "Other"] as const;
 const PRIORITIES = ["High", "Medium", "Low"] as const;
-const REQUIRES_POS_BEHAVIOR = new Set<string>(["BOGO", "Add-ons", "Discount"]);
+// `Same` is self-explanatory (today's pricing; no kiosk behavior change to
+// describe). Everything else needs operator copy explaining what the kiosk /
+// POS should actually do — `Other` especially, since the type name alone
+// tells reviewers nothing.
+const REQUIRES_POS_BEHAVIOR = new Set<string>([
+  "BOGO",
+  "Add-ons",
+  "Discount",
+  "Other"
+]);
 
 interface Props {
   locations: PromoLocationOption[];
@@ -31,37 +40,29 @@ export default function CreatePromoForm({ locations }: Props) {
     new Set()
   );
   const [locationFilter, setLocationFilter] = useState("");
-  const hiddenLocationsRef = useRef<HTMLInputElement>(null);
 
   const posBehaviorRequired = REQUIRES_POS_BEHAVIOR.has(promoType);
-  const posBehaviorDisabled =
-    promoType === "Same" || promoType === "Other";
+  const posBehaviorDisabled = promoType === "Same";
 
   function toggleLocation(code: string) {
     setSelectedLocations((prev) => {
       const next = new Set(prev);
       if (next.has(code)) next.delete(code);
       else next.add(code);
-      if (hiddenLocationsRef.current) {
-        hiddenLocationsRef.current.value = Array.from(next).join(",");
-      }
       return next;
     });
   }
 
   function selectAll() {
-    const all = new Set(filtered.map((l) => l.locationCode));
-    // include previously selected outside the current filter too
-    selectedLocations.forEach((c) => all.add(c));
-    setSelectedLocations(all);
-    if (hiddenLocationsRef.current) {
-      hiddenLocationsRef.current.value = Array.from(all).join(",");
-    }
+    setSelectedLocations((prev) => {
+      const all = new Set(prev);
+      filtered.forEach((l) => all.add(l.locationCode));
+      return all;
+    });
   }
 
   function clearAll() {
     setSelectedLocations(new Set());
-    if (hiddenLocationsRef.current) hiddenLocationsRef.current.value = "";
   }
 
   const filtered =
@@ -109,11 +110,20 @@ export default function CreatePromoForm({ locations }: Props) {
       </Field>
 
       <Field label="Locations affected" required>
+        {/*
+          Controlled hidden input — `value` derives from `selectedLocations`
+          state so React owns the DOM value. The earlier uncontrolled +
+          `ref.current.value =` approach failed intermittently in production:
+          React's reconciliation on parent re-renders would reset the
+          DOM-mutated value, the form would submit with an empty string, and
+          the server action rejected with "Select at least one location"
+          even though checkboxes were visibly checked.
+        */}
         <input
-          ref={hiddenLocationsRef}
           type="hidden"
           name="locationCodes"
-          defaultValue=""
+          value={Array.from(selectedLocations).join(",")}
+          readOnly
         />
         <div className="rounded-splash-sm border border-gray-light bg-white">
           <div className="flex flex-wrap items-center gap-2 border-b border-gray-light px-3 py-2">

@@ -23,7 +23,17 @@ import type {
 
 const PROMO_TYPES = ["Same", "BOGO", "Add-ons", "Discount", "Other"] as const;
 const PRIORITIES = ["High", "Medium", "Low"] as const;
-const REQUIRES_POS_BEHAVIOR = new Set<string>(["BOGO", "Add-ons", "Discount"]);
+// `Same` is self-explanatory (today's pricing, no kiosk behavior change).
+// Everything else needs operator copy explaining what the kiosk / POS should
+// do — `Other` especially, since the type name alone tells reviewers nothing.
+// Keep in sync with PROMO_TYPES_REQUIRING_POS_BEHAVIOR in
+// apps/promo-worker/src/handlers/promos.ts.
+const REQUIRES_POS_BEHAVIOR = new Set<string>([
+  "BOGO",
+  "Add-ons",
+  "Discount",
+  "Other"
+]);
 const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 function asString(v: FormDataEntryValue | null): string {
