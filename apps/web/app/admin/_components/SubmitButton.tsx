@@ -16,18 +16,26 @@ interface SubmitButtonProps {
   children: ReactNode;
   pendingText?: string;
   className?: string;
+  /**
+   * Additional disabled gate ORed with the form-status pending flag. Use
+   * for client-side guards (e.g. "file exceeds size limit") that should
+   * keep the button disabled even when no submit is in flight.
+   */
+  disabled?: boolean;
 }
 
 export function SubmitButton({
   children,
   pendingText = "Working…",
-  className
+  className,
+  disabled
 }: SubmitButtonProps) {
   const { pending } = useFormStatus();
+  const isDisabled = pending || Boolean(disabled);
   return (
     <button
       type="submit"
-      disabled={pending}
+      disabled={isDisabled}
       aria-busy={pending}
       className={className}
     >

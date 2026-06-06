@@ -13,6 +13,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { ActionForm } from "../../../_components/ActionForm";
 import type { ActionResult } from "../../../_components/ActionForm";
+import { SubmitButton } from "../../../_components/SubmitButton";
 import { createPromoAction } from "../../_actions/createActions";
 import type { PromoLocationOption } from "../../_lib/worker-fetch";
 
@@ -289,12 +290,12 @@ export default function CreatePromoForm({ locations }: Props) {
         >
           Cancel
         </Link>
-        <button
-          type="submit"
-          className="rounded-splash-sm bg-splash-blue px-5 py-2 text-sm font-bold text-white shadow-splash-card hover:opacity-95"
+        <SubmitButton
+          pendingText="Creating promotion…"
+          className="rounded-splash-sm bg-splash-blue px-5 py-2 text-sm font-bold text-white shadow-splash-card hover:opacity-95 disabled:cursor-not-allowed disabled:opacity-70"
         >
           Submit promotion
-        </button>
+        </SubmitButton>
       </div>
     </ActionForm>
   );

@@ -7,6 +7,7 @@
 "use client";
 
 import { ActionForm } from "../../_components/ActionForm";
+import { SubmitButton } from "../../_components/SubmitButton";
 import { setPromoStatusAction } from "../_actions/statusActions";
 import { PROMO_STATUSES } from "../_lib/types";
 import type { PromoStatus } from "../_lib/types";
@@ -38,12 +39,12 @@ export default function StatusEditor({ promoId, currentStatus }: Props) {
           </option>
         ))}
       </select>
-      <button
-        type="submit"
-        className="rounded-splash-sm bg-splash-navy px-3 py-1.5 text-sm font-bold text-white hover:opacity-95"
+      <SubmitButton
+        pendingText="Saving…"
+        className="rounded-splash-sm bg-splash-navy px-3 py-1.5 text-sm font-bold text-white hover:opacity-95 disabled:cursor-not-allowed disabled:opacity-70"
       >
         Save
-      </button>
+      </SubmitButton>
     </ActionForm>
   );
 }

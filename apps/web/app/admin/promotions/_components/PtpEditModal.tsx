@@ -9,6 +9,7 @@
 import { useEffect, useState } from "react";
 import { ActionForm } from "../../_components/ActionForm";
 import type { ActionResult } from "../../_components/ActionForm";
+import { SubmitButton } from "../../_components/SubmitButton";
 import { putPtpAction } from "../_actions/ptpActions";
 import type { PromoPtp } from "../_lib/types";
 
@@ -118,12 +119,12 @@ export default function PtpEditModal({
               >
                 Cancel
               </button>
-              <button
-                type="submit"
-                className="rounded-splash-sm bg-splash-blue px-4 py-2 text-sm font-bold text-white shadow-splash-card hover:opacity-95"
+              <SubmitButton
+                pendingText="Saving…"
+                className="rounded-splash-sm bg-splash-blue px-4 py-2 text-sm font-bold text-white shadow-splash-card hover:opacity-95 disabled:cursor-not-allowed disabled:opacity-70"
               >
                 Save
-              </button>
+              </SubmitButton>
             </div>
           </ActionForm>
         </div>

@@ -5,9 +5,8 @@
 
 "use client";
 
-import { useState } from "react";
+import { useFormStatus } from "react-dom";
 import { ActionForm } from "../../_components/ActionForm";
-import type { ActionResult } from "../../_components/ActionForm";
 import { deleteMaterialAction } from "../_actions/materialActions";
 
 interface Props {
@@ -21,38 +20,42 @@ export default function MaterialDeleteButton({
   materialId,
   materialName
 }: Props) {
-  const [armed, setArmed] = useState(false);
-
-  function handleResult(result: ActionResult) {
-    if (result.ok) setArmed(false);
-  }
-
   return (
     <ActionForm
       action={deleteMaterialAction}
-      onResult={handleResult}
       resetOnSuccess={false}
       className="inline-block"
     >
       <input type="hidden" name="promoId" value={promoId} />
       <input type="hidden" name="materialId" value={materialId} />
-      <button
-        type="submit"
-        onClick={(e) => {
-          if (
-            !window.confirm(
-              `Delete "${materialName}"? This removes the file too.`
-            )
-          ) {
-            e.preventDefault();
-            return;
-          }
-          setArmed(true);
-        }}
-        className="rounded-splash-sm border border-splash-deny/40 bg-white px-2 py-1 text-xs font-bold text-splash-deny hover:bg-splash-deny/5"
-      >
-        {armed ? "…" : "Delete"}
-      </button>
+      <DeleteButton materialName={materialName} />
     </ActionForm>
+  );
+}
+
+// Inline so `useFormStatus` resolves against the parent <ActionForm>'s
+// <form> element. SubmitButton can't be used directly because its child
+// is a static label — we need the confirm-gate to live on the button's
+// own onClick handler.
+function DeleteButton({ materialName }: { materialName: string }) {
+  const { pending } = useFormStatus();
+  return (
+    <button
+      type="submit"
+      disabled={pending}
+      aria-busy={pending}
+      onClick={(e) => {
+        if (
+          !window.confirm(
+            `Delete "${materialName}"? This removes the file too.`
+          )
+        ) {
+          e.preventDefault();
+        }
+      }}
+      className="rounded-splash-sm border border-splash-deny/40 bg-white px-2 py-1 text-xs font-bold text-splash-deny hover:bg-splash-deny/5 disabled:cursor-not-allowed disabled:opacity-70"
+    >
+      {pending ? "Deleting…" : "Delete"}
+    </button>
   );
 }

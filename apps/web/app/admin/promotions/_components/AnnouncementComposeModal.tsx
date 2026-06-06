@@ -11,6 +11,7 @@
 import { useEffect, useState } from "react";
 import { ActionForm } from "../../_components/ActionForm";
 import type { ActionResult } from "../../_components/ActionForm";
+import { SubmitButton } from "../../_components/SubmitButton";
 import { sendAnnouncementAction } from "../_actions/announceActions";
 import { isValidEmail } from "@splash/types/email-validate";
 import type { PromoMaterial, PromoPtp } from "../_lib/types";
@@ -348,13 +349,13 @@ export default function AnnouncementComposeModal({
               >
                 Close
               </button>
-              <button
-                type="submit"
+              <SubmitButton
+                pendingText="Sending…"
                 disabled={recipients.length === 0}
                 className="rounded-splash-sm bg-splash-blue px-5 py-2 text-sm font-bold text-white shadow-splash-card hover:opacity-95 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 Send announcement
-              </button>
+              </SubmitButton>
             </div>
           </ActionForm>
         </div>

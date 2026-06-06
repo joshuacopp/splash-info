@@ -8,6 +8,7 @@
 "use client";
 
 import { ActionForm } from "../../_components/ActionForm";
+import { SubmitButton } from "../../_components/SubmitButton";
 import { patchTicketAction } from "../_actions/ticketActions";
 
 interface Props {
@@ -85,12 +86,12 @@ export default function TicketFieldsForm({
       </div>
 
       <div className="flex items-center justify-end pt-2">
-        <button
-          type="submit"
-          className="rounded-splash-sm bg-splash-navy px-4 py-2 text-sm font-bold text-white hover:opacity-95"
+        <SubmitButton
+          pendingText="Saving ticket…"
+          className="rounded-splash-sm bg-splash-navy px-4 py-2 text-sm font-bold text-white hover:opacity-95 disabled:cursor-not-allowed disabled:opacity-70"
         >
           Save ticket
-        </button>
+        </SubmitButton>
       </div>
     </ActionForm>
   );

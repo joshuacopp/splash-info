@@ -10,6 +10,7 @@
 import { useEffect, useRef, useState } from "react";
 import { ActionForm } from "../../_components/ActionForm";
 import type { ActionResult } from "../../_components/ActionForm";
+import { SubmitButton } from "../../_components/SubmitButton";
 import { uploadMaterialAction } from "../_actions/materialActions";
 
 const MATERIAL_KINDS: ReadonlyArray<{ value: string; label: string }> = [
@@ -181,13 +182,13 @@ export default function MaterialUploadModal({
               >
                 Cancel
               </button>
-              <button
-                type="submit"
+              <SubmitButton
+                pendingText="Uploading…"
                 disabled={Boolean(clientError)}
                 className="rounded-splash-sm bg-splash-blue px-4 py-2 text-sm font-bold text-white shadow-splash-card hover:opacity-95 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 Upload
-              </button>
+              </SubmitButton>
             </div>
           </ActionForm>
         </div>
