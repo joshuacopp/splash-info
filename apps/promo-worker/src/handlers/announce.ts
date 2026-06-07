@@ -416,8 +416,12 @@ async function parseAndValidateBody(
  * `materialModes: {[id]: "attachment"}`. Demoting a non-image to
  * "inline" is silently ignored (image renderers in email clients
  * wouldn't display a PDF inline anyway).
+ *
+ * Exported (Brief 161) so the regression fixture in
+ * `test/render-html.snap.ts` can exercise the real code path rather
+ * than a copy.
  */
-function partitionMaterialsForRender(
+export function partitionMaterialsForRender(
   resolved: MaterialRowForAnnounce[],
   materialModes: Record<string, MaterialMode>
 ): {
@@ -448,6 +452,51 @@ function partitionMaterialsForRender(
     }
   }
   return { inlineMaterials, attachmentMaterials };
+}
+
+// IMPORTANT (Brief 161): inline materials MUST appear in this array with
+// `is_inline: true` + `content_id: "material-{id}"` set — they are NOT
+// mutually exclusive with the body HTML's `<img src="cid:material-{id}">`
+// references. The HTML references the CID; the queue attachment carries
+// the bytes. Both sides are required for the recipient's email client to
+// resolve the inline image — drop the inline entries from this array and
+// every recipient sees a broken-image placeholder where the embedded
+// image should render. The contract is empirically silent in Outlook /
+// Gmail UIs (no console error, no PA error, no queue error — just a
+// missing image) which is why the regression fixture at
+// `test/render-html.snap.ts` exists to catch a future executor dropping
+// the inline branch.
+//
+// Exported (Brief 161) so the regression fixture exercises the real
+// code path rather than a copy.
+/**
+ * Build the `attachments` array for a `outbound_emails` row from the
+ * fully-resolved materials + the inline-partition map.
+ *
+ * Every resolved material produces exactly one entry. Materials present
+ * in `inlineMaterialMap` get `is_inline: true` + `content_id` populated
+ * (the `cid:` reference the body HTML embeds); materials absent from
+ * the map are plain attachments.
+ */
+export function buildOutboundEmailAttachmentsForAnnouncement(
+  resolved: MaterialRowForAnnounce[],
+  inlineMaterialMap: Map<string, { contentId: string }>
+): OutboundEmailAttachment[] {
+  return resolved.map((m) => {
+    const inlineEntry = inlineMaterialMap.get(m.id);
+    const base: OutboundEmailAttachment = {
+      filename: m.name,
+      mime: m.file_mime ?? "application/octet-stream",
+      size_bytes: m.file_size_bytes ?? 0,
+      r2_key: m.r2_key,
+      bucket: "PROMO_FILES"
+    };
+    if (inlineEntry) {
+      base.is_inline = true;
+      base.content_id = inlineEntry.contentId;
+    }
+    return base;
+  });
 }
 
 export async function handleSendAnnouncement(
@@ -600,21 +649,14 @@ export async function handleSendAnnouncement(
   // Brief 160 — inline materials carry `is_inline: true` + `content_id`;
   // attachment materials are plain. PA's Send Email V2 connector reads
   // these per-attachment to flip `IsInline` + `ContentId`.
-  const attachments: OutboundEmailAttachment[] = resolvedMaterials.map((m) => {
-    const inlineEntry = inlineMaterialMap.get(m.id);
-    const base: OutboundEmailAttachment = {
-      filename: m.name,
-      mime: m.file_mime ?? "application/octet-stream",
-      size_bytes: m.file_size_bytes ?? 0,
-      r2_key: m.r2_key,
-      bucket: "PROMO_FILES"
-    };
-    if (inlineEntry) {
-      base.is_inline = true;
-      base.content_id = inlineEntry.contentId;
-    }
-    return base;
-  });
+  // See the IMPORTANT comment above
+  // `buildOutboundEmailAttachmentsForAnnouncement` for the contract +
+  // why a future executor MUST NOT drop the inline branch from this
+  // array (Brief 161).
+  const attachments = buildOutboundEmailAttachmentsForAnnouncement(
+    resolvedMaterials,
+    inlineMaterialMap
+  );
 
   // --- Fan out one outbound_emails row per recipient ----------------------
   const failedRecipients: string[] = [];

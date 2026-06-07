@@ -10,8 +10,24 @@
 //   1. Subject + body only (no PTP, no materials).
 //   2. Subject + body + PTP + 1 inline image + 1 attachment doc.
 //   3. Subject + body + 2 inline images + 0 attachments.
+//
+// Brief 161 — added FIXTURE_4: a contract assertion that the
+// attachments-array shape passed to `enqueueOutboundEmail` contains
+// every resolved material AND that inline entries carry
+// `is_inline: true` + `content_id: "material-{id}"` matching the
+// `<img src="cid:...">` reference the body HTML emits. Throws an
+// Error on contract violation so `tsx test/render-html.snap.ts` exits
+// non-zero. Guards the recipient-visible inline-image regression —
+// see the IMPORTANT comment in
+// `apps/promo-worker/src/handlers/announce.ts` above
+// `buildOutboundEmailAttachmentsForAnnouncement` for the
+// silent-failure mode.
 
 import { renderAnnouncement } from "../src/announce/render-html.js";
+import {
+  partitionMaterialsForRender,
+  buildOutboundEmailAttachmentsForAnnouncement
+} from "../src/handlers/announce.js";
 
 const FIXTURE_1 = {
   subject: "Summer Wash Special — June kickoff",
@@ -85,3 +101,112 @@ function dump(label: string, input: Parameters<typeof renderAnnouncement>[0]) {
 dump("FIXTURE 1: subject + body only", FIXTURE_1);
 dump("FIXTURE 2: subject + body + PTP + 1 inline image + 1 attachment", FIXTURE_2);
 dump("FIXTURE 3: subject + body + 2 inline images + 0 attachments", FIXTURE_3);
+
+// =============================================================================
+// FIXTURE 4 (Brief 161) — attachments-shape contract assertion
+// =============================================================================
+// Two resolved materials (1 image, 1 pdf); the image should partition to
+// inline + carry is_inline:true + content_id matching the cid:material-{id}
+// reference in the rendered body HTML; the pdf should partition to
+// attachment with no inline flags. Both MUST appear in the queue
+// attachments array — recipients lose the inline image otherwise.
+
+const FIXTURE_4_MATERIALS = [
+  {
+    id: "55555555-5555-4555-8555-555555555555",
+    name: "promo-banner.jpg",
+    r2_key: "promo-materials/abc/55555555-5555-4555-8555-555555555555.jpg",
+    file_mime: "image/jpeg",
+    file_size_bytes: 124_500
+  },
+  {
+    id: "66666666-6666-4666-8666-666666666666",
+    name: "operator-notes.pdf",
+    r2_key: "promo-materials/abc/66666666-6666-4666-8666-666666666666.pdf",
+    file_mime: "application/pdf",
+    file_size_bytes: 48_200
+  }
+];
+
+function assertAttachmentsContract(): void {
+  const partition = partitionMaterialsForRender(FIXTURE_4_MATERIALS, {});
+  const inlineMaterialMap = new Map(
+    partition.inlineMaterials.map((m) => [m.materialId, { contentId: m.contentId }])
+  );
+  const attachments = buildOutboundEmailAttachmentsForAnnouncement(
+    FIXTURE_4_MATERIALS,
+    inlineMaterialMap
+  );
+  const rendered = renderAnnouncement({
+    subject: "Inline image contract probe",
+    bodyText: "Probe body — see attachments below.",
+    promoTitle: "Brief 161 regression probe",
+    includePtp: false,
+    ptp: null,
+    inlineMaterials: partition.inlineMaterials,
+    attachmentMaterials: partition.attachmentMaterials
+  });
+
+  const failures: string[] = [];
+
+  // 1. Attachments array MUST contain every resolved material.
+  if (attachments.length !== FIXTURE_4_MATERIALS.length) {
+    failures.push(
+      `expected ${FIXTURE_4_MATERIALS.length} attachments, got ${attachments.length}`
+    );
+  }
+
+  // 2. The image MUST be tagged inline.
+  const imageMaterial = FIXTURE_4_MATERIALS[0]!;
+  const imageEntry = attachments.find((a) => a.filename === imageMaterial.name);
+  if (!imageEntry) {
+    failures.push(`image material missing from attachments array`);
+  } else {
+    if (imageEntry.is_inline !== true) {
+      failures.push(`image entry missing is_inline:true (got ${imageEntry.is_inline})`);
+    }
+    const expectedContentId = `material-${imageMaterial.id}`;
+    if (imageEntry.content_id !== expectedContentId) {
+      failures.push(
+        `image entry content_id mismatch — expected "${expectedContentId}", got "${imageEntry.content_id}"`
+      );
+    }
+    // 3. The body HTML MUST reference the same CID.
+    const cidRef = `cid:${expectedContentId}`;
+    if (!rendered.html.includes(cidRef)) {
+      failures.push(
+        `body HTML missing "${cidRef}" reference — partition produced inline material but renderer dropped it`
+      );
+    }
+  }
+
+  // 4. The pdf MUST NOT be tagged inline.
+  const pdfMaterial = FIXTURE_4_MATERIALS[1]!;
+  const pdfEntry = attachments.find((a) => a.filename === pdfMaterial.name);
+  if (!pdfEntry) {
+    failures.push(`pdf material missing from attachments array`);
+  } else {
+    if (pdfEntry.is_inline) {
+      failures.push(`pdf entry incorrectly tagged is_inline (PDFs cannot inline)`);
+    }
+    if (pdfEntry.content_id) {
+      failures.push(`pdf entry has content_id "${pdfEntry.content_id}" but should be undefined`);
+    }
+  }
+
+  console.log("=".repeat(80));
+  console.log("FIXTURE 4 (Brief 161): inline-image attachments contract");
+  console.log("=".repeat(80));
+  console.log(JSON.stringify(attachments, null, 2));
+  if (failures.length === 0) {
+    console.log("[ok] contract holds");
+    return;
+  }
+  console.log("[FAIL] CONTRACT VIOLATED — recipients will see broken images:");
+  for (const f of failures) console.log(`  - ${f}`);
+  throw new Error(
+    `Brief 161 attachments-shape contract violated: ${failures.join("; ")}`
+  );
+}
+
+assertAttachmentsContract();

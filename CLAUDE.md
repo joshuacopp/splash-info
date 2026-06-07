@@ -1320,6 +1320,28 @@ URL-based — service bindings don't apply to those.
   new shared `@splash/email-shell` package so both workers share one
   canonical shell — forms-worker imports it as a workspace dep, file
   deleted from `apps/forms-worker/src/`, behavior identical.
+  **Inline materials ride the queue payload alongside non-inline ones**
+  — the queue row's `attachments` JSONB contains one
+  `OutboundEmailAttachment` entry per resolved material; inline ones
+  carry `is_inline: true` + `content_id: "material-{materialId}"` and
+  non-inline ones omit both fields. The body HTML's
+  `<img src="cid:material-{id}">` references resolve against those
+  queue attachments at PA send time — the HTML emits the CID
+  reference, the queue attachment carries the bytes, and BOTH are
+  required for the recipient's email client to render the embedded
+  image. Dropping the inline entries from the attachments array (e.g.,
+  by mapping only over the non-inline partition) breaks the recipient
+  view with no console error / no PA error / no queue error —
+  recipients just see a broken-image marker. Brief 161 (2026-06-06)
+  extracted the attachments-building loop into a named exported
+  helper `buildOutboundEmailAttachmentsForAnnouncement` next to
+  `partitionMaterialsForRender` (both `export`ed for test access),
+  added an IMPORTANT block comment above the helper documenting the
+  silent-failure mode, and added FIXTURE_4 in
+  `apps/promo-worker/test/render-html.snap.ts` that asserts the
+  attachments-shape contract (length equals resolved materials count;
+  image entry has `is_inline: true` + `content_id` matching the body
+  HTML's `cid:material-{id}` reference; pdf entry has neither flag).
 
 - **@splash/email-shell** (Brief 160) - Shared workspace package at
   `packages/email-shell/` hosting the Outlook-safe HTML email shell.

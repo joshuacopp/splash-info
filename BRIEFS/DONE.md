@@ -158,3 +158,4 @@
 - 2026-06-05 12:07:44 brief-158b-promo-apps-web-write-affordances.md (success)
 - 2026-06-06 09:09:15 brief-159-sysadmin-set-promo-role-tool.md (success)
 - 2026-06-06 11:32:25 brief-160-promo-announcement-preview-branded-html-inline-materials.md (success)
+- 2026-06-06 12:30:20 brief-161-promo-announce-inline-materials-payload-fix.md (success)
