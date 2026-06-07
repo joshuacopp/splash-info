@@ -97,6 +97,12 @@ export interface PromoLocation {
   isComplete: boolean;
   completedAt: string | null;
   completedBy: string | null;
+  /** Brief 164 — when the per-site "IT changes are live" email was sent.
+   *  NULL = never notified. Eligible for the FAB-driven notification fire
+   *  iff `isComplete === true && notifiedAt === null`. */
+  notifiedAt: string | null;
+  /** Brief 164 — which IT user fired the per-site notification. */
+  notifiedBy: string | null;
 }
 
 export interface PromoMaterial {

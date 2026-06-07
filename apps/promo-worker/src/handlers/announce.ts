@@ -44,6 +44,11 @@ import type { PromoRole } from "@splash/types/promo";
 import type { Env } from "../index.js";
 import { logActivity } from "./_activity.js";
 import { renderAnnouncement } from "../announce/render-html.js";
+import {
+  ANNOUNCEMENT_TEMPLATES,
+  findTemplate,
+  substituteTemplate
+} from "../announce/templates.js";
 
 // =============================================================================
 // Shared constants + helpers
@@ -58,13 +63,24 @@ const BODY_MAX_LEN = 50_000;
 const RECIPIENT_CAP = 500;
 
 const KNOWN_BODY_KEYS = new Set([
+  // Brief 163 — `mode` is optional; absent + (subject|bodyText) present
+  // means freeform (back-compat). `mode: "template"` swaps subject/bodyText
+  // for templateId/templateFields.
+  "mode",
   "subject",
   "bodyText",
+  "templateId",
+  "templateFields",
   "recipientEmails",
   "selectedMaterialIds",
   "includePtp",
   "materialModes"
 ]);
+
+// Brief 163 — operator-supplied template field values cap. Generous —
+// individual field values still go through SUBJECT_MAX_LEN / BODY_MAX_LEN
+// after substitution.
+const TEMPLATE_FIELD_VALUE_MAX_LEN = 10_000;
 
 // Brief 160 — material modes override.
 // Optional `materialModes: Record<materialId, "inline" | "attachment">`.
@@ -213,8 +229,11 @@ async function fetchPtpForAnnounce(
 // =============================================================================
 
 interface AnnounceBody {
+  mode?: unknown;
   subject?: unknown;
   bodyText?: unknown;
+  templateId?: unknown;
+  templateFields?: unknown;
   recipientEmails?: unknown;
   selectedMaterialIds?: unknown;
   includePtp?: unknown;
@@ -228,6 +247,14 @@ interface ValidatedAnnouncePayload {
   selectedMaterialIds: string[];
   includePtp: boolean;
   materialModes: Record<string, MaterialMode>;
+  /** Brief 163 — populated when the operator picked a template;
+   *  null for freeform sends. The resolved subject + bodyText above
+   *  reflect the post-substitution output. */
+  templateId: string | null;
+  /** Brief 163 — operator-supplied field values, verbatim (no
+   *  substitution applied). Stored on `promo_announcements.template_fields`
+   *  so a future "edit & resend" UI can pre-populate the form. */
+  templateFields: Record<string, string> | null;
 }
 
 interface ValidateOk {
@@ -244,6 +271,17 @@ interface ValidateErr {
  * is true on send (recipients are the fan-out target) and false on
  * preview (recipients are optional metadata; preview renders the same
  * regardless).
+ *
+ * Brief 163 — accepts EITHER freeform OR template body shape. Body
+ * union:
+ *   - `mode: "freeform"` (or absent + subject/bodyText present) — uses
+ *     `subject` + `bodyText` directly.
+ *   - `mode: "template"` — uses `templateId` + `templateFields`; the
+ *     resolved subject + bodyText come from `substituteTemplate` against
+ *     the registered template's strings.
+ *
+ * The rest of the send handler runs identically on the resolved
+ * subject + bodyText regardless of which path the caller took.
  */
 async function parseAndValidateBody(
   req: Request,
@@ -264,22 +302,105 @@ async function parseAndValidateBody(
     }
   }
 
+  // Brief 163 — discriminate between freeform and template. Explicit
+  // `mode` wins; absent `mode` + (subject OR bodyText) implies freeform
+  // for back-compat with pre-163 callers that don't know about `mode`.
+  let resolvedMode: "freeform" | "template";
+  if (body.mode === "template") {
+    resolvedMode = "template";
+  } else if (body.mode === "freeform" || body.mode === undefined) {
+    resolvedMode = "freeform";
+  } else {
+    return { ok: false, response: jsonError(400, "bad_request") };
+  }
+
   const fields: Record<string, string> = {};
 
   let subject = "";
-  if (typeof body.subject === "string") subject = body.subject.trim();
-  if (!subject) {
-    fields.subject = "required";
-  } else if (subject.length > SUBJECT_MAX_LEN) {
-    fields.subject = "too_long";
-  }
-
   let bodyText = "";
-  if (typeof body.bodyText === "string") bodyText = body.bodyText;
-  if (!bodyText || bodyText.length === 0) {
-    fields.bodyText = "required";
-  } else if (bodyText.length > BODY_MAX_LEN) {
-    fields.bodyText = "too_long";
+  let templateId: string | null = null;
+  let templateFields: Record<string, string> | null = null;
+
+  if (resolvedMode === "template") {
+    // Template-driven body resolution.
+    if (typeof body.templateId !== "string") {
+      fields.templateId = "required";
+    } else {
+      const tpl = findTemplate(body.templateId.trim());
+      if (!tpl) {
+        return {
+          ok: false,
+          response: new Response(
+            JSON.stringify({ error: "unknown_template", templateId: body.templateId }),
+            { status: 400, headers: { "Content-Type": "application/json" } }
+          )
+        };
+      }
+      // Validate template fields object.
+      let rawFields: Record<string, unknown> = {};
+      if (body.templateFields !== undefined) {
+        if (!isPlainObject(body.templateFields)) {
+          fields.templateFields = "invalid";
+        } else {
+          rawFields = body.templateFields;
+        }
+      }
+      // Per-field validation against the template's field list.
+      const cleanedFields: Record<string, string> = {};
+      if (!fields.templateFields) {
+        for (const def of tpl.fields) {
+          const raw = rawFields[def.key];
+          let value = "";
+          if (typeof raw === "string") {
+            value = raw.trim();
+          } else if (raw !== undefined && raw !== null) {
+            // Non-string entry under a known field key — defensive reject.
+            fields[def.key] = "invalid";
+            continue;
+          }
+          if (def.required && value.length === 0) {
+            fields[def.key] = "required";
+            continue;
+          }
+          if (value.length > TEMPLATE_FIELD_VALUE_MAX_LEN) {
+            fields[def.key] = "too_long";
+            continue;
+          }
+          cleanedFields[def.key] = value;
+        }
+      }
+      if (Object.keys(fields).length === 0) {
+        templateId = tpl.id;
+        templateFields = cleanedFields;
+        subject = substituteTemplate(tpl.subjectTemplate, cleanedFields).trim();
+        bodyText = substituteTemplate(tpl.bodyTemplate, cleanedFields);
+        // Defense in depth — the substituted output still has to pass
+        // the same subject/body length caps as freeform.
+        if (!subject) fields.subject = "required";
+        else if (subject.length > SUBJECT_MAX_LEN) fields.subject = "too_long";
+        if (!bodyText || bodyText.length === 0) fields.bodyText = "required";
+        else if (bodyText.length > BODY_MAX_LEN) fields.bodyText = "too_long";
+      }
+    }
+  } else {
+    // Freeform body resolution (unchanged from Brief 157/160).
+    if (typeof body.subject === "string") subject = body.subject.trim();
+    if (!subject) {
+      fields.subject = "required";
+    } else if (subject.length > SUBJECT_MAX_LEN) {
+      fields.subject = "too_long";
+    }
+
+    if (typeof body.bodyText === "string") bodyText = body.bodyText;
+    if (!bodyText || bodyText.length === 0) {
+      fields.bodyText = "required";
+    } else if (bodyText.length > BODY_MAX_LEN) {
+      fields.bodyText = "too_long";
+    }
+
+    // Brief 163 — reject template-only keys present on a freeform send.
+    if (body.templateId !== undefined) fields.templateId = "unexpected";
+    if (body.templateFields !== undefined) fields.templateFields = "unexpected";
   }
 
   let includePtp = false;
@@ -403,7 +524,9 @@ async function parseAndValidateBody(
       recipientEmails,
       selectedMaterialIds,
       includePtp,
-      materialModes
+      materialModes,
+      templateId,
+      templateFields
     }
   };
 }
@@ -588,12 +711,19 @@ export async function handleSendAnnouncement(
         subject: payload.subject,
         // body_text on the snapshot is the OPERATOR's typed body, without
         // the appended PTP block — `included_ptp = true` + the live PTP
-        // row at read time covers the intent.
+        // row at read time covers the intent. Template-driven sends
+        // snapshot the POST-substitution body here; the as-supplied
+        // field values live in `template_fields` alongside.
         body_text: payload.bodyText,
         body_html: null,
         recipient_emails: payload.recipientEmails,
         included_material_ids: payload.selectedMaterialIds,
-        included_ptp: payload.includePtp
+        included_ptp: payload.includePtp,
+        // Brief 163 — null for freeform; populated for template sends.
+        // template_fields holds the as-supplied operator inputs verbatim
+        // so a future "edit & resend" UI can pre-populate the form.
+        template_id: payload.templateId,
+        template_fields: payload.templateFields
       })
     });
     if (!resp.ok) {
@@ -818,4 +948,36 @@ export async function handlePreviewAnnouncement(
     plain_text: rendered.plainText,
     attachment_summary: attachmentSummary
   });
+}
+
+// =============================================================================
+// GET /promo/api/announce/templates
+// =============================================================================
+// Brief 163 — return the code-defined announcement template registry. Any
+// non-null promoRole. Read-only (no CSRF gate). Cached for 5 minutes —
+// registry is code-defined so it doesn't change between deploys, but the
+// cache avoids per-modal-open round-trips.
+
+export async function handleListAnnouncementTemplates(
+  req: Request,
+  env: Env
+): Promise<Response> {
+  const auth = await authenticate(req, env);
+  if (auth.status !== "authenticated") {
+    return jsonError(401, "unauthorized");
+  }
+  const gate = gatePromoRole(auth.session.promoRole, []);
+  if (!gate.isAuthorized || !gate.promoRole) {
+    return jsonError(403, "forbidden");
+  }
+  return new Response(
+    JSON.stringify({ templates: ANNOUNCEMENT_TEMPLATES }),
+    {
+      status: 200,
+      headers: {
+        "Content-Type": "application/json",
+        "Cache-Control": "private, max-age=300"
+      }
+    }
+  );
 }

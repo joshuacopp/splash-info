@@ -159,3 +159,6 @@
 - 2026-06-06 09:09:15 brief-159-sysadmin-set-promo-role-tool.md (success)
 - 2026-06-06 11:32:25 brief-160-promo-announcement-preview-branded-html-inline-materials.md (success)
 - 2026-06-06 12:30:20 brief-161-promo-announce-inline-materials-payload-fix.md (success)
+- 2026-06-06 22:05:02 brief-162-promo-create-it-notification.md (success)
+- 2026-06-06 22:28:45 brief-163-promo-announcement-templates.md (success)
+- 2026-06-06 22:42:33 brief-164-promo-it-notify-completed-sites.md (success)

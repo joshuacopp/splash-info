@@ -1,4 +1,7 @@
 // Brief 158b — toggleable per-location completion grid.
+// Brief 164 — per-row notification indicator (amber clock = complete but
+// un-notified; green check = notified). Reads `notifiedAt` off each row
+// surfaced by the worker's detail endpoint.
 //
 // Drop-in companion to the read-only `<LocationProgress>` server
 // component. Uses React 19's `useOptimistic` so the checkbox flips
@@ -116,9 +119,49 @@ export default function LocationProgressToggleable({
                 ✓
               </span>
             )}
+            <NotificationIndicator
+              isComplete={loc.isComplete}
+              notifiedAt={loc.notifiedAt}
+            />
           </li>
         ))}
       </ul>
     </div>
+  );
+}
+
+/**
+ * Brief 164 — per-row notification state hint.
+ *   - not complete → no indicator (notification not yet possible).
+ *   - complete + un-notified → amber clock icon ("pending notification").
+ *   - complete + notified → green envelope icon w/ timestamp tooltip.
+ */
+function NotificationIndicator({
+  isComplete,
+  notifiedAt
+}: {
+  isComplete: boolean;
+  notifiedAt: string | null;
+}) {
+  if (!isComplete) return null;
+  if (notifiedAt === null) {
+    return (
+      <span
+        title="Marked complete; site not yet notified"
+        aria-label="Pending notification"
+        className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-amber-100 text-[0.625rem] text-amber-700"
+      >
+        ⏱
+      </span>
+    );
+  }
+  return (
+    <span
+      title={`Notified ${notifiedAt}`}
+      aria-label="Notified"
+      className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-emerald-100 text-[0.625rem] text-emerald-700"
+    >
+      ✉
+    </span>
   );
 }

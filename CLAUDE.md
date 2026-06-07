@@ -1342,6 +1342,240 @@ URL-based — service bindings don't apply to those.
   attachments-shape contract (length equals resolved materials count;
   image entry has `is_inline: true` + `content_id` matching the body
   HTML's `cid:material-{id}` reference; pdf entry has neither flag).
+  Brief 162 (2026-06-06) added the **create → IT notification email**:
+  every successful `POST /promo/api/promos` (Brief 154's
+  `handleCreatePromo`) now fires `ctx.waitUntil(fireCreateNotify(...))`
+  immediately before returning the 201 — fan-out one Splash-branded
+  HTML email per IT-tier user via the Brief 127 `outbound_emails`
+  queue. **Recipients** resolve dynamically through a new helper
+  `resolveItNotificationRecipients(env)` in
+  `apps/promo-worker/src/handlers/_notify.ts` (sibling to
+  `_activity.ts`) — `auth_unified WHERE promo_role IN ('it',
+  'super_admin') AND email IS NOT NULL`, deduped case-insensitive
+  preserving first-occurrence casing, sorted. Onboarding /
+  offboarding flows automatically through Brief 159's Set Promo Role
+  card; no static `[vars]` IT distro to drift. Empty recipient list
+  (zero IT users yet) is a valid v1 state — logs `[promo.create] no
+  IT recipients — skipping notify for promo {id}` and returns.
+  **Renderer** `renderCreateNotify(input)` in
+  `apps/promo-worker/src/announce/render-create-notify.ts` (sibling
+  to `render-html.ts`) returns `{html, plainText}` — HTML body via
+  `@splash/email-shell wrapInEmailShell` (same shell forms-worker
+  workflow emails + promo announcements use) carries `<h2>` "New
+  promotion submitted" + intro + two-column metadata `<table>`
+  (Title / Type / Priority pill tinted red/amber/neutral / Requested
+  go-live / Proposed window / Locations affected with first-5
+  preview + "and N more" tail / POS behavior or "(not specified)"
+  muted / Submitted by) + sudsy-blue "Open IT ticket" CTA button
+  (table-wrapped for Outlook compatibility) + secondary "view promo
+  overview" text link + closing copy "Pick this up in the IT queue
+  when you're ready to scope." Plain text mirrors line-break
+  separated; URLs spelled out in full. Subject = `New promo:
+  {title}`; preheader = `{title} — {type}, {priority} priority`
+  capped at 100 chars. **`attachments: []`** on every enqueue — no
+  materials exist at create time; the IT recipient pulls the empty-
+  materials promo up from the live view link. **`source_kind:
+  'promo-create-it-notify'`** keyed off `source_id: promoId` for the
+  dedup tuple — re-firing the same logical event (would only happen
+  via a worker bug, not user action) is a no-op via the
+  `outbound_emails` unique index. Each promo notifies each IT user
+  at most once. **Fail-soft on every layer:** recipient resolution
+  throw / empty list / per-recipient enqueue throw all log and
+  continue, never blocks other recipients, never blocks the parent
+  201 response. **`APPS_WEB_BASE_URL`** is a new `[vars]` entry on
+  `apps/promo-worker/wrangler.toml` (mirrors damage-worker's
+  pattern); a local `resolveAppsWebBase(env, request)` helper in
+  `_notify.ts` rewrites workers.dev request origins to that value
+  (workers.dev does not host the apps/web admin UI; email links
+  there would be dead ends) while `staging.splashcarwashes.info`
+  passes through unchanged (so staging-test promos link to staging
+  apps/web where the row actually exists). The helper is inlined
+  rather than importing damage-worker's `admin-url.ts` — 15 LOC is
+  lower friction at v1; a third notification-firing worker is the
+  right time to promote it to a shared package. **No PA flow
+  changes required** — drain handles the new `source_kind`
+  automatically via Brief 127's source-agnostic pattern; the PA
+  expression that already picks `body_html` over `body_text` covers
+  this row shape too. Out-of-scope at Brief 162 (each is a
+  candidate for its own brief): notifications on OTHER lifecycle
+  events (status changes, ready-by changes, assignment, completion);
+  per-IT-user opt-out flags; submitter receives a copy (live view
+  already opens automatically post-create); configurable subject /
+  body templates via UI; backfill notifications for promos created
+  before Brief 162.
+  Brief 163 (2026-06-06) added **fillable announcement templates** so
+  marketing operators stop writing announcement bodies free-form for
+  every send. New code-defined registry at
+  `apps/promo-worker/src/announce/templates.ts` exports
+  `ANNOUNCEMENT_TEMPLATES: ReadonlyArray<AnnouncementTemplate>` with
+  three v1 entries — `new_special_heads_up` (heads-up with
+  kioskBehavior + start/end dates + signature), `materials_ptp_followup`
+  (lightweight post-materials send), `end_of_promo` (wrap-up with
+  optional recap notes) — plus `findTemplate(id)` lookup and
+  `substituteTemplate(template, fields)` helpers. Substitution regex
+  `\{([a-zA-Z][a-zA-Z0-9_]*)\}/g`; unknown placeholders SURVIVE
+  verbatim (defensive — catches stale templates with renamed fields
+  silently emitting blanks); YYYY-MM-DD date values reformat to
+  "MMM D, YYYY" before insertion. No HTML escaping at this layer —
+  `render-html.ts` handles it downstream per the Brief 160 contract.
+  Adding a new template is a one-file PR on `templates.ts`; UI-managed
+  templates (operator adds/edits via admin UI) are v2 and would
+  require a new `promo_announcement_templates` table + admin CRUD +
+  permission model. **New endpoint** `GET /promo/api/announce/templates`
+  (any non-null `promoRole`; no CSRF gate per read-only spec;
+  `Cache-Control: private, max-age=300` because registry is code-defined
+  and changes only between deploys). **Worker body union.**
+  `parseAndValidateBody` in `handlers/announce.ts` rewritten to
+  discriminate freeform vs. template via explicit `mode` discriminant
+  — `{mode: "freeform"; subject; bodyText; ...}` (or absent `mode` +
+  subject/bodyText present for pre-163 back-compat) OR
+  `{mode: "template"; templateId; templateFields; ...}`. Template branch
+  looks up the registry (`findTemplate`), validates each
+  `required: true` field as trimmed non-empty, substitutes via
+  `substituteTemplate`, then runs the post-substitution subject + body
+  through the same SUBJECT_MAX_LEN=500 / BODY_MAX_LEN=50000 caps.
+  Freeform branch rejects template-only keys (`templateId` /
+  `templateFields`) with `unexpected` for defense in depth. Send +
+  preview share one `parseAndValidateBody` so they cannot diverge.
+  **Schema additions** on `promo_announcements` (both NULLABLE —
+  freeform leaves NULL, template populates both): `template_id text`
+  (registry id) + `template_fields jsonb` (operator inputs VERBATIM,
+  no substitution applied — `template_fields` is the as-supplied
+  values so a future "edit & resend" UI can pre-populate the form
+  without re-deriving from the substituted body). The snapshot's
+  `body_text` continues to hold the POST-substitution body (matches
+  Brief 157's intentional snapshot-vs-delivered divergence; what
+  gets enqueued on `outbound_emails` includes any appended PTP block,
+  the snapshot does not). **Apps/web modal extension.** Compose
+  modal `AnnouncementComposeModal` grows a Template `<select>` picker
+  above Recipients (hides when registry is empty — fail-soft
+  degradation per the worker returning `[]` on error). Picking a
+  template hides freeform Subject + Body and renders per-field
+  labeled inputs (`text` → `<input>`, `textarea` → `<textarea>`,
+  `date` → `<input type=date>`) + a live `<pre>` preview block
+  showing the substituted subject + body via a shared client-side
+  `substituteTemplate` mirror at `_lib/announce-templates.ts`. Hidden
+  `templateId` + `templateField[{key}]` FormData entries ride along
+  to `sendAnnouncementAction` / `previewAnnouncementAction` which
+  dispatch on the `mode` discriminant. Template field values keyed
+  by `${templateId}.${fieldKey}` so flipping between templates
+  preserves prior entries when the operator flips back; reset on
+  modal open. **Client-safe split.** First build attempt failed
+  because the modal (client component) transitively imported
+  `next/headers` via the announce-templates module. Resolution:
+  client-safe `_lib/announce-templates.ts` exports types +
+  `substituteTemplate` mirror only; server-side fetch helper
+  `listAnnouncementTemplates()` lives in `worker-fetch.ts` as a
+  sibling to `listAllLocations` (fail-soft empty array on error;
+  consumed directly by the promo live-view page server component).
+  Both modules share the `AnnouncementTemplate` type via a type-only
+  `import type`. **Template "Preview" works correctly** because the
+  action forwards `{mode: "template", templateId, templateFields}` to
+  `/announce/preview` which resolves substitution server-side and
+  renders through the same `renderAnnouncement` path as send. The
+  inline `<pre>` preview is a fast feedback loop; the Brief 160
+  iframe preview remains the authoritative "what the recipient sees"
+  surface. **Out-of-scope at Brief 163** (each a candidate for its
+  own brief): UI-managed templates (operator adds / edits via admin
+  UI); per-recipient personalization (`{first_name}` etc. — recipients
+  are a flat email list with no addressbook lookup); conditional /
+  branching templates (`{#if specialName}...{/if}`); multi-language
+  templates (English only); operator-saved drafts (start a template,
+  save half-filled, come back later); templates that pre-fill from
+  the promo's own data (`title`, `proposedStartDate`, etc.) so the
+  operator only fills what's truly variable.
+  Brief 164 (2026-06-06) added the **"Notify completed sites" button**
+  on the IT ticket page. Closes the gap where IT marks a site complete
+  in the per-location progress widget but has no proactive way to tell
+  the field. Schema add — `promo_locations` gains
+  `notified_at timestamptz NULL` + `notified_by uuid NULL REFERENCES
+  auth.users(id)` plus a partial index
+  `idx_promo_locations_complete_unnotified ON promo_locations(promo_id)
+  WHERE is_complete = true AND notified_at IS NULL` so the
+  eligible-sites query is a one-row index scan. **New endpoint**
+  `POST /promo/api/promos/{id}/notify-completed-sites`
+  (super_admin\|it; CSRF gate; body `{ note?: string }` — optional
+  ≤500-char operator-supplied note that prepends to each per-site
+  email body as an amber-tinted callout). Flow: read promo `title` +
+  `promo_type` (404 if missing) → query eligible sites
+  (`is_complete = true AND notified_at IS NULL`); empty result returns
+  200 `{ok, notifiedCount: 0, ..., message: "No new sites to notify"}`
+  → per-site parallel `pricing_simple` fetch for `location_pretty` +
+  `am_email` + `rm_email` + `site_email`, dedup recipients
+  case-insensitively per-site (NOT globally — each email is per-site,
+  so one RM covering 3 sites gets 3 emails) → render once per site via
+  `renderSiteNotify` → enqueue one `outbound_emails` row per recipient
+  with `source_kind: 'promo-site-notify'` + `source_id:
+  "{promoId}:{locationCode}"` + `attachments: []` → if ALL enqueues
+  for a site succeeded, PATCH the `promo_locations` row with
+  `notified_at = now()` + `notified_by = session.userId` and emit one
+  `site_notified` activity row; if ANY per-site enqueue OR the stamp
+  PATCH failed, surface the locationCode in `failedLocations[]` and
+  leave the row un-notified for retry on the next button press. Empty
+  recipient list (no `am_email`/`rm_email`/`site_email` on the
+  `pricing_simple` row) counted in `skippedCount`; row stays
+  un-notified. **Dedup posture** at two layers: (a) eligible-sites
+  query filters out already-notified rows; (b) `outbound_emails`
+  unique tuple `(promo-worker, promo-site-notify,
+  "{promoId}:{locationCode}", recipient)` suppresses re-enqueue.
+  **Operator workaround for forced re-notify** — clear `notified_at`
+  on the `promo_locations` row AND DELETE the matching
+  `outbound_emails` rows (the dedup index would otherwise suppress
+  the re-fire even after `notified_at` is cleared). Documented as an
+  edge case for the rare "site had to be redone" path. **New
+  renderer** `apps/promo-worker/src/announce/render-site-notify.ts`
+  (sibling to `render-create-notify.ts`) exports `renderSiteNotify
+  (input): {html, plainText}` — Splash-branded HTML via
+  `@splash/email-shell wrapInEmailShell` with `<h2>` "IT changes are
+  live" + opening paragraph mentioning promo title + locationPretty +
+  "The special is now active at your site." + optional amber-tinted
+  callout when `note` is non-empty (operator-typed line breaks
+  preserved via `<br />` after HTML escaping) + metadata grid (Promo
+  type / Location code monospace / Notified by) + sudsy-blue "View
+  promo details" inline link + closing "Reach out to your manager if
+  anything looks off at your site." Subject `"IT changes are live at
+  {locationPretty}: {promoTitle}"`. Plain text mirrors the structure
+  with line breaks and full URLs. **New activity_type** `'site_notified'`
+  in `_activity.ts`'s `PromoActivityType` enum — operator runs the
+  `promo_activity_log` CHECK constraint extension SQL noted in the
+  brief. Activity row carries `{locationCode, recipientCount, note?}`
+  in `details`. **Apps/web** — new sticky bottom-right FAB
+  `<NotifyCompletedSitesButton>` at
+  `apps/web/app/admin/promotions/_components/`: pill-shaped, splash-
+  navy fill, bell icon + label + eligibleCount badge; disabled-with-
+  hover-hint when zero eligible sites; click opens centered
+  confirmation modal showing eligible count + first-5 codes + tail +
+  optional 500-char note textarea + "Notify N sites" SubmitButton
+  (pendingText "Notifying…"). Success → modal closes + transient
+  sub-banner above the FAB showing the breakdown
+  ("Notified N sites." / "Skipped M (no contact email on file)." /
+  "Failed K: ...") with amber partial-failure list. `LocationProgress
+  Toggleable` gained per-row indicator — amber clock (⏱) for
+  complete-but-un-notified, green envelope (✉) for notified with
+  `notifiedAt` timestamp tooltip, nothing for not-complete.
+  `ActivityTimeline` renders `site_notified` as "Notified
+  {locationCode} — N recipient(s)" with sudsy-blue dot. IT ticket
+  page renders the FAB OUTSIDE the card grid so `position: fixed`
+  floats independently of scroll; eligible-sites list derived
+  server-side from `promo.locations.filter(l => l.isComplete &&
+  l.notifiedAt === null)` so the button's disabled state is correct
+  on first paint. **API response shape widening** — `PromoLocation`
+  in `apps/web/app/admin/promotions/_lib/types.ts` + worker
+  `PromoDetailRow` / `PromoDetailResponse` gained
+  `notifiedAt: string | null` + `notifiedBy: string | null`; worker
+  `select` embed widened to
+  `promo_locations(location_code,is_complete,completed_at,completed_by,notified_at,notified_by)`.
+  **Live-view `LocationProgress` (read-only) intentionally NOT
+  extended with the indicator** — feature is IT-ticket-scoped; v2
+  candidate when the live view needs the visual hint too. Out of
+  scope at Brief 164: operator-editable email body template
+  (hard-coded at v1); bulk-mark-notified without sending (v2 sibling
+  endpoint); per-site opt-out flags; CC IT on every per-site
+  notification (could derive from operator's modal choice); auto-
+  notify on toggle-complete (rejected — operator explicitly wants
+  manual button + note); notification of UN-marked-complete (rollback
+  — v2); "Notify SPECIFIC site only" (today the FAB notifies all
+  eligible at once).
 
 - **@splash/email-shell** (Brief 160) - Shared workspace package at
   `packages/email-shell/` hosting the Outlook-safe HTML email shell.
@@ -2683,6 +2917,32 @@ URL-based — service bindings don't apply to those.
   dispatch reads from `env.PROMO_FILES` (optional binding); when
   unbound the attachment is skipped with a log line but the email
   still sends.
+  `source_kind='promo-create-it-notify'` writers (Brief 162):
+  promo-worker via `fireCreateNotify` in
+  `apps/promo-worker/src/handlers/_notify.ts`; `source_id` is the
+  `promo_id` (NOT an announcement id — there is no announcement
+  for create-notify) so re-firing the same logical create-event is
+  a no-op via the dedup index. Each promo notifies each IT-tier
+  user at most once. `attachments` is always `[]` (no materials at
+  create time). Recipients are dynamically resolved at fire time
+  via `resolveItNotificationRecipients` against `auth_unified
+  WHERE promo_role IN ('it', 'super_admin')` — onboarding flows
+  automatically through Brief 159's Set Promo Role card.
+  `source_kind='promo-site-notify'` writers (Brief 164):
+  promo-worker via `handleNotifyCompletedSites` in
+  `apps/promo-worker/src/handlers/notify-sites.ts`; `source_id` is
+  `"{promoId}:{locationCode}"` so re-firing for the same (promo,
+  site, recipient) tuple is a no-op via the dedup index — combined
+  with the eligible-sites query (`is_complete = true AND notified_at
+  IS NULL`) that's two layers of suppression. `attachments` is
+  always `[]`. Recipients per site come from `pricing_simple`
+  (`am_email` / `rm_email` / `site_email` deduped case-insensitive
+  per-site — NOT globally). After all enqueues for a site succeed,
+  the worker PATCHes `promo_locations.notified_at = now()` +
+  `notified_by = session.userId` so the eligible-sites query won't
+  pick it up again on the next FAB click. Forcing a fresh notify
+  after a site-redo requires the operator to clear `notified_at`
+  AND DELETE the matching `outbound_emails` rows.
   Brief 128 (2026-05-14) landed the admin viewer at
   `/admin/email-queue` (apps/web, admin-tier — `super_admin` OR
   `dcRole admin/super_admin`; tile in the Admin dashboard group).

@@ -30,6 +30,7 @@ import { gatePromoRole } from "@splash/db-supabase";
 import { isOriginAllowed, jsonError } from "@splash/http";
 import type { PromoRole } from "@splash/types/promo";
 import type { Env } from "../index.js";
+import { fireCreateNotify } from "./_notify.js";
 
 // =============================================================================
 // Shared helpers
@@ -529,7 +530,7 @@ function validateIsoDate(v: unknown): string | null {
 export async function handleCreatePromo(
   req: Request,
   env: Env,
-  _ctx: ExecutionContext
+  ctx: ExecutionContext
 ): Promise<Response> {
   const sk = requireServiceKey(env);
   if (sk) return sk;
@@ -714,6 +715,29 @@ export async function handleCreatePromo(
     console.error("[promo.create] detail refetch returned null for", promoId);
     return jsonError(500, "promo_create_failed");
   }
+
+  // Brief 162 — fire-and-forget IT notification email. Runs inside
+  // ctx.waitUntil so a slow Supabase recipient query or queue insert
+  // doesn't delay the operator's redirect. All errors caught + logged
+  // inside fireCreateNotify itself; the .catch here is the belt-and-
+  // suspenders guard for anything that escapes (it shouldn't).
+  ctx.waitUntil(
+    fireCreateNotify(env, req, {
+      promoId,
+      title: payload.title,
+      promoType: payload.promoType,
+      posBehavior: payload.posBehavior,
+      priority: payload.priority,
+      proposedStartDate: payload.proposedStartDate,
+      proposedEndDate: payload.proposedEndDate,
+      requestedGoLiveDate: payload.requestedGoLiveDate,
+      locationCodes: payload.locationCodes,
+      submitterEmail: gate.session.email
+    }).catch((err) => {
+      console.error("[promo.create] IT notify failed (fail-soft):", err);
+    })
+  );
+
   return jsonResponse({ ok: true, promo: detail }, 201);
 }
 
@@ -814,6 +838,8 @@ interface PromoDetailRow {
     is_complete: boolean;
     completed_at: string | null;
     completed_by: string | null;
+    notified_at: string | null;
+    notified_by: string | null;
   }> | null;
   materials: Array<{
     id: string;
@@ -891,6 +917,8 @@ interface PromoDetailResponse {
     isComplete: boolean;
     completedAt: string | null;
     completedBy: string | null;
+    notifiedAt: string | null;
+    notifiedBy: string | null;
   }>;
   materials: Array<{
     id: string;
@@ -949,7 +977,7 @@ async function fetchPromoDetail(
       // happen post-create but worth being defensive on) doesn't 404 the
       // promo itself.
       "ticket:promo_tickets!left(ready_by_date,roadblocks,internal_note,created_at,updated_at,ready_by_updated_at,ready_by_updated_by,assignees:promo_ticket_assignees(user_id,assigned_at,assigned_by))",
-      "locations:promo_locations(location_code,is_complete,completed_at,completed_by)",
+      "locations:promo_locations(location_code,is_complete,completed_at,completed_by,notified_at,notified_by)",
       "materials:promo_materials(id,name,kind,r2_key,file_mime,file_size_bytes,uploaded_at,uploaded_by)",
       "ptp:promo_ptp(purpose,tools,process,updated_at,updated_by)",
       // Activity is bounded to the latest 20 entries; details column is
@@ -1052,7 +1080,9 @@ async function fetchPromoDetail(
       locationCode: l.location_code,
       isComplete: l.is_complete,
       completedAt: l.completed_at,
-      completedBy: l.completed_by
+      completedBy: l.completed_by,
+      notifiedAt: l.notified_at,
+      notifiedBy: l.notified_by
     })),
     materials: (row.materials ?? []).map((m) => ({
       id: m.id,

@@ -2,6 +2,11 @@
 // Brief 160 — Preview button + sub-modal with `<iframe srcdoc>` of the
 // rendered HTML body + per-material inline-vs-attachment toggle for
 // image materials.
+// Brief 163 — fillable templates: picker dropdown at the top of the
+// modal swaps the freeform Subject + Body textareas for per-field
+// inputs derived from the picked template's `fields[]`. Submit flows
+// through the SAME server action; the action discriminates on the
+// presence of a non-empty hidden `templateId` FormData entry.
 //
 // Largest single modal in 158b. Pre-populated recipients are passed in as
 // a prop (resolved server-side in the parent via `_lib/locations.ts`).
@@ -11,7 +16,7 @@
 
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { ActionForm } from "../../_components/ActionForm";
 import type { ActionResult } from "../../_components/ActionForm";
 import { SubmitButton } from "../../_components/SubmitButton";
@@ -21,6 +26,8 @@ import {
 } from "../_actions/announceActions";
 import { isValidEmail } from "@splash/types/email-validate";
 import type { PromoMaterial, PromoPtp } from "../_lib/types";
+import type { AnnouncementTemplate } from "../_lib/announce-templates";
+import { substituteTemplate } from "../_lib/announce-templates";
 
 interface Props {
   promoId: string;
@@ -28,6 +35,10 @@ interface Props {
   materials: PromoMaterial[];
   ptp: PromoPtp | null;
   defaultRecipients: string[];
+  /** Brief 163 — code-defined registry fetched server-side. Empty array
+   *  means the worker returned [] or errored — modal degrades to
+   *  freeform-only with no picker. */
+  templates: AnnouncementTemplate[];
 }
 
 interface PreviewData {
@@ -54,7 +65,8 @@ export default function AnnouncementComposeModal({
   promoTitle,
   materials,
   ptp,
-  defaultRecipients
+  defaultRecipients,
+  templates
 }: Props) {
   const [open, setOpen] = useState(false);
   const [recipients, setRecipients] = useState<string[]>([]);
@@ -70,6 +82,14 @@ export default function AnnouncementComposeModal({
     null
   );
   const [preview, setPreview] = useState<PreviewData | null>(null);
+  // Brief 163 — empty string ("") = freeform; otherwise a template id from
+  // the registry. `templateFieldValues` is keyed by `{templateId}.{fieldKey}`
+  // so picking a different template preserves prior entries in case the
+  // operator flips back.
+  const [selectedTemplateId, setSelectedTemplateId] = useState("");
+  const [templateFieldValues, setTemplateFieldValues] = useState<
+    Record<string, string>
+  >({});
 
   // Seed when modal opens (mirrors BogoModal's `useEffect`).
   useEffect(() => {
@@ -87,6 +107,8 @@ export default function AnnouncementComposeModal({
       setIncludePtp(Boolean(ptp));
       setFailedRecipients(null);
       setPreview(null);
+      setSelectedTemplateId("");
+      setTemplateFieldValues({});
     }
   }, [open, defaultRecipients, materials, ptp]);
 
@@ -130,6 +152,18 @@ export default function AnnouncementComposeModal({
 
   function setMaterialMode(id: string, mode: MaterialMode) {
     setMaterialModes((prev) => ({ ...prev, [id]: mode }));
+  }
+
+  // Brief 163 — template state changes.
+  function setTemplateFieldValue(
+    templateId: string,
+    fieldKey: string,
+    value: string
+  ) {
+    setTemplateFieldValues((prev) => ({
+      ...prev,
+      [`${templateId}.${fieldKey}`]: value
+    }));
   }
 
   function handleSendResult(result: ActionResult) {
@@ -244,6 +278,11 @@ export default function AnnouncementComposeModal({
             handleSendResult={handleSendResult}
             handlePreviewResult={handlePreviewResult}
             closeModal={() => setOpen(false)}
+            templates={templates}
+            selectedTemplateId={selectedTemplateId}
+            setSelectedTemplateId={setSelectedTemplateId}
+            templateFieldValues={templateFieldValues}
+            setTemplateFieldValue={setTemplateFieldValue}
           />
         </div>
       </div>
@@ -280,6 +319,16 @@ interface ComposeFormBodyProps {
   handleSendResult: (r: ActionResult) => void;
   handlePreviewResult: (r: ActionResult) => void;
   closeModal: () => void;
+  // Brief 163 — template state.
+  templates: AnnouncementTemplate[];
+  selectedTemplateId: string;
+  setSelectedTemplateId: (next: string) => void;
+  templateFieldValues: Record<string, string>;
+  setTemplateFieldValue: (
+    templateId: string,
+    fieldKey: string,
+    value: string
+  ) => void;
 }
 
 function ComposeFormBody(props: ComposeFormBodyProps) {
@@ -327,6 +376,33 @@ function ComposeFormBody(props: ComposeFormBodyProps) {
     }
   }
 
+  // Brief 163 — lookup the currently picked template (if any) + build a
+  // values map scoped to its field keys for the live preview + worker
+  // submission.
+  const selectedTemplate = useMemo(
+    () =>
+      props.selectedTemplateId
+        ? props.templates.find((t) => t.id === props.selectedTemplateId) ?? null
+        : null,
+    [props.selectedTemplateId, props.templates]
+  );
+
+  const currentTemplateFieldValues = useMemo(() => {
+    if (!selectedTemplate) return {};
+    const out: Record<string, string> = {};
+    for (const f of selectedTemplate.fields) {
+      out[f.key] = props.templateFieldValues[`${selectedTemplate.id}.${f.key}`] ?? "";
+    }
+    return out;
+  }, [selectedTemplate, props.templateFieldValues]);
+
+  const previewSubject = selectedTemplate
+    ? substituteTemplate(selectedTemplate.subjectTemplate, currentTemplateFieldValues)
+    : "";
+  const previewBody = selectedTemplate
+    ? substituteTemplate(selectedTemplate.bodyTemplate, currentTemplateFieldValues)
+    : "";
+
   return (
     <ActionForm
       action={sendAnnouncementAction}
@@ -346,6 +422,54 @@ function ComposeFormBody(props: ComposeFormBodyProps) {
         name="includePtp"
         value={props.includePtp ? "1" : "0"}
       />
+      {/* Brief 163 — hidden templateId carries the picked template id (or
+          empty for freeform). The server action discriminates on the
+          presence of a non-empty value. */}
+      <input
+        type="hidden"
+        name="templateId"
+        value={props.selectedTemplateId}
+      />
+      {selectedTemplate &&
+        selectedTemplate.fields.map((f) => (
+          <input
+            key={`hidden-${f.key}`}
+            type="hidden"
+            name={`templateField[${f.key}]`}
+            value={currentTemplateFieldValues[f.key] ?? ""}
+          />
+        ))}
+
+      {/* Brief 163 — template picker. Empty array = degrade to
+          freeform-only (no picker rendered). */}
+      {props.templates.length > 0 && (
+        <section>
+          <label
+            htmlFor="promo-announce-template-picker"
+            className="mb-1 block text-sm font-semibold text-splash-navy"
+          >
+            Template
+          </label>
+          <select
+            id="promo-announce-template-picker"
+            value={props.selectedTemplateId}
+            onChange={(e) => props.setSelectedTemplateId(e.target.value)}
+            className="w-full rounded-splash-sm border border-gray-light bg-white px-3 py-2 text-sm focus:border-splash-blue focus:outline-none"
+          >
+            <option value="">(none — write freeform)</option>
+            {props.templates.map((t) => (
+              <option key={t.id} value={t.id}>
+                {t.name}
+              </option>
+            ))}
+          </select>
+          {selectedTemplate?.description && (
+            <p className="mt-1 text-xs text-splash-navy/55">
+              {selectedTemplate.description}
+            </p>
+          )}
+        </section>
+      )}
 
       <section>
         <h3 className="mb-2 text-sm font-semibold text-splash-navy">
@@ -405,33 +529,117 @@ function ComposeFormBody(props: ComposeFormBodyProps) {
         )}
       </section>
 
-      <section>
-        <label className="mb-1 block text-sm font-semibold text-splash-navy">
-          Subject <span className="text-splash-deny">*</span>
-        </label>
-        <input
-          type="text"
-          name="subject"
-          required
-          maxLength={500}
-          defaultValue={`Promotion update: ${props.promoTitle}`}
-          className="w-full rounded-splash-sm border border-gray-light bg-white px-3 py-2 text-sm focus:border-splash-blue focus:outline-none"
-        />
-      </section>
+      {selectedTemplate ? (
+        // Brief 163 — template-driven inputs swap in for the freeform
+        // Subject + Body textareas. Each field maps to a `templateField[{key}]`
+        // FormData entry via the hidden mirrors emitted near the top of
+        // the form. The visible inputs are controlled so the live preview
+        // can re-render on every keystroke without an extra ref read.
+        <>
+          {selectedTemplate.fields.map((f) => (
+            <section key={f.key}>
+              <label
+                htmlFor={`tpl-${selectedTemplate.id}-${f.key}`}
+                className="mb-1 block text-sm font-semibold text-splash-navy"
+              >
+                {f.label}
+                {f.required && (
+                  <span className="text-splash-deny"> *</span>
+                )}
+              </label>
+              {f.type === "textarea" ? (
+                <textarea
+                  id={`tpl-${selectedTemplate.id}-${f.key}`}
+                  value={currentTemplateFieldValues[f.key] ?? ""}
+                  onChange={(e) =>
+                    props.setTemplateFieldValue(
+                      selectedTemplate.id,
+                      f.key,
+                      e.target.value
+                    )
+                  }
+                  rows={4}
+                  required={f.required}
+                  placeholder={f.placeholder}
+                  className="w-full rounded-splash-sm border border-gray-light bg-white px-3 py-2 text-sm focus:border-splash-blue focus:outline-none"
+                />
+              ) : (
+                <input
+                  id={`tpl-${selectedTemplate.id}-${f.key}`}
+                  type={f.type === "date" ? "date" : "text"}
+                  value={currentTemplateFieldValues[f.key] ?? ""}
+                  onChange={(e) =>
+                    props.setTemplateFieldValue(
+                      selectedTemplate.id,
+                      f.key,
+                      e.target.value
+                    )
+                  }
+                  required={f.required}
+                  placeholder={f.placeholder}
+                  className="w-full rounded-splash-sm border border-gray-light bg-white px-3 py-2 text-sm focus:border-splash-blue focus:outline-none"
+                />
+              )}
+              {f.hint && (
+                <p className="mt-1 text-xs text-splash-navy/55">{f.hint}</p>
+              )}
+            </section>
+          ))}
 
-      <section>
-        <label className="mb-1 block text-sm font-semibold text-splash-navy">
-          Body <span className="text-splash-deny">*</span>
-        </label>
-        <textarea
-          name="bodyText"
-          required
-          rows={8}
-          maxLength={50000}
-          className="w-full rounded-splash-sm border border-gray-light bg-white px-3 py-2 text-sm focus:border-splash-blue focus:outline-none"
-          placeholder="Operator-authored body. Plain text."
-        />
-      </section>
+          {/* Brief 163 — live preview below the inputs. Mirrors the
+              worker's substitution exactly (shared `substituteTemplate`
+              from `_lib/announce-templates.ts`). */}
+          <section className="rounded-splash-sm border border-gray-light bg-gray-50 px-3 py-3">
+            <h4 className="mb-1 text-xs font-bold uppercase tracking-wide text-splash-navy/55">
+              Preview (subject + body)
+            </h4>
+            <p className="mb-2 text-sm font-semibold text-splash-navy">
+              {previewSubject || (
+                <span className="italic text-splash-navy/55">
+                  (fill in fields above to preview the subject)
+                </span>
+              )}
+            </p>
+            <pre className="whitespace-pre-wrap font-sans text-sm text-splash-navy/85">
+              {previewBody || (
+                <span className="italic text-splash-navy/55">
+                  (fill in fields above to preview the body)
+                </span>
+              )}
+            </pre>
+          </section>
+        </>
+      ) : (
+        <>
+          <section>
+            <label className="mb-1 block text-sm font-semibold text-splash-navy">
+              Subject <span className="text-splash-deny">*</span>
+            </label>
+            <input
+              type="text"
+              name="subject"
+              required
+              maxLength={500}
+              defaultValue={`Promotion update: ${props.promoTitle}`}
+              className="w-full rounded-splash-sm border border-gray-light bg-white px-3 py-2 text-sm focus:border-splash-blue focus:outline-none"
+            />
+          </section>
+
+          <section>
+            <label className="mb-1 block text-sm font-semibold text-splash-navy">
+              Body <span className="text-splash-deny">*</span>
+            </label>
+            <textarea
+              name="bodyText"
+              required
+              rows={8}
+              maxLength={50000}
+              className="w-full rounded-splash-sm border border-gray-light bg-white px-3 py-2 text-sm focus:border-splash-blue focus:outline-none"
+              placeholder="Operator-authored body. Plain text."
+            />
+          </section>
+        </>
+      )}
 
       <section>
         <h3 className="mb-2 text-sm font-semibold text-splash-navy">

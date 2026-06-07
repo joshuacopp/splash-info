@@ -19,6 +19,10 @@ import type { Env } from "../index.js";
  * Allow-list of activity_type values that match the `promo_activity_log`
  * CHECK constraint in supabase/promo-tables.sql. Brief 155 introduces no
  * new values — every type here was already declared at Brief 153.
+ *
+ * Brief 164 added `site_notified` — operator must extend the CHECK
+ * constraint allow-list before this value will accept INSERTs (see the
+ * brief's Phase 4.1 SQL block).
  */
 export type PromoActivityType =
   | "created"
@@ -32,7 +36,8 @@ export type PromoActivityType =
   | "ptp_updated"
   | "location_marked_complete"
   | "location_marked_incomplete"
-  | "announcement_sent";
+  | "announcement_sent"
+  | "site_notified";
 
 /**
  * Insert one `promo_activity_log` row. Fail-soft: logs and returns rather

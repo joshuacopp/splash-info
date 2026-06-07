@@ -10,7 +10,7 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { getMe } from "../../../_lib/me";
-import { getPromo } from "../_lib/worker-fetch";
+import { getPromo, listAnnouncementTemplates } from "../_lib/worker-fetch";
 import { resolveRecipients } from "../_lib/locations";
 import NoAccessCard from "../_components/NoAccessCard";
 import PromoStatusPill from "../_components/PromoStatusPill";
@@ -67,9 +67,14 @@ export default async function PromoDetailPage({ params }: PageProps) {
   const userLookup = await lookupUserNames(assigneeIds);
 
   // Pre-resolve recipients for the announcement modal so the operator
-  // sees a fully-populated list the moment they click Compose.
+  // sees a fully-populated list the moment they click Compose. Templates
+  // (Brief 163) are fetched in parallel — the modal renders a picker
+  // at the top with these as options.
   const defaultRecipients = canWrite
     ? await resolveRecipients(promo.locations.map((l) => l.locationCode))
+    : [];
+  const announcementTemplates = canWrite
+    ? await listAnnouncementTemplates()
     : [];
 
   const startFmt = formatEst(`${promo.proposedStartDate}T00:00:00Z`).absolute;
@@ -240,6 +245,7 @@ export default async function PromoDetailPage({ params }: PageProps) {
               materials={promo.materials}
               ptp={promo.ptp}
               defaultRecipients={defaultRecipients}
+              templates={announcementTemplates}
             />
           ) : null
         }

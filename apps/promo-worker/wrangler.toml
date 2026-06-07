@@ -23,6 +23,12 @@ routes = [
 
 [vars]
 SUPABASE_URL = "https://rewokyofschtvqgxrxwl.supabase.co"
+# Brief 162 — apps/web origin used when building admin links inside outbound
+# notification emails (e.g., the "Open IT ticket" CTA on the new-promo notify).
+# Recipients click these from email, so workers.dev request origins MUST get
+# rewritten to production — staging.splashcarwashes.info passes through
+# unchanged in the helper.
+APPS_WEB_BASE_URL = "https://splashcarwashes.info"
 
 [[r2_buckets]]
 binding     = "PROMO_FILES"

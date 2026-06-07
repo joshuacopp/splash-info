@@ -22,6 +22,7 @@
 //   GET     /promo/api/promos/{id}/materials/{materialId}/file                — Brief 156: stream the R2 object
 //   PUT     /promo/api/promos/{id}/ptp                                        — Brief 156: upsert Purpose / Tools / Process doc
 //   POST    /promo/api/promos/{id}/announce                                   — Brief 157: snapshot + fan out to outbound_emails
+//   GET     /promo/api/announce/templates                                     — Brief 163: list fillable announcement templates
 //   OPTIONS *                                                                 — 204 (CORS preflight no-op)
 //   *                                                                         — 404
 //
@@ -55,19 +56,26 @@ import {
 import { handlePutPtp } from "./handlers/ptp.js";
 import {
   handleSendAnnouncement,
-  handlePreviewAnnouncement
+  handlePreviewAnnouncement,
+  handleListAnnouncementTemplates
 } from "./handlers/announce.js";
 import {
   handleResolveRecipients,
   handleListLocations,
   handleSearchPromoUsers
 } from "./handlers/recipients.js";
+import { handleNotifyCompletedSites } from "./handlers/notify-sites.js";
 
 export interface Env {
   SUPABASE_URL: string;
   SUPABASE_SERVICE_KEY: string;
   SUPABASE_ANON_KEY: string;
   PROMO_FILES: R2Bucket;
+  /** Brief 162 — apps/web origin for "Open IT ticket" / "View promo
+   *  overview" CTAs inside outbound notification emails. workers.dev
+   *  request origins get rewritten to this value because workers.dev
+   *  does not host the apps/web admin UI. */
+  APPS_WEB_BASE_URL: string;
 }
 
 export default {
@@ -222,6 +230,16 @@ export default {
       return new Response("Method Not Allowed", { status: 405 });
     }
 
+    // Brief 163 — fillable announcement template registry. Any non-null
+    // promoRole. Cached for 5 minutes (registry is code-defined). Path
+    // is intentionally NOT under /promos/{id} because the registry is
+    // global, not per-promo.
+    if (url.pathname === "/promo/api/announce/templates") {
+      if (request.method === "GET")
+        return handleListAnnouncementTemplates(request, env);
+      return new Response("Method Not Allowed", { status: 405 });
+    }
+
     // Brief 160 — announcement preview (no snapshot, no fan-out). Matched
     // BEFORE the bare `/announce` route so the more specific path wins.
     const announcePreviewMatch = url.pathname.match(
@@ -240,6 +258,17 @@ export default {
     if (announceMatch && announceMatch[1]) {
       if (request.method === "POST")
         return handleSendAnnouncement(request, env, ctx, announceMatch[1]);
+      return new Response("Method Not Allowed", { status: 405 });
+    }
+
+    // Brief 164 — per-site "IT changes are live" notification fire.
+    // Matched BEFORE the `/announce` patterns to guarantee specificity.
+    const notifySitesMatch = url.pathname.match(
+      /^\/promo\/api\/promos\/([0-9a-f-]+)\/notify-completed-sites$/i
+    );
+    if (notifySitesMatch && notifySitesMatch[1]) {
+      if (request.method === "POST")
+        return handleNotifyCompletedSites(request, env, notifySitesMatch[1]);
       return new Response("Method Not Allowed", { status: 405 });
     }
 

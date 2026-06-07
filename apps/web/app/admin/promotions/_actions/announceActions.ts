@@ -30,15 +30,33 @@ function asString(v: FormDataEntryValue | null): string {
   return typeof v === "string" ? v : "";
 }
 
-interface ParsedComposeForm {
-  promoId: string;
-  subject: string;
-  bodyText: string;
-  recipientList: string[];
-  selectedMaterialIds: string[];
-  materialModes: Record<string, "inline" | "attachment">;
-  includePtp: boolean;
-}
+/**
+ * Brief 163 — `mode: "template"` parsed form carries `templateId` +
+ * `templateFields` instead of subject + bodyText. The worker resolves
+ * the substitution server-side, so the action passes the raw inputs
+ * through unchanged.
+ */
+type ParsedComposeForm =
+  | {
+      mode: "freeform";
+      promoId: string;
+      subject: string;
+      bodyText: string;
+      recipientList: string[];
+      selectedMaterialIds: string[];
+      materialModes: Record<string, "inline" | "attachment">;
+      includePtp: boolean;
+    }
+  | {
+      mode: "template";
+      promoId: string;
+      templateId: string;
+      templateFields: Record<string, string>;
+      recipientList: string[];
+      selectedMaterialIds: string[];
+      materialModes: Record<string, "inline" | "attachment">;
+      includePtp: boolean;
+    };
 
 interface ParseOk {
   ok: true;
@@ -56,21 +74,8 @@ function parseComposeForm(
   const promoId = asString(formData.get("promoId")).trim();
   if (!promoId) return { ok: false, error: "Missing promo id." };
 
-  const subject = asString(formData.get("subject")).trim();
-  const bodyText = asString(formData.get("bodyText"));
   const recipientsRaw = asString(formData.get("recipientEmails"));
   const includePtp = formData.get("includePtp") === "1";
-
-  if (!subject) return { ok: false, error: "Subject is required." };
-  if (subject.length > SUBJECT_MAX_LEN) {
-    return { ok: false, error: "Subject is too long." };
-  }
-  if (!bodyText || bodyText.trim().length === 0) {
-    return { ok: false, error: "Body is required." };
-  }
-  if (bodyText.length > BODY_MAX_LEN) {
-    return { ok: false, error: "Body exceeds the 50,000-character limit." };
-  }
 
   const recipientList = recipientsRaw
     .split(",")
@@ -108,9 +113,51 @@ function parseComposeForm(
     }
   }
 
+  // Brief 163 — discriminate template vs. freeform by the presence of a
+  // non-empty `templateId` FormData entry. Template fields ride along as
+  // `templateField[{key}]` entries.
+  const templateId = asString(formData.get("templateId")).trim();
+  if (templateId) {
+    const templateFields: Record<string, string> = {};
+    for (const [key, value] of formData.entries()) {
+      const m = key.match(/^templateField\[(.+)\]$/);
+      if (!m || !m[1]) continue;
+      if (typeof value !== "string") continue;
+      templateFields[m[1]] = value;
+    }
+    return {
+      ok: true,
+      parsed: {
+        mode: "template",
+        promoId,
+        templateId,
+        templateFields,
+        recipientList,
+        selectedMaterialIds,
+        materialModes,
+        includePtp
+      }
+    };
+  }
+
+  const subject = asString(formData.get("subject")).trim();
+  const bodyText = asString(formData.get("bodyText"));
+
+  if (!subject) return { ok: false, error: "Subject is required." };
+  if (subject.length > SUBJECT_MAX_LEN) {
+    return { ok: false, error: "Subject is too long." };
+  }
+  if (!bodyText || bodyText.trim().length === 0) {
+    return { ok: false, error: "Body is required." };
+  }
+  if (bodyText.length > BODY_MAX_LEN) {
+    return { ok: false, error: "Body exceeds the 50,000-character limit." };
+  }
+
   return {
     ok: true,
     parsed: {
+      mode: "freeform",
       promoId,
       subject,
       bodyText,
@@ -130,15 +177,29 @@ export async function sendAnnouncementAction(
   if (!parsed.ok) return { ok: false, error: parsed.error };
   const p = parsed.parsed;
 
-  const result = await sendPromoAnnouncement(p.promoId, {
-    subject: p.subject,
-    bodyText: p.bodyText,
-    recipientEmails: p.recipientList,
-    selectedMaterialIds:
-      p.selectedMaterialIds.length > 0 ? p.selectedMaterialIds : undefined,
-    includePtp: p.includePtp,
-    materialModes: Object.keys(p.materialModes).length > 0 ? p.materialModes : undefined
-  });
+  const result =
+    p.mode === "template"
+      ? await sendPromoAnnouncement(p.promoId, {
+          mode: "template",
+          templateId: p.templateId,
+          templateFields: p.templateFields,
+          recipientEmails: p.recipientList,
+          selectedMaterialIds:
+            p.selectedMaterialIds.length > 0 ? p.selectedMaterialIds : undefined,
+          includePtp: p.includePtp,
+          materialModes:
+            Object.keys(p.materialModes).length > 0 ? p.materialModes : undefined
+        })
+      : await sendPromoAnnouncement(p.promoId, {
+          subject: p.subject,
+          bodyText: p.bodyText,
+          recipientEmails: p.recipientList,
+          selectedMaterialIds:
+            p.selectedMaterialIds.length > 0 ? p.selectedMaterialIds : undefined,
+          includePtp: p.includePtp,
+          materialModes:
+            Object.keys(p.materialModes).length > 0 ? p.materialModes : undefined
+        });
 
   if (!result.ok) {
     return toActionResult(result, "");
@@ -170,15 +231,29 @@ export async function previewAnnouncementAction(
   if (!parsed.ok) return { ok: false, error: parsed.error };
   const p = parsed.parsed;
 
-  const result = await previewPromoAnnouncement(p.promoId, {
-    subject: p.subject,
-    bodyText: p.bodyText,
-    recipientEmails: p.recipientList.length > 0 ? p.recipientList : undefined,
-    selectedMaterialIds:
-      p.selectedMaterialIds.length > 0 ? p.selectedMaterialIds : undefined,
-    includePtp: p.includePtp,
-    materialModes: Object.keys(p.materialModes).length > 0 ? p.materialModes : undefined
-  });
+  const result =
+    p.mode === "template"
+      ? await previewPromoAnnouncement(p.promoId, {
+          mode: "template",
+          templateId: p.templateId,
+          templateFields: p.templateFields,
+          recipientEmails: p.recipientList.length > 0 ? p.recipientList : undefined,
+          selectedMaterialIds:
+            p.selectedMaterialIds.length > 0 ? p.selectedMaterialIds : undefined,
+          includePtp: p.includePtp,
+          materialModes:
+            Object.keys(p.materialModes).length > 0 ? p.materialModes : undefined
+        })
+      : await previewPromoAnnouncement(p.promoId, {
+          subject: p.subject,
+          bodyText: p.bodyText,
+          recipientEmails: p.recipientList.length > 0 ? p.recipientList : undefined,
+          selectedMaterialIds:
+            p.selectedMaterialIds.length > 0 ? p.selectedMaterialIds : undefined,
+          includePtp: p.includePtp,
+          materialModes:
+            Object.keys(p.materialModes).length > 0 ? p.materialModes : undefined
+        });
 
   if (!result.ok) {
     return toActionResult(result, "");

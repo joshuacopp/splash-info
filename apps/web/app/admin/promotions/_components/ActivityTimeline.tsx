@@ -20,6 +20,7 @@
 //   material_removed              (Brief 156)
 //   ptp_updated                   (Brief 156)
 //   announcement_sent             (Brief 157)
+//   site_notified                 (Brief 164)
 
 import type { PromoActivityEntry } from "../_lib/types";
 import { shortenUserId } from "../_lib/user-lookup";
@@ -56,6 +57,8 @@ interface DetailsBag {
   locationCount?: number;
   promoType?: string;
   priority?: string;
+  // Brief 164 — site_notified
+  note?: string;
 }
 
 function safeDetails(details: unknown): DetailsBag {
@@ -117,6 +120,15 @@ function renderHeadline(entry: PromoActivityEntry): string {
       const sentTo = d.recipientCount != null ? ` (${d.recipientCount})` : "";
       return `Announcement sent${subj}${sentTo}`;
     }
+    case "site_notified": {
+      const loc = d.locationCode ?? "";
+      const rc = d.recipientCount;
+      const recipients =
+        rc != null ? ` — ${rc} recipient${rc === 1 ? "" : "s"}` : "";
+      return loc
+        ? `Notified ${loc}${recipients}`
+        : `Site notified${recipients}`;
+    }
     default:
       return entry.activityType.replace(/_/g, " ");
   }
@@ -132,6 +144,7 @@ function ActivityDot({ type }: { type: string }) {
   else if (type.startsWith("material_")) cls = "bg-amber-500";
   else if (type === "ptp_updated") cls = "bg-teal-500";
   else if (type === "announcement_sent") cls = "bg-racecar-red";
+  else if (type === "site_notified") cls = "bg-sudsy-blue";
   else if (type === "created") cls = "bg-splash-navy";
   return (
     <span

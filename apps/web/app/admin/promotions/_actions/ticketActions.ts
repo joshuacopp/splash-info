@@ -12,7 +12,8 @@ import {
   patchPromoTicket,
   addPromoAssignee,
   removePromoAssignee,
-  patchPromoLocationProgress
+  patchPromoLocationProgress,
+  notifyCompletedSites
 } from "../_lib/worker-fetch";
 import {
   toActionResult,
@@ -161,4 +162,60 @@ export async function toggleLocationProgressAction(
       ? `Marked ${locationCode} complete.`
       : `Marked ${locationCode} incomplete.`
   };
+}
+
+const NOTE_MAX_LEN = 500;
+
+/**
+ * Brief 164 — "Notify completed sites" FAB action. Fires one branded
+ * email per recipient per eligible site (sites with `is_complete = true
+ * AND notifiedAt === null`). Optional operator note prepends to every
+ * per-site body.
+ *
+ * Returns ActionResult with `data: {notifiedCount, sites, skippedCount,
+ * failedLocations, message?}` so the modal can render the breakdown and
+ * surface partial failures as an amber sub-banner.
+ */
+export async function notifyCompletedSitesAction(
+  _prev: ActionResult | null,
+  formData: FormData
+): Promise<ActionResult> {
+  const promoId = asString(formData.get("promoId")).trim();
+  if (!promoId) return { ok: false, error: "Missing promo id." };
+
+  const noteRaw = asString(formData.get("note"));
+  const note = noteRaw.trim();
+  if (note.length > NOTE_MAX_LEN) {
+    return {
+      ok: false,
+      error: `Note is too long (max ${NOTE_MAX_LEN} chars).`
+    };
+  }
+
+  const result = await notifyCompletedSites(
+    promoId,
+    note ? { note } : {}
+  );
+  if (!result.ok) return toActionResult(result, "");
+
+  revalidatePromoPaths({ promoId, includeList: true, includeQueue: true });
+  const data = result.data;
+  const failed = data.failedLocations.length;
+  const skipped = data.skippedCount;
+  let message: string;
+  if (data.notifiedCount === 0 && failed === 0 && skipped === 0) {
+    message = data.message || "No new sites to notify.";
+  } else {
+    const parts: string[] = [
+      `Notified ${data.notifiedCount} site${data.notifiedCount === 1 ? "" : "s"}.`
+    ];
+    if (skipped > 0) {
+      parts.push(`Skipped ${skipped} (no contact email on file).`);
+    }
+    if (failed > 0) {
+      parts.push(`Failed ${failed}: ${data.failedLocations.join(", ")}.`);
+    }
+    message = parts.join(" ");
+  }
+  return { ok: true, message, data };
 }

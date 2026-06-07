@@ -21,6 +21,7 @@ import StatusEditor from "../../_components/StatusEditor";
 import TicketFieldsForm from "../../_components/TicketFieldsForm";
 import AssigneesEditor from "../../_components/AssigneesEditor";
 import LocationProgressToggleable from "../../_components/LocationProgressToggleable";
+import NotifyCompletedSitesButton from "../../_components/NotifyCompletedSitesButton";
 import { lookupUserNames } from "../../_lib/user-lookup";
 import { formatEst } from "../../../jotform/_lib/format-est";
 
@@ -148,6 +149,18 @@ export default async function PromoTicketPage({ params }: PageProps) {
           locations={promo.locations}
         />
       </Card>
+
+      {/* Brief 164 — "Notify completed sites" FAB. Rendered outside the
+          card grid so its `position: fixed` styling floats independently
+          of scroll. The list of eligible sites — complete AND not yet
+          notified — is computed server-side so the button's disabled
+          state is correct on first paint. */}
+      <NotifyCompletedSitesButton
+        promoId={promo.id}
+        eligibleSites={promo.locations
+          .filter((l) => l.isComplete && l.notifiedAt === null)
+          .map((l) => l.locationCode)}
+      />
     </section>
   );
 }

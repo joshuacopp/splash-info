@@ -494,17 +494,30 @@ export async function putPromoPtp(
 
 // ---- Announcement ------------------------------------------------------
 
-export interface SendAnnouncementBody {
-  subject: string;
-  bodyText: string;
-  recipientEmails: string[];
-  selectedMaterialIds?: string[];
-  includePtp?: boolean;
-  /** Brief 160 — per-material override of the default
-   *  image-MIME = inline rule. Map of materialId → "inline" | "attachment".
-   *  Omit a materialId to use the auto-rule. */
-  materialModes?: Record<string, "inline" | "attachment">;
-}
+/**
+ * Brief 163 — body shape union. EITHER freeform OR template, never both.
+ * Back-compat: omit `mode` + supply `subject` + `bodyText` for freeform
+ * (pre-163 callsites continue to work).
+ */
+export type SendAnnouncementBody =
+  | {
+      mode?: "freeform";
+      subject: string;
+      bodyText: string;
+      recipientEmails: string[];
+      selectedMaterialIds?: string[];
+      includePtp?: boolean;
+      materialModes?: Record<string, "inline" | "attachment">;
+    }
+  | {
+      mode: "template";
+      templateId: string;
+      templateFields: Record<string, string>;
+      recipientEmails: string[];
+      selectedMaterialIds?: string[];
+      includePtp?: boolean;
+      materialModes?: Record<string, "inline" | "attachment">;
+    };
 
 export interface SendAnnouncementResponseData {
   ok: true;
@@ -527,14 +540,29 @@ export async function sendPromoAnnouncement(
 
 // ---- Announcement preview (Brief 160) ----------------------------------
 
-export interface PreviewAnnouncementBody {
-  subject: string;
-  bodyText: string;
-  recipientEmails?: string[];
-  selectedMaterialIds?: string[];
-  includePtp?: boolean;
-  materialModes?: Record<string, "inline" | "attachment">;
-}
+/**
+ * Brief 163 — body shape union mirrors `SendAnnouncementBody` minus the
+ * recipients-required gate (preview tolerates empty recipients).
+ */
+export type PreviewAnnouncementBody =
+  | {
+      mode?: "freeform";
+      subject: string;
+      bodyText: string;
+      recipientEmails?: string[];
+      selectedMaterialIds?: string[];
+      includePtp?: boolean;
+      materialModes?: Record<string, "inline" | "attachment">;
+    }
+  | {
+      mode: "template";
+      templateId: string;
+      templateFields: Record<string, string>;
+      recipientEmails?: string[];
+      selectedMaterialIds?: string[];
+      includePtp?: boolean;
+      materialModes?: Record<string, "inline" | "attachment">;
+    };
 
 export interface PreviewAnnouncementResponseData {
   ok: true;
@@ -556,6 +584,60 @@ export async function previewPromoAnnouncement(
     "POST",
     body
   );
+}
+
+// ---- Notify completed sites (Brief 164) --------------------------------
+
+export interface NotifyCompletedSitesResponseData {
+  ok: true;
+  notifiedCount: number;
+  sites: Array<{
+    locationCode: string;
+    recipientCount: number;
+    notifiedAt: string;
+  }>;
+  skippedCount: number;
+  failedLocations: string[];
+  message?: string;
+}
+
+export interface NotifyCompletedSitesBody {
+  note?: string;
+}
+
+export async function notifyCompletedSites(
+  promoId: string,
+  body: NotifyCompletedSitesBody = {}
+): Promise<WorkerWriteResult<NotifyCompletedSitesResponseData>> {
+  return writeJson<NotifyCompletedSitesResponseData>(
+    `/promo/api/promos/${encodeURIComponent(promoId)}/notify-completed-sites`,
+    "POST",
+    body
+  );
+}
+
+// ---- Announcement templates (Brief 163) --------------------------------
+
+import type { AnnouncementTemplate } from "./announce-templates";
+
+/**
+ * Brief 163 — fetch the code-defined announcement template registry. Any
+ * non-null promoRole. Fail-soft: returns [] on error so the modal degrades
+ * to freeform-only. Worker emits a 5-minute private cache header.
+ */
+export async function listAnnouncementTemplates(): Promise<AnnouncementTemplate[]> {
+  try {
+    const resp = await callPromo("/promo/api/announce/templates");
+    if (!resp.ok) return [];
+    const data = (await resp
+      .json()
+      .catch(() => ({ templates: [] as AnnouncementTemplate[] }))) as {
+      templates?: AnnouncementTemplate[];
+    };
+    return Array.isArray(data.templates) ? data.templates : [];
+  } catch {
+    return [];
+  }
 }
 
 // ---------------------------------------------------------------------------
