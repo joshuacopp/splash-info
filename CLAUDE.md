@@ -1902,7 +1902,12 @@ URL-based — service bindings don't apply to those.
   + `TURNSTILE_SECRET_KEY` (public-audience forms only);
   `FORMS_SUBMISSION_WEBHOOK_URL` (PA notification, fail-soft when
   unbound); `FORMS_FILES` R2 bucket (`splash-forms-files` — owns both
-  `form-assets/` and `form-submission-files/` namespaces). Service
+  `form-assets/` and `form-submission-files/` namespaces); `PROMO_FILES`
+  R2 bucket (`splash-promo-files` — read-only access, Brief 165 bound
+  the read side so promo-worker's announcement materials can be
+  inlined into outbound emails at claim time per Brief 127 + 160; the
+  bucket is shared with promo-worker which owns the write side via
+  Brief 156's `handleUploadMaterial`). Service
   binding `FORMS_WORKER` from apps/web. Brief 97 wires the daily
   cleanup cron (orphan R2 objects, 11:00 UTC — picked to not collide
   with damage 13:00 / workorders 11:30). The `[observability.logs]`
@@ -2916,7 +2921,24 @@ URL-based — service bindings don't apply to those.
   'PROMO_FILES'` — forms-worker's claim-time `inlineAttachments`
   dispatch reads from `env.PROMO_FILES` (optional binding); when
   unbound the attachment is skipped with a log line but the email
-  still sends.
+  still sends. **Adding a new bucket to this queue's attachment
+  surface is a STRICTLY three-step change — all three MUST land in
+  the same brief** (Brief 165 closed a gap where Briefs 160/161 did
+  steps (a) and (c) but never executed step (b), causing every
+  promo material to silently drop from PA claim responses with
+  recipients seeing broken-image placeholders): (a) widen the
+  `OutboundEmailAttachment.bucket` union in
+  `packages/db-supabase/src/outbound-emails.ts`; (b) **bind the
+  bucket on forms-worker's `wrangler.toml`** via a sibling
+  `[[r2_buckets]]` block AND widen the forms-worker `Env`
+  interface in `apps/forms-worker/src/index.ts` if not already
+  there; (c) extend the dispatch in
+  `apps/forms-worker/src/email-queue/attachments.ts` to route the
+  new bucket name to its `env` binding. Skipping (b) is a SILENT
+  failure mode — no PA error, no queue error, no console error —
+  the body HTML's `cid:` references resolve to nothing and
+  recipients see broken-image markers in Outlook / Gmail / Apple
+  Mail.
   `source_kind='promo-create-it-notify'` writers (Brief 162):
   promo-worker via `fireCreateNotify` in
   `apps/promo-worker/src/handlers/_notify.ts`; `source_id` is the

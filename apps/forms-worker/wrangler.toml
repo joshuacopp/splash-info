@@ -124,6 +124,17 @@ TURNSTILE_SITE_KEY = "0x4AAAAAADBV7fdfR67Jt-ab"
 binding     = "FORMS_FILES"
 bucket_name = "splash-forms-files"
 
+# Brief 165 — read-side binding for promo-worker's announcement materials.
+# Same bucket as promo-worker's writer-side binding (apps/promo-worker/
+# wrangler.toml). Two-worker pattern: promo-worker uploads; forms-worker
+# reads at email-queue claim time to inline materials into outbound emails
+# (Brief 127 + 160). Adding a third bucket-sharing worker would follow the
+# same shape — bind here AND on the writer's wrangler.toml, extend the
+# OutboundEmailAttachment.bucket union, extend attachments.ts dispatch.
+[[r2_buckets]]
+binding     = "PROMO_FILES"
+bucket_name = "splash-promo-files"
+
 # Brief 92 — bundle vendored static .js files (signature_pad.min.js,
 # forms-public.js) under `static/` as default-exported strings. The
 # worker imports them and serves them via /forms/api/static/{filename}.

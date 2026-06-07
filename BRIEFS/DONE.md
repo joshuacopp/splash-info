@@ -162,3 +162,4 @@
 - 2026-06-06 22:05:02 brief-162-promo-create-it-notification.md (success)
 - 2026-06-06 22:28:45 brief-163-promo-announcement-templates.md (success)
 - 2026-06-06 22:42:33 brief-164-promo-it-notify-completed-sites.md (success)
+- 2026-06-06 23:44:08 brief-165-forms-worker-bind-promo-files-r2.md (success)
