@@ -1583,6 +1583,92 @@ URL-based — service bindings don't apply to those.
   manual button + note); notification of UN-marked-complete (rollback
   — v2); "Notify SPECIFIC site only" (today the FAB notifies all
   eligible at once).
+  Brief 166 (2026-06-08) shipped a seven-item polish batch on top of
+  Briefs 153-165 (no schema changes). **Materials default unchecked.**
+  `AnnouncementComposeModal`'s open-seed flipped from pre-checking every
+  material to `setSelectedMaterials(new Set())` — the operator actively
+  selects what to attach (pre-166 default of "everything pre-checked"
+  routinely sent unwanted attachments). Section heading now reads
+  "Attach materials (N selected) — nothing is attached unless you
+  select it." **Freeform signature.** New optional `<input
+  name="signature">` ≤500 chars below the Body textarea on the
+  freeform-compose branch; the action forwards it to send + preview,
+  and the worker's `parseAndValidateBody` freeform branch appends
+  `"\n\n{signature}"` to `bodyText` when present so send AND preview
+  reflect it. Template sends ignore `signature` (templates own their
+  own `{signature}` field). **Recent-promo autofill picker.** New
+  `RecentPromoAutofillPicker` sub-component (rendered above the
+  template field inputs when a template is selected AND
+  `recentPromos.length > 0`) autofills overlapping fields from a
+  picked recent promo: `specialName ← title`, `startDate ←
+  proposedStartDate`, `endDate ← proposedEndDate`, `kioskBehavior`
+  preset by promoType (`Same`/`BOGO` get explicit offerings copy;
+  anything else blank). Detail page (`/admin/promotions/{id}`)
+  fetches 10 most recent promos via `listPromos({ limit: 10 })` and
+  threads them as a `recentPromos: RecentPromoForAutofill[]` prop.
+  New type `RecentPromoForAutofill` lives in
+  `_lib/announce-templates.ts` (client-safe). The
+  `new_special_heads_up.kioskBehavior` template field label was also
+  renamed from "Kiosk/POS behavior or details" → "Promo offerings
+  for customers" (key + placeholder unchanged). **Dynamic body copy
+  reflecting actual attached state.** New exported helper
+  `computeMaterialsPtpCopy({ hasMaterials, includePtp })` returns
+  `{ materialsPtpNote, materialsPtpBody }` — defined IDENTICALLY in
+  `apps/promo-worker/src/announce/templates.ts` (worker) AND
+  `apps/web/app/admin/promotions/_lib/announce-templates.ts` (client
+  mirror) per the existing `substituteTemplate` dual-definition
+  pattern (both modules carry comments documenting the seam).
+  Heads-up template's static "There will be an announcement...
+  shortly!" line replaced with the `{materialsPtpNote}` placeholder;
+  follow-up template's static "Attached you'll find the marketing
+  materials and the PTP..." sentence replaced with
+  `{materialsPtpBody}`. Placeholders are NOT in `fields[]` so the
+  first `substituteTemplate` pass leaves them verbatim. Worker
+  `handleSendAnnouncement` + `handlePreviewAnnouncement` run a
+  SECOND `substituteTemplate` pass AFTER `resolvedMaterials` +
+  `payload.includePtp` are known, guarded on `payload.templateId !==
+  null` so freeform sends skip the pass. Snapshot insert stores the
+  post-substitution body in `promo_announcements.body_text` so the
+  stored history reflects actual-state copy. Modal inline `<pre>`
+  preview folds the same dyn copy into `previewSubstitutionFields`
+  via `useMemo(dynCopy)` keyed on `selectedMaterials.size` +
+  `includePtp`, so the inline preview matches the authoritative
+  iframe preview (which now runs the same computation server-side).
+  Four cases each: heads-up `materialsPtpNote` — neither (preserves
+  pre-166 line) / materials only ("Please see the attached
+  materials.") / PTP only ("The PTP is included below.") / both
+  ("Please see the attached materials, and the PTP included
+  below."). Follow-up `materialsPtpBody` — both (preserves pre-166
+  sentence) / materials only ("Attached you'll find the marketing
+  materials for this special.") / PTP only ("Below you'll find the
+  Purpose/Tools/Process document for this special.") / neither
+  ("Materials and the PTP will follow shortly."). **Notify-completed-
+  sites RM/RD opt-in.** `notify-sites.ts` accepts optional
+  `includeRm?: boolean` + `includeRd?: boolean` on the POST body
+  (default false). Per site, `site_email` is ALWAYS included;
+  `rm_email` (Regional Manager) only when `includeRm`; `am_email`
+  (Regional Director — see the CLAUDE.md label-vs-data mapping:
+  RM = `rm_email`, RD = `am_email`) only when `includeRd`. Per-site
+  case-insensitive dedup retained. `NotifyCompletedSitesButton`
+  modal gains two unchecked-by-default checkboxes under "Also notify
+  (optional)"; modal intro copy reframed away from "Recipients are
+  the AM/RM/site email." `notifyCompletedSitesAction` reads
+  checkboxes (`"on"` = true) and conditionally spreads booleans into
+  the worker body via the new `NotifyCompletedSitesBody` type
+  widening. **Same → "Same As Today" (display only).**
+  `CreatePromoForm`'s promoType `<option>` for `Same` displays
+  "Same As Today" via a new `PROMO_TYPE_LABEL_OVERRIDES` map keyed
+  by stored value; the stored value remains `Same` (renaming would
+  cascade into worker validation, every existing `promotions` row,
+  and the offerings autofill which keys off `Same`). Detail / queue
+  / IT-notify-email surfaces still render the stored value `Same` —
+  a broader display-label sweep is a separate item if wanted. Out
+  of scope at Brief 166 (each a candidate for a follow-up): broader
+  `Same` display-label sweep on detail/queue/notify surfaces;
+  per-RM-group or per-tier RM/RD opt-in defaults; recent-promo
+  picker beyond 10 entries; offerings presets for promo types other
+  than `Same` / `BOGO`; signature field on template sends (template
+  `{signature}` field exists already).
 
 - **@splash/email-shell** (Brief 160) - Shared workspace package at
   `packages/email-shell/` hosting the Outlook-safe HTML email shell.

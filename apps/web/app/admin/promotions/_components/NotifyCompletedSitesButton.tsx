@@ -186,8 +186,9 @@ export default function NotifyCompletedSitesButton({
 
             <p className="mb-3 text-sm text-splash-navy/70">
               Only sites marked complete and not yet notified will receive
-              an email. Recipients are the AM / RM / site email on record
-              for each location.
+              an email. By default we email the site address on file —
+              opt in below to also include the Regional Manager / Regional
+              Director.
             </p>
 
             <div className="mb-4 rounded-splash-sm border border-gray-light bg-gray-50 px-3 py-2 text-sm">
@@ -238,6 +239,32 @@ export default function NotifyCompletedSitesButton({
                   {note.length} / {NOTE_MAX_LEN}
                 </p>
               </div>
+
+              {/* Brief 166 item 7 — RM/RD opt-in. Default OFF. */}
+              <fieldset className="space-y-1.5">
+                <legend className="mb-1 block text-sm font-semibold text-splash-navy">
+                  Also notify{" "}
+                  <span className="font-normal text-splash-navy/55">
+                    (optional)
+                  </span>
+                </legend>
+                <label className="flex items-center gap-2 text-sm text-splash-navy">
+                  <input
+                    type="checkbox"
+                    name="includeRm"
+                    className="h-4 w-4"
+                  />
+                  <span>Also notify Regional Manager</span>
+                </label>
+                <label className="flex items-center gap-2 text-sm text-splash-navy">
+                  <input
+                    type="checkbox"
+                    name="includeRd"
+                    className="h-4 w-4"
+                  />
+                  <span>Also notify Regional Director</span>
+                </label>
+              </fieldset>
 
               <div className="flex items-center justify-end gap-3 border-t border-gray-light pt-3">
                 <button

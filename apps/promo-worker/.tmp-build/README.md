@@ -1,1 +1,0 @@
-This folder contains the built output assets for the worker "splash-promo" generated at 2026-06-07T02:37:23.244Z.

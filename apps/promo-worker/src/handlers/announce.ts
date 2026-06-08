@@ -47,7 +47,8 @@ import { renderAnnouncement } from "../announce/render-html.js";
 import {
   ANNOUNCEMENT_TEMPLATES,
   findTemplate,
-  substituteTemplate
+  substituteTemplate,
+  computeMaterialsPtpCopy
 } from "../announce/templates.js";
 
 // =============================================================================
@@ -69,6 +70,10 @@ const KNOWN_BODY_KEYS = new Set([
   "mode",
   "subject",
   "bodyText",
+  // Brief 166 item 3 — freeform-only optional signature appended to
+  // bodyText. Template sends ignore it (templates own their own
+  // `{signature}` field).
+  "signature",
   "templateId",
   "templateFields",
   "recipientEmails",
@@ -76,6 +81,9 @@ const KNOWN_BODY_KEYS = new Set([
   "includePtp",
   "materialModes"
 ]);
+
+// Brief 166 item 3 — signature cap; symmetric with the create form's input.
+const SIGNATURE_MAX_LEN = 500;
 
 // Brief 163 — operator-supplied template field values cap. Generous —
 // individual field values still go through SUBJECT_MAX_LEN / BODY_MAX_LEN
@@ -232,6 +240,8 @@ interface AnnounceBody {
   mode?: unknown;
   subject?: unknown;
   bodyText?: unknown;
+  /** Brief 166 item 3 — freeform-only. */
+  signature?: unknown;
   templateId?: unknown;
   templateFields?: unknown;
   recipientEmails?: unknown;
@@ -383,7 +393,8 @@ async function parseAndValidateBody(
       }
     }
   } else {
-    // Freeform body resolution (unchanged from Brief 157/160).
+    // Freeform body resolution (unchanged from Brief 157/160 except for
+    // Brief 166 item 3 — optional signature appended after bodyText).
     if (typeof body.subject === "string") subject = body.subject.trim();
     if (!subject) {
       fields.subject = "required";
@@ -396,6 +407,27 @@ async function parseAndValidateBody(
       fields.bodyText = "required";
     } else if (bodyText.length > BODY_MAX_LEN) {
       fields.bodyText = "too_long";
+    }
+
+    // Brief 166 item 3 — optional signature. When present + non-empty,
+    // append "\n\n{signature}" to the body so send AND preview both
+    // reflect it. Per-field cap is symmetric with the create form input.
+    if (body.signature !== undefined && body.signature !== null) {
+      if (typeof body.signature !== "string") {
+        fields.signature = "invalid";
+      } else {
+        const sigTrimmed = body.signature.trim();
+        if (sigTrimmed.length > SIGNATURE_MAX_LEN) {
+          fields.signature = "too_long";
+        } else if (sigTrimmed.length > 0 && !fields.bodyText) {
+          const combined = `${bodyText}\n\n${sigTrimmed}`;
+          if (combined.length > BODY_MAX_LEN) {
+            fields.bodyText = "too_long";
+          } else {
+            bodyText = combined;
+          }
+        }
+      }
     }
 
     // Brief 163 — reject template-only keys present on a freeform send.
@@ -723,6 +755,26 @@ export async function handleSendAnnouncement(
     }
   }
 
+  // --- Brief 166 items 5/6 — second-pass substitution -----------------------
+  // The heads-up + follow-up templates have `{materialsPtpNote}` /
+  // `{materialsPtpBody}` placeholders that survive the operator-field pass
+  // because they're not in the template's `fields[]`. Fill them now that
+  // `resolvedMaterials.length` + `payload.includePtp` are known. Freeform
+  // sends have no placeholders, so the call is a no-op; guard on
+  // `templateId` so the cost (one regex pass per send) only lands on
+  // template sends.
+  let finalBodyText = payload.bodyText;
+  if (payload.templateId !== null) {
+    const dynCopy = computeMaterialsPtpCopy({
+      hasMaterials: resolvedMaterials.length > 0,
+      includePtp: payload.includePtp
+    });
+    finalBodyText = substituteTemplate(payload.bodyText, {
+      materialsPtpNote: dynCopy.materialsPtpNote,
+      materialsPtpBody: dynCopy.materialsPtpBody
+    });
+  }
+
   // --- Snapshot row in promo_announcements --------------------------------
   let announcementId: string;
   let sentAt: string;
@@ -742,9 +794,12 @@ export async function handleSendAnnouncement(
         // body_text on the snapshot is the OPERATOR's typed body, without
         // the appended PTP block — `included_ptp = true` + the live PTP
         // row at read time covers the intent. Template-driven sends
-        // snapshot the POST-substitution body here; the as-supplied
-        // field values live in `template_fields` alongside.
-        body_text: payload.bodyText,
+        // snapshot the POST-substitution body here (Brief 166 items 5/6:
+        // the dynamic `{materialsPtpNote}` / `{materialsPtpBody}` are also
+        // applied so the stored history reflects the actual-state copy);
+        // the as-supplied operator field values live in `template_fields`
+        // alongside.
+        body_text: finalBodyText,
         body_html: null,
         recipient_emails: payload.recipientEmails,
         included_material_ids: payload.selectedMaterialIds,
@@ -795,7 +850,9 @@ export async function handleSendAnnouncement(
 
   const rendered = renderAnnouncement({
     subject: payload.subject,
-    bodyText: payload.bodyText,
+    // Brief 166 items 5/6 — finalBodyText reflects the second-pass
+    // substitution (templates only; freeform is unchanged).
+    bodyText: finalBodyText,
     promoTitle: promoMeta.title,
     includePtp: payload.includePtp,
     ptp: ptpRow
@@ -948,9 +1005,23 @@ export async function handlePreviewAnnouncement(
     payload.materialModes
   );
 
+  // Brief 166 items 5/6 — mirror handleSendAnnouncement's second-pass
+  // substitution so the iframe preview matches what gets sent.
+  let finalBodyText = payload.bodyText;
+  if (payload.templateId !== null) {
+    const dynCopy = computeMaterialsPtpCopy({
+      hasMaterials: resolvedMaterials.length > 0,
+      includePtp: payload.includePtp
+    });
+    finalBodyText = substituteTemplate(payload.bodyText, {
+      materialsPtpNote: dynCopy.materialsPtpNote,
+      materialsPtpBody: dynCopy.materialsPtpBody
+    });
+  }
+
   const rendered = renderAnnouncement({
     subject: payload.subject,
-    bodyText: payload.bodyText,
+    bodyText: finalBodyText,
     promoTitle: promoMeta.title,
     includePtp: payload.includePtp,
     ptp: ptpRow

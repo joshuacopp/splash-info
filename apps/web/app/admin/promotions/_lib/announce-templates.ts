@@ -28,6 +28,29 @@ export interface AnnouncementTemplate {
   fields: TemplateFieldDef[];
 }
 
+/**
+ * Brief 166 item 4 — minimal projection of a recent promo, scoped to the
+ * fields the compose modal's autofill picker needs. The detail page
+ * fetches these via `listPromos({ limit: 10 })` and passes them in as
+ * a prop on `AnnouncementComposeModal`.
+ *
+ * Defined here (the client-safe module) so the modal can import the type
+ * without dragging the SSR-only worker-fetch surface into the bundle.
+ */
+export interface RecentPromoForAutofill {
+  id: string;
+  title: string;
+  /** Stored value (e.g. "Same", "BOGO"); display labels are computed by
+   *  the picker. Drives the offerings-text preset in the modal. */
+  promoType: string;
+  /** ISO YYYY-MM-DD. */
+  proposedStartDate: string;
+  /** ISO YYYY-MM-DD. */
+  proposedEndDate: string;
+  /** ISO timestamp; rendered with formatEst for the option label. */
+  createdAt: string;
+}
+
 const MONTH_SHORT_NAMES = [
   "Jan", "Feb", "Mar", "Apr", "May", "Jun",
   "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"
@@ -65,4 +88,47 @@ export function substituteTemplate(
     const raw = fields[key] ?? "";
     return formatIsoDate(raw);
   });
+}
+
+/**
+ * Brief 166 items 5 & 6 — client mirror of the worker's
+ * `computeMaterialsPtpCopy` in `apps/promo-worker/src/announce/templates.ts`.
+ * Used by the compose modal's inline `<pre>` live preview so what the
+ * operator sees in the preview pane matches what the worker computes at
+ * send / iframe-preview time. Keep wording identical to the worker — the
+ * authoritative iframe preview comes from `/announce/preview`, so any
+ * drift between the two would surface as a confusing mismatch between
+ * the inline preview and the iframe.
+ */
+export function computeMaterialsPtpCopy(opts: {
+  hasMaterials: boolean;
+  includePtp: boolean;
+}): { materialsPtpNote: string; materialsPtpBody: string } {
+  const { hasMaterials, includePtp } = opts;
+  let materialsPtpNote: string;
+  if (hasMaterials && includePtp) {
+    materialsPtpNote =
+      "Please see the attached materials, and the PTP included below.";
+  } else if (hasMaterials) {
+    materialsPtpNote = "Please see the attached materials.";
+  } else if (includePtp) {
+    materialsPtpNote = "The PTP is included below.";
+  } else {
+    materialsPtpNote =
+      "There will be an announcement with more details, materials, and the PTP coming your way shortly!";
+  }
+  let materialsPtpBody: string;
+  if (hasMaterials && includePtp) {
+    materialsPtpBody =
+      "Attached you'll find the marketing materials and the Purpose/Tools/Process document for this special.";
+  } else if (hasMaterials) {
+    materialsPtpBody =
+      "Attached you'll find the marketing materials for this special.";
+  } else if (includePtp) {
+    materialsPtpBody =
+      "Below you'll find the Purpose/Tools/Process document for this special.";
+  } else {
+    materialsPtpBody = "Materials and the PTP will follow shortly.";
+  }
+  return { materialsPtpNote, materialsPtpBody };
 }

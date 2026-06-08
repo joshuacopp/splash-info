@@ -10,7 +10,12 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { getMe } from "../../../_lib/me";
-import { getPromo, listAnnouncementTemplates } from "../_lib/worker-fetch";
+import {
+  getPromo,
+  listAnnouncementTemplates,
+  listPromos
+} from "../_lib/worker-fetch";
+import type { RecentPromoForAutofill } from "../_lib/announce-templates";
 import { resolveRecipients } from "../_lib/locations";
 import NoAccessCard from "../_components/NoAccessCard";
 import PromoStatusPill from "../_components/PromoStatusPill";
@@ -76,6 +81,23 @@ export default async function PromoDetailPage({ params }: PageProps) {
   const announcementTemplates = canWrite
     ? await listAnnouncementTemplates()
     : [];
+  // Brief 166 item 4 — fetch the 10 most recently created promos to power
+  // the compose modal's "Pull details from a promo" autofill picker.
+  // Worker already orders by `created_at.desc`. Fail-soft: empty array on
+  // error, modal degrades to no-picker.
+  const recentPromosResp = canWrite
+    ? await listPromos({ limit: 10 }).catch(() => null)
+    : null;
+  const recentPromos: RecentPromoForAutofill[] = (
+    recentPromosResp?.promos ?? []
+  ).map((p) => ({
+    id: p.id,
+    title: p.title,
+    promoType: p.promoType,
+    proposedStartDate: p.proposedStartDate,
+    proposedEndDate: p.proposedEndDate,
+    createdAt: p.createdAt
+  }));
 
   const startFmt = formatEst(`${promo.proposedStartDate}T00:00:00Z`).absolute;
   const endFmt = formatEst(`${promo.proposedEndDate}T00:00:00Z`).absolute;
@@ -246,6 +268,7 @@ export default async function PromoDetailPage({ params }: PageProps) {
               ptp={promo.ptp}
               defaultRecipients={defaultRecipients}
               templates={announcementTemplates}
+              recentPromos={recentPromos}
             />
           ) : null
         }

@@ -54,9 +54,13 @@ const NOTE_MAX_LEN = 500;
 
 interface NotifyBody {
   note?: unknown;
+  /** Brief 166 item 7 — optional opt-in flags. Default false: site_email
+   *  is the only guaranteed recipient. */
+  includeRm?: unknown;
+  includeRd?: unknown;
 }
 
-const KNOWN_BODY_KEYS = new Set(["note"]);
+const KNOWN_BODY_KEYS = new Set(["note", "includeRm", "includeRd"]);
 
 function pgHeaders(env: Env): HeadersInit {
   return {
@@ -164,9 +168,12 @@ export async function handleNotifyCompletedSites(
 
   if (!PROMO_ID_RE.test(promoId)) return jsonError(404, "promo_not_found");
 
-  // Body — `{ note?: string }` only. Empty body is the common case
-  // (operator submits the modal without filling the textarea).
+  // Body — `{ note?: string, includeRm?: boolean, includeRd?: boolean }`.
+  // Empty body is the common case (operator submits the modal without
+  // filling the textarea + leaving the RM/RD checkboxes unchecked).
   let bodyText = "";
+  let includeRm = false;
+  let includeRd = false;
   try {
     if (req.headers.get("content-length") !== "0") {
       const raw = await req.json().catch(() => null);
@@ -197,6 +204,42 @@ export async function handleNotifyCompletedSites(
               JSON.stringify({
                 error: "bad_request",
                 fields: { note: "invalid" }
+              }),
+              { status: 400, headers: { "Content-Type": "application/json" } }
+            );
+          }
+        }
+        // Brief 166 item 7 — opt-in RM/RD recipients. Default false; only
+        // an explicit boolean true flips them on. Anything else (null /
+        // missing / non-boolean) returns 400 to make typo'd payloads
+        // surface fast.
+        if ("includeRm" in body) {
+          const v = body.includeRm;
+          if (v === undefined || v === null) {
+            includeRm = false;
+          } else if (typeof v === "boolean") {
+            includeRm = v;
+          } else {
+            return new Response(
+              JSON.stringify({
+                error: "bad_request",
+                fields: { includeRm: "invalid" }
+              }),
+              { status: 400, headers: { "Content-Type": "application/json" } }
+            );
+          }
+        }
+        if ("includeRd" in body) {
+          const v = body.includeRd;
+          if (v === undefined || v === null) {
+            includeRd = false;
+          } else if (typeof v === "boolean") {
+            includeRd = v;
+          } else {
+            return new Response(
+              JSON.stringify({
+                error: "bad_request",
+                fields: { includeRd: "invalid" }
               }),
               { status: 400, headers: { "Content-Type": "application/json" } }
             );
@@ -306,9 +349,16 @@ export async function handleNotifyCompletedSites(
           typeof row.location_pretty === "string" && row.location_pretty.trim()
             ? row.location_pretty.trim()
             : code;
+        // Brief 166 item 7 — site_email is the only guaranteed recipient.
+        // rm_email (Regional Manager) opt-in via `includeRm`; am_email
+        // (Regional Director — note the label-vs-data mapping from
+        // CLAUDE.md: am_email backs the RD label) opt-in via `includeRd`.
+        const candidates: Array<string | null> = [row.site_email];
+        if (includeRm) candidates.push(row.rm_email);
+        if (includeRd) candidates.push(row.am_email);
         const recipients: string[] = [];
         const seen = new Set<string>();
-        for (const raw of [row.am_email, row.rm_email, row.site_email]) {
+        for (const raw of candidates) {
           if (typeof raw !== "string") continue;
           const trimmed = raw.trim();
           if (!trimmed) continue;

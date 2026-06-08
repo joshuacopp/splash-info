@@ -42,6 +42,8 @@ type ParsedComposeForm =
       promoId: string;
       subject: string;
       bodyText: string;
+      /** Brief 166 item 3 — optional signature; worker appends to bodyText. */
+      signature: string;
       recipientList: string[];
       selectedMaterialIds: string[];
       materialModes: Record<string, "inline" | "attachment">;
@@ -142,6 +144,9 @@ function parseComposeForm(
 
   const subject = asString(formData.get("subject")).trim();
   const bodyText = asString(formData.get("bodyText"));
+  // Brief 166 item 3 — signature is optional, ≤500 chars; the worker
+  // appends "\n\n{signature}" to bodyText when present + non-empty.
+  const signature = asString(formData.get("signature")).trim();
 
   if (!subject) return { ok: false, error: "Subject is required." };
   if (subject.length > SUBJECT_MAX_LEN) {
@@ -153,6 +158,9 @@ function parseComposeForm(
   if (bodyText.length > BODY_MAX_LEN) {
     return { ok: false, error: "Body exceeds the 50,000-character limit." };
   }
+  if (signature.length > 500) {
+    return { ok: false, error: "Signature is too long (max 500 chars)." };
+  }
 
   return {
     ok: true,
@@ -161,6 +169,7 @@ function parseComposeForm(
       promoId,
       subject,
       bodyText,
+      signature,
       recipientList,
       selectedMaterialIds,
       materialModes,
@@ -193,6 +202,7 @@ export async function sendAnnouncementAction(
       : await sendPromoAnnouncement(p.promoId, {
           subject: p.subject,
           bodyText: p.bodyText,
+          ...(p.signature ? { signature: p.signature } : {}),
           recipientEmails: p.recipientList,
           selectedMaterialIds:
             p.selectedMaterialIds.length > 0 ? p.selectedMaterialIds : undefined,
@@ -247,6 +257,7 @@ export async function previewAnnouncementAction(
       : await previewPromoAnnouncement(p.promoId, {
           subject: p.subject,
           bodyText: p.bodyText,
+          ...(p.signature ? { signature: p.signature } : {}),
           recipientEmails: p.recipientList.length > 0 ? p.recipientList : undefined,
           selectedMaterialIds:
             p.selectedMaterialIds.length > 0 ? p.selectedMaterialIds : undefined,

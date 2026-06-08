@@ -60,7 +60,10 @@ export const ANNOUNCEMENT_TEMPLATES: ReadonlyArray<AnnouncementTemplate> = [
       "We're announcing a new special that will be rolling out at your site soon!\n\n" +
       "The special will be {specialName}, and will offer customers {kioskBehavior}.\n\n" +
       "The special is planned to run from {startDate} to {endDate}.\n\n" +
-      "There will be an announcement with more details, materials, and the PTP coming your way shortly!\n\n" +
+      // Brief 166 item 5 — `{materialsPtpNote}` is NOT an operator field.
+      // The worker fills it via a second `substituteTemplate` pass after
+      // resolving materials + PTP. See `computeMaterialsPtpCopy`.
+      "{materialsPtpNote}\n\n" +
       "{signature}",
     fields: [
       {
@@ -71,8 +74,12 @@ export const ANNOUNCEMENT_TEMPLATES: ReadonlyArray<AnnouncementTemplate> = [
         placeholder: "e.g. Family Plan BOGO"
       },
       {
+        // Brief 166 item 4 — label-only change. Key remains `kioskBehavior`
+        // so the body template's `{kioskBehavior}` placeholder is unchanged
+        // and existing announcement snapshots referencing the old label
+        // continue to resolve.
         key: "kioskBehavior",
-        label: "Kiosk/POS behavior or details",
+        label: "Promo offerings for customers",
         type: "textarea",
         required: true,
         placeholder: "What the customer experiences at the kiosk"
@@ -96,7 +103,9 @@ export const ANNOUNCEMENT_TEMPLATES: ReadonlyArray<AnnouncementTemplate> = [
     subjectTemplate: "Now available: materials + PTP for {specialName}",
     bodyTemplate:
       "Following up on the {specialName} announcement!\n\n" +
-      "Attached you'll find the marketing materials and the Purpose/Tools/Process document for this special.\n\n" +
+      // Brief 166 item 6 — `{materialsPtpBody}` is NOT an operator field;
+      // the worker substitutes it post-resolve. See `computeMaterialsPtpCopy`.
+      "{materialsPtpBody}\n\n" +
       "Please review and reach out to your manager with any questions.\n\n" +
       "{signature}",
     fields: [
@@ -188,4 +197,53 @@ export function substituteTemplate(
     const raw = fields[key] ?? "";
     return formatIsoDate(raw);
   });
+}
+
+/**
+ * Brief 166 items 5 & 6 — compute the "what's actually attached" copy
+ * that gets folded into the heads-up and follow-up templates at SEND
+ * time (not at template-author time). The placeholders
+ * `{materialsPtpNote}` (heads-up trailing line) and `{materialsPtpBody}`
+ * (follow-up body sentence) are NOT operator fields — they survive
+ * `substituteTemplate`'s first pass verbatim and get filled by a SECOND
+ * `substituteTemplate` pass in `handleSendAnnouncement` /
+ * `handlePreviewAnnouncement` once `resolvedMaterials` + `payload.includePtp`
+ * are known. The worker is authoritative; the modal mirrors this helper
+ * client-side for the inline preview only.
+ *
+ * Keep this function identically defined in
+ * `apps/web/app/admin/promotions/_lib/announce-templates.ts` —
+ * same dual-definition pattern as `substituteTemplate`.
+ */
+export function computeMaterialsPtpCopy(opts: {
+  hasMaterials: boolean;
+  includePtp: boolean;
+}): { materialsPtpNote: string; materialsPtpBody: string } {
+  const { hasMaterials, includePtp } = opts;
+  let materialsPtpNote: string;
+  if (hasMaterials && includePtp) {
+    materialsPtpNote =
+      "Please see the attached materials, and the PTP included below.";
+  } else if (hasMaterials) {
+    materialsPtpNote = "Please see the attached materials.";
+  } else if (includePtp) {
+    materialsPtpNote = "The PTP is included below.";
+  } else {
+    materialsPtpNote =
+      "There will be an announcement with more details, materials, and the PTP coming your way shortly!";
+  }
+  let materialsPtpBody: string;
+  if (hasMaterials && includePtp) {
+    materialsPtpBody =
+      "Attached you'll find the marketing materials and the Purpose/Tools/Process document for this special.";
+  } else if (hasMaterials) {
+    materialsPtpBody =
+      "Attached you'll find the marketing materials for this special.";
+  } else if (includePtp) {
+    materialsPtpBody =
+      "Below you'll find the Purpose/Tools/Process document for this special.";
+  } else {
+    materialsPtpBody = "Materials and the PTP will follow shortly.";
+  }
+  return { materialsPtpNote, materialsPtpBody };
 }

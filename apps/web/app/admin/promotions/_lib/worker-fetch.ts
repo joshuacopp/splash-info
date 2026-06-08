@@ -504,6 +504,9 @@ export type SendAnnouncementBody =
       mode?: "freeform";
       subject: string;
       bodyText: string;
+      /** Brief 166 item 3 — optional. Worker appends "\n\n{signature}"
+       *  to bodyText before render when present + non-empty. */
+      signature?: string;
       recipientEmails: string[];
       selectedMaterialIds?: string[];
       includePtp?: boolean;
@@ -549,6 +552,8 @@ export type PreviewAnnouncementBody =
       mode?: "freeform";
       subject: string;
       bodyText: string;
+      /** Brief 166 item 3 — optional. Same semantics as the send body. */
+      signature?: string;
       recipientEmails?: string[];
       selectedMaterialIds?: string[];
       includePtp?: boolean;
@@ -603,6 +608,9 @@ export interface NotifyCompletedSitesResponseData {
 
 export interface NotifyCompletedSitesBody {
   note?: string;
+  /** Brief 166 item 7 — opt-in. Default false: site_email only. */
+  includeRm?: boolean;
+  includeRd?: boolean;
 }
 
 export async function notifyCompletedSites(

@@ -26,8 +26,14 @@ import {
 } from "../_actions/announceActions";
 import { isValidEmail } from "@splash/types/email-validate";
 import type { PromoMaterial, PromoPtp } from "../_lib/types";
-import type { AnnouncementTemplate } from "../_lib/announce-templates";
-import { substituteTemplate } from "../_lib/announce-templates";
+import type {
+  AnnouncementTemplate,
+  RecentPromoForAutofill
+} from "../_lib/announce-templates";
+import {
+  substituteTemplate,
+  computeMaterialsPtpCopy
+} from "../_lib/announce-templates";
 
 interface Props {
   promoId: string;
@@ -39,6 +45,10 @@ interface Props {
    *  means the worker returned [] or errored — modal degrades to
    *  freeform-only with no picker. */
   templates: AnnouncementTemplate[];
+  /** Brief 166 item 4 — most recently created promos (10 max), used to
+   *  power the "Pull details from a promo" autofill dropdown rendered
+   *  when a template is selected. Empty array = no picker rendered. */
+  recentPromos: RecentPromoForAutofill[];
 }
 
 interface PreviewData {
@@ -60,13 +70,27 @@ function formatKb(totalBytes: number): string {
   return `${(kb / 1024).toFixed(1)} MB`;
 }
 
+/**
+ * Brief 166 item 4 — preset offerings copy keyed by promo type. Driven by
+ * the recent-promos picker; if the operator picks a promo whose type
+ * falls outside this map, the `kioskBehavior` field is left blank for
+ * the operator to fill in.
+ */
+const OFFERINGS_PRESET_BY_PROMO_TYPE: Record<string, string> = {
+  Same:
+    "the opportunity to try out their first month as a MaxPass member for the cost of a single wash!",
+  BOGO:
+    "the opportunity to purchase two months of MaxPass membership for the price of one!"
+};
+
 export default function AnnouncementComposeModal({
   promoId,
   promoTitle,
   materials,
   ptp,
   defaultRecipients,
-  templates
+  templates,
+  recentPromos
 }: Props) {
   const [open, setOpen] = useState(false);
   const [recipients, setRecipients] = useState<string[]>([]);
@@ -95,8 +119,13 @@ export default function AnnouncementComposeModal({
   useEffect(() => {
     if (open) {
       setRecipients([...defaultRecipients]);
-      setSelectedMaterials(new Set(materials.map((m) => m.id)));
+      // Brief 166 item 1 — default to NO materials checked. The operator
+      // actively selects what to attach; the prior "everything pre-checked"
+      // default sent unwanted materials by accident.
+      setSelectedMaterials(new Set());
       // Default mode per material: image MIME → inline, everything else → attachment.
+      // Mode only matters once a material is checked, but we seed for every
+      // material so toggle-on doesn't have to compute a default.
       const seedModes: Record<string, MaterialMode> = {};
       for (const m of materials) {
         seedModes[m.id] = (m.fileMime ?? "").startsWith("image/")
@@ -164,6 +193,21 @@ export default function AnnouncementComposeModal({
       ...prev,
       [`${templateId}.${fieldKey}`]: value
     }));
+  }
+
+  // Brief 166 item 4 — bulk write used by the recent-promo autofill.
+  // Merges multiple `{templateId}.{fieldKey}` entries in one state update.
+  function bulkSetTemplateFieldValues(
+    templateId: string,
+    values: Record<string, string>
+  ) {
+    setTemplateFieldValues((prev) => {
+      const next = { ...prev };
+      for (const [fieldKey, value] of Object.entries(values)) {
+        next[`${templateId}.${fieldKey}`] = value;
+      }
+      return next;
+    });
   }
 
   function handleSendResult(result: ActionResult) {
@@ -283,6 +327,8 @@ export default function AnnouncementComposeModal({
             setSelectedTemplateId={setSelectedTemplateId}
             templateFieldValues={templateFieldValues}
             setTemplateFieldValue={setTemplateFieldValue}
+            recentPromos={recentPromos}
+            bulkSetTemplateFieldValues={bulkSetTemplateFieldValues}
           />
         </div>
       </div>
@@ -328,6 +374,12 @@ interface ComposeFormBodyProps {
     templateId: string,
     fieldKey: string,
     value: string
+  ) => void;
+  // Brief 166 item 4 — recent promo picker.
+  recentPromos: RecentPromoForAutofill[];
+  bulkSetTemplateFieldValues: (
+    templateId: string,
+    values: Record<string, string>
   ) => void;
 }
 
@@ -396,11 +448,43 @@ function ComposeFormBody(props: ComposeFormBodyProps) {
     return out;
   }, [selectedTemplate, props.templateFieldValues]);
 
+  // Brief 166 items 5/6 — compute the dynamic placeholders client-side
+  // so the inline `<pre>` preview matches what the worker will send.
+  // The authoritative iframe preview comes from `/announce/preview` which
+  // runs the same computation server-side.
+  const dynCopy = useMemo(
+    () =>
+      computeMaterialsPtpCopy({
+        hasMaterials: props.selectedMaterials.size > 0,
+        includePtp: props.includePtp
+      }),
+    [props.selectedMaterials.size, props.includePtp]
+  );
+
+  // Combine operator-supplied field values with the dynamic copy so the
+  // single `substituteTemplate` call below resolves both passes at once.
+  // Unknown placeholders survive verbatim per `substituteTemplate`'s
+  // contract, so freeform / templates without the placeholders are no-op.
+  const previewSubstitutionFields = useMemo(
+    () => ({
+      ...currentTemplateFieldValues,
+      materialsPtpNote: dynCopy.materialsPtpNote,
+      materialsPtpBody: dynCopy.materialsPtpBody
+    }),
+    [currentTemplateFieldValues, dynCopy]
+  );
+
   const previewSubject = selectedTemplate
-    ? substituteTemplate(selectedTemplate.subjectTemplate, currentTemplateFieldValues)
+    ? substituteTemplate(
+        selectedTemplate.subjectTemplate,
+        previewSubstitutionFields
+      )
     : "";
   const previewBody = selectedTemplate
-    ? substituteTemplate(selectedTemplate.bodyTemplate, currentTemplateFieldValues)
+    ? substituteTemplate(
+        selectedTemplate.bodyTemplate,
+        previewSubstitutionFields
+      )
     : "";
 
   return (
@@ -536,6 +620,38 @@ function ComposeFormBody(props: ComposeFormBodyProps) {
         // the form. The visible inputs are controlled so the live preview
         // can re-render on every keystroke without an extra ref read.
         <>
+          {/* Brief 166 item 4 — recent-promo autofill picker. Available on
+              every template; autofills whatever overlaps the picked
+              template's field set. All values remain editable after
+              autofill. Hidden entirely when no recent promos exist. */}
+          {props.recentPromos.length > 0 && (
+            <RecentPromoAutofillPicker
+              template={selectedTemplate}
+              recentPromos={props.recentPromos}
+              onPick={(promo) => {
+                const overrides: Record<string, string> = {};
+                const keys = new Set(selectedTemplate.fields.map((f) => f.key));
+                if (keys.has("specialName")) {
+                  overrides.specialName = promo.title;
+                }
+                if (keys.has("startDate")) {
+                  overrides.startDate = promo.proposedStartDate;
+                }
+                if (keys.has("endDate")) {
+                  overrides.endDate = promo.proposedEndDate;
+                }
+                if (keys.has("kioskBehavior")) {
+                  overrides.kioskBehavior =
+                    OFFERINGS_PRESET_BY_PROMO_TYPE[promo.promoType] ?? "";
+                }
+                props.bulkSetTemplateFieldValues(
+                  selectedTemplate.id,
+                  overrides
+                );
+              }}
+            />
+          )}
+
           {selectedTemplate.fields.map((f) => (
             <section key={f.key}>
               <label
@@ -638,12 +754,33 @@ function ComposeFormBody(props: ComposeFormBodyProps) {
               placeholder="Operator-authored body. Plain text."
             />
           </section>
+
+          {/* Brief 166 item 3 — optional signature line for freeform sends.
+              Worker appends "\n\n{signature}" to the body when present. */}
+          <section>
+            <label className="mb-1 block text-sm font-semibold text-splash-navy">
+              Signature{" "}
+              <span className="font-normal text-splash-navy/55">
+                (optional, appended below the body)
+              </span>
+            </label>
+            <input
+              type="text"
+              name="signature"
+              maxLength={500}
+              placeholder="— The Splash team"
+              className="w-full rounded-splash-sm border border-gray-light bg-white px-3 py-2 text-sm focus:border-splash-blue focus:outline-none"
+            />
+          </section>
         </>
       )}
 
       <section>
         <h3 className="mb-2 text-sm font-semibold text-splash-navy">
-          Attach materials ({props.selectedMaterials.size} of {props.materials.length})
+          Attach materials ({props.selectedMaterials.size} selected)
+          <span className="ml-1 font-normal text-splash-navy/55">
+            — nothing is attached unless you select it.
+          </span>
         </h3>
         {props.materials.length === 0 ? (
           <p className="text-xs italic text-splash-navy/55">
@@ -785,6 +922,70 @@ function ComposeFormBody(props: ComposeFormBodyProps) {
         </SubmitButton>
       </div>
     </ActionForm>
+  );
+}
+
+/**
+ * Brief 166 item 4 — recent-promo autofill picker. Renders above the
+ * template's per-field inputs. Operator picks a promo from the dropdown
+ * and the parent's `onPick` callback writes the overlapping fields
+ * (`specialName`, `startDate`, `endDate`, `kioskBehavior`) into the
+ * template's value state. Picker is uncontrolled (resets to "(none)"
+ * after each pick) so subsequent picks always fire `onChange`.
+ */
+function RecentPromoAutofillPicker({
+  template,
+  recentPromos,
+  onPick
+}: {
+  template: AnnouncementTemplate;
+  recentPromos: RecentPromoForAutofill[];
+  onPick: (promo: RecentPromoForAutofill) => void;
+}) {
+  const id = `promo-autofill-picker-${template.id}`;
+  return (
+    <section className="rounded-splash-sm border border-splash-blue/30 bg-splash-blue/5 px-3 py-2">
+      <label
+        htmlFor={id}
+        className="mb-1 block text-xs font-semibold uppercase tracking-wide text-splash-navy/70"
+      >
+        Pull details from a promo
+      </label>
+      <select
+        id={id}
+        value=""
+        onChange={(e) => {
+          const promoId = e.target.value;
+          if (!promoId) return;
+          const found = recentPromos.find((p) => p.id === promoId);
+          if (found) onPick(found);
+          // Reset so picking the same option twice still fires onChange.
+          e.target.value = "";
+        }}
+        className="w-full rounded-splash-sm border border-gray-light bg-white px-3 py-2 text-sm focus:border-splash-blue focus:outline-none"
+      >
+        <option value="">(pick a recent promo to autofill…)</option>
+        {recentPromos.map((p) => {
+          const created = new Date(p.createdAt);
+          const createdLabel = isNaN(created.getTime())
+            ? p.createdAt
+            : created.toLocaleDateString("en-US", {
+                month: "short",
+                day: "numeric",
+                year: "numeric"
+              });
+          return (
+            <option key={p.id} value={p.id}>
+              {p.title} — {createdLabel}
+            </option>
+          );
+        })}
+      </select>
+      <p className="mt-1 text-xs text-splash-navy/55">
+        Autofills name, dates, and offerings where the template has those
+        fields. Everything stays editable.
+      </p>
+    </section>
   );
 }
 

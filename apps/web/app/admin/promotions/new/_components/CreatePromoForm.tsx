@@ -18,6 +18,12 @@ import { createPromoAction } from "../../_actions/createActions";
 import type { PromoLocationOption } from "../../_lib/worker-fetch";
 
 const PROMO_TYPES = ["Same", "BOGO", "Add-ons", "Discount", "Other"] as const;
+// Brief 166 item 2 — display-only label override. The stored value remains
+// "Same" (renaming the enum value would cascade into worker validation,
+// existing rows, and Brief 166 item 4's autofill which keys off "Same").
+const PROMO_TYPE_LABEL_OVERRIDES: Record<string, string> = {
+  Same: "Same As Today"
+};
 const PRIORITIES = ["High", "Medium", "Low"] as const;
 // `Same` is self-explanatory (today's pricing; no kiosk behavior change to
 // describe). Everything else needs operator copy explaining what the kiosk /
@@ -227,7 +233,7 @@ export default function CreatePromoForm({ locations }: Props) {
           >
             {PROMO_TYPES.map((t) => (
               <option key={t} value={t}>
-                {t}
+                {PROMO_TYPE_LABEL_OVERRIDES[t] ?? t}
               </option>
             ))}
           </select>

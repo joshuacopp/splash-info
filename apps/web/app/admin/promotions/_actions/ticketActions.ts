@@ -192,10 +192,17 @@ export async function notifyCompletedSitesAction(
     };
   }
 
-  const result = await notifyCompletedSites(
-    promoId,
-    note ? { note } : {}
-  );
+  // Brief 166 item 7 — RM/RD opt-in checkboxes on the modal arrive as
+  // present-with-value-"on" / absent. Convert to booleans for the worker.
+  const includeRm = asString(formData.get("includeRm")) === "on";
+  const includeRd = asString(formData.get("includeRd")) === "on";
+
+  const body: { note?: string; includeRm?: boolean; includeRd?: boolean } = {};
+  if (note) body.note = note;
+  if (includeRm) body.includeRm = true;
+  if (includeRd) body.includeRd = true;
+
+  const result = await notifyCompletedSites(promoId, body);
   if (!result.ok) return toActionResult(result, "");
 
   revalidatePromoPaths({ promoId, includeList: true, includeQueue: true });
