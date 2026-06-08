@@ -1295,12 +1295,19 @@ URL-based — service bindings don't apply to those.
   modal — apps/web ships a `materialMode[{materialId}]=inline|attachment`
   FormData entry that the worker reads via the optional `materialModes`
   body field. Inline attachments carry `is_inline:true` +
-  `content_id:"material-{materialId}"` on the queue row; PA's drain
-  flow needs an operator-side expression edit to map these to Send
-  Email V2's `IsInline` + `ContentId` (documented in
-  PRE_DEPLOY_PROMO.md §6.5). Until PA is edited, inline-flagged
-  images fall back to flat attachments — body HTML still ships, just
-  with a broken-image placeholder for the unresolved CID. New
+  `content_id:"material-{materialId}"` on the queue row. NOTE
+  (corrected 2026-06-08): the Office 365 Outlook **"Send an email (V2)"**
+  action does NOT support inline attachments — it silently drops every
+  attachment property except `Name` and `ContentBytes`, so `is_inline`
+  / `content_id` go nowhere and cid images never resolve. The PA drain
+  flow's send step must instead use **Microsoft Graph** via the O365
+  Outlook "Send an HTTP request" action (create-draft-then-send),
+  which honors `isInline` + `contentId`. See PRE_DEPLOY_PROMO.md §6.5
+  for the verified flow (Select → Create draft → Send draft + the
+  `addProperty` body that survives HTML quotes). Until the send step
+  uses Graph, inline-flagged images fall back to flat attachments —
+  body HTML still ships, just with a broken-image placeholder for the
+  unresolved CID. New
   endpoint `POST /promo/api/promos/{id}/announce/preview` (same role
   gate as `/announce`; `recipientEmails` optional) returns the
   rendered HTML + plain text + an attachment summary
@@ -2875,12 +2882,16 @@ URL-based — service bindings don't apply to those.
   (each entry is `{filename, mime, size_bytes}` + either `r2_key` or
   `base64`; r2_key is preferred + inlined at claim time so queue
   rows stay small; Brief 160 added two optional per-attachment fields
-  `is_inline?: boolean` and `content_id?: string` — when set, PA's
-  Send Email V2 connector flips `IsInline` true + `ContentId`
-  populated for the matching attachment, so the recipient renders the
-  image inline in the body via `<img src="cid:{content_id}" />`
-  reference rather than seeing it in the attachment tray; convention
-  used by promo-worker is `content_id = "material-{materialId}"`),
+  `is_inline?: boolean` and `content_id?: string` — when set, the PA
+  drain flow maps these onto a Microsoft Graph `fileAttachment`
+  (`isInline` + `contentId`) so the recipient renders the image inline
+  in the body via `<img src="cid:{content_id}" />` reference rather
+  than seeing it in the attachment tray; convention used by
+  promo-worker is `content_id = "material-{materialId}"`. NOTE
+  (corrected 2026-06-08): this requires the PA send step to use Graph
+  via the O365 Outlook "Send an HTTP request" action — the standard
+  "Send an email (V2)" action ignores `is_inline`/`content_id` (it
+  honors only `Name` + `ContentBytes`). See PRE_DEPLOY_PROMO.md §6.5),
   `scheduled_for` (defaults `now()`), `claimed_at`
   + `claim_id` (lock state — 10-minute stale-claim window),
   `sent_at` (null until PA confirms send), `send_attempts` (drops

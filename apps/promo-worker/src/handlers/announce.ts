@@ -577,6 +577,36 @@ export function partitionMaterialsForRender(
   return { inlineMaterials, attachmentMaterials };
 }
 
+/**
+ * Ensure the attachment filename carries the material's real file
+ * extension. Materials are stored in R2 at
+ * `promo-materials/{promoId}/{materialId}.{ext}` (Brief 156), so the
+ * extension on `r2_key` is authoritative. The operator-entered material
+ * `name` usually has NO extension (e.g. "Summer Flyer"), which makes a
+ * downloaded attachment fail to open on stricter clients — iOS Outlook
+ * reports "file format is not supported" because it keys the handler off
+ * the filename extension (desktop Outlook on the web falls back to the
+ * MIME type, which is why it looked fine there). Append the r2_key
+ * extension when the name doesn't already end with it. Inline images are
+ * unaffected either way (they render off `content_id` + MIME, not the
+ * filename) but get the corrected name too for consistency.
+ *
+ * Exported for the regression fixture in `test/render-html.snap.ts`.
+ */
+export function filenameWithExtension(name: string, r2Key: string): string {
+  const trimmed = (name ?? "").trim() || "attachment";
+  const dot = r2Key.lastIndexOf(".");
+  const slash = r2Key.lastIndexOf("/");
+  // The extension only counts if the last dot falls after the last path
+  // separator — guards against a dotless key or a dot inside a folder name.
+  if (dot <= slash) return trimmed;
+  const ext = r2Key.slice(dot + 1).toLowerCase();
+  // Defensive: only treat plausible alphanumeric extensions as real.
+  if (!ext || /[^a-z0-9]/.test(ext)) return trimmed;
+  if (trimmed.toLowerCase().endsWith(`.${ext}`)) return trimmed;
+  return `${trimmed}.${ext}`;
+}
+
 // IMPORTANT (Brief 161): inline materials MUST appear in this array with
 // `is_inline: true` + `content_id: "material-{id}"` set — they are NOT
 // mutually exclusive with the body HTML's `<img src="cid:material-{id}">`
@@ -608,7 +638,7 @@ export function buildOutboundEmailAttachmentsForAnnouncement(
   return resolved.map((m) => {
     const inlineEntry = inlineMaterialMap.get(m.id);
     const base: OutboundEmailAttachment = {
-      filename: m.name,
+      filename: filenameWithExtension(m.name, m.r2_key),
       mime: m.file_mime ?? "application/octet-stream",
       size_bytes: m.file_size_bytes ?? 0,
       r2_key: m.r2_key,

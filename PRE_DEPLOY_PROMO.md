@@ -316,47 +316,142 @@ needed (slot inventory across the project: 11:00 UTC forms cleanup,
 11:30 UTC workorders MaintainX sync, 12:00 UTC forms approval digest,
 13:00 UTC damage daily summary).
 
-## 6.5 PA flow widening (Brief 160 — inline attachments)
+## 6.5 PA flow — inline images via Microsoft Graph (Brief 160, CORRECTED)
 
-Brief 160 adds CID inline-image support to the announcement send path.
-Operator-side PA work is required before inline-flagged images render
-embedded in the body — without it, inline-flagged images degrade to
-regular attachments (the body HTML still ships, just without the
-embedded images).
+> **Correction (supersedes the original Brief 160 guidance).** The first
+> version of this section told the operator to add `IsInline` + `ContentId`
+> mappings to the Office 365 Outlook **"Send an email (V2)"** action. That
+> does not work: Send-email-V2 **silently drops every attachment property
+> except `Name` and `ContentBytes`**. `isInline` / `contentId` are ignored,
+> so cid-referenced images never resolve (Outlook shows a broken-image
+> marker, Gmail hides it) and the image ALSO shows up as a stray
+> downloadable attachment. This was the cause of the repeated
+> inline-image failures. The fix is to send via **Microsoft Graph**
+> (create-draft-then-send), which honors `isInline` + `contentId`.
 
-The shared "drain outbound_emails" flow (the one PA built for Brief
-127) needs two new expressions on the per-attachment loop that maps the
-queue row's `attachments[]` JSONB onto Send Email V2's `Attachments`
-array:
+The inline mechanism needs **no worker change** — each queue attachment
+already carries `is_inline` + `content_id`, and the bytes are base64-inlined
+at claim time (`apps/forms-worker/src/email-queue/attachments.ts`). One
+related worker fix DID land with this work (attachment filename extensions —
+see the "Attachment filenames" note at the end of this section); the send
+step is where the real change is.
 
-- **IsInline (boolean)** — set to:
+> **Status:** verified end-to-end on 2026-06-08 — inline image renders
+> embedded in the body, non-inline materials arrive as openable attachments
+> on desktop AND iOS Outlook.
+
+### Send mailbox / connection
+
+The flow runs under `josh.copp@splashcarwashes.com` (licensed). Emails send
+FROM `jotform.noreply@splashcarwashes.com`. To send as jotform.noreply via
+`/me/...`, add an Office 365 Outlook connection signed in **as
+jotform.noreply** on the send actions only — the rest of the flow stays on
+josh.copp. The O365 Outlook connector is a **standard (non-premium)**
+connector, and Power Automate premium attaches to the flow OWNER
+(josh.copp), not a per-action connection — so the jotform.noreply
+connection consumes no premium. No app registration, API key, or admin
+consent required.
+
+### Replace "Send an email (V2)" with create-draft + send
+
+Inside the per-item Apply-to-each over the claim response `items[]`, three
+actions replace the old Send-email-V2 (Select → Create draft → Send draft):
+
+**Step 1 — Select** (Data Operation → Select): build the Graph attachments
+array.
+- *From:* `items('Apply_to_each')?['attachments']`
+- *Map* (key/value rows; enter every Value through the **fx** expression
+  editor so types are preserved):
+
+  | Key | Value (fx expression) |
+  |---|---|
+  | `@@odata.type` | `'#microsoft.graph.fileAttachment'` |
+  | `name` | `item()?['filename']` |
+  | `contentType` | `item()?['mime']` |
+  | `contentBytes` | `item()?['base64']` |
+  | `isInline` | `coalesce(item()?['is_inline'], false)` |
+  | `contentId` | `item()?['content_id']` |
+
+  Two gotchas that WILL bite:
+  - The `@odata.type` key MUST be entered as **`@@odata.type`** — Power
+    Automate treats a leading `@` as the start of an expression, so a
+    single `@` throws "invalid expression in Select input parameters".
+    The doubled `@@` renders as a literal single `@` at runtime.
+  - `isInline` must go in as the `coalesce(...)` **expression**, not the
+    typed word `true`/`false`. A Select value that is exactly one
+    expression keeps its native boolean type; a typed string `"true"`
+    silently fails the inline flag (the original bug we were chasing).
+
+**Step 2 — Send an HTTP request** (Office 365 Outlook, connection =
+jotform.noreply), renamed **Create draft**.
+- *Method:* `POST`
+- *Uri:* `/v1.0/me/messages`
+- *Headers:* key `Content-Type`, value `application/json`
+- *Body:* **do NOT hand-write JSON with `@{...}` tokens.** The HTML in
+  `body_html` is full of double-quotes (`style="…"`, `src="cid:…"`) and
+  newlines that break the payload ("Unable to read JSON request payload").
+  Build the message object **programmatically** so PA escapes the strings
+  for you. Set Body via the **fx** expression editor to:
   ```
-  @if(item()?['is_inline'], true, false)
+  addProperty(addProperty(addProperty(addProperty(json('{}'), 'subject', if(empty(items('Apply_to_each')?['subject']), '', items('Apply_to_each')?['subject'])), 'body', addProperty(json('{"contentType":"HTML"}'), 'content', if(empty(items('Apply_to_each')?['body_html']), items('Apply_to_each')?['body_text'], items('Apply_to_each')?['body_html']))), 'toRecipients', json(concat('[{"emailAddress":{"address":"', items('Apply_to_each')?['recipient'], '"}}]'))), 'attachments', body('Select'))
   ```
-- **ContentId (string)** — set to:
+  This starts from `{}` and adds each field as a real value — `subject` and
+  the HTML `content` are added via `addProperty`, which JSON-escapes them
+  automatically; `attachments` is the Select output dropped in as a real
+  array so `isInline` stays boolean; `recipient` is safe to concat (emails
+  carry no quotes). Add `cc`/`replyTo` with additional `addProperty` calls
+  if a future source uses them (promo announcements don't).
+
+**Step 3 — Send an HTTP request** (same jotform.noreply connection),
+renamed **Send draft**.
+- *Method:* `POST`
+- *Uri* (fx expression): `concat('/v1.0/me/messages/', body('Create_draft')?['id'], '/send')`
+- *Body:* empty.
+
+### Confirm + result tracking
+
+Keep the existing confirm step
+(`POST /forms/internal/api/email-queue/confirm`, body `{claim_id, results}`).
+The two Append-to-array actions build each `results` entry. Because there
+are now TWO actions that can fail (Create draft AND Send draft), wire the
+failure-path Append's **Configure run after** on **Send draft** to include
+**is skipped** alongside **has failed** / **has timed out** — a Create-draft
+failure skips Send draft, and without "is skipped" the row is never
+confirmed failed and silently stalls instead of retrying.
+
+- Success append Value (fx):
   ```
-  @if(item()?['is_inline'], item()?['content_id'], null)
+  json(concat('{"id":"', items('Apply_to_each')?['id'], '","status":"sent"}'))
+  ```
+- Failure append Value (fx) — pulls the error from whichever action failed:
+  ```
+  json(concat('{"id":"', items('Apply_to_each')?['id'], '","status":"failed","error":', if(empty(coalesce(body('Send_draft'), body('Create_draft'))), '"unknown error"', concat('"', replace(replace(string(coalesce(body('Send_draft'), body('Create_draft'))), '\\', '\\\\'), '"', '\\"'), '"')), '}'))
   ```
 
-The existing `Name` / `ContentBytes` / `ContentType` mappings stay
-unchanged.
+**Why create-draft-then-send (not a single sendMail).** `/me/sendMail`
+and `/users/{id}/sendMail` are NOT supported segments on the Office 365
+Outlook connector's "Send an HTTP request" action — only `messages`
+(draft) is. So inline images require the two-call draft-then-send pattern.
 
-**Behavior on a partially-widened flow.** If the operator has not yet
-edited PA, `is_inline` + `content_id` are just JSONB keys PA never
-reads; Send Email V2 treats every attachment as a regular attachment.
-The recipient gets the body HTML (with `<img src="cid:...">` that
-won't resolve — Outlook shows a broken-image placeholder, Gmail just
-hides it) AND the same image as a downloadable attachment. Not pretty,
-but the announcement still arrives. After PA is edited the
-broken-image placeholder disappears and the image renders embedded in
-the body.
+### Attachment filenames
 
-**Recipient client coverage.** CID inline attachments are the standard
-embed mechanism for transactional email and render in every modern
-client we support: Outlook desktop 365 / 2019 / 2016, Outlook on the
-web, Gmail (web + iOS + Android), Apple Mail (macOS + iOS), Yahoo,
-default Android Mail. The `<img>` is hidden if the attachment
-parsing fails (e.g., very old clients) — no broken-image marker.
+Materials are stored in R2 with the real extension on `r2_key`
+(`promo-materials/{promoId}/{materialId}.{ext}`), but the operator-entered
+material `name` often has none (e.g. "Summer Flyer"). A downloaded
+attachment with no extension opens fine in Outlook-on-the-web (it falls back
+to the MIME type) but fails on **iOS Outlook** with "file format is not
+supported" (it keys the handler off the filename extension).
+`buildOutboundEmailAttachmentsForAnnouncement` in
+`apps/promo-worker/src/handlers/announce.ts` now appends the `r2_key`
+extension to the filename when the name lacks it (`filenameWithExtension`),
+so the Select `name` value stays a plain `item()?['filename']` — no PA-side
+extension handling needed. **Requires a promo-worker redeploy.**
+
+**Recipient client coverage.** Graph CID inline attachments render
+embedded in every modern client: Outlook desktop 365 / 2019 / 2016,
+Outlook on the web, Gmail (web + iOS + Android), Apple Mail (macOS + iOS),
+Yahoo, default Android Mail — with no stray attachment icon (unlike the
+V2 cid-name hack).
 
 ## 7. Known limitations / v2 candidates
 
