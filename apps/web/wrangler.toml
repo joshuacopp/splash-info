@@ -32,10 +32,13 @@ compatibility_flags = ["nodejs_compat"]
 # that table.
 routes = [
   { pattern = "staging.splashcarwashes.info/*", zone_name = "splashcarwashes.info" },
-  # === CUTOVER PHASE A — uncomment the line(s) below + push at the flip window ===
-  # (ROLLED BACK 2026-06-11: apps/web catch-all must be bound LAST, after every
-  #  live worker carve — esp. signup — is on the apex, or it 404s those paths.)
-  # { pattern = "splashcarwashes.info/*", zone_name = "splashcarwashes.info" }
+  # === CUTOVER PHASE A — LIVE (2026-06-11 re-flip) ===
+  # Safe this time: signup, /claims/*, /claims-api/*, dashboard /api/*, sysadmin
+  # /sysadmin/api/*, /pertrack/* are all EXACT-host on their workers, so they
+  # out-rank this exact-host /* on path specificity and keep serving. Only the
+  # dead wildcard legacy routes (/admin*, /manage*, /fixit*) lose to this — all
+  # fine (apps/web owns /admin; the others were never in production).
+  { pattern = "splashcarwashes.info/*", zone_name = "splashcarwashes.info" }
 ]
 
 # Service bindings (Brief 17) — apps/web SSR helpers call sibling workers
