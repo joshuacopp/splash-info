@@ -17,9 +17,10 @@ workers_dev = true
 # nothing routes to the apex; staging keeps working unchanged.
 routes = [
   { pattern = "staging.splashcarwashes.info/sysadmin/api/*", zone_name = "splashcarwashes.info" },
-  # === CUTOVER PHASE A — uncomment the line(s) below + push at the flip window ===
-  # (ROLLED BACK 2026-06-11 — re-flip with apps/web catch-all bound LAST.)
-  # { pattern = "splashcarwashes.info/sysadmin/api/*", zone_name = "splashcarwashes.info" }
+  # === CUTOVER §5 forward path (2026-06-11): admin-API carve LIVE on apex ===
+  # Exact-host → survives apps/web's future /* catch-all. Matches live CF state
+  # (already bound during Phase A; repo now reconciled). apps/web /* bound LAST.
+  { pattern = "splashcarwashes.info/sysadmin/api/*", zone_name = "splashcarwashes.info" }
 ]
 
 # Bindings:
