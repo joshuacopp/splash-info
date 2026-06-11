@@ -45,10 +45,11 @@ routes = [
   { pattern = "staging.splashcarwashes.info/manage/api/*", zone_name = "splashcarwashes.info" },
   { pattern = "staging.splashcarwashes.info/claims-api/*", zone_name = "splashcarwashes.info" },
   { pattern = "staging.splashcarwashes.info/claims/*",     zone_name = "splashcarwashes.info" },
-  # === CUTOVER PHASE A — ACTIVATED 2026-06-11 ===
-  { pattern = "splashcarwashes.info/manage/api/*", zone_name = "splashcarwashes.info" },
-  { pattern = "splashcarwashes.info/claims-api/*", zone_name = "splashcarwashes.info" },
-  { pattern = "splashcarwashes.info/claims/*",     zone_name = "splashcarwashes.info" }
+  # === CUTOVER PHASE A — uncomment the line(s) below + push at the flip window ===
+  # (ROLLED BACK 2026-06-11 — re-flip with apps/web catch-all bound LAST.)
+  # { pattern = "splashcarwashes.info/manage/api/*", zone_name = "splashcarwashes.info" },
+  # { pattern = "splashcarwashes.info/claims-api/*", zone_name = "splashcarwashes.info" },
+  # { pattern = "splashcarwashes.info/claims/*",     zone_name = "splashcarwashes.info" }
 ]
 
 # Bindings:
@@ -139,7 +140,7 @@ routes = [
 #                          description. Today apps/web is on workers.dev / staging;
 #                          flip to the prod hostname at cutover.
 [vars]
-MAINTAINX_MODE = "production"  # CUTOVER PHASE A ACTIVATED 2026-06-11 (was "test")
+MAINTAINX_MODE = "test"  # CUTOVER PHASE A: change to "production" at flip (rolled back 2026-06-11)
 MAINTAINX_BASE_URL = "https://api.getmaintainx.com/v1"
 APPS_WEB_BASE_URL = "https://splashcarwashes.info"
 # Brief 102 (2026-05-11): incidents inbox copied on every customer claim

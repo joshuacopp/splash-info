@@ -26,8 +26,9 @@ workers_dev = true
 # nothing routes to the apex; staging keeps working unchanged.
 routes = [
   { pattern = "staging.splashcarwashes.info/pertrack/*", zone_name = "splashcarwashes.info" },
-  # === CUTOVER PHASE A — ACTIVATED 2026-06-11 ===
-  { pattern = "splashcarwashes.info/pertrack/*", zone_name = "splashcarwashes.info" }
+  # === CUTOVER PHASE A — uncomment the line(s) below + push at the flip window ===
+  # (ROLLED BACK 2026-06-11 — re-flip with apps/web catch-all bound LAST.)
+  # { pattern = "splashcarwashes.info/pertrack/*", zone_name = "splashcarwashes.info" }
 ]
 
 # Bindings:

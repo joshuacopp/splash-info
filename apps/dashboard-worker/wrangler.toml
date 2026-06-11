@@ -34,11 +34,12 @@ routes = [
   { pattern = "staging.splashcarwashes.info/api/logout",       zone_name = "splashcarwashes.info" },
   { pattern = "staging.splashcarwashes.info/api/forced-reset", zone_name = "splashcarwashes.info" },
   { pattern = "staging.splashcarwashes.info/api/me",           zone_name = "splashcarwashes.info" },
-  # === CUTOVER PHASE A — ACTIVATED 2026-06-11 ===
-  { pattern = "splashcarwashes.info/api/login",        zone_name = "splashcarwashes.info" },
-  { pattern = "splashcarwashes.info/api/logout",       zone_name = "splashcarwashes.info" },
-  { pattern = "splashcarwashes.info/api/forced-reset", zone_name = "splashcarwashes.info" },
-  { pattern = "splashcarwashes.info/api/me",           zone_name = "splashcarwashes.info" }   # (gap fix — Header /api/me, READINESS §2.2)
+  # === CUTOVER PHASE A — uncomment the line(s) below + push at the flip window ===
+  # (ROLLED BACK 2026-06-11 — re-flip with apps/web catch-all bound LAST.)
+  # { pattern = "splashcarwashes.info/api/login",        zone_name = "splashcarwashes.info" },
+  # { pattern = "splashcarwashes.info/api/logout",       zone_name = "splashcarwashes.info" },
+  # { pattern = "splashcarwashes.info/api/forced-reset", zone_name = "splashcarwashes.info" },
+  # { pattern = "splashcarwashes.info/api/me",           zone_name = "splashcarwashes.info" }   # (gap fix — Header /api/me, READINESS §2.2)
 ]
 
 # Bindings (set with `wrangler secret put`):
