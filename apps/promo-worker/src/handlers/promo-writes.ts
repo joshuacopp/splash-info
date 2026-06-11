@@ -45,12 +45,17 @@ const USER_ID_RE = PROMO_ID_RE;
 const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const LOCATION_CODE_RE = /^[a-z0-9_-]+$/;
 
+// Brief 167 — `Removing` inserted between `Live` and `Ended` for the
+// per-site teardown phase. The status PATCH gate accepts the same
+// {super_admin, it, marketing} set; flipping Live → Removing → Ended is
+// permitted by construction (no transition-graph enforcement).
 const STATUSES = [
   "Submitted",
   "Scoped",
   "Building",
   "Tested",
   "Live",
+  "Removing",
   "Ended"
 ] as const;
 type Status = (typeof STATUSES)[number];
@@ -924,12 +929,25 @@ export async function handleRemoveAssignee(
 // =============================================================================
 // PATCH /promo/api/promos/{id}/locations/{locationCode}
 // =============================================================================
+//
+// Brief 167 — widened to accept `isRemoved` alongside `isComplete`. Either
+// or both may be sent; at least one is required. The two flags track
+// independent phases (Build vs. Removal) of the same site row, so toggling
+// removal does NOT alter the build-phase columns and vice versa.
+//
+// `isRemoved = false` (un-removing) ALSO clears `removal_notified_at` +
+// `removal_notified_by` so a prior removal notification doesn't linger
+// against a now-non-removed row (a follow-up Re-mark + Notify will fire
+// fresh). The build-phase un-complete path does NOT clear `notified_at` —
+// Brief 164 shipped after Brief 155 and never owned both halves; Brief 167
+// owns both phases so does the symmetric clear on the removal side.
 
 interface PatchLocationBody {
   isComplete?: unknown;
+  isRemoved?: unknown;
 }
 
-const PATCH_LOCATION_KNOWN_KEYS = new Set(["isComplete"]);
+const PATCH_LOCATION_KNOWN_KEYS = new Set(["isComplete", "isRemoved"]);
 
 export async function handlePatchLocationProgress(
   req: Request,
@@ -968,7 +986,13 @@ export async function handlePatchLocationProgress(
     }
   }
 
-  if (typeof body.isComplete !== "boolean") {
+  // Validate each present flag.
+  const hasIsComplete = "isComplete" in body;
+  const hasIsRemoved = "isRemoved" in body;
+  if (!hasIsComplete && !hasIsRemoved) {
+    return jsonError(400, "bad_request");
+  }
+  if (hasIsComplete && typeof body.isComplete !== "boolean") {
     return new Response(
       JSON.stringify({
         error: "bad_request",
@@ -977,14 +1001,49 @@ export async function handlePatchLocationProgress(
       { status: 400, headers: { "Content-Type": "application/json" } }
     );
   }
-  const isComplete = body.isComplete;
+  if (hasIsRemoved && typeof body.isRemoved !== "boolean") {
+    return new Response(
+      JSON.stringify({
+        error: "bad_request",
+        fields: { isRemoved: "invalid" }
+      }),
+      { status: 400, headers: { "Content-Type": "application/json" } }
+    );
+  }
+  const isComplete = hasIsComplete ? (body.isComplete as boolean) : null;
+  const isRemoved = hasIsRemoved ? (body.isRemoved as boolean) : null;
   const nowIso = new Date().toISOString();
+
+  // Build the PATCH body only with the fields actually requested.
+  const patchBody: Record<string, unknown> = {};
+  if (isComplete !== null) {
+    patchBody.is_complete = isComplete;
+    patchBody.completed_at = isComplete ? nowIso : null;
+    patchBody.completed_by = isComplete ? gate.session.userId : null;
+  }
+  if (isRemoved !== null) {
+    patchBody.is_removed = isRemoved;
+    patchBody.removed_at = isRemoved ? nowIso : null;
+    patchBody.removed_by = isRemoved ? gate.session.userId : null;
+    // Un-marking a site removed means it's no longer torn down — any
+    // prior "special removed" email is stale. Clear both stamps so the
+    // FAB re-treats the site as eligible after a future re-mark.
+    if (!isRemoved) {
+      patchBody.removal_notified_at = null;
+      patchBody.removal_notified_by = null;
+    }
+  }
 
   type PatchedLocation = {
     location_code: string;
     is_complete: boolean;
     completed_at: string | null;
     completed_by: string | null;
+    is_removed: boolean;
+    removed_at: string | null;
+    removed_by: string | null;
+    removal_notified_at: string | null;
+    removal_notified_by: string | null;
   };
   let updated: PatchedLocation | null = null;
   try {
@@ -998,11 +1057,7 @@ export async function handlePatchLocationProgress(
         "Content-Type": "application/json",
         Prefer: "return=representation"
       },
-      body: JSON.stringify({
-        is_complete: isComplete,
-        completed_at: isComplete ? nowIso : null,
-        completed_by: isComplete ? gate.session.userId : null
-      })
+      body: JSON.stringify(patchBody)
     });
     if (!resp.ok) {
       const errText = await resp.text().catch(() => "");
@@ -1027,18 +1082,33 @@ export async function handlePatchLocationProgress(
     );
   }
 
-  await logActivity(
-    env,
-    promoId,
-    gate.session.userId,
-    isComplete ? "location_marked_complete" : "location_marked_incomplete",
-    { locationCode }
-  );
+  // Per-field activity rows. Both phases can emit in a single PATCH
+  // (rare but allowed) — one row per side.
+  if (isComplete !== null) {
+    await logActivity(
+      env,
+      promoId,
+      gate.session.userId,
+      isComplete ? "location_marked_complete" : "location_marked_incomplete",
+      { locationCode }
+    );
+  }
+  if (isRemoved !== null) {
+    await logActivity(
+      env,
+      promoId,
+      gate.session.userId,
+      isRemoved ? "location_marked_removed" : "location_marked_unremoved",
+      { locationCode }
+    );
+  }
 
   return jsonResponse({
     ok: true,
     locationCode: updated.location_code,
     isComplete: updated.is_complete,
-    completedAt: updated.completed_at
+    completedAt: updated.completed_at,
+    isRemoved: updated.is_removed,
+    removedAt: updated.removed_at
   });
 }

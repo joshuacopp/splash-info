@@ -23,6 +23,13 @@ import type { Env } from "../index.js";
  * Brief 164 added `site_notified` — operator must extend the CHECK
  * constraint allow-list before this value will accept INSERTs (see the
  * brief's Phase 4.1 SQL block).
+ *
+ * Brief 167 added the three teardown-phase entries:
+ *   - `location_marked_removed`      — IT marked the site torn down
+ *   - `location_marked_unremoved`    — IT un-marked the site torn down
+ *   - `removal_site_notified`        — per-site "special ended" email fired
+ * The operator must extend the `promo_activity_log` CHECK constraint
+ * allow-list to accept these inserts (see Brief 167 Phase 1.3 SQL).
  */
 export type PromoActivityType =
   | "created"
@@ -37,7 +44,10 @@ export type PromoActivityType =
   | "location_marked_complete"
   | "location_marked_incomplete"
   | "announcement_sent"
-  | "site_notified";
+  | "site_notified"
+  | "location_marked_removed"
+  | "location_marked_unremoved"
+  | "removal_site_notified";
 
 /**
  * Insert one `promo_activity_log` row. Fail-soft: logs and returns rather

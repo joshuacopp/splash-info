@@ -21,6 +21,9 @@
 //   ptp_updated                   (Brief 156)
 //   announcement_sent             (Brief 157)
 //   site_notified                 (Brief 164)
+//   location_marked_removed       (Brief 167)
+//   location_marked_unremoved     (Brief 167)
+//   removal_site_notified         (Brief 167)
 
 import type { PromoActivityEntry } from "../_lib/types";
 import { shortenUserId } from "../_lib/user-lookup";
@@ -129,6 +132,23 @@ function renderHeadline(entry: PromoActivityEntry): string {
         ? `Notified ${loc}${recipients}`
         : `Site notified${recipients}`;
     }
+    case "location_marked_removed":
+      return d.locationCode
+        ? `Marked ${d.locationCode} removed`
+        : "Marked removed";
+    case "location_marked_unremoved":
+      return d.locationCode
+        ? `Unmarked ${d.locationCode} removed`
+        : "Unmarked removed";
+    case "removal_site_notified": {
+      const loc = d.locationCode ?? "";
+      const rc = d.recipientCount;
+      const recipients =
+        rc != null ? ` — ${rc} recipient${rc === 1 ? "" : "s"}` : "";
+      return loc
+        ? `Notified ${loc} of removal${recipients}`
+        : `Removal site notified${recipients}`;
+    }
     default:
       return entry.activityType.replace(/_/g, " ");
   }
@@ -136,9 +156,14 @@ function renderHeadline(entry: PromoActivityEntry): string {
 
 function ActivityDot({ type }: { type: string }) {
   // Single color tier per category. Tailwind classes inline so we can
-  // statically extract them.
+  // statically extract them. Brief 167: removal-phase rows tinted orange
+  // to distinguish from the build-phase emerald (location_marked_complete
+  // / location_marked_incomplete) and the build-notify sudsy-blue.
   let cls = "bg-splash-navy/30";
-  if (type.startsWith("status_")) cls = "bg-splash-blue";
+  if (type === "location_marked_removed" || type === "location_marked_unremoved")
+    cls = "bg-orange-500";
+  else if (type === "removal_site_notified") cls = "bg-orange-500";
+  else if (type.startsWith("status_")) cls = "bg-splash-blue";
   else if (type.startsWith("assignment_")) cls = "bg-sudsy-blue";
   else if (type.startsWith("location_")) cls = "bg-emerald-500";
   else if (type.startsWith("material_")) cls = "bg-amber-500";

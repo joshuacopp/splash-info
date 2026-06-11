@@ -21,7 +21,9 @@ import StatusEditor from "../../_components/StatusEditor";
 import TicketFieldsForm from "../../_components/TicketFieldsForm";
 import AssigneesEditor from "../../_components/AssigneesEditor";
 import LocationProgressToggleable from "../../_components/LocationProgressToggleable";
+import LocationRemovalToggleable from "../../_components/LocationRemovalToggleable";
 import NotifyCompletedSitesButton from "../../_components/NotifyCompletedSitesButton";
+import NotifyRemovedSitesButton from "../../_components/NotifyRemovedSitesButton";
 import { lookupUserNames } from "../../_lib/user-lookup";
 import { formatEst } from "../../../jotform/_lib/format-est";
 
@@ -58,6 +60,21 @@ export default async function PromoTicketPage({ params }: PageProps) {
   const goLiveFmt = formatEst(
     `${promo.requestedGoLiveDate}T00:00:00Z`
   ).absolute;
+
+  // Brief 167 — phase-aware UI gating. The Removal card only appears once
+  // the promo has gone Live (nothing to tear down before then); the build-
+  // phase FAB hides once status crosses into `Removing`/`Ended` so the
+  // removal-phase FAB owns the bottom-right unambiguously. The two FABs
+  // never render simultaneously — operator never has to choose between
+  // them or stack-coordinate them.
+  const isRemovalPhase =
+    promo.status === "Removing" || promo.status === "Ended";
+  const showRemovalCard =
+    promo.status === "Live" ||
+    promo.status === "Removing" ||
+    promo.status === "Ended";
+  const showBuildFab = !isRemovalPhase;
+  const showRemovalFab = isRemovalPhase;
 
   return (
     <section className="mx-auto w-full max-w-[1000px] px-5 py-9">
@@ -150,17 +167,46 @@ export default async function PromoTicketPage({ params }: PageProps) {
         />
       </Card>
 
-      {/* Brief 164 — "Notify completed sites" FAB. Rendered outside the
-          card grid so its `position: fixed` styling floats independently
-          of scroll. The list of eligible sites — complete AND not yet
-          notified — is computed server-side so the button's disabled
-          state is correct on first paint. */}
-      <NotifyCompletedSitesButton
-        promoId={promo.id}
-        eligibleSites={promo.locations
-          .filter((l) => l.isComplete && l.notifiedAt === null)
-          .map((l) => l.locationCode)}
-      />
+      {/* Brief 167 — Removal phase card. Only renders once the promo is
+          past Live so the build phase has actually run. Marketing operators
+          flip `Live → Removing` via the StatusEditor; from there the per-
+          site checklist + "Notify removed sites" FAB drive the teardown. */}
+      {showRemovalCard ? (
+        <Card title={`Per-location removal (${promo.locations.length})`}>
+          <LocationRemovalToggleable
+            promoId={promo.id}
+            locations={promo.locations}
+          />
+        </Card>
+      ) : null}
+
+      {/* Brief 164 — "Notify completed sites" FAB. Brief 167 hides this
+          FAB once status is `Removing`/`Ended` — the build phase is done
+          and showing two FABs would only invite mis-clicks. The list of
+          eligible sites — complete AND not yet notified — is computed
+          server-side so the button's disabled state is correct on first
+          paint. */}
+      {showBuildFab ? (
+        <NotifyCompletedSitesButton
+          promoId={promo.id}
+          eligibleSites={promo.locations
+            .filter((l) => l.isComplete && l.notifiedAt === null)
+            .map((l) => l.locationCode)}
+        />
+      ) : null}
+
+      {/* Brief 167 — "Notify removed sites" FAB. Only the removal-phase
+          FAB renders once status is `Removing`/`Ended`. Mutually exclusive
+          with the build-phase FAB above to avoid overlap; documented
+          decision in the brief's Phase 7.6. */}
+      {showRemovalFab ? (
+        <NotifyRemovedSitesButton
+          promoId={promo.id}
+          eligibleSites={promo.locations
+            .filter((l) => l.isRemoved && l.removalNotifiedAt === null)
+            .map((l) => l.locationCode)}
+        />
+      ) : null}
     </section>
   );
 }

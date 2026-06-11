@@ -412,6 +412,11 @@ export interface PatchLocationProgressResponseData {
   locationCode: string;
   isComplete: boolean;
   completedAt: string | null;
+  /** Brief 167 — present on every response since both phases share the
+   *  endpoint. May reflect a value the caller did NOT set if the row was
+   *  previously toggled by another path. */
+  isRemoved?: boolean;
+  removedAt?: string | null;
 }
 
 export async function patchPromoLocationProgress(
@@ -423,6 +428,25 @@ export async function patchPromoLocationProgress(
     `/promo/api/promos/${encodeURIComponent(promoId)}/locations/${encodeURIComponent(locationCode)}`,
     "PATCH",
     { isComplete }
+  );
+}
+
+// ---- Location removal (Brief 167) --------------------------------------
+
+/**
+ * Toggle the per-location removal flag. Hits the same endpoint as
+ * `patchPromoLocationProgress` — the worker dispatches on the body's
+ * `isRemoved` key. Mirrors the build-phase helper for symmetry.
+ */
+export async function patchPromoLocationRemoval(
+  promoId: string,
+  locationCode: string,
+  isRemoved: boolean
+): Promise<WorkerWriteResult<PatchLocationProgressResponseData>> {
+  return writeJson<PatchLocationProgressResponseData>(
+    `/promo/api/promos/${encodeURIComponent(promoId)}/locations/${encodeURIComponent(locationCode)}`,
+    "PATCH",
+    { isRemoved }
   );
 }
 
@@ -619,6 +643,39 @@ export async function notifyCompletedSites(
 ): Promise<WorkerWriteResult<NotifyCompletedSitesResponseData>> {
   return writeJson<NotifyCompletedSitesResponseData>(
     `/promo/api/promos/${encodeURIComponent(promoId)}/notify-completed-sites`,
+    "POST",
+    body
+  );
+}
+
+// ---- Notify removed sites (Brief 167) ----------------------------------
+
+export interface NotifyRemovedSitesResponseData {
+  ok: true;
+  notifiedCount: number;
+  sites: Array<{
+    locationCode: string;
+    recipientCount: number;
+    removalNotifiedAt: string;
+  }>;
+  skippedCount: number;
+  failedLocations: string[];
+  message?: string;
+}
+
+export interface NotifyRemovedSitesBody {
+  note?: string;
+  /** Brief 166-style opt-in. Default false: site_email only. */
+  includeRm?: boolean;
+  includeRd?: boolean;
+}
+
+export async function notifyRemovedSites(
+  promoId: string,
+  body: NotifyRemovedSitesBody = {}
+): Promise<WorkerWriteResult<NotifyRemovedSitesResponseData>> {
+  return writeJson<NotifyRemovedSitesResponseData>(
+    `/promo/api/promos/${encodeURIComponent(promoId)}/notify-removed-sites`,
     "POST",
     body
   );

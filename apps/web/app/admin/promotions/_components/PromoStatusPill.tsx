@@ -1,11 +1,15 @@
-// Brief 158a — six-state status pill for promotions.
+// Brief 158a — seven-state status pill for promotions (Removing added at
+// Brief 167).
 //
-// Mirrors the mockup's color palette:
+// Color palette:
 //   Submitted  neutral gray   (waiting to be picked up)
 //   Scoped     sudsy blue     (IT has shape; pre-build)
-//   Building   amber          (in progress)
+//   Building   amber          (in progress, construction phase)
 //   Tested     teal           (QA pass)
 //   Live       green          (running)
+//   Removing   orange         (teardown in progress — Brief 167; distinct
+//                              from Building's amber and Ended's gray to
+//                              read as "active but winding down")
 //   Ended      muted gray     (concluded)
 
 import type { PromoStatus } from "../_lib/types";
@@ -21,6 +25,7 @@ const PALETTE: Record<PromoStatus, string> = {
   Building: "bg-amber-100 text-amber-800",
   Tested: "bg-teal-100 text-teal-800",
   Live: "bg-emerald-100 text-emerald-800",
+  Removing: "bg-orange-100 text-orange-800",
   Ended: "bg-gray-200 text-gray-600"
 };
 

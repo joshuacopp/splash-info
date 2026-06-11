@@ -59,12 +59,14 @@ const PROMO_TYPES_REQUIRING_POS_BEHAVIOR = new Set<PromoType>([
 const PRIORITIES = ["High", "Medium", "Low"] as const;
 type Priority = (typeof PRIORITIES)[number];
 
+// Brief 167 — `Removing` inserted between `Live` and `Ended` (teardown phase).
 const STATUSES = [
   "Submitted",
   "Scoped",
   "Building",
   "Tested",
   "Live",
+  "Removing",
   "Ended"
 ] as const;
 type Status = (typeof STATUSES)[number];
@@ -840,6 +842,12 @@ interface PromoDetailRow {
     completed_by: string | null;
     notified_at: string | null;
     notified_by: string | null;
+    // Brief 167 — removal phase mirror columns.
+    is_removed: boolean;
+    removed_at: string | null;
+    removed_by: string | null;
+    removal_notified_at: string | null;
+    removal_notified_by: string | null;
   }> | null;
   materials: Array<{
     id: string;
@@ -919,6 +927,12 @@ interface PromoDetailResponse {
     completedBy: string | null;
     notifiedAt: string | null;
     notifiedBy: string | null;
+    // Brief 167 — removal phase mirror.
+    isRemoved: boolean;
+    removedAt: string | null;
+    removedBy: string | null;
+    removalNotifiedAt: string | null;
+    removalNotifiedBy: string | null;
   }>;
   materials: Array<{
     id: string;
@@ -977,7 +991,8 @@ async function fetchPromoDetail(
       // happen post-create but worth being defensive on) doesn't 404 the
       // promo itself.
       "ticket:promo_tickets!left(ready_by_date,roadblocks,internal_note,created_at,updated_at,ready_by_updated_at,ready_by_updated_by,assignees:promo_ticket_assignees(user_id,assigned_at,assigned_by))",
-      "locations:promo_locations(location_code,is_complete,completed_at,completed_by,notified_at,notified_by)",
+      // Brief 167 — embed widened with the removal-phase mirror columns.
+      "locations:promo_locations(location_code,is_complete,completed_at,completed_by,notified_at,notified_by,is_removed,removed_at,removed_by,removal_notified_at,removal_notified_by)",
       "materials:promo_materials(id,name,kind,r2_key,file_mime,file_size_bytes,uploaded_at,uploaded_by)",
       "ptp:promo_ptp(purpose,tools,process,updated_at,updated_by)",
       // Activity is bounded to the latest 20 entries; details column is
@@ -1082,7 +1097,13 @@ async function fetchPromoDetail(
       completedAt: l.completed_at,
       completedBy: l.completed_by,
       notifiedAt: l.notified_at,
-      notifiedBy: l.notified_by
+      notifiedBy: l.notified_by,
+      // Brief 167 — removal phase mirror.
+      isRemoved: l.is_removed,
+      removedAt: l.removed_at,
+      removedBy: l.removed_by,
+      removalNotifiedAt: l.removal_notified_at,
+      removalNotifiedBy: l.removal_notified_by
     })),
     materials: (row.materials ?? []).map((m) => ({
       id: m.id,

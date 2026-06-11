@@ -13,7 +13,9 @@ import {
   addPromoAssignee,
   removePromoAssignee,
   patchPromoLocationProgress,
-  notifyCompletedSites
+  patchPromoLocationRemoval,
+  notifyCompletedSites,
+  notifyRemovedSites
 } from "../_lib/worker-fetch";
 import {
   toActionResult,
@@ -164,6 +166,42 @@ export async function toggleLocationProgressAction(
   };
 }
 
+/**
+ * Brief 167 — toggle the per-location removal flag. Mirrors
+ * `toggleLocationProgressAction` (free function — used by the optimistic
+ * UI in `LocationRemovalToggleable`, NOT a `(prev, formData)` form action).
+ *
+ * Un-marking a site removed ALSO clears the worker-side
+ * `removal_notified_at` so the FAB re-treats the site as eligible after a
+ * future re-mark. The dedup index in `outbound_emails` still suppresses
+ * dup queue rows unless the operator also deletes the prior queue row.
+ */
+export async function toggleLocationRemovalAction(
+  promoId: string,
+  locationCode: string,
+  isRemoved: boolean
+): Promise<ActionResult> {
+  if (!promoId) return { ok: false, error: "Missing promo id." };
+  if (!LOCATION_CODE_RE.test(locationCode)) {
+    return { ok: false, error: "Invalid location code." };
+  }
+
+  const result = await patchPromoLocationRemoval(
+    promoId,
+    locationCode,
+    isRemoved
+  );
+  if (!result.ok) return toActionResult(result, "");
+
+  revalidatePromoPaths({ promoId, includeList: true, includeQueue: true });
+  return {
+    ok: true,
+    message: isRemoved
+      ? `Marked ${locationCode} removed.`
+      : `Unmarked ${locationCode} removed.`
+  };
+}
+
 const NOTE_MAX_LEN = 500;
 
 /**
@@ -215,6 +253,66 @@ export async function notifyCompletedSitesAction(
   } else {
     const parts: string[] = [
       `Notified ${data.notifiedCount} site${data.notifiedCount === 1 ? "" : "s"}.`
+    ];
+    if (skipped > 0) {
+      parts.push(`Skipped ${skipped} (no contact email on file).`);
+    }
+    if (failed > 0) {
+      parts.push(`Failed ${failed}: ${data.failedLocations.join(", ")}.`);
+    }
+    message = parts.join(" ");
+  }
+  return { ok: true, message, data };
+}
+
+/**
+ * Brief 167 — "Notify removed sites" FAB action. Symmetric twin of
+ * `notifyCompletedSitesAction`. Fires one branded email per recipient per
+ * eligible removed-site (sites with `is_removed = true AND
+ * removalNotifiedAt === null`). Same Brief 166 RM/RD opt-in pattern as the
+ * build-phase notify.
+ *
+ * Returns ActionResult with `data: {notifiedCount, sites, skippedCount,
+ * failedLocations, message?}` so the modal can render the breakdown and
+ * surface partial failures as an amber sub-banner.
+ */
+export async function notifyRemovedSitesAction(
+  _prev: ActionResult | null,
+  formData: FormData
+): Promise<ActionResult> {
+  const promoId = asString(formData.get("promoId")).trim();
+  if (!promoId) return { ok: false, error: "Missing promo id." };
+
+  const noteRaw = asString(formData.get("note"));
+  const note = noteRaw.trim();
+  if (note.length > NOTE_MAX_LEN) {
+    return {
+      ok: false,
+      error: `Note is too long (max ${NOTE_MAX_LEN} chars).`
+    };
+  }
+
+  const includeRm = asString(formData.get("includeRm")) === "on";
+  const includeRd = asString(formData.get("includeRd")) === "on";
+
+  const body: { note?: string; includeRm?: boolean; includeRd?: boolean } = {};
+  if (note) body.note = note;
+  if (includeRm) body.includeRm = true;
+  if (includeRd) body.includeRd = true;
+
+  const result = await notifyRemovedSites(promoId, body);
+  if (!result.ok) return toActionResult(result, "");
+
+  revalidatePromoPaths({ promoId, includeList: true, includeQueue: true });
+  const data = result.data;
+  const failed = data.failedLocations.length;
+  const skipped = data.skippedCount;
+  let message: string;
+  if (data.notifiedCount === 0 && failed === 0 && skipped === 0) {
+    message = data.message || "No new sites to notify.";
+  } else {
+    const parts: string[] = [
+      `Notified ${data.notifiedCount} site${data.notifiedCount === 1 ? "" : "s"} of removal.`
     ];
     if (skipped > 0) {
       parts.push(`Skipped ${skipped} (no contact email on file).`);

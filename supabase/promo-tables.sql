@@ -36,7 +36,7 @@ CREATE TABLE IF NOT EXISTS promotions (
   requested_go_live_date   date NOT NULL,
   priority                 text NOT NULL CHECK (priority IN ('High', 'Medium', 'Low')),
   status                   text NOT NULL DEFAULT 'Submitted'
-                             CHECK (status IN ('Submitted', 'Scoped', 'Building', 'Tested', 'Live', 'Ended')),
+                             CHECK (status IN ('Submitted', 'Scoped', 'Building', 'Tested', 'Live', 'Removing', 'Ended')),  -- Brief 167: 'Removing' inserted between 'Live' and 'Ended' for the per-site teardown phase
   created_at               timestamptz NOT NULL DEFAULT now(),
   created_by               uuid NOT NULL,                                        -- auth.users.id
   updated_at               timestamptz NOT NULL DEFAULT now(),
@@ -60,10 +60,25 @@ CREATE TABLE IF NOT EXISTS promo_locations (
   is_complete     boolean NOT NULL DEFAULT false,
   completed_at    timestamptz,
   completed_by    uuid,                                                          -- auth.users.id
+  -- Brief 164 — per-site build notification ("IT changes are live").
+  notified_at         timestamptz,                                               -- when the build-phase email was sent; NULL = never notified
+  notified_by         uuid,                                                      -- auth.users.id; NULL = never notified
+  -- Brief 167 — per-site teardown tracking + removal notification.
+  is_removed          boolean NOT NULL DEFAULT false,                            -- IT marked the site torn down (promo removed from POS)
+  removed_at          timestamptz,
+  removed_by          uuid,                                                      -- auth.users.id
+  removal_notified_at timestamptz,                                               -- when the per-site "special removed" email was sent; NULL = never
+  removal_notified_by uuid,                                                      -- which IT user fired the removal notify; NULL = never
   PRIMARY KEY (promo_id, location_code)
 );
 CREATE INDEX IF NOT EXISTS idx_promo_locations_location_code  ON promo_locations (location_code);
 CREATE INDEX IF NOT EXISTS idx_promo_locations_incomplete     ON promo_locations (promo_id) WHERE is_complete = false;
+-- Brief 164 — build-notify eligibility (one-row index scan on FAB click).
+CREATE INDEX IF NOT EXISTS idx_promo_locations_complete_unnotified
+  ON promo_locations (promo_id) WHERE is_complete = true AND notified_at IS NULL;
+-- Brief 167 — removal-notify eligibility (one-row index scan on FAB click).
+CREATE INDEX IF NOT EXISTS idx_promo_locations_removed_unnotified
+  ON promo_locations (promo_id) WHERE is_removed = true AND removal_notified_at IS NULL;
 
 -- 3. promo_tickets — 1:1 with promotions. Split from `promotions`
 --    because the audience differs (IT-only fields like internal_note
@@ -177,7 +192,11 @@ CREATE TABLE IF NOT EXISTS promo_activity_log (
     'ptp_updated',
     'location_marked_complete',
     'location_marked_incomplete',
-    'announcement_sent'
+    'announcement_sent',
+    'site_notified',              -- Brief 164
+    'location_marked_removed',    -- Brief 167
+    'location_marked_unremoved',  -- Brief 167
+    'removal_site_notified'       -- Brief 167
   )),
   details        jsonb NOT NULL DEFAULT '{}'::jsonb,
   created_at     timestamptz NOT NULL DEFAULT now()

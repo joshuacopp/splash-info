@@ -20,18 +20,24 @@ export type PromoStatus =
   | "Building"
   | "Tested"
   | "Live"
+  | "Removing"
   | "Ended";
 
 export type PromoPriority = "High" | "Medium" | "Low";
 
 export type PromoType = "Same" | "BOGO" | "Add-ons" | "Discount" | "Other";
 
+// Brief 167 — `Removing` is the per-site teardown phase between `Live`
+// and `Ended` (mirrors `Building` on the construction side). IT marks
+// each site torn down + notifies the field; status flips to `Ended`
+// manually once teardown is complete.
 export const PROMO_STATUSES: readonly PromoStatus[] = [
   "Submitted",
   "Scoped",
   "Building",
   "Tested",
   "Live",
+  "Removing",
   "Ended"
 ];
 
@@ -103,6 +109,18 @@ export interface PromoLocation {
   notifiedAt: string | null;
   /** Brief 164 — which IT user fired the per-site notification. */
   notifiedBy: string | null;
+  /** Brief 167 — IT marked this site torn down (special removed from POS). */
+  isRemoved: boolean;
+  /** Brief 167 — when the site was marked removed. NULL = not removed. */
+  removedAt: string | null;
+  /** Brief 167 — which IT user marked the site removed. NULL = not removed. */
+  removedBy: string | null;
+  /** Brief 167 — when the per-site "special ended" email was sent.
+   *  NULL = never notified. Eligible for the removal-FAB fire iff
+   *  `isRemoved === true && removalNotifiedAt === null`. */
+  removalNotifiedAt: string | null;
+  /** Brief 167 — which IT user fired the per-site removal notification. */
+  removalNotifiedBy: string | null;
 }
 
 export interface PromoMaterial {

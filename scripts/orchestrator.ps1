@@ -32,12 +32,17 @@
     headless mode but is safer for first-time testing).
 
 .EXAMPLE
-    pwsh scripts/orchestrator.ps1
-    Start the daemon. Polls every 10s. Stop with Ctrl+C.
+    .\scripts\orchestrator.ps1
+    Start the daemon (Windows PowerShell 5.1 — this is the canonical
+    command we use). Polls every 10s. Stop with Ctrl+C.
 
 .EXAMPLE
-    pwsh scripts/orchestrator.ps1 -DryRun
+    .\scripts\orchestrator.ps1 -DryRun
     Print what would happen without invoking claude. For testing.
+
+.EXAMPLE
+    powershell -ExecutionPolicy Bypass -File .\scripts\orchestrator.ps1
+    Use this form if the session blocks script execution.
 #>
 
 [CmdletBinding()]

@@ -1230,14 +1230,19 @@ URL-based — service bindings don't apply to those.
   Brief 159 (sysadmin "Set Promo Role" card so role grants live
   in-UI rather than SQL-only).
 
-- **Promotions feature** (Briefs 153–158b) - End-to-end "plan,
-  scope, and run a promotional campaign" flow on the internal
-  tooling. The tenth monorepo worker (`splash-promo`) plus four
-  apps/web routes under `/admin/promotions/*` deliver the
-  cross-team workflow surfaced in the operator's mockup. Roles
-  live in `auth_unified.promo_role` (`super_admin | it | marketing
-  | ops | null`) and surface to apps/web via `Session.promoRole`
-  (Brief 153). The flow:
+- **Promotions feature** (Briefs 153–158b, extended through Brief
+  167) - End-to-end "plan, scope, run, and tear down a promotional
+  campaign" flow on the internal tooling. The tenth monorepo worker
+  (`splash-promo`) plus four apps/web routes under
+  `/admin/promotions/*` deliver the cross-team workflow surfaced in
+  the operator's mockup. Roles live in `auth_unified.promo_role`
+  (`super_admin | it | marketing | ops | null`) and surface to
+  apps/web via `Session.promoRole` (Brief 153). Lifecycle (seven
+  statuses as of Brief 167):
+  `Submitted → Scoped → Building → Tested → Live → Removing → Ended`.
+  `Removing` is the per-site teardown phase between `Live` and
+  `Ended` — symmetric to `Building` on the construction side. The
+  flow:
   1. **Marketing / IT / super_admin submits a promo** via
      `/admin/promotions/new` (Brief 158b) → POST `/promo/api/promos`
      (Brief 154) → row lands in `promotions` with status `Submitted`,
@@ -1266,17 +1271,52 @@ URL-based — service bindings don't apply to those.
      queue and delivers (attachments inlined from `PROMO_FILES`
      R2 bucket via forms-worker's queue claim handler). PTP
      appends to the email body when opted in.
-  5. **End of campaign** — Marketing flips status to `Ended` via
-     the StatusEditor (marketing-tier widening on Brief 155's
-     status PATCH).
-  Role-by-role permission table:
-  | Role | List/detail | Create | Status PATCH | Ticket PATCH | Assign | Locations | Materials | PTP | Announce | IT queue |
-  |---|---|---|---|---|---|---|---|---|---|---|
-  | super_admin | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-  | it | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-  | marketing | ✓ | ✓ | ✓ | — | — | — | ✓ | ✓ | ✓ | — |
-  | ops | ✓ | — | — | — | — | — | — | — | — | — |
-  | null | — | — | — | — | — | — | — | — | — | — |
+  5. **Marketing wraps up announcements** for the campaign.
+  6. **Teardown — `Live → Removing`** (Brief 167). When the campaign
+     ends, IT flips status to `Removing` via the StatusEditor. The
+     IT ticket page's existing Per-Location Progress card stays
+     (build-phase audit trail) and a new Per-Location Removal card
+     appears. IT marks each site torn down via the removal
+     checkboxes; the removal phase mirrors the build phase 1:1 —
+     `is_removed` + `removed_at` + `removed_by` columns on
+     `promo_locations` plus the `location_marked_removed` /
+     `location_marked_unremoved` activity types. The Brief 155
+     per-location toggle endpoint accepts both `isComplete` and
+     `isRemoved` (either or both per request).
+  7. **Per-site removal notification — `notify-removed-sites`**
+     (Brief 167). After marking sites torn down, IT clicks the
+     orange "Notify removed sites" FAB → POST
+     `/promo/api/promos/{id}/notify-removed-sites` → one
+     `outbound_emails` row per recipient per eligible site
+     (`is_removed = true AND removal_notified_at IS NULL`) with
+     `source_kind: 'promo-site-removal-notify'`. Brief 166 RM/RD
+     opt-in posture (default false; site_email always implied).
+     After all-success per site, `removal_notified_at` +
+     `removal_notified_by` stamped; one `removal_site_notified`
+     activity row emitted. Dedup tuple `(promo-worker,
+     promo-site-removal-notify, "{promoId}:{locationCode}",
+     recipient)` suppresses re-fires at the queue layer; the
+     eligibility query suppresses at the read layer.
+     `is_removed = false` on the toggle endpoint clears
+     `removal_notified_at` server-side so a future re-mark is
+     eligible again — forced re-notify after a partial re-tear-down
+     also requires deleting the matching `outbound_emails` row.
+  8. **End of campaign** — IT flips status `Removing → Ended` via
+     the StatusEditor (marketing-tier widening on Brief 155's status
+     PATCH means marketing can also flip; no auto-advance at v1).
+  Manual status-graph posture: no transition-graph enforcement —
+  the status PATCH gate stays authoritative-without-graph, so an
+  operator can flip `Live → Removing → Ended` (forward) or
+  `Ended → Live` (rewind) by construction. UI suggests the next
+  step; endpoint is authoritative.
+  Role-by-role permission table (Removal columns added at Brief 167):
+  | Role | List/detail | Create | Status PATCH | Ticket PATCH | Assign | Locations (build) | Locations (removal) | Materials | PTP | Announce | Notify completed sites | Notify removed sites | IT queue |
+  |---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+  | super_admin | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+  | it | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+  | marketing | ✓ | ✓ | ✓ | — | — | — | — | ✓ | ✓ | ✓ | — | — | — |
+  | ops | ✓ | — | — | — | — | — | — | — | — | — | — | — | — |
+  | null | — | — | — | — | — | — | — | — | — | — | — | — | — |
   Every write is gated server-side via `gatePromoRole` (Brief 153);
   apps/web's UI gates are convenience hints (worker re-validates).
   internalNote is stripped at the GET-detail seam for non-IT
@@ -1669,6 +1709,82 @@ URL-based — service bindings don't apply to those.
   picker beyond 10 entries; offerings presets for promo types other
   than `Same` / `BOGO`; signature field on template sends (template
   `{signature}` field exists already).
+  Brief 167 (2026-06-10) added the **per-site teardown phase** —
+  closes the lifecycle gap where promos ended at a single `Live →
+  Ended` flip with no mirror to the construction phase. Schema:
+  `promotions.status` CHECK widened to seven values (`Removing`
+  inserted between `Live` and `Ended`); `promo_locations` gains five
+  new columns (`is_removed boolean NOT NULL DEFAULT false`,
+  `removed_at`, `removed_by`, `removal_notified_at`,
+  `removal_notified_by`) plus a partial index
+  `idx_promo_locations_removed_unnotified ON promo_locations(promo_id)
+  WHERE is_removed = true AND removal_notified_at IS NULL`;
+  `promo_activity_log` CHECK extended with `location_marked_removed`,
+  `location_marked_unremoved`, `removal_site_notified`. The Brief 155
+  per-location toggle endpoint
+  (`PATCH /promo/api/promos/{id}/locations/{locationCode}`) widened
+  to accept `{isComplete?, isRemoved?}` — either or both per
+  request; at least one required; unknown keys → 400. On `isRemoved
+  = true` stamps `removed_at` + `removed_by`; on `isRemoved = false`
+  clears stamps AND clears `removal_notified_at` +
+  `removal_notified_by` so the FAB re-treats the site as eligible
+  on next re-mark (this differs from the build-phase un-complete
+  path which never owned the notify side; Brief 167 owns both phases
+  + does the symmetric clear). Worker response always carries
+  `isRemoved` + `removedAt` alongside the existing `isComplete` +
+  `completedAt` for shape consistency. **New endpoint** `POST
+  /promo/api/promos/{id}/notify-removed-sites` (super_admin | it;
+  CSRF; body `{note?, includeRm?, includeRd?}` per Brief 166's
+  pattern — site_email always implied, RM/RD opt-in). Same
+  two-layer dedup posture as Brief 164: eligible-sites query +
+  `outbound_emails` unique tuple `(promo-worker,
+  promo-site-removal-notify, "{promoId}:{locationCode}", recipient)`.
+  Forced re-notify after a site re-tear-down requires clearing
+  `removal_notified_at` AND deleting the matching `outbound_emails`
+  row. **New renderer** `render-removal-notify.ts` (sibling to
+  `render-site-notify.ts`) — Splash-branded HTML via
+  `@splash/email-shell` with `<h2>` "Special ended" + paragraph
+  ("{title} special has been removed at {locationPretty}; the
+  promotional pricing is no longer active at your site") + optional
+  amber-tinted operator-note callout + metadata grid (Promo type /
+  Location code monospace / Removed by) + "View promo details"
+  inline link + closing "Reach out to your manager if anything
+  still looks active at your site." Subject `"The {title} special
+  has ended at {locationPretty}"`. **Apps/web** — `PromoStatus`
+  union + `PROMO_STATUSES` array extended (Pipeline / StatusEditor
+  / FilterBar derive from `PROMO_STATUSES` so they pick up
+  `Removing` automatically); `PromoStatusPill.PALETTE` gains
+  `Removing: "bg-orange-100 text-orange-800"`; `PromoLocation` type
+  widened with five removal-phase fields. New components
+  `LocationRemovalToggleable` (React 19 `useOptimistic` +
+  per-row amber-clock-for-pending / green-envelope-for-notified
+  indicator) and `NotifyRemovedSitesButton` (sticky bottom-right
+  orange FAB + confirmation modal with Brief 166-style RM/RD opt-in
+  checkboxes). `ActivityTimeline` gains three headline cases +
+  orange dots (case-checked FIRST so the generic `location_*` →
+  emerald rule is bypassed). IT ticket page derives three
+  phase-aware flags before render: `showRemovalCard`
+  (Live/Removing/Ended), `showBuildFab` (NOT Removing/Ended),
+  `showRemovalFab` (Removing/Ended) — the two FABs are mutually
+  exclusive (chosen over vertical stacking; no z-stack
+  coordination, no mis-click risk). Decisions: (1) Single widened
+  endpoint vs. parallel `.../removal` route — widening cleanly
+  accommodated both phases. (2) Worker response always carries both
+  pairs for shape consistency. (3) `is_removed = false` clears
+  `removal_notified_at` server-side per the brief. (4) Hide-on-
+  removing for the build FAB (simpler + no mis-click risk vs.
+  stacking). (5) Removal card visible at `Live | Removing | Ended`
+  (operators frequently mark a site torn down same-day as a status
+  flip). (6) Orange tint for `Removing` pill + removal FAB +
+  removal activity dots. (7) No transition-graph enforcement —
+  `Live → Removing → Ended` permitted by construction (same as
+  every other status edge). Out of scope at Brief 167 (each a v2
+  candidate): auto-advance `Removing → Ended` when all sites
+  removed + notified; auto-flip `Live → Removing` on first removal
+  toggle; operator-editable removal email template; notify-a-
+  specific-site-only; bulk-mark-removed-without-sending; removal
+  materials / removal PTP; per-site opt-out flags; transition-
+  graph enforcement; schema migration framework.
 
 - **@splash/email-shell** (Brief 160) - Shared workspace package at
   `packages/email-shell/` hosting the Outlook-safe HTML email shell.
@@ -3062,6 +3178,23 @@ URL-based — service bindings don't apply to those.
   pick it up again on the next FAB click. Forcing a fresh notify
   after a site-redo requires the operator to clear `notified_at`
   AND DELETE the matching `outbound_emails` rows.
+  `source_kind='promo-site-removal-notify'` writers (Brief 167):
+  promo-worker via `handleNotifyRemovedSites` in
+  `apps/promo-worker/src/handlers/notify-removed-sites.ts`. Symmetric
+  twin of `promo-site-notify` — same `"{promoId}:{locationCode}"`
+  source_id shape, same `attachments: []`, same per-site (NOT global)
+  recipient dedup against `pricing_simple` (`site_email` always;
+  `rm_email` only when `includeRm`; `am_email` (= Regional Director
+  per the CLAUDE.md label-vs-data mapping) only when `includeRd`).
+  Eligibility query is `is_removed = true AND removal_notified_at IS
+  NULL`; after all-success per site, PATCH stamps
+  `removal_notified_at` + `removal_notified_by`. Same forced-renotify
+  workaround: clear `removal_notified_at` AND DELETE the matching
+  `outbound_emails` rows. Un-marking a site removed via the Brief 155
+  toggle endpoint with `{isRemoved: false}` ALSO clears
+  `removal_notified_at` server-side (the toggle widening at Brief
+  167) so a future re-mark is eligible — though the queue dedup
+  index still suppresses unless the queue row is also deleted.
   Brief 128 (2026-05-14) landed the admin viewer at
   `/admin/email-queue` (apps/web, admin-tier — `super_admin` OR
   `dcRole admin/super_admin`; tile in the Admin dashboard group).

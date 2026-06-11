@@ -65,6 +65,7 @@ import {
   handleSearchPromoUsers
 } from "./handlers/recipients.js";
 import { handleNotifyCompletedSites } from "./handlers/notify-sites.js";
+import { handleNotifyRemovedSites } from "./handlers/notify-removed-sites.js";
 
 export interface Env {
   SUPABASE_URL: string;
@@ -269,6 +270,18 @@ export default {
     if (notifySitesMatch && notifySitesMatch[1]) {
       if (request.method === "POST")
         return handleNotifyCompletedSites(request, env, notifySitesMatch[1]);
+      return new Response("Method Not Allowed", { status: 405 });
+    }
+
+    // Brief 167 — symmetric twin to Brief 164: per-site "the special has
+    // ended" notification fire. Marked sites eligible iff
+    // `is_removed = true AND removal_notified_at IS NULL`.
+    const notifyRemovedMatch = url.pathname.match(
+      /^\/promo\/api\/promos\/([0-9a-f-]+)\/notify-removed-sites$/i
+    );
+    if (notifyRemovedMatch && notifyRemovedMatch[1]) {
+      if (request.method === "POST")
+        return handleNotifyRemovedSites(request, env, notifyRemovedMatch[1]);
       return new Response("Method Not Allowed", { status: 405 });
     }
 

@@ -164,3 +164,4 @@
 - 2026-06-06 22:42:33 brief-164-promo-it-notify-completed-sites.md (success)
 - 2026-06-06 23:44:08 brief-165-forms-worker-bind-promo-files-r2.md (success)
 - 2026-06-08 08:55:22 brief-166-promo-announcement-and-creator-polish-batch.md (success)
+- 2026-06-10 07:19:05 brief-167-promo-removal-phase-and-notify-removed-sites.md (success)
