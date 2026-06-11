@@ -18,23 +18,27 @@ compatibility_flags = ["nodejs_compat"]
 # obvious the workers.dev URL is the primary deploy target right now.
 workers_dev = true
 
-# Step 7 cutover routes (uncomment when apps/web is ready):
-# routes = [
-#   { pattern = "splashcarwashes.info/api/login",         zone_name = "splashcarwashes.info" },
-#   { pattern = "splashcarwashes.info/api/logout",        zone_name = "splashcarwashes.info" },
-#   { pattern = "splashcarwashes.info/api/forced-reset",  zone_name = "splashcarwashes.info" }
-# ]
-
 # Staging routes (Brief 16) — bind dashboard-worker's SSO endpoints to
 # staging.splashcarwashes.info so apps/web (also bound to the staging
-# subdomain) can call them same-origin. Production routes above stay
-# commented; staging is purely additive. Includes /api/me (added in
+# subdomain) can call them same-origin. Includes /api/me (added in
 # Brief 11a) so the Header can render the user identity row in staging.
+#
+# Brief 168 (2026-06-11): apex production twins staged inside this same
+# `routes` array, COMMENTED so they're inert. Operator uncomments + pushes
+# at the cutover window (see CUTOVER_RUNBOOK.md Phase A). Until then
+# nothing routes to the apex; staging keeps working unchanged. /api/me
+# is the previously-known gap from CUTOVER_READINESS §2.2 — staged with
+# its siblings so the Header's identity row works post-flip.
 routes = [
   { pattern = "staging.splashcarwashes.info/api/login",        zone_name = "splashcarwashes.info" },
   { pattern = "staging.splashcarwashes.info/api/logout",       zone_name = "splashcarwashes.info" },
   { pattern = "staging.splashcarwashes.info/api/forced-reset", zone_name = "splashcarwashes.info" },
-  { pattern = "staging.splashcarwashes.info/api/me",           zone_name = "splashcarwashes.info" }
+  { pattern = "staging.splashcarwashes.info/api/me",           zone_name = "splashcarwashes.info" },
+  # === CUTOVER PHASE A — uncomment the line(s) below + push at the flip window ===
+  # { pattern = "splashcarwashes.info/api/login",        zone_name = "splashcarwashes.info" },
+  # { pattern = "splashcarwashes.info/api/logout",       zone_name = "splashcarwashes.info" },
+  # { pattern = "splashcarwashes.info/api/forced-reset", zone_name = "splashcarwashes.info" },
+  # { pattern = "splashcarwashes.info/api/me",           zone_name = "splashcarwashes.info" }   # (gap fix — Header /api/me, READINESS §2.2)
 ]
 
 # Bindings (set with `wrangler secret put`):

@@ -13,13 +13,15 @@ compatibility_flags = ["nodejs_compat"]
 upload_source_maps = true
 workers_dev = true
 
+# Brief 169 (2026-06-11): apex production twin staged inside this same
+# `routes` array, COMMENTED so it's inert. Operator uncomments + pushes
+# at the cutover window (see CUTOVER_RUNBOOK.md Phase B). Until then
+# nothing routes to the apex; staging keeps working unchanged.
 routes = [
-  { pattern = "staging.splashcarwashes.info/promo/*", zone_name = "splashcarwashes.info" }
+  { pattern = "staging.splashcarwashes.info/promo/*", zone_name = "splashcarwashes.info" },
+  # === CUTOVER PHASE B — uncomment the line(s) below + push at the flip window ===
+  # { pattern = "splashcarwashes.info/promo/*", zone_name = "splashcarwashes.info" }
 ]
-
-# routes = [
-#   { pattern = "splashcarwashes.info/promo/*", zone_name = "splashcarwashes.info" }
-# ]
 
 [vars]
 SUPABASE_URL = "https://rewokyofschtvqgxrxwl.supabase.co"
@@ -28,6 +30,7 @@ SUPABASE_URL = "https://rewokyofschtvqgxrxwl.supabase.co"
 # Recipients click these from email, so workers.dev request origins MUST get
 # rewritten to production — staging.splashcarwashes.info passes through
 # unchanged in the helper.
+# CUTOVER PHASE B: confirmed = https://splashcarwashes.info at flip (already apex).
 APPS_WEB_BASE_URL = "https://splashcarwashes.info"
 
 [[r2_buckets]]

@@ -31,17 +31,6 @@ workers_dev = true
 # Saved on customer/admin device home screens. Do not rename.
 # (See BUILD_STATE.md → "Load-bearing constraints".)
 #
-# Production routes — preserved verbatim from the Step 4 scaffold for
-# reference at cutover time. NOT bound to this worker name. Do not
-# uncomment until cutover.
-#
-# routes = [
-#   { pattern = "splashcarwashes.info/signup/*", zone_name = "splashcarwashes.info" },
-#   { pattern = "splashcarwashes.info/q/*", zone_name = "splashcarwashes.info" },
-#   { pattern = "splashcarwashes.info/join/*", zone_name = "splashcarwashes.info" },
-#   { pattern = "splashcarwashes.info/api/submit-signup", zone_name = "splashcarwashes.info" }
-# ]
-
 # Staging routes (Brief 16) — bind signup-worker's admin pricing JSON API
 # AND the customer-facing surface (/signup, /q, /join, /api/submit-signup)
 # to staging.splashcarwashes.info so the full system can be exercised
@@ -49,12 +38,35 @@ workers_dev = true
 # the staging subdomain (no customer bookmarks point there) — the
 # load-bearing-URL warning above applies to the production routes only.
 # Per decision 8, signup-worker owns customer-facing rendering.
+#
+# CUTOVER PHASE C apex twins (Brief 170) live inside this single active
+# `routes` array, commented/inert, under a grep-able banner. Activation =
+# operator parity-checks `splash-signup-next` vs production
+# (`info-signup-worker`) on workers.dev/staging, runs the pre-cutover SQL
+# guard, then uncomments the apex line(s) below + pushes at the cutover
+# window. CF Builds binds the apex routes to `splash-signup-next` on push,
+# removing them from `info-signup-worker` (CUTOVER_RUNBOOK.md Phase C).
+# Worker name stays `splash-signup-next` — NO rename — so apps/web's
+# `SIGNUP_WORKER` service binding keeps working without any apps/web
+# change. NOTE: `/signup/*`, `/q/*`, `/join/*` are load-bearing customer
+# bookmark URLs — keep each apex twin's path EXACTLY as the staging line
+# has it (CLAUDE.md constraint #1). `/api/submit-signup` is an EXACT path,
+# never a wildcard — a `/api/*` wildcard would swallow dashboard-worker's
+# `/api/login|logout|forced-reset|me` (CUTOVER_READINESS §2.4).
+# Rollback: in the CF dashboard, move the apex routes back to
+# `info-signup-worker`; durable rollback = re-comment + push.
 routes = [
   { pattern = "staging.splashcarwashes.info/admin/api/*",        zone_name = "splashcarwashes.info" },
   { pattern = "staging.splashcarwashes.info/api/submit-signup",  zone_name = "splashcarwashes.info" },
   { pattern = "staging.splashcarwashes.info/signup/*",           zone_name = "splashcarwashes.info" },
   { pattern = "staging.splashcarwashes.info/q/*",                zone_name = "splashcarwashes.info" },
-  { pattern = "staging.splashcarwashes.info/join/*",             zone_name = "splashcarwashes.info" }
+  { pattern = "staging.splashcarwashes.info/join/*",             zone_name = "splashcarwashes.info" },
+  # === CUTOVER PHASE C — uncomment the line(s) below + push at the flip window ===
+  # { pattern = "splashcarwashes.info/signup/*",          zone_name = "splashcarwashes.info" },
+  # { pattern = "splashcarwashes.info/q/*",               zone_name = "splashcarwashes.info" },
+  # { pattern = "splashcarwashes.info/join/*",            zone_name = "splashcarwashes.info" },
+  # { pattern = "splashcarwashes.info/api/submit-signup", zone_name = "splashcarwashes.info" },
+  # { pattern = "splashcarwashes.info/admin/api/*",       zone_name = "splashcarwashes.info" }
 ]
 
 # Vars (plain — set via dashboard or [vars] block):

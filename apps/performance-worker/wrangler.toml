@@ -16,17 +16,18 @@ compatibility_flags = ["nodejs_compat"]
 
 workers_dev = true
 
-# Step 7 cutover routes (uncomment when apps/web is ready):
-# routes = [
-#   { pattern = "splashcarwashes.info/pertrack/*", zone_name = "splashcarwashes.info" }
-# ]
-
 # Staging routes (Brief 16) — bind performance-worker to
 # staging.splashcarwashes.info so apps/web (also bound to staging) can
-# call /pertrack/* same-origin. Production routes above stay commented;
-# staging is purely additive.
+# call /pertrack/* same-origin.
+#
+# Brief 168 (2026-06-11): apex production twin staged inside this same
+# `routes` array, COMMENTED so it's inert. Operator uncomments + pushes
+# at the cutover window (see CUTOVER_RUNBOOK.md Phase A). Until then
+# nothing routes to the apex; staging keeps working unchanged.
 routes = [
-  { pattern = "staging.splashcarwashes.info/pertrack/*", zone_name = "splashcarwashes.info" }
+  { pattern = "staging.splashcarwashes.info/pertrack/*", zone_name = "splashcarwashes.info" },
+  # === CUTOVER PHASE A — uncomment the line(s) below + push at the flip window ===
+  # { pattern = "splashcarwashes.info/pertrack/*", zone_name = "splashcarwashes.info" }
 ]
 
 # Bindings:

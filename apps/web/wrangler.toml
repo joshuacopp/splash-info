@@ -10,13 +10,6 @@ main = ".open-next/worker.js"
 compatibility_date = "2026-05-01"
 compatibility_flags = ["nodejs_compat"]
 
-# Routes: intentionally unset for Step 4. Will be added in Step 7 when pages
-# are populated and we're ready to cut over from the legacy workers.
-# routes = [
-#   { pattern = "splashcarwashes.info/admin/*", zone_name = "splashcarwashes.info" },
-#   ...
-# ]
-
 # Staging routes (Brief 16) — apps/web is bound to a catch-all on
 # staging.splashcarwashes.info. CF's most-specific-match-wins routing
 # means the per-worker patterns (dashboard /api/*, signup /admin/api/*
@@ -27,14 +20,20 @@ compatibility_flags = ["nodejs_compat"]
 # the new domain (per-deploy, not per-route). NEXT_PUBLIC_*_WORKER_URL
 # env vars stay unset for staging deploys: server-side helpers fall
 # back to the request host (staging.splashcarwashes.info), and all
-# routes resolve through CF same-origin. Production routes stay
-# commented; staging is purely additive.
+# routes resolve through CF same-origin.
+#
+# Brief 168 (2026-06-11): apex production twin staged inside this same
+# `routes` array, COMMENTED so it's inert. Operator uncomments + pushes
+# at the cutover window (see CUTOVER_RUNBOOK.md Phase A). Until then
+# nothing routes to the apex; staging keeps working unchanged.
 #
 # NOTE: this `routes` key is at the top level — it MUST appear before
 # any `[table]` header (e.g. `[assets]`) or TOML will scope it into
 # that table.
 routes = [
-  { pattern = "staging.splashcarwashes.info/*", zone_name = "splashcarwashes.info" }
+  { pattern = "staging.splashcarwashes.info/*", zone_name = "splashcarwashes.info" },
+  # === CUTOVER PHASE A — uncomment the line(s) below + push at the flip window ===
+  # { pattern = "splashcarwashes.info/*", zone_name = "splashcarwashes.info" }
 ]
 
 # Service bindings (Brief 17) — apps/web SSR helpers call sibling workers

@@ -81,15 +81,25 @@ workers_dev = true
 # / `/api/fleet-packages` / `/api/fleet-submit`, which would collide
 # with apps/web staging's `/api/login` / `/api/me`. Production route
 # stays unbound until cutover — see CLAUDE.md constraint #9.
+#
+# Brief 169 (2026-06-11): apex production subdomain twin staged inside
+# this same `routes` array, COMMENTED so it's inert. CLAUDE.md constraint
+# #9 is operator-overridden at the cutover window (locked decision #4 in
+# CUTOVER_RUNBOOK.md Phase B); staging the commented twin satisfies that
+# override safely because nothing is bound until the operator uncomments.
+# CRITICAL: even at the flip window, the legacy `broad-shape-38b8` worker
+# must FIRST have its `fleet.splashcarwashes.info` route removed via the
+# CF dashboard before this twin is uncommented + pushed — otherwise CF
+# will reject the duplicate hostname binding. DO NOT touch the legacy
+# worker from a brief; that's a CF-UI operator action.
 routes = [
-  { pattern = "fleet.staging.splashcarwashes.info", custom_domain = true }
+  { pattern = "fleet.staging.splashcarwashes.info", custom_domain = true },
+  # === CUTOVER PHASE B — uncomment the line below + push at the flip window ===
+  # (Prerequisite: operator removes `fleet.splashcarwashes.info` from
+  # `broad-shape-38b8` in the CF dashboard first; see CUTOVER_RUNBOOK.md
+  # Phase B + CLAUDE.md constraint #9.)
+  # { pattern = "fleet.splashcarwashes.info", custom_domain = true }
 ]
-
-# Production custom-domain route stays bound to the legacy worker
-# `broad-shape-38b8`. DO NOT uncomment without operator-driven cutover.
-# routes = [
-#   { pattern = "fleet.splashcarwashes.info", custom_domain = true }
-# ]
 
 [vars]
 SUPABASE_URL       = "https://rewokyofschtvqgxrxwl.supabase.co"

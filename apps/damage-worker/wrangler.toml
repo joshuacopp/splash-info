@@ -27,13 +27,6 @@ compatibility_flags = ["nodejs_compat"]
 
 workers_dev = true
 
-# Step 7 cutover routes (uncomment when apps/web is ready):
-# routes = [
-#   { pattern = "splashcarwashes.info/claims-api/submit-claim", zone_name = "splashcarwashes.info" },
-#   { pattern = "splashcarwashes.info/claims-api/photo/*",      zone_name = "splashcarwashes.info" },
-#   { pattern = "splashcarwashes.info/manage/api/*",            zone_name = "splashcarwashes.info" }
-# ]
-
 # Staging routes (Brief 16) — bind damage-worker to
 # staging.splashcarwashes.info so apps/web (also bound to staging) can
 # call /manage/api/* same-origin. Includes /claims-api/* (collapsed
@@ -41,11 +34,21 @@ workers_dev = true
 # separate prod patterns; CF most-specific-match-wins semantics still
 # correctly route subpaths to this worker) AND /claims/* (per decision
 # 9: damage-worker owns the public customer claim form rendering).
-# Production routes above stay commented; staging is purely additive.
+#
+# Brief 168 (2026-06-11): apex production twins staged inside this same
+# `routes` array, COMMENTED so they're inert. Operator uncomments + pushes
+# at the cutover window (see CUTOVER_RUNBOOK.md Phase A). Until then
+# nothing routes to the apex; staging keeps working unchanged. NOTE:
+# /claims/* is a load-bearing public customer URL (per CLAUDE.md
+# constraint #1) — the apex twin path is exact and must not change.
 routes = [
   { pattern = "staging.splashcarwashes.info/manage/api/*", zone_name = "splashcarwashes.info" },
   { pattern = "staging.splashcarwashes.info/claims-api/*", zone_name = "splashcarwashes.info" },
-  { pattern = "staging.splashcarwashes.info/claims/*",     zone_name = "splashcarwashes.info" }
+  { pattern = "staging.splashcarwashes.info/claims/*",     zone_name = "splashcarwashes.info" },
+  # === CUTOVER PHASE A — uncomment the line(s) below + push at the flip window ===
+  # { pattern = "splashcarwashes.info/manage/api/*", zone_name = "splashcarwashes.info" },
+  # { pattern = "splashcarwashes.info/claims-api/*", zone_name = "splashcarwashes.info" },
+  # { pattern = "splashcarwashes.info/claims/*",     zone_name = "splashcarwashes.info" }
 ]
 
 # Bindings:
@@ -136,7 +139,7 @@ routes = [
 #                          description. Today apps/web is on workers.dev / staging;
 #                          flip to the prod hostname at cutover.
 [vars]
-MAINTAINX_MODE = "test"
+MAINTAINX_MODE = "test"  # CUTOVER PHASE A: change to "production" at flip
 MAINTAINX_BASE_URL = "https://api.getmaintainx.com/v1"
 APPS_WEB_BASE_URL = "https://splashcarwashes.info"
 # Brief 102 (2026-05-11): incidents inbox copied on every customer claim
@@ -166,13 +169,17 @@ binding = "IMAGES"
 # When unbound, the scheduled handler logs a warning and exits cleanly —
 # same fail-soft posture as CUSTOMER_CLAIM_WEBHOOK_URL (Brief 32).
 #
-# Cadence (updated 2026-06-10 per operator): fires at 13:00 UTC (8 AM ET) on
-# Monday, Thursday, and Saturday only (cron day-of-week 1,4,6) — was every
-# day. Event-driven claim emails (customer confirmation, internal new-claim,
+# Cadence (updated 2026-06-10 per operator; DOW corrected 2026-06-11): fires at
+# 13:00 UTC (8 AM ET) on Monday, Thursday, and Saturday only — was every day.
+# WARNING: Cloudflare Workers cron uses a NON-standard day-of-week field where
+# 1=Sunday .. 7=Saturday (NOT the POSIX 0=Sunday). So Mon/Thu/Sat = MON,THU,SAT
+# (numerically 2,5,7) — the earlier "1,4,6" actually fired Sun/Wed/Fri. Using
+# the three-letter abbreviations (CF-recommended) to stay unambiguous.
+# Event-driven claim emails (customer confirmation, internal new-claim,
 # note/status notifications) are NOT on this schedule; they fire in real time
 # on their triggering event.
 [triggers]
-crons = ["0 13 * * 1,4,6"]
+crons = ["0 13 * * MON,THU,SAT"]
 
 # Brief 63 (2026-05-07): keeps Workers Logs sticky across deploys. Without
 # this, CF Builds re-provisions the worker on every push and the dashboard

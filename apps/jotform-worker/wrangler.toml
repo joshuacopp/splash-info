@@ -76,9 +76,20 @@ workers_dev = true
 # UI-only) so future pushes don't strip the bindings — CF Builds reads routes
 # from this file on every deploy and would unbind anything UI-only on the
 # next push. Production routes follow operator-driven cutover.
+#
+# Brief 169 (2026-06-11): apex production twins staged inside this same
+# `routes` array, COMMENTED so they're inert. Operator uncomments + pushes
+# at the cutover window (see CUTOVER_RUNBOOK.md Phase B). Until then
+# nothing routes to the apex; staging keeps working unchanged. NOTE: the
+# JotForm webhook URL must be re-pointed at
+# `https://splashcarwashes.info/jotform/{token}` in the JotForm UI as a
+# companion step at flip — wrangler.toml can't stage that.
 routes = [
   { pattern = "staging.splashcarwashes.info/jotform/*", zone_name = "splashcarwashes.info" },
-  { pattern = "staging.splashcarwashes.info/admin/jotform/api/*", zone_name = "splashcarwashes.info" }
+  { pattern = "staging.splashcarwashes.info/admin/jotform/api/*", zone_name = "splashcarwashes.info" },
+  # === CUTOVER PHASE B — uncomment the line(s) below + push at the flip window ===
+  # { pattern = "splashcarwashes.info/jotform/*", zone_name = "splashcarwashes.info" },
+  # { pattern = "splashcarwashes.info/admin/jotform/api/*", zone_name = "splashcarwashes.info" }
 ]
 
 [vars]

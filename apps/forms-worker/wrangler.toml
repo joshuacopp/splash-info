@@ -103,14 +103,18 @@ workers_dev = true
 # Staging route — path-carved on apps/web's staging hostname. CF's
 # most-specific-match-wins routing means this carve outranks apps/web's
 # catch-all `staging.splashcarwashes.info/*`. Brief 16 pattern.
+#
+# Brief 169 (2026-06-11): apex production twin staged inside this same
+# `routes` array, COMMENTED so it's inert. Operator uncomments + pushes
+# at the cutover window (see CUTOVER_RUNBOOK.md Phase B). Until then
+# nothing routes to the apex; staging keeps working unchanged. Bare
+# `/forms` index stays served by apps/web's catch-all — `/forms/*`
+# does not capture it, so the coexistence is intact.
 routes = [
-  { pattern = "staging.splashcarwashes.info/forms/*", zone_name = "splashcarwashes.info" }
+  { pattern = "staging.splashcarwashes.info/forms/*", zone_name = "splashcarwashes.info" },
+  # === CUTOVER PHASE B — uncomment the line(s) below + push at the flip window ===
+  # { pattern = "splashcarwashes.info/forms/*", zone_name = "splashcarwashes.info" }
 ]
-
-# Production routes stay commented until operator-driven cutover.
-# routes = [
-#   { pattern = "splashcarwashes.info/forms/*", zone_name = "splashcarwashes.info" }
-# ]
 
 [vars]
 SUPABASE_URL       = "https://rewokyofschtvqgxrxwl.supabase.co"
