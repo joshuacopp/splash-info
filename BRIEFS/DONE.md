@@ -168,3 +168,5 @@
 - 2026-06-11 10:30:04 brief-168-cutover-phase-a-route-diffs.md (success)
 - 2026-06-11 10:40:07 brief-169-cutover-phase-b-route-diffs.md (success)
 - 2026-06-11 10:45:53 brief-170-cutover-phase-c-route-diffs.md (success)
+- 2026-06-13 11:21:22 brief-171-check-request-bundle-approved-quote.md (success)
+- 2026-06-13 12:48:43 brief-172-damage-awaiting-payment-csv-export-and-cause-field.md (success)

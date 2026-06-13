@@ -3847,6 +3847,71 @@ URL-based — service bindings don't apply to those.
   after `validateBeforeSubmit()` passes but before the fetch
   (closest analog to Brief 122's "before browser navigates" for
   this JS-driven fetch + outcome-card form).
+- **Check Request PDF** - Operator-facing PDF auto-generated on
+  damage-worker's two RM-approve / submit-for-payment transitions.
+  AcroForm template fill via pdf-lib against a `templates/check-
+  request.pdf` object in the `damagedocs` R2 bucket (operator
+  prereq — when missing, the worker logs an activity row noting the
+  failure and the status transition itself never rolls back).
+  Stored at `claims/{claim_id}/Req_{claim_id}_{stage-slug}.pdf` as
+  a `claim_photos` row of `photo_type = 'Check Request'`. Fired
+  twice along the approval chain: (a) RM Approve Quote — Requestor
+  signed (RM email), Approval blank → email Incidents via the
+  `INCIDENTS_WEBHOOK_URL`; (b) Submit for Payment — Requestor +
+  Approval signed → email AP via the `AP_WEBHOOK_URL`. The same
+  generator backs the preview path `GET /manage/api/claim/{id}/
+  quote/{quoteId}/preview-check-request.pdf` so reviewers see what
+  the real check request will look like before they commit to the
+  transition (preview signatures are placeholders `"(preview — not
+  signed)"` / `"DRAFT — NOT FOR PAYMENT"` so a printed preview
+  can't be mistaken for the real thing). Brief 171 (2026-06-13)
+  extended the generator to **bundle the approved quote into the
+  PDF as appended page(s)**, with a link fallback when the quote
+  can't be safely embedded. Bundling fires AFTER the AcroForm fill
+  but BEFORE `form.flatten()` / `save()` so the form-field flatten
+  still runs over the template (the appended quote pages have no
+  form fields — PDF branch — or are drawn-content images, so
+  flatten remains safe). Four type branches: `application/pdf` →
+  `copyPages` + `addPage` per page; `image/jpeg` → `embedJpg` to a
+  fitted Letter page; `image/png` → `embedPng` to a fitted Letter
+  page; `image/heic|heif(+sequence)` → convert to JPEG via the
+  `env.IMAGES.input(stream).output({format:"image/jpeg"})` pattern
+  reused verbatim from `packages/storage-r2/src/index.ts` line 109
+  (the same `IMAGES` binding `uploadClaimPhoto` uses for HEIC
+  customer photos), then embed as JPEG. Size guard
+  `QUOTE_BUNDLE_MAX_BYTES = 5 MB` checked against R2 `obj.size`
+  before pulling bytes — oversized quotes fall back to a link
+  without ever downloading. MIME dispatch prefers
+  `quote.content_type` but falls back to `file-type` sniff on the
+  first ~4 KB when the stored column is empty or
+  `application/octet-stream`. Fully fail-soft: every failure path
+  (R2 miss, oversize, unsupported MIME, load/embed throw,
+  HEIC→JPEG conversion throw, `IMAGES` unbound, unexpected
+  exception) logs `[checkreq.quote] append failed (fallback to
+  link): ...` and returns false; the check-request PDF itself
+  always saves and `form.flatten()` still runs. Webhook payload
+  (`sendCheckRequestEmail`) gained two ADDITIVE fields per Brief
+  171: `quoteUrl` (always sent; built by the local `buildQuoteUrl`
+  helper that mirrors `notifications.ts`'s Brief 104 strip-leading-
+  `claims/` + URL-encode-segments shape; null when `r2_key` is
+  missing) and `quoteBundled: boolean` (true when the quote was
+  embedded). Existing field names (`pdfBase64`, `pdfFilename`,
+  `claimId`, `customerName`, `locationPretty`, `amount`,
+  `vendorName`, `rmEmail`, `claimUrl`) are UNCHANGED — PA's Parse
+  JSON action stays valid. Operator-side action: wire the
+  conditional "View/Download Quote" link in the AP + Incidents PA
+  email templates keyed on `equals(triggerBody()?['quoteBundled'],
+  false)`. Activity-log note records the per-event bundle outcome
+  via a `" Quote bundled into PDF."` /
+  `" Quote too large/unsupported to bundle — link included."`
+  suffix on the existing
+  `Generated Check Request ({stageLabel}) and emailed to
+  {recipientLabel}.` line. Receipts intentionally NOT bundled
+  (only the single approved quote); bundling multiple quotes
+  intentionally NOT supported (only the single one referenced by
+  `claims.approved_quote_id`); pre-Brief-171 Check Request PDFs are
+  NOT back-filled (historical `claim_photos` rows continue to point
+  at form-only PDFs).
 - **CUSTOMER_CLAIM_WEBHOOK_URL** - Optional damage-worker secret
   (Brief 32) fired after a customer-submitted claim — Power Automate
   receives a JSON payload with `claim_id`, `customer_email`,

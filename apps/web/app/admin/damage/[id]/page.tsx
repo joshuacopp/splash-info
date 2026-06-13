@@ -72,19 +72,23 @@ import { transitionsFrom, type UITransition } from "../_lib/transitions";
 import {
   addNoteAction,
   deleteDocumentAction,
+  setFaultCategoryAction,
   transitionAction
 } from "./actions";
 import { ActionForm } from "../../_components/ActionForm";
 import { getMe } from "../../../_lib/me";
 import type { Session } from "@splash/types/session";
-import type {
-  ActivityType,
-  ClaimActivityRow,
-  ClaimDetermination,
-  ClaimPhotoRow,
-  ClaimPhotoType,
-  ClaimRow,
-  DamageRole
+import {
+  type ActivityType,
+  type ClaimActivityRow,
+  type ClaimDetermination,
+  type ClaimPhotoRow,
+  type ClaimPhotoType,
+  type ClaimRow,
+  type DamageRole,
+  type FaultCategory,
+  FAULT_CATEGORIES,
+  displayLifecycleForStatus
 } from "@splash/types/claims";
 
 interface DetailResponse {
@@ -320,6 +324,15 @@ export default async function DamageClaimDetailPage({ params, searchParams }: Pa
         checkRequestHref={checkRequestHref}
         activity={activity}
       />
+      {/* Brief 172 — Cause / fault attribution. Render for any caller with
+       *  a damage role; worker re-validates dc_role on POST. Pre-migration
+       *  D1 (column not yet added by operator) surfaces as `null` here and
+       *  the form persists soft-success per the worker's tolerance. */}
+      <CauseCard
+        claimId={claim.claim_id}
+        faultCategory={claim.fault_category ?? null}
+        canEdit={dcRole !== null}
+      />
       <TransitionSection
         claimId={claim.claim_id}
         transitions={transitions}
@@ -336,6 +349,82 @@ export default async function DamageClaimDetailPage({ params, searchParams }: Pa
       <ActivityTimelineCard activity={activity} />
       <AddNoteCard claimId={claim.claim_id} />
     </section>
+  );
+}
+
+/* ============================================================
+ * Brief 172 — Cause / fault attribution card
+ *
+ * Renders below the summary card, above the transition section. Read-
+ * only for callers without a dcRole; for everyone else a `<select>` +
+ * Save persists via setFaultCategoryAction → POST
+ * /manage/api/claim/{id}/fault-category. Empty string = clear → null.
+ * Activity log captures the change via the worker; the timeline card
+ * below shows it as a `[cause] ...` note entry.
+ * ============================================================ */
+
+const CAUSE_LABELS: Record<FaultCategory, string> = {
+  "Employee Error": "Employee Error",
+  "Equipment Malfunction": "Equipment Malfunction",
+  "Not Employee/Equipment": "Not Employee/Equipment"
+};
+
+function CauseCard({
+  claimId,
+  faultCategory,
+  canEdit
+}: {
+  claimId: string;
+  faultCategory: FaultCategory | null;
+  canEdit: boolean;
+}) {
+  return (
+    <div className="mb-6 rounded-splash-lg border border-gray-light bg-white p-6 shadow-splash-card">
+      <h2 className="mb-1 text-lg font-bold text-splash-navy">Cause</h2>
+      <p className="mb-4 text-xs text-splash-navy/60">
+        What caused this damage? Choose Undetermined if you&rsquo;re not
+        sure yet — every claim defaults to Undetermined.
+      </p>
+      {canEdit ? (
+        <ActionForm
+          action={setFaultCategoryAction}
+          className="flex flex-col gap-3 sm:flex-row sm:items-end"
+        >
+          <input type="hidden" name="claim_id" value={claimId} />
+          <label className="flex flex-1 flex-col gap-1">
+            <span className="text-xs font-semibold uppercase tracking-wider text-splash-navy/70">
+              Cause
+            </span>
+            <select
+              name="fault_category"
+              defaultValue={faultCategory ?? ""}
+              className="w-full rounded-splash-sm border border-gray-light bg-white px-3 py-2 text-sm text-splash-navy focus:border-splash-blue focus:outline-none sm:max-w-[320px]"
+            >
+              <option value="">Undetermined</option>
+              {FAULT_CATEGORIES.map((c) => (
+                <option key={c} value={c}>
+                  {CAUSE_LABELS[c]}
+                </option>
+              ))}
+            </select>
+          </label>
+          <button
+            type="submit"
+            className="inline-flex items-center gap-1.5 rounded-splash-sm bg-splash-blue px-5 py-2.5 text-sm font-bold text-white shadow-splash-btn transition-colors hover:bg-splash-blue-dark"
+          >
+            Save cause
+          </button>
+        </ActionForm>
+      ) : (
+        <div className="text-sm text-splash-navy/80">
+          <span className="font-semibold">Current:</span>{" "}
+          {faultCategory ?? "Undetermined"}
+          <p className="mt-2 text-xs italic text-splash-navy/60">
+            You need a damage role to change this.
+          </p>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -417,7 +506,8 @@ function SummaryCard({
             ) : null}
           </div>
         </div>
-        <LifecycleBadge state={claim.lifecycle_state} />
+        {/* Brief 172 — derived 3-way bucket from claim_status. */}
+        <LifecycleBadge state={displayLifecycleForStatus(claim.claim_status)} />
       </div>
 
       <dl className="grid grid-cols-1 gap-x-8 gap-y-4 md:grid-cols-2">

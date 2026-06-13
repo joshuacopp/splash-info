@@ -19,7 +19,18 @@ import { LifecycleBadge } from "./_components/LifecycleBadge";
 import { AgePill } from "./_components/AgePill";
 import { DamageTabs } from "./_components/DamageTabs";
 import { StatusActionPill } from "./_components/StatusActionPill";
-import type { ClaimRow, ClaimStatus, LifecycleState } from "@splash/types/claims";
+import { CsvExportButton } from "../../_components/CsvExportButton";
+import {
+  type ClaimRow,
+  type ClaimStatus,
+  type LifecycleState,
+  displayLifecycleForStatus
+} from "@splash/types/claims";
+
+// Brief 172 — list-page lifecycle picker is a 4-way URL value (the third
+// "Awaiting Payment" bucket is derived in the worker from claim_status;
+// stored lifecycle_state stays binary).
+type LifecycleParam = LifecycleState | "Awaiting Payment" | "All";
 
 // Brief 59 — shape returned from /manage/api/contact-roster.
 interface ContactRosterEntry {
@@ -72,7 +83,12 @@ const CLAIM_STATUSES: ReadonlyArray<ClaimStatus> = [
   "Closed — Approved/No Response"
 ];
 
-const LIFECYCLE_OPTIONS: ReadonlyArray<LifecycleState | "All"> = ["Open", "Closed", "All"];
+const LIFECYCLE_OPTIONS: ReadonlyArray<LifecycleParam> = [
+  "Open",
+  "Awaiting Payment",
+  "Closed",
+  "All"
+];
 
 interface PageProps {
   searchParams: Promise<Record<string, string | string[] | undefined>>;
@@ -100,7 +116,13 @@ export default async function DamageClaimsListPage({ searchParams }: PageProps) 
   const search = firstParam(sp.search).trim();
   const locationParam = firstParam(sp.location) || "All";
   const statusParam = firstParam(sp.status) || "All";
-  const lifecycleParam = (firstParam(sp.lifecycle) || "Open") as LifecycleState | "All";
+  const lifecycleRaw = firstParam(sp.lifecycle) || "Open";
+  const lifecycleParam: LifecycleParam =
+    lifecycleRaw === "Closed" ||
+    lifecycleRaw === "All" ||
+    lifecycleRaw === "Awaiting Payment"
+      ? lifecycleRaw
+      : "Open";
   const rdEmailParam = firstParam(sp.regional_director_email).trim();
   const rmEmailParam = firstParam(sp.regional_manager_email).trim();
   const submittedFromParam = firstParam(sp.submitted_from).trim();
@@ -406,7 +428,7 @@ export default async function DamageClaimsListPage({ searchParams }: PageProps) 
           </label>
         </div>
 
-        <div className="mt-4 flex items-center gap-3">
+        <div className="mt-4 flex flex-wrap items-center gap-3">
           <button
             type="submit"
             className="inline-flex items-center gap-1.5 rounded-splash-sm bg-splash-blue px-5 py-2.5 text-sm font-bold text-white shadow-splash-btn transition-colors hover:bg-splash-blue-dark"
@@ -419,6 +441,20 @@ export default async function DamageClaimsListPage({ searchParams }: PageProps) 
           >
             Reset
           </Link>
+          {/*
+           * Brief 172 — CSV export. The href carries the SAME filter
+           * params the page is currently rendering against so a click
+           * downloads exactly the visible result set (no surprise
+           * widening). Brief 88 proxy-route pattern: the link points at
+           * apps/web's /admin/damage/export.csv, which proxies via the
+           * DAMAGE_WORKER service binding internally so the browser
+           * stays same-origin (cookies + auth all "just work").
+           */}
+          <div className="ml-auto">
+            <CsvExportButton
+              href={`/admin/damage/export.csv${qs.toString() ? `?${qs.toString()}` : ""}`}
+            />
+          </div>
         </div>
       </form>
 
@@ -488,14 +524,24 @@ export default async function DamageClaimsListPage({ searchParams }: PageProps) 
                       </div>
                     </td>
                     <td className="px-4 py-3">
-                      <LifecycleBadge state={c.lifecycle_state} />
+                      {/*
+                       * Brief 172 — derive the 3-way bucket from
+                       * claim_status. The stored `c.lifecycle_state` is
+                       * binary (Open/Closed); awaiting-payment claims
+                       * still carry Open but the badge surfaces the
+                       * derived value so the operator sees finance-
+                       * stage claims distinctly.
+                       */}
+                      <LifecycleBadge
+                        state={displayLifecycleForStatus(c.claim_status)}
+                      />
                     </td>
                     <td className="px-4 py-3 font-mono text-xs text-splash-navy/80">
                       <div className="flex items-center gap-2">
                         <span>{formatSubmittedDate(c.submitted_at)}</span>
                         <AgePill
                           ageDays={c.age_days}
-                          lifecycle={c.lifecycle_state}
+                          lifecycle={displayLifecycleForStatus(c.claim_status)}
                         />
                       </div>
                     </td>

@@ -14,10 +14,21 @@
 // is missing, the worker logs an activity row noting the failure and
 // continues — the status transition itself is never rolled back.
 
-import { PDFDocument } from "pdf-lib";
+import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
+import { fileTypeFromBuffer } from "file-type";
 import type { ClaimPhotoRow, ClaimRow } from "@splash/types/claims";
+import type { ImagesBinding } from "@splash/storage-r2";
 
 const CHECK_REQUEST_TEMPLATE_KEY = "templates/check-request.pdf";
+
+/**
+ * Brief 171 — quote-append size guard. Quotes larger than this are NOT
+ * embedded into the check-request PDF (the bundled PDF rides Power
+ * Automate's base64-in-webhook payload; an oversized quote would push the
+ * total past PA's ~4 MB inbound ceiling). Oversized quotes fall back to
+ * a link in the webhook instead of being bundled.
+ */
+const QUOTE_BUNDLE_MAX_BYTES = 5 * 1024 * 1024; // 5 MB raw quote file
 
 interface CheckRequestFields {
   date: string;
@@ -39,11 +50,21 @@ interface CheckRequestFields {
  *
  * AcroForm field names match the template exactly — do not rename without
  * updating the template (or vice versa).
+ *
+ * Brief 171 — also appends the approved quote (when supplied) as extra
+ * page(s) AFTER the form fill but BEFORE `form.flatten()` / `save()`.
+ * `quoteBundled` reports whether the append succeeded; callers thread it
+ * through to the webhook payload so PA can decide whether to surface the
+ * "View Quote" link. The quote-append step is fully fail-soft — any
+ * failure logs and returns `quoteBundled: false`; the check-request PDF
+ * itself always saves.
  */
 export async function generateCheckRequestPdf(
   bucket: R2Bucket,
-  fields: CheckRequestFields
-): Promise<Uint8Array> {
+  fields: CheckRequestFields,
+  quote?: ClaimPhotoRow,
+  images?: ImagesBinding
+): Promise<{ pdfBytes: Uint8Array; quoteBundled: boolean }> {
   const templateObj = await bucket.get(CHECK_REQUEST_TEMPLATE_KEY);
   if (!templateObj) {
     throw new Error(
@@ -82,8 +103,18 @@ export async function generateCheckRequestPdf(
   setIf("Signature of Requestor", fields.requestorSignature);
   setIf("Approval", fields.approvalSignature);
 
+  // Brief 171 — append the approved quote pages BEFORE flatten/save.
+  // `appendQuoteToPdf` never throws; on failure it just returns false and
+  // we fall back to the link in the webhook payload.
+  let quoteBundled = false;
+  if (quote) {
+    quoteBundled = await appendQuoteToPdf(pdfDoc, bucket, images, quote);
+  }
+
   // Flatten the form so AP receives a non-editable PDF. Failures here are
-  // non-fatal — better an unflattened PDF than no PDF.
+  // non-fatal — better an unflattened PDF than no PDF. The appended quote
+  // pages have no form fields (PDF branch) or are drawn-content images,
+  // so flatten remains safe.
   try {
     form.flatten();
   } catch (err) {
@@ -93,7 +124,197 @@ export async function generateCheckRequestPdf(
     );
   }
 
-  return pdfDoc.save();
+  const pdfBytes = await pdfDoc.save();
+  return { pdfBytes, quoteBundled };
+}
+
+/**
+ * Brief 171 — best-effort: append the approved quote to `pdfDoc` as extra
+ * page(s). Returns true if the quote was embedded, false if it must fall
+ * back to a link (unsupported / oversized / conversion-failed /
+ * read-failed). NEVER throws — every failure path logs and returns false.
+ *
+ *  - application/pdf       → copyPages + addPage for each quote page
+ *  - image/jpeg            → embedJpg → one fitted page
+ *  - image/png             → embedPng → one fitted page
+ *  - image/heic|heif(+seq) → convert to JPEG via env.IMAGES, then embedJpg
+ *  - anything else / IMAGES unbound / decode error / size > cap → false
+ *
+ * Reads the quote bytes from R2 directly with `bucket.get(quote.r2_key)`.
+ * `r2_key` for quote `claim_photos` rows already includes the `claims/`
+ * prefix (see `uploadClaimPhoto` in `@splash/storage-r2`) — do NOT
+ * double-prefix (Brief 104 footgun).
+ */
+export async function appendQuoteToPdf(
+  pdfDoc: PDFDocument,
+  bucket: R2Bucket,
+  images: ImagesBinding | undefined,
+  quote: ClaimPhotoRow
+): Promise<boolean> {
+  try {
+    if (!quote.r2_key) {
+      console.warn("[checkreq.quote] append skipped: quote has no r2_key");
+      return false;
+    }
+
+    const obj = await bucket.get(quote.r2_key);
+    if (!obj) {
+      console.warn(
+        `[checkreq.quote] append failed (fallback to link): R2 object not found at ${quote.r2_key}`
+      );
+      return false;
+    }
+    // Size guard — checked against `size` before pulling bytes.
+    if (obj.size > QUOTE_BUNDLE_MAX_BYTES) {
+      console.warn(
+        `[checkreq.quote] append skipped (size ${obj.size} > ${QUOTE_BUNDLE_MAX_BYTES}): falling back to link`
+      );
+      return false;
+    }
+
+    const bytes = new Uint8Array(await obj.arrayBuffer());
+
+    // Resolve MIME — prefer the stored content_type, but sniff if it's
+    // empty / generic so we don't mis-dispatch on a stale value.
+    let mime = (quote.content_type ?? "").toLowerCase();
+    if (!mime || mime === "application/octet-stream") {
+      const sniffed = await fileTypeFromBuffer(
+        bytes.subarray(0, Math.min(bytes.length, 4100))
+      );
+      if (sniffed) mime = sniffed.mime;
+    }
+
+    if (mime === "application/pdf") {
+      return await appendPdfQuotePages(pdfDoc, bytes);
+    }
+    if (mime === "image/jpeg") {
+      return await appendImageQuotePage(pdfDoc, bytes, "jpeg", quote);
+    }
+    if (mime === "image/png") {
+      return await appendImageQuotePage(pdfDoc, bytes, "png", quote);
+    }
+    if (
+      mime === "image/heic" ||
+      mime === "image/heif" ||
+      mime === "image/heic-sequence" ||
+      mime === "image/heif-sequence"
+    ) {
+      if (!images) {
+        console.warn(
+          "[checkreq.quote] append failed (fallback to link): IMAGES binding unbound, cannot convert HEIC/HEIF"
+        );
+        return false;
+      }
+      let jpegBytes: Uint8Array;
+      try {
+        const stream = new Blob([bytes as BlobPart]).stream();
+        const result = await images.input(stream).output({ format: "image/jpeg" });
+        const buf = await result.response().arrayBuffer();
+        jpegBytes = new Uint8Array(buf);
+      } catch (convErr) {
+        console.warn(
+          "[checkreq.quote] append failed (fallback to link): HEIC→JPEG conversion threw:",
+          convErr instanceof Error ? convErr.message : convErr
+        );
+        return false;
+      }
+      return await appendImageQuotePage(pdfDoc, jpegBytes, "jpeg", quote);
+    }
+
+    console.warn(
+      `[checkreq.quote] append skipped (unsupported MIME "${mime}"): falling back to link`
+    );
+    return false;
+  } catch (err) {
+    console.warn(
+      "[checkreq.quote] append failed (fallback to link):",
+      err instanceof Error ? err.message : err
+    );
+    return false;
+  }
+}
+
+async function appendPdfQuotePages(
+  pdfDoc: PDFDocument,
+  bytes: Uint8Array
+): Promise<boolean> {
+  let q: PDFDocument;
+  try {
+    q = await PDFDocument.load(bytes);
+  } catch (loadErr) {
+    console.warn(
+      "[checkreq.quote] append failed (fallback to link): PDF load threw (likely encrypted/corrupt):",
+      loadErr instanceof Error ? loadErr.message : loadErr
+    );
+    return false;
+  }
+  const pages = await pdfDoc.copyPages(q, q.getPageIndices());
+  for (const p of pages) pdfDoc.addPage(p);
+  return true;
+}
+
+async function appendImageQuotePage(
+  pdfDoc: PDFDocument,
+  bytes: Uint8Array,
+  format: "jpeg" | "png",
+  quote: ClaimPhotoRow
+): Promise<boolean> {
+  let image;
+  try {
+    image =
+      format === "jpeg"
+        ? await pdfDoc.embedJpg(bytes)
+        : await pdfDoc.embedPng(bytes);
+  } catch (embedErr) {
+    console.warn(
+      `[checkreq.quote] append failed (fallback to link): embed${
+        format === "jpeg" ? "Jpg" : "Png"
+      } threw:`,
+      embedErr instanceof Error ? embedErr.message : embedErr
+    );
+    return false;
+  }
+
+  // US Letter; ~0.5 in margins; small header label above the image.
+  const pageWidth = 612;
+  const pageHeight = 792;
+  const margin = 36; // 0.5 in
+  const headerHeight = 24;
+  const page = pdfDoc.addPage([pageWidth, pageHeight]);
+
+  // Header label: "Approved Quote — {vendor}" near the top margin.
+  try {
+    const font = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
+    const label = quote.vendor
+      ? `Approved Quote — ${quote.vendor}`
+      : "Approved Quote";
+    page.drawText(label, {
+      x: margin,
+      y: pageHeight - margin - 12,
+      size: 12,
+      font,
+      color: rgb(0.04, 0.16, 0.34) // splash-navy-ish
+    });
+  } catch {
+    /* swallow — header is cosmetic, never block the image */
+  }
+
+  const availW = pageWidth - margin * 2;
+  const availH = pageHeight - margin * 2 - headerHeight;
+  const scale = Math.min(availW / image.width, availH / image.height, 1);
+  const drawW = image.width * scale;
+  const drawH = image.height * scale;
+  const drawX = margin + (availW - drawW) / 2;
+  const drawY = margin + (availH - drawH) / 2; // bottom margin + center within remaining
+
+  page.drawImage(image, {
+    x: drawX,
+    y: drawY,
+    width: drawW,
+    height: drawH
+  });
+
+  return true;
 }
 
 /**
@@ -176,6 +397,11 @@ interface StoredCheckRequestPdf {
   r2Key: string;
   filename: string;
   pdfBytes: Uint8Array;
+  /** Brief 171 — true when the approved quote was embedded into the
+   *  generated PDF (extra page[s] after the check-request form). When
+   *  false the caller should include the quote link in the webhook
+   *  payload so PA can surface the "View Quote" link. */
+  quoteBundled: boolean;
 }
 
 /**
@@ -192,10 +418,16 @@ export async function storeCheckRequestPdf(
   quote: ClaimPhotoRow,
   requestorEmail: string,
   approvalEmail: string,
-  stageLabel: string
+  stageLabel: string,
+  images: ImagesBinding | undefined
 ): Promise<StoredCheckRequestPdf> {
   const fields = buildCheckRequestFields(claim, quote, requestorEmail, approvalEmail);
-  const pdfBytes = await generateCheckRequestPdf(bucket, fields);
+  const { pdfBytes, quoteBundled } = await generateCheckRequestPdf(
+    bucket,
+    fields,
+    quote,
+    images
+  );
 
   const stageSlug = stageLabel
     .toLowerCase()
@@ -237,7 +469,8 @@ export async function storeCheckRequestPdf(
     id: insertResult.meta?.last_row_id ?? null,
     r2Key,
     filename,
-    pdfBytes
+    pdfBytes,
+    quoteBundled
   };
 }
 
@@ -254,6 +487,23 @@ function bytesToBase64(bytes: Uint8Array): string {
     binary += String.fromCharCode(bytes[i]!);
   }
   return btoa(binary);
+}
+
+/**
+ * Brief 171 — build the public `/claims-api/photo/...` URL for a quote's
+ * R2 key. Mirrors the strip-`claims/`-prefix-and-URL-encode-segments
+ * shape used by `apps/web`'s `damagePhotoUrl` and the internal new-claim
+ * webhook builder in `notifications.ts` (Brief 104 fix). Returns null when
+ * the r2_key is empty/missing so the webhook surfaces an explicit null
+ * (PA can branch on that vs. a stale empty string).
+ */
+function buildQuoteUrl(r2Key: string | null | undefined): string | null {
+  if (!r2Key) return null;
+  const stripped = r2Key.startsWith("claims/")
+    ? r2Key.slice("claims/".length)
+    : r2Key;
+  const segments = stripped.split("/").map(encodeURIComponent).join("/");
+  return `https://splashcarwashes.info/claims-api/photo/${segments}`;
 }
 
 interface SendEmailResult {
@@ -275,7 +525,8 @@ export async function sendCheckRequestEmail(
   quote: ClaimPhotoRow,
   pdfBytes: Uint8Array,
   pdfFilename: string,
-  requestorEmail: string
+  requestorEmail: string,
+  quoteBundled: boolean
 ): Promise<SendEmailResult> {
   if (!webhookUrl) {
     console.warn("sendCheckRequestEmail: webhook URL not configured, skipping");
@@ -283,6 +534,13 @@ export async function sendCheckRequestEmail(
   }
 
   const pdfBase64 = bytesToBase64(pdfBytes);
+
+  // Brief 171 — build the link-fallback URL from quote.r2_key with the
+  // same strip-and-encode shape `notifications.ts` uses for the internal
+  // new-claim webhook (Brief 104). `serveClaimPhoto` prepends "claims/"
+  // before the R2 .get(), so the URL path must NOT include that prefix
+  // already baked into r2_key.
+  const quoteUrl = buildQuoteUrl(quote.r2_key);
 
   const payload = {
     claimId: claim.claim_id,
@@ -293,7 +551,12 @@ export async function sendCheckRequestEmail(
     rmEmail: requestorEmail || "",
     claimUrl: `https://splashcarwashes.info/manage/claim/${encodeURIComponent(claim.claim_id)}`,
     pdfBase64,
-    pdfFilename
+    pdfFilename,
+    // Brief 171 — additive only; existing field names unchanged.
+    // `quoteUrl` is always sent (cheap, canonical reference); operator
+    // wires the conditional "View Quote" link in PA on `quoteBundled === false`.
+    quoteUrl,
+    quoteBundled
   };
 
   try {
@@ -350,8 +613,23 @@ export async function runCheckRequestPdfStep(args: {
   stageLabel: string;
   webhookUrl: string | undefined;
   recipientLabel: string;
+  /** Brief 171 — env.IMAGES, for HEIC→JPEG conversion of HEIC quotes
+   *  during the bundled-quote append step. Optional; when undefined the
+   *  HEIC branch falls back to the link in the webhook payload. */
+  images: ImagesBinding | undefined;
 }): Promise<void> {
-  const { db, bucket, claim, quote, requestorEmail, approvalEmail, stageLabel, webhookUrl, recipientLabel } = args;
+  const {
+    db,
+    bucket,
+    claim,
+    quote,
+    requestorEmail,
+    approvalEmail,
+    stageLabel,
+    webhookUrl,
+    recipientLabel,
+    images
+  } = args;
 
   let stored: StoredCheckRequestPdf;
   try {
@@ -362,7 +640,8 @@ export async function runCheckRequestPdfStep(args: {
       quote,
       requestorEmail,
       approvalEmail,
-      stageLabel
+      stageLabel,
+      images
     );
   } catch (err) {
     console.error("runCheckRequestPdfStep: PDF generation/storage failed:", err);
@@ -392,13 +671,21 @@ export async function runCheckRequestPdfStep(args: {
     quote,
     stored.pdfBytes,
     stored.filename,
-    requestorEmail
+    requestorEmail,
+    stored.quoteBundled
   );
+  // Brief 171 — surface the bundled-quote outcome in the activity-log
+  // note so the claim timeline records which path fired (in-PDF vs.
+  // link-fallback). Helps later audits explain why a given AP email had
+  // / didn't have the quote pages attached.
+  const quoteOutcome = stored.quoteBundled
+    ? " Quote bundled into PDF."
+    : " Quote too large/unsupported to bundle — link included.";
   const noteText = emailResult.ok
-    ? `Generated Check Request (${stageLabel}) and emailed to ${recipientLabel}.`
+    ? `Generated Check Request (${stageLabel}) and emailed to ${recipientLabel}.${quoteOutcome}`
     : `Generated Check Request (${stageLabel}). Email to ${recipientLabel} FAILED: ${
         emailResult.error ?? "status " + emailResult.status
-      }.`;
+      }.${quoteOutcome}`;
   try {
     await db
       .prepare(

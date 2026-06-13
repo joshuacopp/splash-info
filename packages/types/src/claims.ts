@@ -5,8 +5,81 @@
  * Lifecycle bucket. Computed by lifecycleForStatus() in legacy:
  *   "Closed — *" → "Closed", everything else → "Open".
  * Source: legacy/damagemanager.js:1790.
+ *
+ * Brief 172: the stored `claims.lifecycle_state` column stays binary
+ * (CHECK constraint allows only 'Open' | 'Closed' — SQLite can't ALTER a
+ * CHECK in place). The 3-way DisplayLifecycleState below is DERIVED at
+ * read time from claim_status for UI / filter purposes; never stored.
  */
 export type LifecycleState = "Open" | "Closed";
+
+/**
+ * Brief 172 — 3-way display bucket derived from claim_status. The third
+ * value "Awaiting Payment" carves out the three post-approval finance-
+ * stage claim_statuses (see AWAITING_PAYMENT_STATUSES) so the ops queue
+ * (default lifecycle=Open) doesn't show claims that are sitting with
+ * finance/AP. NOT stored — every renderer + filter that needs the 3-way
+ * derives via displayLifecycleForStatus(status).
+ */
+export type DisplayLifecycleState = "Open" | "Awaiting Payment" | "Closed";
+
+/**
+ * Brief 172 — claim_status values that belong in the "Awaiting Payment"
+ * derived bucket. Em-dashes are U+2014 — must match ClaimStatus enum
+ * verbatim or the IN-clause in db-d1's listClaims won't match anything.
+ *
+ * Membership rationale (operator-locked decision): all three post-quote-
+ * approval payment statuses count as Awaiting Payment because the ops
+ * team (GM/RM) has no remaining action — the claim is sitting with
+ * finance/AP. Trimming the set (e.g. "Check Issued" only counts as
+ * Closed-ish) is a one-line change to this array.
+ */
+export const AWAITING_PAYMENT_STATUSES: readonly ClaimStatus[] = [
+  "Approved — Check Request Submitted",
+  "Approved — Submitted for Payment",
+  "Approved — Check Issued"
+];
+
+/**
+ * Brief 172 — derive the 3-way display bucket from a claim_status.
+ *
+ *   Closed (claim_status startsWith "Closed —") → "Closed"
+ *   In AWAITING_PAYMENT_STATUSES                → "Awaiting Payment"
+ *   Everything else                              → "Open"
+ *
+ * `lifecycleForStatus` (in @splash/db-d1) stays unchanged and returns the
+ * binary stored value; this helper produces the derived 3-way value used
+ * by every UI badge / KPI / filter.
+ */
+export function displayLifecycleForStatus(
+  status: ClaimStatus
+): DisplayLifecycleState {
+  if (status.startsWith("Closed")) return "Closed";
+  if ((AWAITING_PAYMENT_STATUSES as readonly string[]).includes(status)) {
+    return "Awaiting Payment";
+  }
+  return "Open";
+}
+
+/**
+ * Brief 172 — cause / fault-attribution allow-list. NULL on existing +
+ * new rows means "Undetermined" — the default; the operator runs a
+ * `ALTER TABLE claims ADD COLUMN fault_category TEXT CHECK (...)` to
+ * land the column (see brief Report section for exact SQL). Worker
+ * tolerates the column being absent during the brief window between
+ * code push and the operator-applied D1 migration via the Brief 138/140
+ * `/no such column.*fault_category/i` try/catch pattern.
+ */
+export type FaultCategory =
+  | "Employee Error"
+  | "Equipment Malfunction"
+  | "Not Employee/Equipment";
+
+export const FAULT_CATEGORIES: readonly FaultCategory[] = [
+  "Employee Error",
+  "Equipment Malfunction",
+  "Not Employee/Equipment"
+];
 
 /**
  * Form determination — picked by the employee on the public claim form.
@@ -185,6 +258,16 @@ export interface ClaimRow {
    *  NOT NULL means: WO created — used as the dedupe key when Brief 43's
    *  GM-side modal re-triggers WO creation. */
   maintainx_workorder_id: number | null;
+
+  /** Brief 172 — cause / fault attribution. One of
+   *  `Employee Error` | `Equipment Malfunction` | `Not Employee/Equipment`,
+   *  or NULL for unset (the default — surfaces as "Undetermined" in UI).
+   *  Settable by any damage role (gm/rm/admin/super_admin) via
+   *  POST /manage/api/claim/{id}/fault-category. Pre-migration windows
+   *  (column absent in D1) are tolerated by the worker via the
+   *  Brief 138/140 `/no such column.*fault_category/i` try/catch pattern;
+   *  reads collapse to null when the column is missing. */
+  fault_category: FaultCategory | null;
 
   // Soft delete
   deleted_at: string | null;

@@ -208,3 +208,55 @@ export async function deleteDocumentAction(
   revalidatePath(detailPath(claimId));
   return { ok: true, message: "Document deleted" };
 }
+
+/* ============================================================
+ * Brief 172 — set / clear the cause/fault-attribution field on a
+ * claim. Empty `fault_category` clears (NULL). UI gates dcRole !==
+ * null; the worker re-validates as defense in depth and tolerates
+ * the D1 column being absent during the post-deploy migration window
+ * (soft success with a `migration_pending: true` body in that case).
+ * ============================================================ */
+export async function setFaultCategoryAction(
+  _prevState: ActionResult | null,
+  formData: FormData
+): Promise<ActionResult> {
+  const claimId = String(formData.get("claim_id") ?? "").trim();
+  if (!claimId) {
+    return { ok: false, error: "Missing claim id on cause submission." };
+  }
+
+  const result = await damagePostForm(
+    `/manage/api/claim/${encodeURIComponent(claimId)}/fault-category`,
+    formData
+  );
+
+  if (!result.ok) {
+    return { ok: false, error: result.error };
+  }
+
+  revalidatePath(detailPath(claimId));
+
+  // Worker returns `{ ok, fault_category, migration_pending? }` — surface
+  // the migration-pending state so the operator knows their pick was
+  // accepted but won't persist until the ALTER TABLE lands.
+  const body = result.body;
+  if (
+    body &&
+    typeof body === "object" &&
+    (body as { migration_pending?: unknown }).migration_pending === true
+  ) {
+    return {
+      ok: true,
+      message:
+        "Cause saved (pending D1 migration — the operator must run the ALTER TABLE for the change to persist)."
+    };
+  }
+
+  const next =
+    body && typeof body === "object"
+      ? (body as { fault_category?: unknown }).fault_category
+      : undefined;
+  const label =
+    typeof next === "string" && next.length > 0 ? next : "Undetermined";
+  return { ok: true, message: `Cause set to ${label}` };
+}

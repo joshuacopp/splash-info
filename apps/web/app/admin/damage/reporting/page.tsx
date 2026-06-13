@@ -53,6 +53,8 @@ interface ReportingResponse {
   };
   totals: {
     open: number;
+    /** Brief 172 — derived bucket; sits between Open and Closed. */
+    awaiting_payment: number;
     closed: number;
     approved: number;
     denied: number;
@@ -88,6 +90,9 @@ interface ReportingResponse {
     n: number;
     cost: number;
   }>;
+  /** Brief 172 — by-cause / fault-attribution counts. Empty array pre-
+   *  D1 migration; renderer treats empty as "(none)" gracefully. */
+  by_fault_category: Array<{ fault_category: string; count: number }>;
 }
 
 interface PageProps {
@@ -341,12 +346,44 @@ export default async function DamageReportingPage({ searchParams }: PageProps) {
 
       <section id="overview" className="mb-8 scroll-mt-20">
         <h2 className="mb-3 text-lg font-bold text-splash-navy">Overview</h2>
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
+        {/* Brief 172 — Awaiting Payment inserted between Open and Closed
+            so the row reads in lifecycle order. The three counts are
+            mutually exclusive: open + awaiting_payment + closed = total. */}
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
           <KpiTile label="Open" value={String(report.totals.open)} />
+          <KpiTile
+            label="Awaiting Payment"
+            value={String(report.totals.awaiting_payment)}
+          />
           <KpiTile label="Closed" value={String(report.totals.closed)} />
           <KpiTile label="Approved" value={String(report.totals.approved)} />
           <KpiTile label="Denied" value={String(report.totals.denied)} />
           <KpiTile label="Repair Cost" value={formatCurrency(report.totals.repair_cost)} />
+        </div>
+
+        {/* Brief 172 — By Cause / fault-attribution. KPI-pill row below the
+            tiles, one pill per category present in the result (the worker's
+            COALESCE folds NULLs into a synthesized "Undetermined" entry).
+            Empty array means no claims fell into any bucket (or the
+            fault_category column hasn't been migrated yet); fall back to a
+            neutral "(none)" hint so the section doesn't visually disappear. */}
+        <div className="mt-4">
+          <h3 className="mb-2 text-sm font-semibold uppercase tracking-wider text-splash-navy/70">
+            By Cause
+          </h3>
+          {report.by_fault_category.length === 0 ? (
+            <p className="text-xs text-splash-navy/60">(none)</p>
+          ) : (
+            <div className="flex flex-wrap gap-2">
+              {report.by_fault_category.map((row) => (
+                <CausePill
+                  key={row.fault_category}
+                  cause={row.fault_category}
+                  count={row.count}
+                />
+              ))}
+            </div>
+          )}
         </div>
       </section>
 
@@ -394,6 +431,32 @@ function KpiTile({ label, value }: { label: string; value: string }) {
       </div>
       <div className="mt-1 text-2xl font-bold text-splash-navy">{value}</div>
     </div>
+  );
+}
+
+/**
+ * Brief 172 — KPI pill for the By-Cause row. Tones mirror the
+ * StatusActionPill vocabulary (amber / sudsy / neutral / muted) so the
+ * three real causes stand out from the synthesized Undetermined row.
+ */
+function CausePill({ cause, count }: { cause: string; count: number }) {
+  let cls = "bg-splash-navy/10 text-splash-navy/80";
+  if (cause === "Employee Error") {
+    cls = "bg-amber-100 text-amber-900 ring-1 ring-amber-300";
+  } else if (cause === "Equipment Malfunction") {
+    cls = "bg-sudsy-blue-soft text-splash-navy ring-1 ring-sudsy-blue/40";
+  } else if (cause === "Not Employee/Equipment") {
+    cls = "bg-gray-light/70 text-splash-navy/80 ring-1 ring-gray-light";
+  } else if (cause === "Undetermined") {
+    cls = "bg-white text-splash-navy/60 ring-1 ring-gray-light";
+  }
+  return (
+    <span
+      className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-semibold ${cls}`}
+    >
+      <span>{cause}</span>
+      <span className="font-mono text-[11px] opacity-80">{count}</span>
+    </span>
   );
 }
 

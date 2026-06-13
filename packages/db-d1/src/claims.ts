@@ -6,7 +6,12 @@
 // unconditionally — D1 writes are best-effort (gotcha: damage worker still
 // returns success even if D1 fails, since R2 has the canonical record).
 
-import type { ClaimRow, ClaimStatus, LifecycleState } from "@splash/types/claims";
+import {
+  AWAITING_PAYMENT_STATUSES,
+  type ClaimRow,
+  type ClaimStatus,
+  type LifecycleState
+} from "@splash/types/claims";
 
 /**
  * Map form determination → initial claim_status.
@@ -291,7 +296,15 @@ export async function writeClaimBatch(db: D1Database, c: ClaimInsert): Promise<v
 export interface ClaimsListFilters {
   /** Restrict to a list of location codes; empty array → no rows. */
   locationCodes?: ReadonlyArray<string>;
-  lifecycle?: LifecycleState | "All";
+  /**
+   * Brief 172 — 3-way derived bucket. `"Open"` excludes the three
+   * AWAITING_PAYMENT_STATUSES rows (which still carry stored
+   * lifecycle_state='Open' — Awaiting Payment is derived, not stored).
+   * `"Awaiting Payment"` matches `claim_status IN (...)` ignoring the
+   * stored column. `"Closed"` matches the stored column. `"All"` skips
+   * the filter entirely.
+   */
+  lifecycle?: LifecycleState | "Awaiting Payment" | "All";
   claimStatus?: ClaimStatus;
   /** Substring match on customer_name. */
   search?: string;
@@ -348,8 +361,22 @@ export async function listClaims(
   }
 
   if (filters.lifecycle && filters.lifecycle !== "All") {
-    where.push("lifecycle_state = ?");
-    params.push(filters.lifecycle);
+    // Brief 172 — 3-way derived bucket. Stored lifecycle_state is binary
+    // (Open/Closed); "Awaiting Payment" carves the three post-quote-
+    // approval finance-stage claim_statuses out of Open at read time.
+    const apPlaceholders = AWAITING_PAYMENT_STATUSES.map(() => "?").join(",");
+    if (filters.lifecycle === "Open") {
+      where.push(
+        `lifecycle_state = 'Open' AND claim_status NOT IN (${apPlaceholders})`
+      );
+      params.push(...AWAITING_PAYMENT_STATUSES);
+    } else if (filters.lifecycle === "Awaiting Payment") {
+      where.push(`claim_status IN (${apPlaceholders})`);
+      params.push(...AWAITING_PAYMENT_STATUSES);
+    } else {
+      // "Closed"
+      where.push("lifecycle_state = 'Closed'");
+    }
   }
   if (filters.claimStatus) {
     where.push("claim_status = ?");

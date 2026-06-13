@@ -119,14 +119,18 @@ import {
   serveClaimPhoto,
   uploadClaimPhoto
 } from "@splash/storage-r2";
-import type {
-  ClaimDetermination,
-  ClaimPhotoRow,
-  ClaimRow,
-  ClaimStatus,
-  DamageRole,
-  LifecycleState,
-  PayToType
+import {
+  AWAITING_PAYMENT_STATUSES,
+  type ClaimDetermination,
+  type ClaimPhotoRow,
+  type ClaimRow,
+  type ClaimStatus,
+  type DamageRole,
+  type FaultCategory,
+  FAULT_CATEGORIES,
+  type LifecycleState,
+  type PayToType,
+  displayLifecycleForStatus
 } from "@splash/types/claims";
 import {
   CEO_APPROVAL_THRESHOLD,
@@ -414,6 +418,13 @@ async function dispatchManageApi(
     return getClaimsList(env, session, new URL(request.url));
   }
 
+  // Brief 172 — GET /manage/api/claims.csv — CSV export of the same
+  // filter surface. dc_role-scoped via the same resolver. 10000-row
+  // safety cap; RFC-4180 quoting; Content-Disposition: attachment.
+  if (subParts.length === 1 && subParts[0] === "claims.csv" && method === "GET") {
+    return getClaimsCsv(env, session, new URL(request.url));
+  }
+
   // Brief 59 — GET /manage/api/contact-roster?role=regional_director|regional_manager
   if (
     subParts.length === 1 &&
@@ -448,6 +459,12 @@ async function dispatchManageApi(
       }
       if (action === "document" && method === "POST") {
         return handleDocumentUpload(request, env, session, claimId);
+      }
+      // Brief 172 — set / clear the cause/fault-attribution field. Any
+      // damage role with the claim in scope can set it. Tolerant of the
+      // D1 column being absent during the post-deploy migration window.
+      if (action === "fault-category" && method === "POST") {
+        return handleSetFaultCategory(request, env, session, claimId);
       }
     }
 
@@ -607,7 +624,11 @@ async function getClaimsList(env: Env, session: Session, url: URL): Promise<Resp
 
   const filters: ClaimsListFilters = {
     locationCodes: resolved.codes,
-    lifecycle: (lifecycleParam === "All" ? "All" : lifecycleParam) as LifecycleState | "All",
+    // Brief 172 — accept the new "Awaiting Payment" 3-way bucket
+    // alongside the legacy "Open" | "Closed" | "All" values. db-d1's
+    // listClaims rewrites the WHERE clause per bucket; stored
+    // lifecycle_state stays binary.
+    lifecycle: resolveLifecycleParam(lifecycleParam),
     claimStatus: statusParam !== "All" ? (statusParam as ClaimStatus) : undefined,
     search,
     submittedFrom: normalizeSubmittedBound(submittedFromParam, "from"),
@@ -616,6 +637,20 @@ async function getClaimsList(env: Env, session: Session, url: URL): Promise<Resp
 
   const claims = await listClaims(env.DB, filters);
   return json(claims);
+}
+
+/**
+ * Brief 172 — validate the `lifecycle` query param. Unknown values fall
+ * back to "Open" (the default render bucket); kept tolerant so a typo or
+ * legacy bookmark doesn't 400 the list page.
+ */
+function resolveLifecycleParam(
+  raw: string
+): LifecycleState | "Awaiting Payment" | "All" {
+  if (raw === "Closed" || raw === "All" || raw === "Awaiting Payment") {
+    return raw;
+  }
+  return "Open";
 }
 
 /**
@@ -801,10 +836,30 @@ const REPORTING_WINDOWS: ReadonlySet<string> = new Set([
 
 interface ReportingTotals {
   open: number;
+  /**
+   * Brief 172 — derived bucket. Count of claims whose claim_status is in
+   * AWAITING_PAYMENT_STATUSES inside the window+scope. These rows are
+   * EXCLUDED from `open` so the three counts don't overlap (open +
+   * awaiting_payment + closed = total). `approved` (Approved-family
+   * lifetime count) still includes awaiting-payment rows because they
+   * ARE approved — different axis.
+   */
+  awaiting_payment: number;
   closed: number;
   approved: number;
   denied: number;
   repair_cost: number;
+}
+
+/**
+ * Brief 172 — cause/fault breakdown. One row per category (the three
+ * FAULT_CATEGORIES) plus a synthesized `Undetermined` row for
+ * `fault_category IS NULL`. Total row count <= 4. Tolerant of the D1
+ * column being absent (returns empty array on the `no such column` path).
+ */
+interface ReportingByFaultCategoryRow {
+  fault_category: string;
+  count: number;
 }
 
 interface ReportingByLocationRow {
@@ -860,6 +915,9 @@ interface ReportingResponse {
   by_damage_type_approved: ReportingByDamageTypeApprovedRow[];
   by_damage_type_denied: ReportingByDamageTypeRow[];
   by_location_drilldown: ReportingByLocationDrilldownRow[];
+  /** Brief 172 — by-cause/fault-category counts. Empty array when the
+   *  D1 fault_category column is absent (pre-migration). */
+  by_fault_category: ReportingByFaultCategoryRow[];
 }
 
 function resolveReportingWindow(window: ReportingWindow, now: Date): { from: string; to: string } {
@@ -951,13 +1009,29 @@ async function getReporting(env: Env, session: Session, url: URL): Promise<Respo
   const inPlaceholders = codes.map((_, i) => `?${i + 3}`).join(",");
   const baseBindings: unknown[] = [from, to, ...codes];
 
+  // Brief 172 — totals bucketing uses a 3-way CASE so awaiting-payment
+  // claims drop out of `open`. The CASE evaluates top-down: closed-status
+  // rows go to 'closed' first, then awaiting-payment claim_statuses go to
+  // 'awaiting_payment', then anything still with stored lifecycle_state =
+  // 'Open' goes to 'open'. Rows whose stored lifecycle is already
+  // 'Closed' (CASE branch 1) never reach the awaiting-payment branch.
+  const apTotalsPlaceholders = AWAITING_PAYMENT_STATUSES.map(
+    (_, i) => `?${i + 3 + codes.length}`
+  ).join(",");
   const lifecycleSql = `
-    SELECT lifecycle_state, COUNT(*) AS n
+    SELECT
+      CASE
+        WHEN lifecycle_state = 'Closed' THEN 'closed'
+        WHEN claim_status IN (${apTotalsPlaceholders}) THEN 'awaiting_payment'
+        WHEN lifecycle_state = 'Open' THEN 'open'
+        ELSE 'open'
+      END AS bucket,
+      COUNT(*) AS n
     FROM claims
     WHERE submitted_at BETWEEN ?1 AND ?2
       AND location_code IN (${inPlaceholders})
       AND deleted_at IS NULL
-    GROUP BY lifecycle_state
+    GROUP BY bucket
   `;
   const approvedSql = `
     SELECT COUNT(*) AS n
@@ -1143,7 +1217,10 @@ async function getReporting(env: Env, session: Session, url: URL): Promise<Respo
   `;
 
   const stmts = [
-    env.DB.prepare(lifecycleSql).bind(...baseBindings),
+    // Brief 172 — lifecycleSql needs the AP claim_status list appended
+    // after baseBindings (placeholders are ?N where N starts at
+    // 3+codes.length, see SQL above).
+    env.DB.prepare(lifecycleSql).bind(...baseBindings, ...AWAITING_PAYMENT_STATUSES),
     env.DB.prepare(approvedSql).bind(...baseBindings),
     env.DB.prepare(deniedSql).bind(...baseBindings),
     env.DB.prepare(costSql).bind(...baseBindings),
@@ -1172,15 +1249,31 @@ async function getReporting(env: Env, session: Session, url: URL): Promise<Respo
   const byLocationAvgDaysOpenRes = batchResult[11];
   const byLocationDrilldownRes = batchResult[12];
 
+  // Brief 172 — fault-category breakdown runs separately so a missing
+  // fault_category column doesn't fail the whole batch. Tolerant of the
+  // `no such column.*fault_category` error (pre-migration window):
+  // catches and returns an empty array so the rest of the report renders
+  // normally. Mirrors Brief 138/140's idempotency-key column-missing
+  // tolerance pattern.
+  const byFaultCategoryRows = await readByFaultCategory(
+    env.DB,
+    from,
+    to,
+    codes
+  );
+
   const lifecycleRows = (lifecycleRes?.results ?? []) as Array<{
-    lifecycle_state: string;
+    bucket: string;
     n: number;
   }>;
   let totalsOpen = 0;
+  let totalsAwaitingPayment = 0;
   let totalsClosed = 0;
   for (const r of lifecycleRows) {
-    if (r.lifecycle_state === "Open") totalsOpen = Number(r.n) || 0;
-    else if (r.lifecycle_state === "Closed") totalsClosed = Number(r.n) || 0;
+    const count = Number(r.n) || 0;
+    if (r.bucket === "open") totalsOpen = count;
+    else if (r.bucket === "awaiting_payment") totalsAwaitingPayment = count;
+    else if (r.bucket === "closed") totalsClosed = count;
   }
 
   const approvedTotal = Number((approvedRes?.results?.[0] as { n?: number } | undefined)?.n ?? 0);
@@ -1303,6 +1396,7 @@ async function getReporting(env: Env, session: Session, url: URL): Promise<Respo
     filters,
     totals: {
       open: totalsOpen,
+      awaiting_payment: totalsAwaitingPayment,
       closed: totalsClosed,
       approved: approvedTotal,
       denied: deniedTotal,
@@ -1312,9 +1406,55 @@ async function getReporting(env: Env, session: Session, url: URL): Promise<Respo
     by_damage_type_open: byDamageOpen,
     by_damage_type_approved: byDamageApproved,
     by_damage_type_denied: byDamageDenied,
-    by_location_drilldown: byLocationDrilldown
+    by_location_drilldown: byLocationDrilldown,
+    by_fault_category: byFaultCategoryRows
   };
   return json(response);
+}
+
+/**
+ * Brief 172 — by-fault-category counts. Separate query rather than
+ * folded into the batch so the column-missing tolerance can swallow the
+ * specific error without taking down the rest of the report. Pre-
+ * migration callers get `by_fault_category: []` and apps/web renders
+ * "(none)" gracefully.
+ */
+async function readByFaultCategory(
+  db: D1Database,
+  from: string,
+  to: string,
+  codes: string[]
+): Promise<ReportingByFaultCategoryRow[]> {
+  const inPlaceholders = codes.map((_, i) => `?${i + 3}`).join(",");
+  const sql = `
+    SELECT COALESCE(fault_category, 'Undetermined') AS fault_category,
+           COUNT(*) AS n
+    FROM claims
+    WHERE submitted_at BETWEEN ?1 AND ?2
+      AND location_code IN (${inPlaceholders})
+      AND deleted_at IS NULL
+    GROUP BY 1
+    ORDER BY n DESC
+  `;
+  try {
+    const res = await db.prepare(sql).bind(from, to, ...codes).all<{
+      fault_category: string;
+      n: number;
+    }>();
+    return (res.results ?? []).map((r) => ({
+      fault_category: r.fault_category,
+      count: Number(r.n) || 0
+    }));
+  } catch (err) {
+    const errMsg = err instanceof Error ? err.message : String(err);
+    if (/no such column.*fault_category/i.test(errMsg)) {
+      console.warn(
+        "[reporting.fault-category] column missing — returning empty array (apply schema migration)"
+      );
+      return [];
+    }
+    throw err;
+  }
 }
 
 function emptyReportingResponse(
@@ -1328,12 +1468,20 @@ function emptyReportingResponse(
     from,
     to,
     filters,
-    totals: { open: 0, closed: 0, approved: 0, denied: 0, repair_cost: 0 },
+    totals: {
+      open: 0,
+      awaiting_payment: 0,
+      closed: 0,
+      approved: 0,
+      denied: 0,
+      repair_cost: 0
+    },
     by_location: [],
     by_damage_type_open: [],
     by_damage_type_approved: [],
     by_damage_type_denied: [],
-    by_location_drilldown: []
+    by_location_drilldown: [],
+    by_fault_category: []
   };
 }
 
@@ -1361,7 +1509,366 @@ async function getClaimDetail(env: Env, session: Session, claimId: string): Prom
     listActivityForClaim(env.DB, claimId)
   ]);
 
-  return json({ claim, photos, activity });
+  // Brief 172 — getClaimById is `SELECT *`, which pre-migration returns
+  // rows without a `fault_category` key. Normalize to null so apps/web's
+  // ClaimRow consumers always see the field even before the operator
+  // runs the ALTER TABLE.
+  const claimWithFault = {
+    ...claim,
+    fault_category:
+      (claim as ClaimRow).fault_category === undefined
+        ? null
+        : (claim as ClaimRow).fault_category
+  };
+
+  return json({ claim: claimWithFault, photos, activity });
+}
+
+/* ============================================================
+ * Brief 172 — CSV export
+ *
+ * GET /manage/api/claims.csv — same filter surface + dc_role scoping as
+ * /manage/api/claims, but emits a CSV with broader columns (incl.
+ * customer phone/email, full vehicle, license_plate, damage_type +
+ * damage_other, fault_category, the DERIVED 3-way lifecycle, audit
+ * timestamps, age_days). 10000-row safety cap; RFC-4180 quoted; pre-
+ * migration fault_category column is tolerated.
+ * ============================================================ */
+
+/** Hard ceiling matched to fleet/signups/jotform CSV endpoints. */
+const CLAIMS_CSV_MAX_ROWS = 10_000;
+
+/** Columns shipped in the CSV export (Brief 172). Listed once so the
+ *  header row and the per-row writer stay in sync. */
+const CLAIMS_CSV_COLUMNS = [
+  "claim_id",
+  "location_code",
+  "location_pretty",
+  "customer_name",
+  "customer_phone",
+  "customer_email",
+  "vehicle_year",
+  "vehicle_make",
+  "vehicle_model",
+  "vehicle_color",
+  "license_plate",
+  "damage_type",
+  "damage_other",
+  "fault_category",
+  "claim_status",
+  "lifecycle",
+  "submitted_at",
+  "status_updated_at",
+  "age_days"
+] as const;
+
+interface ClaimsCsvRow {
+  claim_id: string;
+  location_code: string;
+  location_pretty: string;
+  customer_name: string;
+  customer_phone: string | null;
+  customer_email: string | null;
+  vehicle_year: number | null;
+  vehicle_make: string | null;
+  vehicle_model: string | null;
+  vehicle_color: string | null;
+  license_plate: string | null;
+  damage_type: string | null;
+  damage_other: string | null;
+  fault_category: string | null;
+  claim_status: ClaimStatus;
+  submitted_at: string;
+  status_updated_at: string | null;
+  age_days: number | null;
+}
+
+async function getClaimsCsv(env: Env, session: Session, url: URL): Promise<Response> {
+  const scope = damageScopeForSession(session);
+  if (scope.kind === "denied") return jsonError(403, "no damage role assigned");
+
+  const requestedLocation = url.searchParams.get("location") ?? "All";
+  const lifecycleParam = url.searchParams.get("lifecycle") ?? "Open";
+  const statusParam = url.searchParams.get("status") ?? "All";
+  const search = url.searchParams.get("search")?.trim() || undefined;
+  const rdEmail = url.searchParams.get("regional_director_email")?.trim().toLowerCase() || null;
+  const rmEmail = url.searchParams.get("regional_manager_email")?.trim().toLowerCase() || null;
+  const submittedFromParam = url.searchParams.get("submitted_from")?.trim() || null;
+  const submittedToParam = url.searchParams.get("submitted_to")?.trim() || null;
+
+  const resolved = await resolveLocationCodesWithFilters(env, scope, {
+    requestedLocation,
+    rdEmail,
+    rmEmail
+  });
+  if (resolved.kind === "empty") {
+    return csvResponse(claimsCsvHeader(), claimsCsvFilename());
+  }
+
+  // Build the WHERE clause inline — broader column projection than
+  // CLAIMS_LIST_COLS so we can ship the customer + audit fields in the
+  // export. fault_category wrapped in COALESCE so a row whose value is
+  // NULL produces an empty cell rather than the literal "null" string.
+  // The column itself is wrapped in the tolerant query path below.
+  const where: string[] = ["deleted_at IS NULL"];
+  const params: unknown[] = [];
+
+  if (resolved.kind === "subset") {
+    if (resolved.codes.length === 0) {
+      return csvResponse(claimsCsvHeader(), claimsCsvFilename());
+    }
+    const placeholders = resolved.codes.map(() => "?").join(",");
+    where.push(`location_code IN (${placeholders})`);
+    params.push(...resolved.codes);
+  }
+
+  // Brief 172 — Awaiting Payment is derived. Same 3-way bucketing as
+  // db-d1's listClaims.
+  const lifecycle = resolveLifecycleParam(lifecycleParam);
+  if (lifecycle !== "All") {
+    const apPlaceholders = AWAITING_PAYMENT_STATUSES.map(() => "?").join(",");
+    if (lifecycle === "Open") {
+      where.push(
+        `lifecycle_state = 'Open' AND claim_status NOT IN (${apPlaceholders})`
+      );
+      params.push(...AWAITING_PAYMENT_STATUSES);
+    } else if (lifecycle === "Awaiting Payment") {
+      where.push(`claim_status IN (${apPlaceholders})`);
+      params.push(...AWAITING_PAYMENT_STATUSES);
+    } else {
+      where.push("lifecycle_state = 'Closed'");
+    }
+  }
+  if (statusParam !== "All") {
+    where.push("claim_status = ?");
+    params.push(statusParam);
+  }
+  if (search) {
+    where.push("customer_name LIKE ?");
+    params.push(`%${search}%`);
+  }
+  const fromIso = normalizeSubmittedBound(submittedFromParam, "from");
+  const toIso = normalizeSubmittedBound(submittedToParam, "to");
+  if (fromIso) {
+    where.push("submitted_at >= ?");
+    params.push(fromIso);
+  }
+  if (toIso) {
+    where.push("submitted_at <= ?");
+    params.push(toIso);
+  }
+
+  // Probe one row past the cap so we can 416 cleanly on overflow.
+  const cap = CLAIMS_CSV_MAX_ROWS + 1;
+  const projection = `claim_id, location_code, location_pretty, customer_name,
+    customer_phone, customer_email, vehicle_year, vehicle_make, vehicle_model,
+    vehicle_color, license_plate, damage_type, damage_other,
+    {fault_category_expr} AS fault_category,
+    claim_status, submitted_at, status_updated_at,
+    CAST((julianday('now') - julianday(submitted_at)) AS INTEGER) AS age_days`;
+
+  // Brief 138/140 — column-missing tolerance. Try with fault_category
+  // first; on the specific "no such column" error, retry with NULL in
+  // its place so the export keeps working pre-migration.
+  let rows: ClaimsCsvRow[];
+  try {
+    const sql = `
+      SELECT ${projection.replace("{fault_category_expr}", "fault_category")}
+      FROM claims
+      WHERE ${where.join(" AND ")}
+      ORDER BY submitted_at DESC
+      LIMIT ${cap}
+    `;
+    const res = await env.DB.prepare(sql).bind(...params).all<ClaimsCsvRow>();
+    rows = res.results ?? [];
+  } catch (err) {
+    const errMsg = err instanceof Error ? err.message : String(err);
+    if (!/no such column.*fault_category/i.test(errMsg)) throw err;
+    console.warn(
+      "[claims.csv] fault_category column missing — exporting with empty cell (apply schema migration)"
+    );
+    const sql = `
+      SELECT ${projection.replace("{fault_category_expr}", "NULL")}
+      FROM claims
+      WHERE ${where.join(" AND ")}
+      ORDER BY submitted_at DESC
+      LIMIT ${cap}
+    `;
+    const res = await env.DB.prepare(sql).bind(...params).all<ClaimsCsvRow>();
+    rows = res.results ?? [];
+  }
+
+  if (rows.length > CLAIMS_CSV_MAX_ROWS) {
+    return new Response(
+      `Result set exceeds the ${CLAIMS_CSV_MAX_ROWS}-row export cap. Narrow your filters and try again.`,
+      { status: 416 }
+    );
+  }
+
+  const lines: string[] = [claimsCsvHeader()];
+  for (const r of rows) {
+    const derived = displayLifecycleForStatus(r.claim_status);
+    lines.push(
+      [
+        r.claim_id,
+        r.location_code,
+        r.location_pretty,
+        r.customer_name,
+        r.customer_phone ?? "",
+        r.customer_email ?? "",
+        r.vehicle_year ?? "",
+        r.vehicle_make ?? "",
+        r.vehicle_model ?? "",
+        r.vehicle_color ?? "",
+        r.license_plate ?? "",
+        r.damage_type ?? "",
+        r.damage_other ?? "",
+        r.fault_category ?? "",
+        r.claim_status,
+        derived,
+        r.submitted_at,
+        r.status_updated_at ?? "",
+        r.age_days ?? ""
+      ]
+        .map(csvQuote)
+        .join(",")
+    );
+  }
+  return csvResponse(lines.join("\r\n"), claimsCsvFilename());
+}
+
+function claimsCsvHeader(): string {
+  return CLAIMS_CSV_COLUMNS.map(csvQuote).join(",");
+}
+
+function claimsCsvFilename(): string {
+  const today = new Date().toISOString().slice(0, 10);
+  return `damage-claims-${today}.csv`;
+}
+
+/**
+ * RFC 4180 minimal field quoter. Wraps in double quotes when the value
+ * contains a comma, quote, CR, or LF; doubles any embedded quotes.
+ * Numbers are stringified verbatim.
+ */
+function csvQuote(value: unknown): string {
+  const s = value === null || value === undefined ? "" : String(value);
+  if (s === "") return "";
+  if (/[",\r\n]/.test(s)) {
+    return `"${s.replace(/"/g, '""')}"`;
+  }
+  return s;
+}
+
+function csvResponse(body: string, filename: string): Response {
+  return new Response(body, {
+    status: 200,
+    headers: {
+      "Content-Type": "text/csv; charset=utf-8",
+      "Content-Disposition": `attachment; filename="${filename}"`,
+      "Cache-Control": "no-store"
+    }
+  });
+}
+
+/* ============================================================
+ * Brief 172 — POST /manage/api/claim/{id}/fault-category
+ *
+ * Body: form-encoded `fault_category` field. One of the three
+ * FAULT_CATEGORIES values, or empty string → clear (NULL).
+ * Gate: any session with dcRole !== null AND claim in scope (no
+ * transition-table check — this is a side metadata write, not a
+ * state-machine move). Worker re-validates and tolerates the D1
+ * column being absent during the post-deploy migration window.
+ * ============================================================ */
+
+async function handleSetFaultCategory(
+  request: Request,
+  env: Env,
+  session: Session,
+  claimId: string
+): Promise<Response> {
+  if (!isOriginAllowed(request)) return jsonError(403, "bad origin");
+
+  const guard = await loadAndScopeCheck(env, session, claimId);
+  if (!guard.ok) return guard.response;
+
+  // dcRole-null is already rejected by loadAndScopeCheck, but the
+  // narrow check is here for defense-in-depth + readable intent.
+  if (!session.dcRole) {
+    return jsonError(403, "no damage role assigned");
+  }
+
+  const form = await readForm(request);
+  const raw = (form.get("fault_category") ?? "").toString().trim();
+  let next: FaultCategory | null = null;
+  if (raw !== "") {
+    if (!(FAULT_CATEGORIES as readonly string[]).includes(raw)) {
+      return jsonError(
+        400,
+        `Invalid cause. Must be one of: ${FAULT_CATEGORIES.join(", ")}, or empty to clear.`
+      );
+    }
+    next = raw as FaultCategory;
+  }
+
+  const prior = (guard.claim as ClaimRow).fault_category ?? null;
+  if (prior === next) {
+    return json({ ok: true, fault_category: next, unchanged: true });
+  }
+
+  // Tolerant UPDATE — same column-missing posture as Brief 138/140 +
+  // the CSV path above. The activity-row insert lives in the same
+  // try-block so a column-missing UPDATE doesn't leave a misleading
+  // log entry.
+  const noteSummary =
+    next === null
+      ? `[cause] ${session.email} cleared cause (was "${prior ?? "Undetermined"}")`
+      : `[cause] ${session.email} set cause to "${next}"${
+          prior ? ` (was "${prior}")` : ""
+        }`;
+
+  try {
+    await env.DB.prepare(
+      "UPDATE claims SET fault_category = ?, updated_at = datetime('now') WHERE claim_id = ?"
+    )
+      .bind(next, claimId)
+      .run();
+  } catch (err) {
+    const errMsg = err instanceof Error ? err.message : String(err);
+    if (/no such column.*fault_category/i.test(errMsg)) {
+      console.warn(
+        "[claim.fault-category] column missing — soft-success returned (apply schema migration)"
+      );
+      return json(
+        {
+          ok: true,
+          fault_category: next,
+          migration_pending: true,
+          message:
+            "Cause changes are queued — the operator must run the fault_category D1 migration for changes to persist."
+        },
+        200
+      );
+    }
+    console.error("handleSetFaultCategory UPDATE failed:", err);
+    return jsonError(500, "Failed to update cause.");
+  }
+
+  // Activity log is fail-soft (mirrors note + transition handlers).
+  try {
+    await logActivity(env.DB, {
+      claimId,
+      activityType: "note",
+      notes: noteSummary,
+      actorEmail: session.email,
+      actorName: session.email
+    });
+  } catch (logErr) {
+    console.error("[claim.fault-category] activity log failed:", logErr);
+  }
+
+  return json({ ok: true, fault_category: next });
 }
 
 /* ============================================================
@@ -1805,7 +2312,8 @@ async function handleStatusTransition(
       approvalEmail: "",
       stageLabel: "Pending Incidents Review",
       webhookUrl: env.INCIDENTS_WEBHOOK_URL,
-      recipientLabel: "incidents"
+      recipientLabel: "incidents",
+      images: env.IMAGES
     });
   } else if (finalTo === "Approved — Submitted for Payment") {
     // Incidents just clicked Submit for Payment.
@@ -1842,7 +2350,8 @@ async function handleStatusTransition(
         approvalEmail: session.email,
         stageLabel: "Submitted to AP",
         webhookUrl: env.AP_WEBHOOK_URL,
-        recipientLabel: "AP"
+        recipientLabel: "AP",
+        images: env.IMAGES
       });
     } else {
       // No approved quote on this claim — log + continue. Activity row
@@ -2972,6 +3481,7 @@ async function handleClaimSubmission(
             parts_ordered: null,
             vendor_name: null,
             maintainx_workorder_id: null,
+            fault_category: null,
             deleted_at: null
           };
 
@@ -3489,7 +3999,17 @@ async function handleCheckRequestPreview(
 
   let pdfBytes: Uint8Array;
   try {
-    pdfBytes = await generateCheckRequestPdf(env.R2_BUCKET, fields);
+    // Brief 171 — preview also bundles the approved quote so reviewers
+    // see exactly what the real check request will look like (header band
+    // + AcroForm + appended quote pages). Same fail-soft posture as the
+    // real path: append failure logs and falls back to the form-only PDF.
+    const generated = await generateCheckRequestPdf(
+      env.R2_BUCKET,
+      fields,
+      quote,
+      env.IMAGES
+    );
+    pdfBytes = generated.pdfBytes;
   } catch (err) {
     console.error("handleCheckRequestPreview: PDF generation failed:", err);
     return jsonError(
