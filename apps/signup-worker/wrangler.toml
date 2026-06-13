@@ -61,12 +61,21 @@ routes = [
   { pattern = "staging.splashcarwashes.info/signup/*",           zone_name = "splashcarwashes.info" },
   { pattern = "staging.splashcarwashes.info/q/*",                zone_name = "splashcarwashes.info" },
   { pattern = "staging.splashcarwashes.info/join/*",             zone_name = "splashcarwashes.info" },
-  # === CUTOVER PHASE C — uncomment the line(s) below + push at the flip window ===
-  # { pattern = "splashcarwashes.info/signup/*",          zone_name = "splashcarwashes.info" },
-  # { pattern = "splashcarwashes.info/q/*",               zone_name = "splashcarwashes.info" },
-  # { pattern = "splashcarwashes.info/join/*",            zone_name = "splashcarwashes.info" },
-  # { pattern = "splashcarwashes.info/api/submit-signup", zone_name = "splashcarwashes.info" },
-  # { pattern = "splashcarwashes.info/admin/api/*",       zone_name = "splashcarwashes.info" }
+  # === CUTOVER PHASE C — LIVE (2026-06-13 signup migration) ===
+  # Verified ready: parity (render byte-identical to legacy), secrets bound
+  # (staging renders live Supabase pricing), penny guard is a no-op, and a
+  # real test submit landed a correct maxpass_signups row (BOGO fields incl.).
+  # These are EXACT-host paths → they out-rank apps/web's /* and serve from
+  # splash-signup-next. On push, CF reassigns each route off the legacy
+  # info-signup-worker onto this worker. /api/submit-signup is EXACT (never a
+  # /api/* wildcard — that would swallow dashboard's /api/login|logout|me).
+  # Rollback: in CF dashboard move these routes back to info-signup-worker;
+  # durable rollback = re-comment + push.
+  { pattern = "splashcarwashes.info/signup/*",          zone_name = "splashcarwashes.info" },
+  { pattern = "splashcarwashes.info/q/*",               zone_name = "splashcarwashes.info" },
+  { pattern = "splashcarwashes.info/join/*",            zone_name = "splashcarwashes.info" },
+  { pattern = "splashcarwashes.info/api/submit-signup", zone_name = "splashcarwashes.info" },
+  { pattern = "splashcarwashes.info/admin/api/*",       zone_name = "splashcarwashes.info" }
 ]
 
 # Vars (plain — set via dashboard or [vars] block):
