@@ -45,11 +45,19 @@ routes = [
   { pattern = "staging.splashcarwashes.info/manage/api/*", zone_name = "splashcarwashes.info" },
   { pattern = "staging.splashcarwashes.info/claims-api/*", zone_name = "splashcarwashes.info" },
   { pattern = "staging.splashcarwashes.info/claims/*",     zone_name = "splashcarwashes.info" },
-  # === CUTOVER PHASE A — uncomment the line(s) below + push at the flip window ===
-  # (ROLLED BACK 2026-06-11 — re-flip with apps/web catch-all bound LAST.)
-  # { pattern = "splashcarwashes.info/manage/api/*", zone_name = "splashcarwashes.info" },
-  # { pattern = "splashcarwashes.info/claims-api/*", zone_name = "splashcarwashes.info" },
-  # { pattern = "splashcarwashes.info/claims/*",     zone_name = "splashcarwashes.info" }
+  # === CUTOVER — LIVE (2026-06-13 damage migration) ===
+  # Exact-host paths → they out-rank apps/web's /* and serve from splash-damage.
+  # SWAP PREREQ: delete /claims/* and /claims-api/* from the legacy
+  # splash-vehicle-claims worker FIRST, or `wrangler deploy` errors with
+  # code 10020 (route already owned). /manage/api/* binds fresh (legacy only
+  # has the old *…/manage* wildcard, which apps/web's /* already shadows).
+  # Low-stakes: damage was never in production, so the delete→redeploy gap
+  # carries no customer impact. MAINTAINX_MODE stays "test" (no real claims
+  # traffic). Rollback: re-point /claims/* + /claims-api/* to
+  # splash-vehicle-claims in the CF UI; durable = re-comment + push.
+  { pattern = "splashcarwashes.info/manage/api/*", zone_name = "splashcarwashes.info" },
+  { pattern = "splashcarwashes.info/claims-api/*", zone_name = "splashcarwashes.info" },
+  { pattern = "splashcarwashes.info/claims/*",     zone_name = "splashcarwashes.info" }
 ]
 
 # Bindings:
