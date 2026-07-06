@@ -199,6 +199,75 @@ export async function saveFailedSubmission(
  * ============================================================ */
 
 /**
+ * True when a content-type / key names a HEIC/HEIF image. Browsers other
+ * than Safari can't decode HEIC in an <img> tag, so these must be
+ * transcoded to JPEG before serving to the admin viewer.
+ */
+export function isHeicContentType(
+  contentType: string | null | undefined,
+  key?: string | null
+): boolean {
+  const ct = (contentType ?? "").toLowerCase();
+  if (
+    ct === "image/heic" ||
+    ct === "image/heif" ||
+    ct === "image/heic-sequence" ||
+    ct === "image/heif-sequence"
+  ) {
+    return true;
+  }
+  const ext = (key ?? "").split(".").pop()?.toLowerCase();
+  return ext === "heic" || ext === "heif";
+}
+
+/**
+ * Build the serving Response for an R2 object, transcoding HEIC/HEIF to
+ * JPEG on the fly when a Cloudflare Images binding is available. Shared by
+ * serveClaimPhoto (legacy `claims/` keys) and the worker's serveR2KeyDirect
+ * (Brief 146 `claim-uploads/` keys) so both prefixes preview identically.
+ *
+ * When the object isn't HEIC, or no Images binding is passed, the original
+ * bytes are streamed through unchanged (behaviour-preserving). A failed
+ * conversion falls back to the original bytes rather than erroring.
+ */
+export async function buildPhotoResponse(
+  object: R2ObjectBody,
+  key: string,
+  images?: ImagesBinding
+): Promise<Response> {
+  const storedType = object.httpMetadata?.contentType ?? "image/jpeg";
+
+  if (images && isHeicContentType(storedType, key)) {
+    // Buffer the source bytes up front so a failed conversion can still
+    // fall back to the original (the body stream is single-use — feeding it
+    // to images.input() consumes it).
+    const original = await object.arrayBuffer();
+    try {
+      const converted = await images
+        .input(new Response(original).body as ReadableStream)
+        .output({ format: "image/jpeg" });
+      const headers = new Headers();
+      headers.set("Content-Type", "image/jpeg");
+      headers.set("Cache-Control", "public, max-age=86400");
+      return new Response(converted.response().body, { headers });
+    } catch (convErr) {
+      // Serve the original bytes — a broken preview is better than a 500,
+      // and the viewer's "Open original" still lets staff download the file.
+      console.error("[serve] HEIC->JPEG conversion failed for", key, convErr);
+      const headers = new Headers();
+      headers.set("Content-Type", storedType);
+      headers.set("Cache-Control", "public, max-age=86400");
+      return new Response(original, { headers });
+    }
+  }
+
+  const headers = new Headers();
+  headers.set("Content-Type", storedType);
+  headers.set("Cache-Control", "public, max-age=86400");
+  return new Response(object.body, { headers });
+}
+
+/**
  * Serve a photo by R2 key suffix (the path after `claims/`). Returns 404
  * when the object is missing. 24-hour cache control matches the legacy
  * behavior.
@@ -208,10 +277,14 @@ export async function saveFailedSubmission(
  * The damage-worker route `/claims-api/photo/{rest}` calls this with
  * the `{rest}` portion (everything after `claims-api/photo/`). The legacy
  * prepended "claims/" before the lookup — we preserve that here.
+ *
+ * When `images` is supplied, HEIC/HEIF objects are transcoded to JPEG so
+ * non-Safari browsers can render the preview. Optional for back-compat.
  */
 export async function serveClaimPhoto(
   bucket: R2Bucket,
-  photoPathSuffix: string
+  photoPathSuffix: string,
+  images?: ImagesBinding
 ): Promise<Response> {
   try {
     const key = `claims/${photoPathSuffix}`;
@@ -219,10 +292,7 @@ export async function serveClaimPhoto(
     if (!object) {
       return new Response("Photo not found", { status: 404 });
     }
-    const headers = new Headers();
-    headers.set("Content-Type", object.httpMetadata?.contentType ?? "image/jpeg");
-    headers.set("Cache-Control", "public, max-age=86400");
-    return new Response(object.body, { headers });
+    return await buildPhotoResponse(object, key, images);
   } catch (error) {
     const message = error instanceof Error ? error.message : "unknown error";
     return new Response("Error fetching photo: " + message, { status: 500 });

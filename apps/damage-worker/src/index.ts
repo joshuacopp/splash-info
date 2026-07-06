@@ -112,6 +112,7 @@ import {
 import { isOriginAllowed, json, jsonError, readForm } from "@splash/http";
 import { isValidEmail } from "@splash/types/email-validate";
 import {
+  buildPhotoResponse,
   generateClaimId,
   type ImagesBinding,
   saveClaimSubmission,
@@ -328,9 +329,9 @@ export default {
         // is correct for the legacy key shape but wrong for the new
         // OOB-upload prefix. Detect the prefix and serve directly.
         if (photoKey.startsWith("claim-uploads/")) {
-          return serveR2KeyDirect(env.R2_BUCKET, photoKey);
+          return serveR2KeyDirect(env.R2_BUCKET, photoKey, env.IMAGES);
         }
-        return serveClaimPhoto(env.R2_BUCKET, photoKey);
+        return serveClaimPhoto(env.R2_BUCKET, photoKey, env.IMAGES);
       }
 
       // GET /claims-api/summary/{claimId} — stream the auto-generated
@@ -4048,20 +4049,18 @@ async function handleCheckRequestPreview(
  */
 async function serveR2KeyDirect(
   bucket: R2Bucket,
-  key: string
+  key: string,
+  images?: ImagesBinding
 ): Promise<Response> {
   try {
     const obj = await bucket.get(key);
     if (!obj) {
       return new Response("Photo not found", { status: 404 });
     }
-    const headers = new Headers();
-    headers.set(
-      "Content-Type",
-      obj.httpMetadata?.contentType ?? "image/jpeg"
-    );
-    headers.set("Cache-Control", "public, max-age=86400");
-    return new Response(obj.body, { headers });
+    // HEIC/HEIF objects are transcoded to JPEG when the Images binding is
+    // available so non-Safari admin viewers can render the preview. Shared
+    // with serveClaimPhoto via buildPhotoResponse.
+    return await buildPhotoResponse(obj, key, images);
   } catch (error) {
     const message = error instanceof Error ? error.message : "unknown error";
     return new Response("Error fetching photo: " + message, { status: 500 });

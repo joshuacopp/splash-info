@@ -31,6 +31,7 @@
 
 import { fileTypeFromBuffer } from "file-type";
 import { isOriginAllowed, json, jsonError } from "@splash/http";
+import { type ImagesBinding, isHeicContentType } from "@splash/storage-r2";
 
 const PENDING_ID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -64,6 +65,10 @@ const ALLOWED_FIELDS = new Set([
 
 interface UploadEnv {
   R2_BUCKET: R2Bucket;
+  /** Optional Cloudflare Images binding for HEIC->JPEG conversion at
+   *  ingest. When unbound, HEIC files are stored as-is (the serve path
+   *  still transcodes them on the fly). */
+  IMAGES?: ImagesBinding;
 }
 
 export async function handleClaimPhotoUpload(
@@ -114,14 +119,35 @@ export async function handleClaimPhotoUpload(
     return jsonError(415, `mime_not_allowed: ${sniffed.mime}`);
   }
 
-  const ext = EXT_FOR_MIME[sniffed.mime] ?? sniffed.ext ?? "bin";
+  // HEIC/HEIF → JPEG at ingest when the Images binding is available, so the
+  // stored object renders directly in non-Safari admin viewers. On failure
+  // (or no binding) we store the original bytes — the serve path transcodes
+  // HEIC on the fly as a safety net.
+  let storedMime = sniffed.mime;
+  let ext = EXT_FOR_MIME[sniffed.mime] ?? sniffed.ext ?? "bin";
+  let body: ReadableStream | ArrayBuffer = file.stream();
+
+  if (env.IMAGES && isHeicContentType(sniffed.mime, file.name)) {
+    try {
+      const converted = await env.IMAGES.input(file.stream()).output({
+        format: "image/jpeg"
+      });
+      body = await converted.response().arrayBuffer();
+      storedMime = "image/jpeg";
+      ext = "jpg";
+    } catch (convErr) {
+      console.error("[claim.upload] HEIC->JPEG conversion failed", convErr);
+      body = file.stream();
+    }
+  }
+
   const nano = generateNanoid(12);
   const r2Key = `claim-uploads/${pendingSubmissionId}/${nano}.${ext}`;
   const originalFilename = sanitizeFilename(file.name) || `upload.${ext}`;
 
   try {
-    await env.R2_BUCKET.put(r2Key, file.stream(), {
-      httpMetadata: { contentType: sniffed.mime },
+    await env.R2_BUCKET.put(r2Key, body, {
+      httpMetadata: { contentType: storedMime },
       customMetadata: {
         pendingSubmissionId,
         field: fieldName || "unknown",
@@ -137,7 +163,7 @@ export async function handleClaimPhotoUpload(
   return json({
     ok: true,
     r2_key: r2Key,
-    mime: sniffed.mime,
+    mime: storedMime,
     size_bytes: file.size,
     original_filename: originalFilename
   });
