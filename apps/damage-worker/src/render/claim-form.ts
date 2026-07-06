@@ -912,8 +912,15 @@ const FORM_SCRIPT = `(function () {
             return;
           }
           // Stamp a synthetic name so the worker has something to log.
+          // Strip the source extension before appending .jpg so a resized
+          // photo.jpg/photo.png doesn't become photo.jpg.jpg / photo.png.jpg.
+          // (String ops, not regex — this whole script is a TS template
+          //  literal, so a /\.x/ regex would lose its backslash on render.)
           try {
-            var renamed = new File([blob], (file.name || 'photo') + '.jpg',
+            var srcName = file.name || 'photo';
+            var dotAt = srcName.lastIndexOf('.');
+            var base = dotAt > 0 ? srcName.slice(0, dotAt) : srcName;
+            var renamed = new File([blob], base + '.jpg',
               { type: 'image/jpeg' });
             resolve(renamed);
           } catch (_) {
