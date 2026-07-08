@@ -113,7 +113,7 @@ workers_dev = true
 routes = [
   { pattern = "staging.splashcarwashes.info/forms/*", zone_name = "splashcarwashes.info" },
   # === CUTOVER PHASE B — uncomment the line(s) below + push at the flip window ===
-  # { pattern = "splashcarwashes.info/forms/*", zone_name = "splashcarwashes.info" }
+  { pattern = "splashcarwashes.info/forms/*", zone_name = "splashcarwashes.info" }
 ]
 
 [vars]

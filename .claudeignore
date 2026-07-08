@@ -1,0 +1,8 @@
+node_modules/
+.git/
+.turbo/
+outputs/
+legacy/
+pnpm-lock.yaml
+*.lock
+BUILD_STATE.md
