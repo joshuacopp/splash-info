@@ -18,10 +18,17 @@ export function renderMulti(field: MultiField, _ctx: RenderBodyArgs): string {
   // checked" but only when ALL inputs in the group share a name AND the
   // attribute. Browsers vary; submit-time validation in Brief 91 is the
   // authoritative gate for `required` + `minSelected`.
-  const minHint = field.minSelected != null && field.minSelected > 0
-    ? `<p class="field-help">Select at least ${field.minSelected}.</p>`
-    : "";
-  const maxHint = field.maxSelected != null
+  // When min and max are both set and equal, the two hints ("at least N" +
+  // "at most N") are redundant, so collapse them into a single "exactly N".
+  const hasMin = field.minSelected != null && field.minSelected > 0;
+  const hasMax = field.maxSelected != null;
+  const exact = hasMin && hasMax && field.minSelected === field.maxSelected;
+  const minHint = exact
+    ? `<p class="field-help">Select exactly ${field.minSelected}.</p>`
+    : hasMin
+      ? `<p class="field-help">Select at least ${field.minSelected}.</p>`
+      : "";
+  const maxHint = !exact && hasMax
     ? `<p class="field-help">Select at most ${field.maxSelected}.</p>`
     : "";
   return `
