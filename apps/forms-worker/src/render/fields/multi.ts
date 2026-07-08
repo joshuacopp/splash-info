@@ -26,10 +26,10 @@ export function renderMulti(field: MultiField, _ctx: RenderBodyArgs): string {
   const minHint = exact
     ? `<p class="field-help">Select ${field.minSelected}</p>`
     : hasMin
-      ? `<p class="field-help">Select at least ${field.minSelected}.</p>`
+      ? `<p class="field-help">Select at least ${field.minSelected}</p>`
       : "";
   const maxHint = !exact && hasMax
-    ? `<p class="field-help">Select at most ${field.maxSelected}.</p>`
+    ? `<p class="field-help">Select at most ${field.maxSelected}</p>`
     : "";
   return `
 <fieldset class="field" data-field-key="${escapeHtml(field.key)}" data-field-type="multi"
