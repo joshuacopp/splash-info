@@ -54,11 +54,13 @@
         wireFile(wrap, slug, formEl);
       });
       wireLookups(formEl, slug);
+      wireMultiMax(formEl);
 
-      // Brief 122 — autosave / resume / clear-on-submit.
+      // Brief 122 — autosave / resume. Submit interception (below) owns
+      // clear-on-submit now (only clears on a confirmed 200 success).
       maybeRenderResumeBanner(formEl, slug);
       wireAutosave(formEl, slug);
-      wireClearOnSubmit(formEl, slug);
+      wireSubmitInterception(formEl, slug);
     });
   }
 
@@ -193,6 +195,43 @@
   function currentPendingId(formEl) {
     var el = formEl.querySelector('input[name="pending_submission_id"]');
     return el ? el.value : "";
+  }
+
+  // ---------------------------------------------------------------------
+  // Multi-select max enforcement
+  //
+  // The `maxSelected` ceiling is validated server-side at submit, but that
+  // only surfaces AFTER a failed submit. Here we prevent the over-selection
+  // in the first place: once `max` boxes are checked, disable the remaining
+  // unchecked ones; re-enable them the moment the user unchecks one. Groups
+  // with no `data-max-selected` (no ceiling) are left alone. `minSelected`
+  // can't be enforced this way — you can't force a user to check boxes — so
+  // it stays a submit-time check.
+  // ---------------------------------------------------------------------
+  function wireMultiMax(formEl) {
+    var groups = formEl.querySelectorAll(
+      '[data-field-type="multi"][data-max-selected]'
+    );
+    Array.prototype.forEach.call(groups, function (group) {
+      var max = parseInt(group.getAttribute("data-max-selected"), 10);
+      if (!(max > 0)) return;
+      var boxes = group.querySelectorAll('input[type="checkbox"]');
+
+      function enforce() {
+        var checked = 0;
+        Array.prototype.forEach.call(boxes, function (b) {
+          if (b.checked) checked += 1;
+        });
+        var atMax = checked >= max;
+        Array.prototype.forEach.call(boxes, function (b) {
+          if (!b.checked) b.disabled = atMax;
+        });
+      }
+
+      group.addEventListener("change", enforce);
+      // Initial pass covers restored drafts / back-button bfcache state.
+      enforce();
+    });
   }
 
   // ---------------------------------------------------------------------
@@ -607,22 +646,173 @@
     return d === 1 ? "1 day ago" : d + " days ago";
   }
 
-  // Brief 122 Phase 3 — clear the draft on successful submission. We do
-  // this in the form's submit event (option B from the brief) rather than
-  // a URL flag (option A) so draft-management doesn't leak into URLs.
+  // ---------------------------------------------------------------------
+  // Submit interception + inline validation UX
   //
-  // The form natively POSTs multipart and the browser handles the
-  // navigation to either the 200 success page or a 4xx JSON error page.
-  // We can't observe the response before navigation without rewriting
-  // the submit flow into a fetch (out of scope here), so we clear
-  // optimistically. Trade-off: a rare validation_failed response would
-  // also clear the draft. Acceptable because (a) most submits succeed,
-  // (b) the user can still hit Back to recover DOM state from bfcache,
-  // and (c) the v1 4xx-error UX is a known limitation tracked separately.
-  function wireClearOnSubmit(formEl, slug) {
-    formEl.addEventListener("submit", function () {
-      clearDraft(slug);
+  // Replaces the old native-POST flow (which navigated the browser to the
+  // raw 422 JSON body on validation failure). We now fetch() the submit,
+  // and:
+  //   - 200  → clear the saved draft, swap in the success-page HTML.
+  //   - 422  → render each `fields` entry inline under its field wrapper
+  //            (reusing showError), plus a summary banner + scroll-to-first.
+  //   - other → friendly form-level banner keyed off the `error` code.
+  // The draft is cleared ONLY on a confirmed 200, so a failed submit no
+  // longer wipes the user's in-progress data.
+  // ---------------------------------------------------------------------
+  function wireSubmitInterception(formEl, slug) {
+    var actionUrl = formEl.getAttribute("action") || "";
+    var submitBtn = formEl.querySelector('button[type="submit"], .submit-btn');
+
+    formEl.addEventListener("submit", function (e) {
+      e.preventDefault();
+      clearFormError(formEl);
+      clearAllFieldErrors(formEl);
+
+      var origLabel = submitBtn ? submitBtn.textContent : "";
+      if (submitBtn) {
+        submitBtn.disabled = true;
+        submitBtn.textContent = "Submitting…";
+      }
+
+      fetch(actionUrl, {
+        method: "POST",
+        body: new FormData(formEl),
+        headers: { Accept: "application/json" }
+      })
+        .then(function (resp) {
+          if (resp.ok) {
+            // Server returns the full success-page HTML. Clear the draft
+            // and replace the document with it.
+            clearDraft(slug);
+            return resp.text().then(function (html) {
+              document.open();
+              document.write(html);
+              document.close();
+            });
+          }
+          return resp.text().then(function (text) {
+            var body = null;
+            try { body = JSON.parse(text); } catch (_) {}
+            restoreSubmitBtn(submitBtn, origLabel);
+            // A single-use Turnstile token is consumed on submit; reset the
+            // widget so a retry gets a fresh one.
+            resetTurnstile();
+
+            if (resp.status === 422 && body && body.fields) {
+              applyFieldErrors(formEl, body.fields);
+              var n = Object.keys(body.fields).length;
+              showFormError(
+                formEl,
+                "Please fix the highlighted field" + (n === 1 ? "" : "s") + " below."
+              );
+              scrollToFirstError(formEl);
+              return;
+            }
+
+            var code = (body && body.error) || "";
+            showFormError(formEl, humanizeError(code));
+          });
+        })
+        .catch(function () {
+          restoreSubmitBtn(submitBtn, origLabel);
+          showFormError(
+            formEl,
+            "Network error — check your connection and try again."
+          );
+        });
     });
+  }
+
+  function restoreSubmitBtn(btn, label) {
+    if (!btn) return;
+    btn.disabled = false;
+    btn.textContent = label || "Submit";
+  }
+
+  function resetTurnstile() {
+    try {
+      if (window.turnstile && typeof window.turnstile.reset === "function") {
+        window.turnstile.reset();
+      }
+    } catch (_) {}
+  }
+
+  function applyFieldErrors(formEl, fields) {
+    Object.keys(fields).forEach(function (key) {
+      var wrap = formEl.querySelector(
+        '[data-field-key="' + cssAttrEscape(key) + '"]'
+      );
+      if (wrap) showError(wrap, fields[key]);
+    });
+  }
+
+  function clearAllFieldErrors(formEl) {
+    var errs = formEl.querySelectorAll('[data-field-error="1"]');
+    Array.prototype.forEach.call(errs, function (el) {
+      if (el.parentNode) el.parentNode.removeChild(el);
+    });
+  }
+
+  function scrollToFirstError(formEl) {
+    var firstErr = formEl.querySelector('[data-field-error="1"]');
+    var target =
+      firstErr && firstErr.parentNode
+        ? firstErr.parentNode
+        : formEl.querySelector('[data-forms-error-summary="1"]');
+    if (target && target.scrollIntoView) {
+      try {
+        target.scrollIntoView({ behavior: "smooth", block: "center" });
+      } catch (_) {
+        target.scrollIntoView();
+      }
+    }
+  }
+
+  function showFormError(formEl, msg) {
+    clearFormError(formEl);
+    var div = document.createElement("div");
+    div.setAttribute("data-forms-error-summary", "1");
+    div.setAttribute("role", "alert");
+    div.style.background = "#fdecea";
+    div.style.border = "1px solid #f5c6cb";
+    div.style.color = "#8a1c1c";
+    div.style.borderRadius = "6px";
+    div.style.padding = "12px 14px";
+    div.style.marginBottom = "20px";
+    div.style.fontSize = "14px";
+    div.textContent = String(msg);
+    if (formEl.firstChild) formEl.insertBefore(div, formEl.firstChild);
+    else formEl.appendChild(div);
+  }
+
+  function clearFormError(formEl) {
+    var existing = formEl.querySelector('[data-forms-error-summary="1"]');
+    if (existing && existing.parentNode) {
+      existing.parentNode.removeChild(existing);
+    }
+  }
+
+  // Map a server error code (possibly "code: detail") to a friendly line.
+  // Unknown codes fall through to the raw string so nothing is swallowed.
+  function humanizeError(code) {
+    var first = String(code).split(":")[0].trim();
+    var map = {
+      bad_origin: "Your session couldn't be verified. Reload the page and try again.",
+      form_not_found: "This form is no longer available.",
+      form_not_accepting_submissions: "This form is no longer accepting submissions.",
+      form_has_no_published_version: "This form isn't published yet.",
+      invalid_form_data: "Your submission couldn't be read. Please try again.",
+      invalid_pending_id: "This form session expired. Reload the page and try again.",
+      lookup_failed: "A looked-up value couldn't be resolved. Check your selections and try again.",
+      too_many_files: "Too many files attached. Remove some and try again.",
+      submission_too_large: "The attached files are too large. Remove some and try again.",
+      session_expired: "Your login expired. Sign in again in a new tab, then click Submit.",
+      turnstile_failed: "The anti-spam check failed. Please try again.",
+      r2_head_failed: "A file couldn't be verified. Please try again.",
+      missing_file: "An uploaded file is missing. Re-attach it and try again.",
+      insert_failed: "We couldn't save your submission. Please try again."
+    };
+    return map[first] || (code ? String(code) : "Something went wrong. Please try again.");
   }
 
   // ---------------------------------------------------------------------
