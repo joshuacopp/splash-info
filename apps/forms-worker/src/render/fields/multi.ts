@@ -19,12 +19,12 @@ export function renderMulti(field: MultiField, _ctx: RenderBodyArgs): string {
   // attribute. Browsers vary; submit-time validation in Brief 91 is the
   // authoritative gate for `required` + `minSelected`.
   // When min and max are both set and equal, the two hints ("at least N" +
-  // "at most N") are redundant, so collapse them into a single "exactly N".
+  // "at most N") are redundant, so collapse them into a single "N".
   const hasMin = field.minSelected != null && field.minSelected > 0;
   const hasMax = field.maxSelected != null;
   const exact = hasMin && hasMax && field.minSelected === field.maxSelected;
   const minHint = exact
-    ? `<p class="field-help">Select exactly ${field.minSelected}.</p>`
+    ? `<p class="field-help">Select ${field.minSelected}.</p>`
     : hasMin
       ? `<p class="field-help">Select at least ${field.minSelected}.</p>`
       : "";
