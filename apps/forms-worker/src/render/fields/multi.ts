@@ -24,7 +24,7 @@ export function renderMulti(field: MultiField, _ctx: RenderBodyArgs): string {
   const hasMax = field.maxSelected != null;
   const exact = hasMin && hasMax && field.minSelected === field.maxSelected;
   const minHint = exact
-    ? `<p class="field-help">Select ${field.minSelected}.</p>`
+    ? `<p class="field-help">Select ${field.minSelected}</p>`
     : hasMin
       ? `<p class="field-help">Select at least ${field.minSelected}.</p>`
       : "";
