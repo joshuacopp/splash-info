@@ -88,8 +88,8 @@ routes = [
   { pattern = "staging.splashcarwashes.info/jotform/*", zone_name = "splashcarwashes.info" },
   { pattern = "staging.splashcarwashes.info/admin/jotform/api/*", zone_name = "splashcarwashes.info" },
   # === CUTOVER PHASE B — uncomment the line(s) below + push at the flip window ===
-  # { pattern = "splashcarwashes.info/jotform/*", zone_name = "splashcarwashes.info" },
-  # { pattern = "splashcarwashes.info/admin/jotform/api/*", zone_name = "splashcarwashes.info" }
+  { pattern = "splashcarwashes.info/jotform/*", zone_name = "splashcarwashes.info" },
+  { pattern = "splashcarwashes.info/admin/jotform/api/*", zone_name = "splashcarwashes.info" }
 ]
 
 [vars]

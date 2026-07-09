@@ -2220,6 +2220,19 @@ async function handleStatusTransition(
     params.push(overrideEquipmentPiece);
   }
 
+  // Auto-classify cause on denial. A denial means we've determined Splash
+  // isn't liable, so record fault_category = 'No Fault' — but only when no
+  // cause has been set yet. Never overrides an operator's explicit
+  // classification (fills NULL only). Guarded on the exact terminal denial
+  // status. Requires the widened fault_category CHECK (must include
+  // 'No Fault') and the column to exist — both live post-migration.
+  const autoNoFaultOnDenial =
+    finalTo === "Closed — Denied" &&
+    ((claim as ClaimRow).fault_category ?? null) === null;
+  if (autoNoFaultOnDenial) {
+    setParts.push("fault_category = 'No Fault'");
+  }
+
   const updateSql = `UPDATE claims SET ${setParts.join(", ")} WHERE claim_id = ?`;
   params.push(claimId);
 
@@ -2232,6 +2245,7 @@ async function handleStatusTransition(
   const noteParts: string[] = [];
   if (noteText) noteParts.push(noteText);
   if (approvalReset) noteParts.push("[Reset approval details on revert]");
+  if (autoNoFaultOnDenial) noteParts.push("[Cause auto-set to No Fault on denial]");
   if (applyEquipmentOverride) {
     noteParts.push(
       `[Equipment override] ${session.email} flipped equipment_related to yes during "${finalTo}" approval (equipment_piece: ${overrideEquipmentPiece})`

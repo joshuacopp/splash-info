@@ -366,7 +366,8 @@ export default async function DamageClaimDetailPage({ params, searchParams }: Pa
 const CAUSE_LABELS: Record<FaultCategory, string> = {
   "Employee Error": "Employee Error",
   "Equipment Malfunction": "Equipment Malfunction",
-  "Not Employee/Equipment": "Not Employee/Equipment"
+  "Not Employee/Equipment": "Not Employee/Equipment",
+  "No Fault": "No Fault"
 };
 
 function CauseCard({
@@ -382,8 +383,8 @@ function CauseCard({
     <div className="mb-6 rounded-splash-lg border border-gray-light bg-white p-6 shadow-splash-card">
       <h2 className="mb-1 text-lg font-bold text-splash-navy">Cause</h2>
       <p className="mb-4 text-xs text-splash-navy/60">
-        What caused this damage? Choose Undetermined if you&rsquo;re not
-        sure yet — every claim defaults to Undetermined.
+        What caused this damage? Leave it unset until you&rsquo;ve
+        determined the cause.
       </p>
       {canEdit ? (
         <ActionForm
@@ -400,7 +401,7 @@ function CauseCard({
               defaultValue={faultCategory ?? ""}
               className="w-full rounded-splash-sm border border-gray-light bg-white px-3 py-2 text-sm text-splash-navy focus:border-splash-blue focus:outline-none sm:max-w-[320px]"
             >
-              <option value="">Undetermined</option>
+              <option value="">Choose a cause</option>
               {FAULT_CATEGORIES.map((c) => (
                 <option key={c} value={c}>
                   {CAUSE_LABELS[c]}
@@ -418,7 +419,7 @@ function CauseCard({
       ) : (
         <div className="text-sm text-splash-navy/80">
           <span className="font-semibold">Current:</span>{" "}
-          {faultCategory ?? "Undetermined"}
+          {faultCategory ?? "Not set"}
           <p className="mt-2 text-xs italic text-splash-navy/60">
             You need a damage role to change this.
           </p>

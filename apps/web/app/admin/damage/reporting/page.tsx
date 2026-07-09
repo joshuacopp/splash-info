@@ -447,6 +447,8 @@ function CausePill({ cause, count }: { cause: string; count: number }) {
     cls = "bg-sudsy-blue-soft text-splash-navy ring-1 ring-sudsy-blue/40";
   } else if (cause === "Not Employee/Equipment") {
     cls = "bg-gray-light/70 text-splash-navy/80 ring-1 ring-gray-light";
+  } else if (cause === "No Fault") {
+    cls = "bg-green-100 text-green-900 ring-1 ring-green-300";
   } else if (cause === "Undetermined") {
     cls = "bg-white text-splash-navy/60 ring-1 ring-gray-light";
   }

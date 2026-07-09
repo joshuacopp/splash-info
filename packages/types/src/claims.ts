@@ -73,12 +73,14 @@ export function displayLifecycleForStatus(
 export type FaultCategory =
   | "Employee Error"
   | "Equipment Malfunction"
-  | "Not Employee/Equipment";
+  | "Not Employee/Equipment"
+  | "No Fault";
 
 export const FAULT_CATEGORIES: readonly FaultCategory[] = [
   "Employee Error",
   "Equipment Malfunction",
-  "Not Employee/Equipment"
+  "Not Employee/Equipment",
+  "No Fault"
 ];
 
 /**

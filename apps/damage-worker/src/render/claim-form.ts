@@ -532,13 +532,23 @@ export function renderClaimForm(args: RenderClaimFormArgs): string {
             </div>
           </div>
 
-          <!-- Equipment toggle (Brief 25): defaults to No; flipping to Yes
-               reveals the dropdown. equipmentInvolved submits as empty string
-               when No, so the worker derives equipment_related = 0. -->
           <div class="form-group">
-            <label>Was the damage equipment related?</label>
+            <label>Determination <span class="required">*</span></label>
+            <div class="radio-group">
+              ${determinationOpts}
+            </div>
+          </div>
+
+          <!-- Equipment toggle (Brief 25): reveals only when the determination
+               is "Requested Customer Get Quote(s)" (customer_get_quotes), and
+               when shown a Yes/No answer is required. Flipping to Yes reveals
+               the Equipment Involved dropdown. When hidden, no radio is checked
+               and equipmentInvolved submits empty, so the worker derives
+               equipment_related = 0. Ordered AFTER Determination on purpose. -->
+          <div class="form-group" id="equipmentGroup" hidden>
+            <label>Was the damage equipment related? <span class="required">*</span></label>
             <div class="seg-toggle" id="equipmentToggle">
-              <input type="radio" name="__equipmentRelated" value="no" id="eqNo" checked>
+              <input type="radio" name="__equipmentRelated" value="no" id="eqNo">
               <label for="eqNo">No</label>
               <input type="radio" name="__equipmentRelated" value="yes" id="eqYes">
               <label for="eqYes">Yes</label>
@@ -568,17 +578,10 @@ export function renderClaimForm(args: RenderClaimFormArgs): string {
           </div>
 
           <div class="form-group">
-            <label>Determination <span class="required">*</span></label>
-            <div class="radio-group">
-              ${determinationOpts}
-            </div>
-          </div>
-
-          <div class="form-group">
-            <label for="customerTold">What Was the Customer Told?
+            <label for="customerTold">What Was the Customer Told? <span class="required">*</span>
               <span class="hint">Document exactly what you communicated to the customer</span>
             </label>
-            <textarea id="customerTold" name="customerTold" placeholder="e.g., Explained that a manager will review and contact them within 48 hours..."></textarea>
+            <textarea id="customerTold" name="customerTold" required placeholder="e.g., Explained that a manager will review and contact them within 48 hours..."></textarea>
           </div>
 
           <div class="form-group">
@@ -818,9 +821,33 @@ const FORM_SCRIPT = `(function () {
   // automatically.
   var eqMalToggle = document.getElementById('equipmentMalfunctionToggle');
   var eqMalHidden = document.getElementById('equipmentMalfunctionHidden');
+  var eqGroup = document.getElementById('equipmentGroup');
+  var eqRadios = document.querySelectorAll('input[name="__equipmentRelated"]');
+  // The equipment question is only relevant for the "Requested Customer Get
+  // Quote(s)" determination. Show it only for that path; when shown a Yes/No
+  // answer is required (radios flagged required, no default checked). When
+  // hidden we clear the radios + drop 'required' so the group can't block
+  // native form validation (the 'hidden' attribute alone does NOT exclude an
+  // input from checkValidity — only removing 'required'/'disabled' does).
+  function equipmentApplies() {
+    var det = document.querySelector('input[name="determination"]:checked');
+    return !!det && det.value === 'customer_get_quotes';
+  }
   function syncEquipment() {
+    var applies = equipmentApplies();
+    if (eqGroup) eqGroup.hidden = !applies;
+    if (!applies) {
+      Array.prototype.forEach.call(eqRadios, function (r) {
+        r.checked = false;
+        r.required = false;
+      });
+    } else {
+      Array.prototype.forEach.call(eqRadios, function (r) {
+        r.required = true;
+      });
+    }
     var checked = document.querySelector('input[name="__equipmentRelated"]:checked');
-    var isYes = checked && checked.value === 'yes';
+    var isYes = applies && checked && checked.value === 'yes';
     if (eqDetails) eqDetails.hidden = !isYes;
     if (eqSelect) {
       eqSelect.required = !!isYes;
@@ -832,7 +859,11 @@ const FORM_SCRIPT = `(function () {
     }
   }
   Array.prototype.forEach.call(
-    document.querySelectorAll('input[name="__equipmentRelated"]'),
+    eqRadios,
+    function (r) { r.addEventListener('change', syncEquipment); }
+  );
+  Array.prototype.forEach.call(
+    document.querySelectorAll('input[name="determination"]'),
     function (r) { r.addEventListener('change', syncEquipment); }
   );
   syncEquipment();
