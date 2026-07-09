@@ -465,6 +465,31 @@ export function getSubmissionsCsvUrl(
   }`;
 }
 
+/**
+ * Build the same-origin URL for the aggregate response-report PDF. Same
+ * path-carved posture as the CSV export; carries the date range plus the
+ * optional on-screen field filter (`filter_key` + `filter_value`) so the
+ * exported report matches what the operator is looking at.
+ */
+export function getSubmissionsReportUrl(
+  formId: string,
+  params: {
+    from?: string;
+    to?: string;
+    filter_key?: string;
+    filter_value?: string;
+  } = {}
+): string {
+  const qs = new URLSearchParams();
+  if (params.from) qs.set("from", params.from);
+  if (params.to) qs.set("to", params.to);
+  if (params.filter_key) qs.set("filter_key", params.filter_key);
+  if (params.filter_value) qs.set("filter_value", params.filter_value);
+  return `/forms/admin/api/forms/${encodeURIComponent(formId)}/submissions/report.pdf${
+    qs.toString() ? `?${qs}` : ""
+  }`;
+}
+
 export async function listVersionsAdmin(
   formId: string
 ): Promise<VersionListResponse | null> {

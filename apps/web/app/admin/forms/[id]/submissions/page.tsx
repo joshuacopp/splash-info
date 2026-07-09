@@ -26,9 +26,8 @@ import { DateRangePicker } from "../../../../_components/DateRangePicker";
 import { CsvExportButton } from "../../../../_components/CsvExportButton";
 import StatusPill from "./_components/StatusPill";
 import ViewToggle from "./_components/ViewToggle";
-import AnswerCell from "./_components/AnswerCell";
 import WorkflowOutcomeCell from "./_components/WorkflowOutcomeCell";
-import { computeSchemaUnion, type AnswerColumn } from "./_lib/schema-union";
+import WideSubmissionsTable from "./_components/WideSubmissionsTable";
 
 export const dynamic = "force-dynamic";
 
@@ -223,150 +222,18 @@ export default async function FormSubmissionsPage({
           )}
 
           {view === "wide" ? (
-            <WideSubmissionsTable formId={id} items={listResp.items} />
+            <WideSubmissionsTable
+              formId={id}
+              items={listResp.items}
+              from={listResp.from ?? fromDefault}
+              to={listResp.to ?? toDefault}
+            />
           ) : (
             <CompactSubmissionsTable formId={id} items={listResp.items} />
           )}
         </>
       )}
     </section>
-  );
-}
-
-// =============================================================================
-// Wide table — meta columns + one column per schema-union field + View →
-// =============================================================================
-
-function WideSubmissionsTable({
-  formId,
-  items
-}: {
-  formId: string;
-  items: SubmissionListItem[];
-}) {
-  if (items.length === 0) {
-    return (
-      <div className="rounded-splash-md border border-gray-light bg-white px-4 py-6 text-center italic text-splash-navy/60">
-        No submissions in the selected range.
-      </div>
-    );
-  }
-
-  const columns = computeSchemaUnion(items);
-
-  const stickyHeadBase =
-    "sticky top-0 z-20 bg-sudsy-blue-soft/40 px-3 py-2 font-semibold";
-  const stickyHeadLeft =
-    "sticky left-0 top-0 z-30 bg-sudsy-blue-soft/40 px-3 py-2 font-semibold";
-  const stickyCellLeft =
-    "sticky left-0 z-10 bg-white px-3 py-2 align-top text-splash-navy";
-
-  return (
-    <div className="overflow-x-auto rounded-splash-md border border-gray-light">
-      <table className="min-w-full border-collapse text-sm">
-        <thead className="text-left text-xs uppercase tracking-wide text-splash-navy/70">
-          <tr>
-            <th className={stickyHeadLeft}>Submitted</th>
-            <th className={stickyHeadBase}>Status</th>
-            <th className={stickyHeadBase}>Workflow</th>
-            <th className={stickyHeadBase}>Submitter</th>
-            <th className={stickyHeadBase}>Splash Notes</th>
-            <th className={stickyHeadBase}>Version</th>
-            {columns.map((col) => (
-              <th key={col.key} className={stickyHeadBase}>
-                <span className="block whitespace-nowrap">{col.label}</span>
-                <span className="block font-mono text-[10px] font-normal normal-case text-splash-navy/40">
-                  {col.key}
-                </span>
-              </th>
-            ))}
-            <th className={stickyHeadBase} />
-          </tr>
-        </thead>
-        <tbody>
-          {items.map((s) => (
-            <tr
-              key={s.id}
-              className="border-t border-gray-light hover:bg-sudsy-blue-soft/20"
-            >
-              <td className={stickyCellLeft}>
-                <span
-                  title={s.submitted_at}
-                  className="block whitespace-nowrap"
-                >
-                  {new Date(s.submitted_at).toLocaleString()}
-                </span>
-              </td>
-              <td className="px-3 py-2 align-top">
-                <StatusPill status={s.status} />
-              </td>
-              <td className="px-3 py-2 align-top">
-                <WorkflowOutcomeCell item={s} />
-              </td>
-              <td className="px-3 py-2 align-top text-splash-navy">
-                {s.submitter_kind === "authenticated" ? (
-                  s.submitter_email ?? <em className="text-splash-navy/50">—</em>
-                ) : (
-                  <em className="text-splash-navy/50">anonymous</em>
-                )}
-              </td>
-              <td
-                className="px-3 py-2 align-top text-splash-navy/80"
-                title={s.splash_notes ?? undefined}
-              >
-                {s.splash_notes_preview ? (
-                  <span className="block max-w-[14rem] truncate">
-                    {s.splash_notes_preview}
-                    {s.splash_notes_truncated && "…"}
-                  </span>
-                ) : (
-                  <em className="text-splash-navy/40">—</em>
-                )}
-              </td>
-              <td className="px-3 py-2 align-top text-splash-navy/80">
-                {s.version_number != null ? `v${s.version_number}` : "—"}
-              </td>
-              {columns.map((col) => (
-                <AnswerTd key={col.key} column={col} item={s} />
-              ))}
-              <td className="px-3 py-2 align-top">
-                <Link
-                  href={`/admin/forms/${encodeURIComponent(formId)}/submissions/${encodeURIComponent(s.id)}`}
-                  className="whitespace-nowrap text-splash-blue hover:underline"
-                >
-                  View →
-                </Link>
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  );
-}
-
-function AnswerTd({
-  column,
-  item
-}: {
-  column: AnswerColumn;
-  item: SubmissionListItem;
-}) {
-  const payload = item.payload ?? {};
-  const inSchema =
-    item.version?.schema.fields.some((f) => f.key === column.key) ?? false;
-  const hasOwn = Object.prototype.hasOwnProperty.call(payload, column.key);
-  if (!inSchema && !hasOwn) {
-    return (
-      <td className="px-3 py-2 align-top text-splash-navy/40">
-        <span title={`Not part of v${item.version_number ?? "?"} schema`}>—</span>
-      </td>
-    );
-  }
-  return (
-    <td className="px-3 py-2 align-top text-splash-navy">
-      <AnswerCell field={column.field} value={payload[column.key]} />
-    </td>
   );
 }
 

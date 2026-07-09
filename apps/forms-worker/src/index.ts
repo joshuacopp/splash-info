@@ -82,6 +82,7 @@ import {
   handleGetSubmission,
   handlePatchSubmission,
   handleSubmissionsCsv,
+  handleSubmissionsReport,
   handleTransition
 } from "./admin/submissions.js";
 import { handleListVersions } from "./admin/versions.js";
@@ -398,6 +399,16 @@ export default {
     );
     if (subCsvMatch && subCsvMatch[1] && req.method === "GET") {
       return handleSubmissionsCsv(env, req, subCsvMatch[1]);
+    }
+
+    // GET /forms/admin/api/forms/{id}/submissions/report.pdf
+    // Must match BEFORE the generic `submissions/{subId}` pattern so
+    // `report.pdf` isn't interpreted as a submission id.
+    const subReportMatch = url.pathname.match(
+      /^\/forms\/admin\/api\/forms\/([^/]+)\/submissions\/report\.pdf$/
+    );
+    if (subReportMatch && subReportMatch[1] && req.method === "GET") {
+      return handleSubmissionsReport(env, req, subReportMatch[1]);
     }
 
     // GET /forms/admin/api/forms/{id}/submissions

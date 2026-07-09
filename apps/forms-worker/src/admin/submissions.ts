@@ -21,6 +21,7 @@
 import { authenticate } from "@splash/auth";
 import { isOriginAllowed, jsonError } from "@splash/http";
 import type {
+  Field,
   FormSchema,
   WorkflowHistoryEntry,
   WorkflowStage
@@ -34,6 +35,12 @@ import {
   transitionSubmission,
   type SubmissionStatus
 } from "../db/admin-submissions.js";
+import { getFormDetail } from "../db/admin-forms.js";
+import {
+  generateReportPdf,
+  type ReportQuestion,
+  type ReportRow
+} from "../pdf/generate-report.js";
 import { resolveApproverEmails } from "../workflow-resolution.js";
 import {
   cascadeThroughEmailSteps,
@@ -301,15 +308,46 @@ export async function handleSubmissionsCsv(
   }
 
   // Schema-union — every field key ever used in any version present.
-  // heading + image are display-only, no payload.
-  const fieldKeys = new Set<string>();
+  // heading + image are display-only, no payload. Alongside each key we
+  // collect the field's human label (for the header row) and, for
+  // dropdown/multi fields, an option value→label map so cells render the
+  // chosen option's label instead of its stored code (e.g. "Yes" not
+  // "option_2"). Merged across versions: the last non-empty label wins;
+  // option maps are unioned so a value that a newer version dropped still
+  // resolves for older submissions.
+  interface KeyMeta {
+    label: string;
+    options: Map<string, string>;
+  }
+  const keyMeta = new Map<string, KeyMeta>();
   for (const sub of submissions) {
     for (const f of sub.schema.fields) {
       if (f.type === "heading" || f.type === "image") continue;
-      fieldKeys.add(f.key);
+      let meta = keyMeta.get(f.key);
+      if (!meta) {
+        meta = { label: "", options: new Map() };
+        keyMeta.set(f.key, meta);
+      }
+      if (f.label) meta.label = f.label;
+      if (f.type === "dropdown" || f.type === "multi") {
+        for (const opt of f.options) meta.options.set(opt.value, opt.label);
+      }
     }
   }
-  const sortedKeys = Array.from(fieldKeys).sort();
+  const sortedKeys = Array.from(keyMeta.keys()).sort();
+
+  // Header shows the human label; fall back to the key when a field has no
+  // label. If two keys share a label, disambiguate by appending the key so
+  // columns stay distinguishable.
+  const labelCounts = new Map<string, number>();
+  for (const k of sortedKeys) {
+    const label = keyMeta.get(k)!.label || k;
+    labelCounts.set(label, (labelCounts.get(label) ?? 0) + 1);
+  }
+  const headerLabelFor = (k: string): string => {
+    const label = keyMeta.get(k)!.label || k;
+    return (labelCounts.get(label) ?? 0) > 1 ? `${label} (${k})` : label;
+  };
 
   const headerCols = [
     "submission_id",
@@ -319,7 +357,7 @@ export async function handleSubmissionsCsv(
     "submitter_email",
     "version_number",
     "splash_notes",
-    ...sortedKeys
+    ...sortedKeys.map(headerLabelFor)
   ];
   const lines: string[] = [headerCols.map(csvEscape).join(",")];
 
@@ -334,7 +372,7 @@ export async function handleSubmissionsCsv(
       sub.splash_notes ?? "",
       ...sortedKeys.map((k) =>
         Object.prototype.hasOwnProperty.call(sub.payload, k)
-          ? stringifyPayloadValue(sub.payload[k])
+          ? stringifyPayloadValue(sub.payload[k], keyMeta.get(k)!.options)
           : ""
       )
     ];
@@ -352,11 +390,255 @@ export async function handleSubmissionsCsv(
   });
 }
 
-function stringifyPayloadValue(v: unknown): string {
+// =============================================================================
+// GET /forms/admin/api/forms/{id}/submissions/report.pdf
+// =============================================================================
+//
+// Aggregate "response report": for every dropdown / multi (multiple-choice)
+// question, the percentage of responses landing on each option. Honors the
+// same date range + field filter the wide-table viewer uses, so the export
+// matches what the operator sees on screen.
+//
+//   Dropdown: denominator = every submission in the filtered set; blanks
+//             roll up into a "No answer" row so the options sum to 100%.
+//   Multi:    denominator = total selections + one "No answer" per blank
+//             submission; each option's share is % of all selections.
+
+// Resolve a payload value to the human-readable text the wide table shows —
+// mirrors the client-side filter's toSearchText so the in-worker filter
+// matches option labels, not stored codes.
+function displayText(field: Field, value: unknown): string {
+  if (value == null || value === "") return "";
+  switch (field.type) {
+    case "dropdown": {
+      const opt = field.options.find((o) => o.value === String(value));
+      return opt?.label ?? String(value);
+    }
+    case "multi": {
+      if (!Array.isArray(value)) return String(value);
+      return value
+        .map((v) => {
+          const opt = field.options.find((o) => o.value === String(v));
+          return opt?.label ?? String(v);
+        })
+        .join(", ");
+    }
+    case "file":
+    case "signature": {
+      if (value && typeof value === "object") {
+        const obj = value as Record<string, unknown>;
+        if (typeof obj.original_filename === "string") return obj.original_filename;
+        if (typeof obj.r2_key === "string") return obj.r2_key;
+      }
+      return "";
+    }
+    default:
+      return String(value);
+  }
+}
+
+interface ChoiceMeta {
+  label: string;
+  type: "dropdown" | "multi";
+  /** value -> label, unioned across every version in range. */
+  options: Map<string, string>;
+  /** option values in first-seen order (drives row order). */
+  order: string[];
+}
+
+export async function handleSubmissionsReport(
+  env: Env,
+  req: Request,
+  formId: string
+): Promise<Response> {
+  const sk = requireServiceKey(env);
+  if (sk) return sk;
+  const gate = await adminGate(env, req);
+  if (!gate.ok) return adminGateResponse(gate);
+
+  if (!FORM_ID_RE.test(formId)) return jsonError(400, "bad_id");
+
+  const url = new URL(req.url);
+  const range = resolveDateRange(url);
+  const filterKey = (url.searchParams.get("filter_key") ?? "").trim();
+  const filterValue = (url.searchParams.get("filter_value") ?? "").trim();
+
+  let submissions: Awaited<ReturnType<typeof listSubmissionsForCsv>>;
+  try {
+    submissions = await listSubmissionsForCsv(
+      env,
+      formId,
+      range.fromIso,
+      range.toIso,
+      CSV_ROW_CAP
+    );
+  } catch (err) {
+    console.error("[forms.admin] report export failed", err);
+    return new Response("Could not build report.", { status: 500 });
+  }
+
+  if (submissions.length >= CSV_ROW_CAP) {
+    return new Response(
+      "Result set too large; narrow the date range and try again.",
+      { status: 416 }
+    );
+  }
+
+  // Choice-field schema union (dropdown + multi only), plus a label map for
+  // every field key (used to caption an active filter on a text field).
+  const choiceMeta = new Map<string, ChoiceMeta>();
+  const fieldLabels = new Map<string, string>();
+  for (const sub of submissions) {
+    for (const f of sub.schema.fields) {
+      if (f.type === "heading" || f.type === "image") continue;
+      if (f.label) fieldLabels.set(f.key, f.label);
+      if (f.type !== "dropdown" && f.type !== "multi") continue;
+      let meta = choiceMeta.get(f.key);
+      if (!meta) {
+        meta = { label: "", type: f.type, options: new Map(), order: [] };
+        choiceMeta.set(f.key, meta);
+      }
+      if (f.label) meta.label = f.label;
+      for (const opt of f.options) {
+        if (!meta.options.has(opt.value)) meta.order.push(opt.value);
+        meta.options.set(opt.value, opt.label);
+      }
+    }
+  }
+
+  // Apply the field filter (contains match on displayed text), matching the
+  // client wide-table filter semantics.
+  let filtered = submissions;
+  let filterCaption: string | null = null;
+  if (filterKey && filterValue) {
+    const needle = filterValue.toLowerCase();
+    filtered = submissions.filter((sub) => {
+      const field = sub.schema.fields.find((f) => f.key === filterKey);
+      const text = field ? displayText(field, sub.payload[filterKey]) : "";
+      return text.toLowerCase().includes(needle);
+    });
+    const label =
+      choiceMeta.get(filterKey)?.label ?? fieldLabels.get(filterKey) ?? filterKey;
+    filterCaption = `Filtered: ${label} contains "${filterValue}"`;
+  }
+
+  const total = filtered.length;
+  const questions: ReportQuestion[] = [];
+
+  for (const [key, meta] of choiceMeta) {
+    const rows: ReportRow[] = [];
+    const counts = new Map<string, number>();
+    for (const val of meta.order) counts.set(meta.options.get(val) ?? val, 0);
+
+    if (meta.type === "dropdown") {
+      let noAnswer = 0;
+      for (const sub of filtered) {
+        const v = sub.payload[key];
+        if (v == null || v === "") {
+          noAnswer++;
+          continue;
+        }
+        const label = meta.options.get(String(v)) ?? String(v);
+        counts.set(label, (counts.get(label) ?? 0) + 1);
+      }
+      for (const [label, count] of counts) {
+        rows.push({ label, count, pct: total ? (count / total) * 100 : 0 });
+      }
+      if (noAnswer > 0) {
+        rows.push({
+          label: "No answer",
+          count: noAnswer,
+          pct: total ? (noAnswer / total) * 100 : 0
+        });
+      }
+      questions.push({
+        label: meta.label || key,
+        type: "dropdown",
+        baseCaption: `${total} submission${total === 1 ? "" : "s"}`,
+        rows
+      });
+    } else {
+      let totalSelections = 0;
+      let noAnswer = 0;
+      for (const sub of filtered) {
+        const v = sub.payload[key];
+        if (!Array.isArray(v) || v.length === 0) {
+          noAnswer++;
+          continue;
+        }
+        for (const item of v) {
+          const label = meta.options.get(String(item)) ?? String(item);
+          counts.set(label, (counts.get(label) ?? 0) + 1);
+          totalSelections++;
+        }
+      }
+      const denom = totalSelections + noAnswer;
+      for (const [label, count] of counts) {
+        rows.push({ label, count, pct: denom ? (count / denom) * 100 : 0 });
+      }
+      if (noAnswer > 0) {
+        rows.push({
+          label: "No answer",
+          count: noAnswer,
+          pct: denom ? (noAnswer / denom) * 100 : 0
+        });
+      }
+      questions.push({
+        label: meta.label || key,
+        type: "multi",
+        baseCaption: `${totalSelections} selection${totalSelections === 1 ? "" : "s"} across ${total} submission${total === 1 ? "" : "s"}`,
+        rows
+      });
+    }
+  }
+
+  let formTitle = "Form";
+  try {
+    const detail = await getFormDetail(env, formId);
+    if (detail?.form.title) formTitle = detail.form.title;
+  } catch {
+    /* title is cosmetic — fall back to generic */
+  }
+
+  let bytes: Uint8Array;
+  try {
+    bytes = await generateReportPdf(env.FORMS_FILES, {
+      formTitle,
+      fromDate: range.fromDate,
+      toDate: range.toDate,
+      totalSubmissions: total,
+      filterCaption,
+      questions
+    });
+  } catch (err) {
+    console.error("[forms.admin] report pdf render failed", err);
+    return new Response("Could not render report PDF.", { status: 500 });
+  }
+
+  const filename = `form-${formId}-report-${range.fromDate}-to-${range.toDate}.pdf`;
+  return new Response(bytes as unknown as BodyInit, {
+    status: 200,
+    headers: {
+      "Content-Type": "application/pdf",
+      "Content-Disposition": `attachment; filename="${filename}"`,
+      "Cache-Control": "no-store"
+    }
+  });
+}
+
+// `options` (when supplied) maps a dropdown/multi option's stored value to
+// its display label; string values are looked up through it so cells show
+// "Yes" instead of "option_2". Unknown values (and non-choice fields) pass
+// through unchanged.
+function stringifyPayloadValue(
+  v: unknown,
+  options?: Map<string, string>
+): string {
   if (v == null) return "";
-  if (typeof v === "string") return v;
+  if (typeof v === "string") return options?.get(v) ?? v;
   if (typeof v === "number" || typeof v === "boolean") return String(v);
-  if (Array.isArray(v)) return v.map((x) => stringifyPayloadValue(x)).join("; ");
+  if (Array.isArray(v))
+    return v.map((x) => stringifyPayloadValue(x, options)).join("; ");
   if (typeof v === "object") {
     // file/signature payloads — render r2_key when present, else JSON
     const obj = v as Record<string, unknown>;
