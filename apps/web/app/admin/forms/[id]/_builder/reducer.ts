@@ -26,6 +26,19 @@ import { defaultConfigFor } from "../_field-types";
 
 const lowerNanoid = customAlphabet("abcdefghijklmnopqrstuvwxyz0123456789", 6);
 
+// Location-scoping field key. Must match the worker's SCOPE_FIELD_KEY
+// (forms-worker/src/admin/forms.ts) exactly — publish-time auto-inject
+// detects an operator-added field by this key and stamps it as the form's
+// `scope_location_field_key` instead of appending a duplicate. Exported so
+// the builder can offer a one-click "Site number" preset and warn when an
+// internal / link-only form is missing it.
+export const SCOPE_FIELD_KEY = "site_number";
+
+/** Does this field set contain the location-scoping site-number field? */
+export function hasScopeField(fields: Field[]): boolean {
+  return fields.some((f) => f.key === SCOPE_FIELD_KEY);
+}
+
 // Brief 123 — _uiKey is a stable nanoid attached to each WorkflowStage in
 // builder state so the React key for the stage row does NOT change when
 // the semantic `stage.id` is renamed. Without this, the StageEditor row
@@ -95,6 +108,9 @@ export interface BuilderState {
 
 export type BuilderAction =
   | { type: "add_field"; fieldType: FieldType }
+  // Insert the preconfigured location-scoping site-number field (key
+  // SCOPE_FIELD_KEY). Idempotent: selects the existing one if already present.
+  | { type: "add_scope_field" }
   | { type: "remove_field"; fieldId: string }
   | { type: "duplicate_field"; fieldId: string }
   | { type: "reorder_field"; fields: Field[] }
@@ -709,6 +725,30 @@ export function reducer(
         ...state,
         fields: [...state.fields, newField],
         selectedFieldId: newField.id,
+        dirty: true
+      };
+    }
+    case "add_scope_field": {
+      // Don't duplicate — if the site-number field already exists, just
+      // select it. This mirrors the worker's publish-time guard.
+      const existing = state.fields.find((f) => f.key === SCOPE_FIELD_KEY);
+      if (existing) {
+        return { ...state, selectedFieldId: existing.id };
+      }
+      const scopeField = {
+        type: "short_text",
+        label: "Site Number",
+        required: true,
+        maxLength: 3,
+        placeholder: "ie 156",
+        helpText: "Staff: enter your 3-digit site number.",
+        id: nanoid(8),
+        key: SCOPE_FIELD_KEY
+      } as Field;
+      return {
+        ...state,
+        fields: [...state.fields, scopeField],
+        selectedFieldId: scopeField.id,
         dirty: true
       };
     }

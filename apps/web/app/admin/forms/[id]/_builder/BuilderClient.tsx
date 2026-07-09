@@ -36,7 +36,12 @@ import Canvas from "./Canvas";
 import Inspector from "./Inspector";
 import Palette from "./Palette";
 import TopBar from "./TopBar";
-import { initialState, reducer, stripBuilderArtifacts } from "./reducer";
+import {
+  initialState,
+  reducer,
+  stripBuilderArtifacts,
+  hasScopeField
+} from "./reducer";
 import WorkflowTab, {
   type WorkflowTabDispatch
 } from "../_workflow/WorkflowTab";
@@ -164,6 +169,17 @@ export default function BuilderClient({
     ? state.fields.find((f) => f.id === state.selectedFieldId)
     : undefined;
 
+  // Internal / link-only forms are location-scoped: they need a site-number
+  // field so location admins see only their site's submissions. If it's
+  // missing, the worker auto-injects one at publish — warn here so the
+  // operator can add it themselves (controlling label / placement) rather
+  // than being surprised by an appended field after publishing. Public forms
+  // are never scoped (anonymous fillers don't know site numbers).
+  const needsScopeField =
+    (state.formMeta.audience === "internal" ||
+      state.formMeta.audience === "link-only") &&
+    !hasScopeField(state.fields);
+
   const workflowTabDispatch: WorkflowTabDispatch = {
     onEnable: () => dispatch({ type: "workflow_enable" }),
     onDisable: () => dispatch({ type: "workflow_disable" }),
@@ -230,6 +246,24 @@ export default function BuilderClient({
         }
       />
 
+      {activeTab === "fields" && needsScopeField && (
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-splash-md border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+          <span>
+            This {state.formMeta.audience} form has no{" "}
+            <strong>Site number</strong> field. One will be added automatically
+            on publish so location admins see only their site&rsquo;s
+            submissions — add it now to control its label and placement.
+          </span>
+          <button
+            type="button"
+            onClick={() => dispatch({ type: "add_scope_field" })}
+            className="inline-flex shrink-0 items-center rounded-splash-sm border border-amber-500 bg-white px-3 py-1.5 text-sm font-bold text-amber-900 hover:bg-amber-100"
+          >
+            Add site-number field
+          </button>
+        </div>
+      )}
+
       {activeTab === "fields" && (
         <div
           className="flex gap-4"
@@ -239,6 +273,7 @@ export default function BuilderClient({
             onAdd={(fieldType) =>
               dispatch({ type: "add_field", fieldType })
             }
+            onAddScopeField={() => dispatch({ type: "add_scope_field" })}
           />
           <DndContext
             sensors={sensors}
