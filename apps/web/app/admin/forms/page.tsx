@@ -13,6 +13,7 @@ import { listFormsAdmin, type FormListItem } from "./_lib/worker-fetch";
 import FormsAdminTabs from "./_components/FormsAdminTabs";
 import NoAccessCard from "./_components/NoAccessCard";
 import CopyLinkButton from "./_components/CopyLinkButton";
+import ArchiveButton from "./_components/ArchiveButton";
 
 export const dynamic = "force-dynamic";
 
@@ -177,6 +178,7 @@ function FormsTable({ items }: { items: FormListItem[] }) {
             <th className="px-3 py-2 font-semibold">Submissions</th>
             <th className="px-3 py-2 font-semibold">Last edited</th>
             <th className="px-3 py-2 font-semibold">Public link</th>
+            <th className="px-3 py-2 font-semibold">Actions</th>
           </tr>
         </thead>
         <tbody>
@@ -211,6 +213,13 @@ function FormsTable({ items }: { items: FormListItem[] }) {
                   <CopyLinkButton slug={f.slug} />
                 ) : (
                   <span className="text-xs text-splash-navy/40">—</span>
+                )}
+              </td>
+              <td className="px-3 py-2 align-top">
+                {f.status === "draft" ? (
+                  <span className="text-xs text-splash-navy/40">—</span>
+                ) : (
+                  <ArchiveButton formId={f.id} status={f.status} />
                 )}
               </td>
             </tr>
