@@ -98,7 +98,7 @@ routes = [
   # (Prerequisite: operator removes `fleet.splashcarwashes.info` from
   # `broad-shape-38b8` in the CF dashboard first; see CUTOVER_RUNBOOK.md
   # Phase B + CLAUDE.md constraint #9.)
-  # { pattern = "fleet.splashcarwashes.info", custom_domain = true }
+  { pattern = "fleet.splashcarwashes.info", custom_domain = true }
 ]
 
 [vars]
