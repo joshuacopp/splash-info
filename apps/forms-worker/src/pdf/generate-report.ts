@@ -18,6 +18,7 @@ import {
   PAGE_WIDTH,
   addPageIfNeeded,
   loadFonts,
+  loadHeaderLogo,
   sanitizeForWinAnsi,
   truncateToWidth,
   type Cursor,
@@ -26,7 +27,6 @@ import {
 } from "./layout-utils.js";
 
 const HEADER_HEIGHT = 80;
-const LOGO_R2_KEY = "assets/splash-logo-white.png";
 
 export interface ReportRow {
   label: string;
@@ -101,16 +101,7 @@ async function drawReportHeader(
     color: COLORS.navy
   });
 
-  let logo: PDFImage | null = null;
-  try {
-    const obj = await bucket.get(LOGO_R2_KEY);
-    if (obj) {
-      const bytes = new Uint8Array(await obj.arrayBuffer());
-      logo = await doc.embedPng(bytes);
-    }
-  } catch {
-    logo = null;
-  }
+  const logo: PDFImage | null = await loadHeaderLogo(doc, bucket);
   if (logo) {
     const logoH = 36;
     const logoW = logoH * (logo.width / logo.height);

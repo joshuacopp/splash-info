@@ -16,12 +16,12 @@ import {
   type Fonts,
   type R2Like,
   formatEst,
+  loadHeaderLogo,
   sanitizeForWinAnsi,
   shortId
 } from "./layout-utils.js";
 
 const HEADER_HEIGHT = 80;
-const LOGO_R2_KEY = "assets/splash-logo-white.png";
 
 export interface HeaderInput {
   formTitle: string;
@@ -49,16 +49,7 @@ export async function drawHeader(
     color: COLORS.navy
   });
 
-  let logo: PDFImage | null = null;
-  try {
-    const obj = await bucket.get(LOGO_R2_KEY);
-    if (obj) {
-      const bytes = new Uint8Array(await obj.arrayBuffer());
-      logo = await doc.embedPng(bytes);
-    }
-  } catch {
-    logo = null;
-  }
+  const logo: PDFImage | null = await loadHeaderLogo(doc, bucket);
   if (logo) {
     const logoH = 36;
     const ratio = logo.width / logo.height;

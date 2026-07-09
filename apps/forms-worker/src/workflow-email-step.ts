@@ -26,6 +26,7 @@
 
 import type {
   ApproverSource,
+  Field,
   FormMeta,
   FormSchema,
   FormVersion,
@@ -463,11 +464,7 @@ export function renderTemplate(
   runtime: RuntimeContext
 ): string {
   if (!template) return "";
-  const fieldLabels = new Map<string, string>();
-  for (const f of schema.fields) {
-    if (f.type === "heading" || f.type === "image") continue;
-    fieldLabels.set(f.key, f.label);
-  }
+  const fields = collectFields(schema);
   return template.replace(/\{([^}\n]+)\}/g, (match, raw: string) => {
     const token = raw.trim();
     switch (token) {
@@ -490,15 +487,28 @@ export function renderTemplate(
       case "outcome.reached_at":
         return runtime.outcome.outcomeReachedAt ?? "";
       case "payload.summary":
-        return renderPayloadSummary(payload, fieldLabels);
+        return renderPayloadSummary(payload, fields);
     }
     if (token.startsWith("field.")) {
       const key = token.slice("field.".length);
-      const v = payload[key];
-      return formatScalar(v);
+      return resolveDisplayValue(fields.get(key), payload[key]);
     }
     return match;
   });
+}
+
+/**
+ * Ordered map of `key -> Field` for every answerable field (heading /
+ * image fields carry no payload value and are skipped). Insertion order
+ * follows the schema, so the payload summary renders fields in form order.
+ */
+function collectFields(schema: FormSchema): Map<string, Field> {
+  const fields = new Map<string, Field>();
+  for (const f of schema.fields) {
+    if (f.type === "heading" || f.type === "image") continue;
+    fields.set(f.key, f);
+  }
+  return fields;
 }
 
 // =============================================================================
@@ -527,11 +537,7 @@ export function renderTemplateHtml(
   runtime: RuntimeContext
 ): string {
   if (!template) return "";
-  const fieldLabels = new Map<string, string>();
-  for (const f of schema.fields) {
-    if (f.type === "heading" || f.type === "image") continue;
-    fieldLabels.set(f.key, f.label);
-  }
+  const fields = collectFields(schema);
 
   // Step 1: substitute tokens with sentinel-wrapped HTML so subsequent
   // paragraph normalization can't mangle the embedded markup. The
@@ -541,7 +547,7 @@ export function renderTemplateHtml(
   const TOKEN_CLOSE = "\x02";
   const tokenReplaced = template.replace(/\{([^}\n]+)\}/g, (match, raw: string) => {
     const token = raw.trim();
-    const html = renderTokenHtml(token, schema, payload, runtime, fieldLabels);
+    const html = renderTokenHtml(token, schema, payload, runtime, fields);
     if (html === null) return match;
     return `${TOKEN_OPEN}${html}${TOKEN_CLOSE}`;
   });
@@ -573,7 +579,7 @@ function renderTokenHtml(
   schema: FormSchema,
   payload: SubmissionPayload,
   runtime: RuntimeContext,
-  fieldLabels: Map<string, string>
+  fields: Map<string, Field>
 ): string | null {
   switch (token) {
     case "form.title":
@@ -613,12 +619,11 @@ function renderTokenHtml(
     case "outcome.reached_at":
       return escapeHtml(runtime.outcome.outcomeReachedAt ?? "");
     case "payload.summary":
-      return renderPayloadSummaryHtml(payload, fieldLabels);
+      return renderPayloadSummaryHtml(payload, fields);
   }
   if (token.startsWith("field.")) {
     const key = token.slice("field.".length);
-    const v = payload[key];
-    const formatted = formatScalar(v);
+    const formatted = resolveDisplayValue(fields.get(key), payload[key]);
     if (!formatted) return "";
     // Multi-line strings render with `<br>` between lines.
     return escapeHtml(formatted).replace(/\n/g, "<br>");
@@ -649,18 +654,18 @@ function renderCtaButton(
 
 function renderPayloadSummaryHtml(
   payload: SubmissionPayload,
-  fieldLabels: Map<string, string>
+  fields: Map<string, Field>
 ): string {
   const rows: string[] = [];
-  for (const [key, label] of fieldLabels.entries()) {
+  for (const [key, field] of fields.entries()) {
     const value = payload[key];
     if (value == null) continue;
-    const formatted = formatScalar(value);
+    const formatted = resolveDisplayValue(field, value);
     if (!formatted) continue;
     const valueHtml = escapeHtml(formatted).replace(/\n/g, "<br>");
     rows.push(
       `<tr>` +
-        `<td style="padding: 8px 12px 8px 0; vertical-align: top; font-size: 14px; font-weight: 600; color: #0E2745; border-bottom: 1px solid #E5E7EB; width: 35%;">${escapeHtml(label)}</td>` +
+        `<td style="padding: 8px 12px 8px 0; vertical-align: top; font-size: 14px; font-weight: 600; color: #0E2745; border-bottom: 1px solid #E5E7EB; width: 35%;">${escapeHtml(field.label)}</td>` +
         `<td style="padding: 8px 0; vertical-align: top; font-size: 14px; color: #1f2937; border-bottom: 1px solid #E5E7EB;">${valueHtml}</td>` +
       `</tr>`
     );
@@ -723,17 +728,46 @@ function escapeOutsideSentinels(
 
 function renderPayloadSummary(
   payload: SubmissionPayload,
-  fieldLabels: Map<string, string>
+  fields: Map<string, Field>
 ): string {
   const lines: string[] = [];
-  for (const [key, label] of fieldLabels.entries()) {
+  for (const [key, field] of fields.entries()) {
     const value = payload[key];
     if (value == null) continue;
-    const formatted = formatScalar(value);
+    const formatted = resolveDisplayValue(field, value);
     if (!formatted) continue;
-    lines.push(`${label}: ${formatted}`);
+    lines.push(`${field.label}: ${formatted}`);
   }
   return lines.join("\n");
+}
+
+/**
+ * Resolve a payload value to the human-readable text shown to recipients —
+ * dropdown / multi option *codes* (`option_3`) become their operator-set
+ * *labels* ("Neutral"). Mirrors the CSV export + PDF + wide-table label
+ * resolution so the email body matches every other surface. Falls back to
+ * `formatScalar` for text / number / file / signature fields (and for any
+ * option code that no longer exists on the field).
+ */
+function resolveDisplayValue(field: Field | undefined, value: unknown): string {
+  if (value == null || value === "") return "";
+  if (field && field.type === "dropdown") {
+    const opt = field.options.find((o) => o.value === String(value));
+    return opt?.label ?? formatScalar(value);
+  }
+  if (field && field.type === "multi") {
+    if (Array.isArray(value)) {
+      return value
+        .map((v) => {
+          const opt = field.options.find((o) => o.value === String(v));
+          return opt?.label ?? String(v);
+        })
+        .join(", ");
+    }
+    const opt = field.options.find((o) => o.value === String(value));
+    return opt?.label ?? formatScalar(value);
+  }
+  return formatScalar(value);
 }
 
 function formatScalar(v: unknown): string {

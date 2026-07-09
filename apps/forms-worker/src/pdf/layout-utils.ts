@@ -18,6 +18,8 @@ import {
   rgb
 } from "pdf-lib";
 
+import { ASSETS } from "@splash/storage-r2";
+
 export const PAGE_WIDTH = 612;
 export const PAGE_HEIGHT = 792;
 export const MARGIN = 54;
@@ -383,6 +385,44 @@ export async function fetchAndEmbedR2Image(
     return doc.embedJpg(bytes);
   }
   throw new Error(`Unsupported image MIME at ${r2Key}: ${ct || "unknown"}`);
+}
+
+/** R2 key the branded white-script logo was uploaded under (Brief 32). */
+const LOGO_R2_KEY = "assets/splash-logo-white.png";
+
+/**
+ * Load the white-script Splash logo for a PDF header and embed it as a
+ * PDFImage. Tries the FORMS_FILES R2 object first, then falls back to the
+ * public brand asset URL (`ASSETS.logoWhite`) — mirrors the damage-worker
+ * `loadSummaryLogoBytes` fallback posture. The R2 key isn't present in the
+ * forms bucket, so in practice the HTTPS fallback is what actually renders.
+ * Returns `null` on total failure so callers degrade to a text-only header.
+ */
+export async function loadHeaderLogo(
+  doc: PDFDocument,
+  bucket: R2Like
+): Promise<PDFImage | null> {
+  // 1) R2 object (present in some buckets; absent in FORMS_FILES).
+  try {
+    const obj = await bucket.get(LOGO_R2_KEY);
+    if (obj) {
+      const bytes = new Uint8Array(await obj.arrayBuffer());
+      return await doc.embedPng(bytes);
+    }
+  } catch {
+    // fall through to HTTPS fallback
+  }
+  // 2) Public brand asset over HTTPS.
+  try {
+    const res = await fetch(ASSETS.logoWhite);
+    if (res.ok) {
+      const bytes = new Uint8Array(await res.arrayBuffer());
+      return await doc.embedPng(bytes);
+    }
+  } catch {
+    // fall through to null
+  }
+  return null;
 }
 
 function isPngMagic(bytes: Uint8Array): boolean {
