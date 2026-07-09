@@ -21,6 +21,7 @@ import {
   loadHeaderLogo,
   sanitizeForWinAnsi,
   truncateToWidth,
+  wrapText,
   type Cursor,
   type Fonts,
   type R2Like
@@ -43,6 +44,22 @@ export interface ReportQuestion {
   rows: ReportRow[];
 }
 
+/** A single free-text answer, listed verbatim in the written-responses
+ *  section. `date` is pre-formatted by the caller (this module is
+ *  layout-only). */
+export interface TextResponse {
+  date: string;
+  text: string;
+}
+
+/** A short_text / long_text question and the individual answers to it. */
+export interface TextQuestion {
+  label: string;
+  /** Small caption, e.g. "42 of 128 submissions answered". */
+  baseCaption: string;
+  responses: TextResponse[];
+}
+
 export interface ReportContext {
   formTitle: string;
   fromDate: string;
@@ -51,6 +68,9 @@ export interface ReportContext {
   /** When a field filter was applied, a one-line description of it. */
   filterCaption: string | null;
   questions: ReportQuestion[];
+  /** Free-text (short/long text) questions listed after the choice charts.
+   *  Empty when the form has no such fields. */
+  textQuestions: TextQuestion[];
 }
 
 export async function generateReportPdf(
@@ -65,16 +85,25 @@ export async function generateReportPdf(
 
   drawSummary(doc, cursor, fonts, ctx);
 
-  if (ctx.questions.length === 0) {
+  if (ctx.questions.length === 0 && ctx.textQuestions.length === 0) {
     addPageIfNeeded(doc, cursor, 24);
-    cursor.page.drawText(
-      "No dropdown or multiple-choice questions to report on.",
-      { x: MARGIN, y: cursor.y, size: 11, font: fonts.regular, color: COLORS.muted }
-    );
+    cursor.page.drawText("No questions to report on.", {
+      x: MARGIN,
+      y: cursor.y,
+      size: 11,
+      font: fonts.regular,
+      color: COLORS.muted
+    });
     cursor.y -= 18;
   } else {
     for (const q of ctx.questions) {
       drawQuestion(doc, cursor, fonts, q);
+    }
+    if (ctx.textQuestions.length > 0) {
+      drawTextSectionHeading(doc, cursor, fonts);
+      for (const tq of ctx.textQuestions) {
+        drawTextQuestion(doc, cursor, fonts, tq);
+      }
     }
   }
 
@@ -276,4 +305,123 @@ function drawBarRow(
   });
 
   cursor.y -= ROW_H;
+}
+
+// -----------------------------------------------------------------------------
+// Written responses — free-text (short/long text) answers, listed verbatim
+// -----------------------------------------------------------------------------
+
+const TEXT_INDENT = 12;
+
+function drawTextSectionHeading(
+  doc: PDFDocument,
+  cursor: Cursor,
+  fonts: Fonts
+): void {
+  addPageIfNeeded(doc, cursor, 48);
+  cursor.y -= 6;
+  cursor.page.drawRectangle({
+    x: MARGIN,
+    y: cursor.y,
+    width: CONTENT_WIDTH,
+    height: 0.75,
+    color: COLORS.subtle
+  });
+  cursor.y -= 22;
+  cursor.page.drawText("Written responses", {
+    x: MARGIN,
+    y: cursor.y,
+    size: 15,
+    font: fonts.bold,
+    color: COLORS.navy
+  });
+  cursor.y -= 20;
+}
+
+function drawTextQuestion(
+  doc: PDFDocument,
+  cursor: Cursor,
+  fonts: Fonts,
+  q: TextQuestion
+): void {
+  // Keep the heading + caption + at least the first response line together.
+  addPageIfNeeded(doc, cursor, 40 + 24);
+
+  cursor.page.drawRectangle({
+    x: MARGIN,
+    y: cursor.y - 2,
+    width: 24,
+    height: 3,
+    color: COLORS.blue
+  });
+  cursor.y -= 16;
+  cursor.page.drawText(sanitizeForWinAnsi(q.label), {
+    x: MARGIN,
+    y: cursor.y,
+    size: 13,
+    font: fonts.bold,
+    color: COLORS.navy
+  });
+  cursor.y -= 13;
+  cursor.page.drawText(sanitizeForWinAnsi(q.baseCaption), {
+    x: MARGIN,
+    y: cursor.y,
+    size: 8,
+    font: fonts.regular,
+    color: COLORS.muted
+  });
+  cursor.y -= 16;
+
+  if (q.responses.length === 0) {
+    addPageIfNeeded(doc, cursor, 16);
+    cursor.page.drawText("No responses in this range.", {
+      x: MARGIN + TEXT_INDENT,
+      y: cursor.y,
+      size: 10,
+      font: fonts.regular,
+      color: COLORS.muted
+    });
+    cursor.y -= 16;
+  } else {
+    for (const r of q.responses) {
+      drawTextResponse(doc, cursor, fonts, r);
+    }
+  }
+  cursor.y -= 10;
+}
+
+function drawTextResponse(
+  doc: PDFDocument,
+  cursor: Cursor,
+  fonts: Fonts,
+  r: TextResponse
+): void {
+  const bodyWidth = CONTENT_WIDTH - TEXT_INDENT;
+  const lines = wrapText(r.text || "-", fonts.regular, 10, bodyWidth);
+  const bodyLines = lines.length > 0 ? lines : ["-"];
+
+  // Keep the date line with its first body line.
+  addPageIfNeeded(doc, cursor, 12 + 13);
+
+  cursor.page.drawText(sanitizeForWinAnsi(r.date), {
+    x: MARGIN + TEXT_INDENT,
+    y: cursor.y,
+    size: 8,
+    font: fonts.bold,
+    color: COLORS.muted
+  });
+  cursor.y -= 12;
+
+  for (const line of bodyLines) {
+    addPageIfNeeded(doc, cursor, 13);
+    cursor.page.drawText(line, {
+      x: MARGIN + TEXT_INDENT,
+      y: cursor.y,
+      size: 10,
+      font: fonts.regular,
+      color: COLORS.text
+    });
+    cursor.y -= 13;
+  }
+  cursor.y -= 6;
 }

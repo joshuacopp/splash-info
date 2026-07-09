@@ -45,7 +45,9 @@ import { getFormScopeFieldKey } from "../db/forms.js";
 import {
   generateReportPdf,
   type ReportQuestion,
-  type ReportRow
+  type ReportRow,
+  type TextQuestion,
+  type TextResponse
 } from "../pdf/generate-report.js";
 import { resolveApproverEmails } from "../workflow-resolution.js";
 import {
@@ -534,12 +536,29 @@ export async function handleSubmissionsReport(
 
   // Choice-field schema union (dropdown + multi only), plus a label map for
   // every field key (used to caption an active filter on a text field).
+  // `textMeta` tracks short/long text fields in first-seen order for the
+  // written-responses section.
   const choiceMeta = new Map<string, ChoiceMeta>();
+  const textMeta = new Map<string, { label: string }>();
   const fieldLabels = new Map<string, string>();
   for (const sub of submissions) {
     for (const f of sub.schema.fields) {
       if (f.type === "heading" || f.type === "image") continue;
       if (f.label) fieldLabels.set(f.key, f.label);
+      // The `site_number` scope field is a short_text, but it's the location
+      // scoping mechanism, not a survey answer — exclude it so the written-
+      // responses section isn't flooded with date-stamped site numbers.
+      if (
+        (f.type === "short_text" || f.type === "long_text") &&
+        f.key !== "site_number"
+      ) {
+        const tm = textMeta.get(f.key);
+        if (!tm) {
+          textMeta.set(f.key, { label: f.label ?? "" });
+        } else if (f.label) {
+          tm.label = f.label;
+        }
+      }
       if (f.type !== "dropdown" && f.type !== "multi") continue;
       let meta = choiceMeta.get(f.key);
       if (!meta) {
@@ -640,6 +659,27 @@ export async function handleSubmissionsReport(
     }
   }
 
+  // Written-responses section: list each non-empty short/long text answer,
+  // date-prefixed, in the same first-seen field order as the schema.
+  const textQuestions: TextQuestion[] = [];
+  for (const [key, meta] of textMeta) {
+    const responses: TextResponse[] = [];
+    for (const sub of filtered) {
+      const raw = sub.payload[key];
+      if (raw == null) continue;
+      const text = typeof raw === "string" ? raw : String(raw);
+      if (text.trim() === "") continue;
+      responses.push({ date: reportDate(sub.submitted_at), text });
+    }
+    textQuestions.push({
+      label: meta.label || key,
+      baseCaption: `${responses.length} of ${total} submission${
+        total === 1 ? "" : "s"
+      } answered`,
+      responses
+    });
+  }
+
   let formTitle = "Form";
   try {
     const detail = await getFormDetail(env, formId);
@@ -656,22 +696,42 @@ export async function handleSubmissionsReport(
       toDate: range.toDate,
       totalSubmissions: total,
       filterCaption,
-      questions
+      questions,
+      textQuestions
     });
   } catch (err) {
     console.error("[forms.admin] report pdf render failed", err);
     return new Response("Could not render report PDF.", { status: 500 });
   }
 
+  // `?disposition=inline` opens the PDF in a browser tab (the "View report"
+  // button); the default `attachment` drives the "Export report" download.
+  const inline = url.searchParams.get("disposition") === "inline";
   const filename = `form-${formId}-report-${range.fromDate}-to-${range.toDate}.pdf`;
   return new Response(bytes as unknown as BodyInit, {
     status: 200,
     headers: {
       "Content-Type": "application/pdf",
-      "Content-Disposition": `attachment; filename="${filename}"`,
+      "Content-Disposition": `${inline ? "inline" : "attachment"}; filename="${filename}"`,
       "Cache-Control": "no-store"
     }
   });
+}
+
+// Compact date for the written-responses list, e.g. "Jan 5, 2026" (EST).
+function reportDate(iso: string): string {
+  try {
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return iso;
+    return d.toLocaleDateString("en-US", {
+      timeZone: "America/New_York",
+      year: "numeric",
+      month: "short",
+      day: "numeric"
+    });
+  } catch {
+    return iso;
+  }
 }
 
 // `options` (when supplied) maps a dropdown/multi option's stored value to

@@ -86,6 +86,13 @@ export default function WideSubmissionsTable({
     }`;
   }, [formId, from, to, activeColumn, filterValue]);
 
+  // Same report, but with disposition=inline so the browser renders it in a
+  // new tab instead of downloading. Powers the "View report" button.
+  const viewReportUrl = useMemo(
+    () => `${reportUrl}${reportUrl.includes("?") ? "&" : "?"}disposition=inline`,
+    [reportUrl]
+  );
+
   // Distinct displayed values for the selected field, to power a datalist of
   // quick-pick suggestions (operator can still free-type a contains match).
   const distinctValues = useMemo(() => {
@@ -179,9 +186,31 @@ export default function WideSubmissionsTable({
           {filteredItems.length} of {items.length}
         </span>
         <a
+          href={viewReportUrl}
+          target="_blank"
+          rel="noopener"
+          className="ml-auto inline-flex items-center gap-1.5 rounded-splash-sm border border-splash-blue bg-splash-blue px-4 py-1.5 text-sm font-bold text-white hover:bg-splash-blue/90"
+          title="Open the response report in a new tab without downloading, honoring the filter and date range"
+        >
+          <svg
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth={2.2}
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden="true"
+            className="h-4 w-4"
+          >
+            <path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z" />
+            <circle cx="12" cy="12" r="3" />
+          </svg>
+          View report
+        </a>
+        <a
           href={reportUrl}
           download
-          className="ml-auto inline-flex items-center gap-1.5 rounded-splash-sm border border-splash-blue bg-white px-4 py-1.5 text-sm font-bold text-splash-blue hover:bg-splash-blue/5"
+          className="inline-flex items-center gap-1.5 rounded-splash-sm border border-splash-blue bg-white px-4 py-1.5 text-sm font-bold text-splash-blue hover:bg-splash-blue/5"
           title="Percentage breakdown of every dropdown / multiple-choice question, honoring the filter and date range"
         >
           <svg
