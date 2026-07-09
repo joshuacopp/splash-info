@@ -892,32 +892,74 @@ function sanitizeSiteNumber(raw) {
  * ============================================================ */
 
 function renderCsv(rows, range, slug) {
+  // Group by site: sort rows so same-site submissions are contiguous. Blank
+  // site sinks to the bottom; jotform_created_at is a stable secondary key.
+  // Copy first — never mutate the caller's array.
+  const sorted = [...rows].sort((a, b) => {
+    const sa = (a?.site ?? "").toString();
+    const sb = (b?.site ?? "").toString();
+    if (sa === "" && sb !== "") return 1;
+    if (sb === "" && sa !== "") return -1;
+    const c = sa.localeCompare(sb, undefined, { sensitivity: "base" });
+    if (c !== 0) return c;
+    return (a?.jotform_created_at ?? "")
+      .toString()
+      .localeCompare((b?.jotform_created_at ?? "").toString());
+  });
+
+  // `site` pulled to the front so the grouping reads as contiguous blocks
+  // while the sheet stays a single clean table (Excel filter/pivot-friendly).
   const headerBase = [
+    "site",
     "id",
     "jotform_created_at",
     "jotform_updated_at",
     "site_number",
-    "site",
     "site_email",
     "jotform_status"
   ];
 
-  // Union of every key present in any answers payload (schema-union, the
-  // Brief 96 pattern). Empty answers payloads contribute zero keys.
-  const answerKeys = new Set();
-  for (const r of rows) {
+  // Union of every answer key present in any row (schema-union, the Brief 96
+  // pattern). For each key, resolve a human column header from the JotForm
+  // entry's `text` (the question label authored in the builder), falling back
+  // to the field `name`, then the raw key. Empty answers payloads contribute
+  // zero keys.
+  const keyLabel = new Map();
+  for (const r of sorted) {
     const a = r && r.answers && typeof r.answers === "object" ? r.answers : null;
     if (!a) continue;
-    for (const k of Object.keys(a)) answerKeys.add(k);
+    for (const k of Object.keys(a)) {
+      if (keyLabel.get(k)) continue; // already resolved a non-empty label
+      const entry = a[k];
+      let label = "";
+      if (entry && typeof entry === "object") {
+        if (typeof entry.text === "string" && entry.text.trim()) {
+          label = entry.text.trim();
+        } else if (typeof entry.name === "string" && entry.name.trim()) {
+          label = entry.name.trim();
+        }
+      }
+      keyLabel.set(k, label);
+    }
   }
-  const sortedKeys = [...answerKeys].sort();
-  const header = [
-    ...headerBase,
-    ...sortedKeys.map((k) => `answers__${k}__answer`)
-  ];
+  const sortedKeys = [...keyLabel.keys()].sort();
+
+  // Disambiguate duplicate labels by appending the key, so two questions that
+  // happen to share wording stay distinct columns.
+  const labelCounts = new Map();
+  for (const k of sortedKeys) {
+    const label = keyLabel.get(k) || k;
+    labelCounts.set(label, (labelCounts.get(label) ?? 0) + 1);
+  }
+  const headerFor = (k) => {
+    const label = keyLabel.get(k) || k;
+    return (labelCounts.get(label) ?? 0) > 1 ? `${label} (${k})` : label;
+  };
+
+  const header = [...headerBase, ...sortedKeys.map(headerFor)];
 
   const lines = [header.map(csvEscape).join(",")];
-  for (const r of rows) {
+  for (const r of sorted) {
     const base = headerBase.map((k) => csvEscape(stringifyForCsv(r?.[k])));
     const answerCells = sortedKeys.map((k) => {
       const entry = r?.answers?.[k];
@@ -943,7 +985,7 @@ function renderCsv(rows, range, slug) {
     lines.push([...base, ...answerCells].join(","));
   }
 
-  const csv = lines.join("\n") + (rows.length > 0 ? "\n" : "");
+  const csv = lines.join("\n") + (sorted.length > 0 ? "\n" : "");
   const filename = `${slug}-${range.fromYmd}-to-${range.toYmd}.csv`;
   return new Response(csv, {
     status: 200,
