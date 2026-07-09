@@ -20,6 +20,25 @@ const headers = (env: SupabaseEnv) => ({
   Authorization: `Bearer ${env.SUPABASE_SERVICE_KEY}`
 });
 
+/**
+ * Location scoping filter. A `locationScope` of `undefined` means the caller
+ * has "all" visibility (super_admin / dc-admin) — no filter is applied. A
+ * non-empty array restricts the query to submissions whose denormalized
+ * `location_code` is in the caller's set (location admins). NULL-location
+ * (unscoped) submissions are excluded for scoped callers — those stay
+ * super_admin / dc-admin only.
+ *
+ * The submissionGate guarantees a scoped caller always has ≥1 location, but we
+ * defend against an empty array by pushing a sentinel that matches no real
+ * (lowercased) code, so a scoping bug can never widen visibility to every row.
+ */
+export function applyLocationScope(url: URL, locationScope?: string[]): void {
+  if (!locationScope) return;
+  const codes = locationScope.length > 0 ? locationScope : ["__no_location__"];
+  const list = codes.map((c) => `"${c.replace(/"/g, '""')}"`).join(",");
+  url.searchParams.set("location_code", `in.(${list})`);
+}
+
 // =============================================================================
 // listSubmissions
 // =============================================================================
@@ -64,6 +83,9 @@ export interface ListSubmissionsArgs {
   submitterKind?: string;
   limit: number;
   includePayload?: boolean;
+  // Location scoping — undefined = "all" (super/dc-admin); array = restrict to
+  // these location_codes (location admins). See applyLocationScope.
+  locationScope?: string[];
 }
 
 interface ListSubmissionDbRow {
@@ -123,6 +145,7 @@ export async function listSubmissions(
   url.searchParams.set("form_id", `eq.${args.formId}`);
   url.searchParams.set("submitted_at", `gte.${args.fromIso}`);
   url.searchParams.append("submitted_at", `lte.${args.toIso}`);
+  applyLocationScope(url, args.locationScope);
   url.searchParams.set("order", "submitted_at.desc");
   url.searchParams.set("limit", String(args.limit));
   if (args.status && args.status !== "all") {
@@ -271,7 +294,8 @@ interface SubmissionDetailDbRow {
 export async function getSubmission(
   env: SupabaseEnv,
   formId: string,
-  subId: string
+  subId: string,
+  locationScope?: string[]
 ): Promise<SubmissionDetail | null> {
   const url = new URL("/rest/v1/form_submissions", env.SUPABASE_URL);
   url.searchParams.set(
@@ -301,6 +325,7 @@ export async function getSubmission(
   );
   url.searchParams.set("id", `eq.${subId}`);
   url.searchParams.set("form_id", `eq.${formId}`);
+  applyLocationScope(url, locationScope);
   url.searchParams.set("limit", "1");
 
   const resp = await fetch(url.toString(), { headers: headers(env) });
@@ -436,7 +461,8 @@ export async function updateSubmission(
   formId: string,
   subId: string,
   userId: string,
-  patch: UpdateSubmissionPatch
+  patch: UpdateSubmissionPatch,
+  locationScope?: string[]
 ): Promise<{ id: string } | null> {
   const body: Record<string, unknown> = {};
   const now = new Date().toISOString();
@@ -454,6 +480,9 @@ export async function updateSubmission(
   const url = new URL("/rest/v1/form_submissions", env.SUPABASE_URL);
   url.searchParams.set("id", `eq.${subId}`);
   url.searchParams.set("form_id", `eq.${formId}`);
+  // Scoped callers can only mutate submissions within their locations — the
+  // filter makes an out-of-scope PATCH match zero rows (→ null → 404).
+  applyLocationScope(url, locationScope);
   url.searchParams.set("select", "id");
 
   const resp = await fetch(url.toString(), {
@@ -514,7 +543,8 @@ export async function listSubmissionsForCsv(
   formId: string,
   fromIso: string,
   toIso: string,
-  limit: number
+  limit: number,
+  locationScope?: string[]
 ): Promise<SubmissionCsvRow[]> {
   const url = new URL("/rest/v1/form_submissions", env.SUPABASE_URL);
   url.searchParams.set(
@@ -524,6 +554,7 @@ export async function listSubmissionsForCsv(
   url.searchParams.set("form_id", `eq.${formId}`);
   url.searchParams.set("submitted_at", `gte.${fromIso}`);
   url.searchParams.append("submitted_at", `lte.${toIso}`);
+  applyLocationScope(url, locationScope);
   url.searchParams.set("order", "submitted_at.desc");
   url.searchParams.set("limit", String(limit));
 

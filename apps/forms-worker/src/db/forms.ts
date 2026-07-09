@@ -207,6 +207,10 @@ export interface InsertSubmissionArgs {
   workflowStage?: string | null;
   workflowHistory?: unknown[];
   currentApproverEmails?: string[];
+  // Location scoping — canonical location_code resolved server-side from the
+  // form's scope field (site number). Null/undefined on unscoped forms; the
+  // column is nullable (unscoped submissions stay super_admin/dc-admin-only).
+  locationCode?: string | null;
 }
 
 /**
@@ -245,7 +249,9 @@ export async function insertSubmissionIdempotent(
     // has no workflow; column default also accepts null.
     workflow_stage: args.workflowStage ?? null,
     workflow_history: args.workflowHistory ?? [],
-    current_approver_emails: args.currentApproverEmails ?? []
+    current_approver_emails: args.currentApproverEmails ?? [],
+    // Location scoping — null on unscoped forms (column is nullable).
+    location_code: args.locationCode ?? null
     // submitted_at + status default server-side
   });
 
@@ -425,4 +431,141 @@ export async function getLocationOptionsFromPricingSimple(
     });
   }
   return out;
+}
+
+// =============================================================================
+// Submission location scoping — site→location_code resolution
+// =============================================================================
+//
+// A location-scoped form carries a `scope_location_field_key` (a schema
+// field.key) on its `forms` row. At submit time we resolve that field's payload
+// value to a canonical `location_code` and stamp it on the submission so the
+// scoped read path can filter `location_code=in.(...)` in one capped/paginated
+// query. See project memory "Forms submission scoping to location admins".
+//
+// Primary path: the scope field is a 3-digit SITE NUMBER text field (Josh's
+// long-standing internal-form pattern). We resolve site→location_code against
+// pricing_simple server-side — never trusting a client-resolved value.
+// Passthrough path: if the scope field is a `location` dropdown or a `lookup`
+// already keyed on pricing_simple.location_code, its value IS a canonical
+// location_code, so we use it directly.
+
+/**
+ * Resolve a 3-digit site number to its canonical (lowercased) location_code via
+ * pricing_simple. Returns null when the site is unknown or the query fails —
+ * caller (submit) HARD-REJECTS unknown sites so no row lands with a
+ * null/garbage location_code (prevents cross-site leakage on reused forms).
+ */
+export async function siteToLocationCode(
+  env: SupabaseEnv,
+  site: string
+): Promise<string | null> {
+  const trimmed = site.trim();
+  if (!trimmed) return null;
+  const url = new URL("/rest/v1/pricing_simple", env.SUPABASE_URL);
+  url.searchParams.set("select", "location_code");
+  url.searchParams.set("site", `eq.${trimmed}`);
+  url.searchParams.set("limit", "1");
+
+  let response: Response;
+  try {
+    response = await fetch(url.toString(), { headers: headers(env) });
+  } catch (err) {
+    console.error("[forms] siteToLocationCode: fetch threw", err);
+    return null;
+  }
+  if (!response.ok) {
+    console.error("[forms] siteToLocationCode: returned", response.status);
+    return null;
+  }
+  const rows = (await response.json().catch(() => [])) as Array<{
+    location_code: string | null;
+  }>;
+  const code = rows[0]?.location_code;
+  return typeof code === "string" && code.trim() ? code.trim().toLowerCase() : null;
+}
+
+/** Outcome of resolving a submission's scope field to a location_code. */
+export type SubmissionLocationResolution =
+  | { status: "resolved"; locationCode: string }
+  | { status: "unknown_site"; site: string }
+  | { status: "no_scope" };
+
+/**
+ * Resolve the location_code to stamp on a submission, given the form's
+ * `scopeFieldKey` (from `forms.scope_location_field_key`), the version schema,
+ * and the submitted payload.
+ *
+ *   - no scope key, or the field isn't in this version's schema → "no_scope"
+ *     (submission is unscoped: visible to super_admin / dc-admin only). We do
+ *     NOT hard-reject on config drift — only on genuinely bad site numbers.
+ *   - `location` field / `lookup` keyed on pricing_simple.location_code →
+ *     value is already a canonical location_code, passthrough (lowercased).
+ *   - otherwise (site-number text field) → resolve via pricing_simple.site;
+ *     unknown/empty → "unknown_site" (caller hard-rejects).
+ */
+export async function resolveSubmissionLocationCode(
+  env: SupabaseEnv,
+  schema: FormSchema,
+  payload: Record<string, unknown>,
+  scopeFieldKey: string | null
+): Promise<SubmissionLocationResolution> {
+  if (!scopeFieldKey) return { status: "no_scope" };
+
+  const field = schema.fields.find((f) => f.key === scopeFieldKey);
+  if (!field) return { status: "no_scope" };
+
+  const raw = payload[field.key];
+  const value = typeof raw === "string" ? raw.trim() : "";
+
+  const isCanonicalLocation =
+    field.type === "location" ||
+    (field.type === "lookup" && field.keyColumn === "pricing_simple.location_code");
+
+  if (isCanonicalLocation) {
+    // Value is already a location_code (server-baked dropdown / location-keyed
+    // lookup). Empty → treat as unknown so a scoped form can't slip through
+    // with no location.
+    if (!value) return { status: "unknown_site", site: "" };
+    return { status: "resolved", locationCode: value.toLowerCase() };
+  }
+
+  // Site-number path.
+  if (!value) return { status: "unknown_site", site: "" };
+  const locationCode = await siteToLocationCode(env, value);
+  if (!locationCode) return { status: "unknown_site", site: value };
+  return { status: "resolved", locationCode };
+}
+
+/**
+ * Fetch a form's `scope_location_field_key` without widening the `FormMeta`
+ * type (that lives in the unmodifiable @splash/forms-schema package). Small
+ * targeted read on the submit path. Returns null when unset or on error —
+ * caller treats null as "unscoped form".
+ */
+export async function getFormScopeFieldKey(
+  env: SupabaseEnv,
+  formId: string
+): Promise<string | null> {
+  const url = new URL("/rest/v1/forms", env.SUPABASE_URL);
+  url.searchParams.set("id", `eq.${formId}`);
+  url.searchParams.set("select", "scope_location_field_key");
+  url.searchParams.set("limit", "1");
+
+  let response: Response;
+  try {
+    response = await fetch(url.toString(), { headers: headers(env) });
+  } catch (err) {
+    console.error("[forms] getFormScopeFieldKey: fetch threw", err);
+    return null;
+  }
+  if (!response.ok) {
+    console.error("[forms] getFormScopeFieldKey: returned", response.status);
+    return null;
+  }
+  const rows = (await response.json().catch(() => [])) as Array<{
+    scope_location_field_key: string | null;
+  }>;
+  const key = rows[0]?.scope_location_field_key;
+  return typeof key === "string" && key.trim() ? key.trim() : null;
 }

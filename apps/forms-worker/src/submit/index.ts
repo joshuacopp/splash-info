@@ -38,6 +38,8 @@ import {
   getCurrentVersion,
   insertSubmissionIdempotent,
   insertSubmissionFiles,
+  getFormScopeFieldKey,
+  resolveSubmissionLocationCode,
   type SubmissionFileRowInsert,
   type SubmissionRow
 } from "../db/forms.js";
@@ -348,6 +350,44 @@ export async function handleSubmit(
   }
 
   // -----------------------------------------------------------------
+  // Location scoping — resolve + stamp `location_code`.
+  //
+  // If this form declares a `scope_location_field_key`, resolve that field's
+  // value (a 3-digit site number, or a canonical location_code for a
+  // location/lookup field) to a location_code server-side and stamp it on the
+  // submission. Unknown site number → HARD REJECT (422, no row written): a
+  // scoped form (reused across sites) must land with a valid location_code so
+  // it can't leak across sites or become invisible to its own location admin.
+  // Unscoped forms resolve to "no_scope" → location_code stays null (visible
+  // to super_admin / dc-admin only, the existing fallback).
+  // -----------------------------------------------------------------
+  let locationCode: string | null = null;
+  const scopeFieldKey = await getFormScopeFieldKey(env, form.id);
+  const locationResolution = await resolveSubmissionLocationCode(
+    env,
+    version.schema,
+    payload,
+    scopeFieldKey
+  );
+  if (locationResolution.status === "unknown_site") {
+    const key = scopeFieldKey ?? "site";
+    return new Response(
+      JSON.stringify({
+        error: "unknown_site",
+        fields: {
+          [key]: locationResolution.site
+            ? `Site number "${locationResolution.site}" is not a recognized location.`
+            : "A site number is required for this form."
+        }
+      }),
+      { status: 422, headers: { "Content-Type": "application/json" } }
+    );
+  }
+  if (locationResolution.status === "resolved") {
+    locationCode = locationResolution.locationCode;
+  }
+
+  // -----------------------------------------------------------------
   // Brief 120 + Brief 127 — workflow seed + email-step cascade.
   //
   // If the version has a workflow block, seed `workflow_stage` to its
@@ -454,7 +494,8 @@ export async function handleSubmit(
       submitterIp,
       workflowStage,
       workflowHistory,
-      currentApproverEmails
+      currentApproverEmails,
+      locationCode
     });
   } catch (err) {
     console.error("[forms] handleSubmit: insert failed", err);

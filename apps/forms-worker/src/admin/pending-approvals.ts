@@ -61,6 +61,9 @@ interface PendingApprovalDbRow {
   submitted_at: string;
   current_approver_emails: string[] | null;
   payload: Record<string, unknown>;
+  // Denormalized location scoping column (stamped at submit). Authoritative
+  // for the row's Site value — preferred over the payload heuristic below.
+  location_code: string | null;
   form: { id: string; title: string } | null;
   version: { id: string; schema: unknown } | null;
 }
@@ -105,6 +108,7 @@ export async function handlePendingApprovals(
       "submitted_at",
       "current_approver_emails",
       "payload",
+      "location_code",
       "form:forms!inner(id,title)",
       "version:form_versions!inner(id,schema)"
     ].join(",")
@@ -178,7 +182,13 @@ export async function handlePendingApprovals(
       submitter_email: r.submitter_email,
       submitter_kind: r.submitter_kind,
       submitted_at: r.submitted_at,
-      location_code: extractLocationCode(schema, r.payload),
+      // Prefer the denormalized column (stamped at submit, correct for
+      // site-number-scoped forms); fall back to the payload heuristic for
+      // legacy rows submitted before the column existed / was backfilled.
+      location_code:
+        (typeof r.location_code === "string" && r.location_code.trim()
+          ? r.location_code.trim()
+          : null) ?? extractLocationCode(schema, r.payload),
       review_path: `/admin/forms/${r.form_id}/submissions/${r.id}`,
       approver_resolution_status:
         approverEmails.length === 0 && expectsApprover ? "empty" : "resolved"

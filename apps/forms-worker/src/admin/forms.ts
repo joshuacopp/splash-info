@@ -25,8 +25,17 @@
 // rendered public form is always strictly valid.
 
 import { isOriginAllowed, jsonError } from "@splash/http";
-import { draftFormSchemaSchema, formSchemaSchema } from "@splash/forms-schema";
-import { adminGate, adminGateResponse, requireServiceKey } from "./auth.js";
+import {
+  draftFormSchemaSchema,
+  formSchemaSchema,
+  type FormSchema
+} from "@splash/forms-schema";
+import {
+  adminGate,
+  adminGateResponse,
+  submissionGate,
+  requireServiceKey
+} from "./auth.js";
 import {
   listForms,
   createForm,
@@ -35,6 +44,8 @@ import {
   updateDraft,
   publishDraft,
   setFormStatus,
+  getFormScopingContext,
+  setFormScopeFieldKey,
   type ListFormsFilter
 } from "../db/admin-forms.js";
 import type { Env } from "../index.js";
@@ -43,10 +54,30 @@ const FORM_ID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const SLUG_RE = /^[a-z0-9][a-z0-9-]{2,80}$/;
 
+// Key used for the auto-injected location-scoping field. Matches the field-key
+// grammar (/^[a-z][a-z0-9_]*$/) and is stable/predictable so operators can
+// recognise it. See handlePublish's scope-injection step.
+const SCOPE_FIELD_KEY = "site_number";
+
+/** 8-char lowercase-alphanumeric id, matching the builder's `nanoid(8)` shape. */
+function randomFieldId(): string {
+  const alphabet = "abcdefghijklmnopqrstuvwxyz0123456789";
+  const bytes = crypto.getRandomValues(new Uint8Array(8));
+  let s = "";
+  for (const b of bytes) s += alphabet[b % alphabet.length];
+  return s;
+}
+
 export async function handleListForms(env: Env, req: Request): Promise<Response> {
   const sk = requireServiceKey(env);
   if (sk) return sk;
-  const gate = await adminGate(env, req);
+  // submissionGate (not adminGate): this endpoint backs the submissions index,
+  // which location admins may read. Full admins get scope "all" (unchanged
+  // behaviour). Location admins get their location set, which scopes the
+  // embedded submission counts AND hides unscoped forms (db listForms). The
+  // form BUILDER list is a separate web page that keeps its own super_admin /
+  // dc-admin role gate, so widening this endpoint doesn't expose the builder.
+  const gate = await submissionGate(env, req);
   if (!gate.ok) return adminGateResponse(gate);
 
   const url = new URL(req.url);
@@ -62,6 +93,9 @@ export async function handleListForms(env: Env, req: Request): Promise<Response>
       return jsonError(400, "bad_audience");
     }
     if (audience !== "all") filter.audience = audience;
+  }
+  if (gate.scope !== "all") {
+    filter.submissionLocationScope = gate.scope.locations;
   }
 
   try {
@@ -151,7 +185,11 @@ export async function handleGetForm(
 ): Promise<Response> {
   const sk = requireServiceKey(env);
   if (sk) return sk;
-  const gate = await adminGate(env, req);
+  // submissionGate (not adminGate): the per-form submissions page reads form
+  // meta (title / slug) through this endpoint, and location admins may view it.
+  // Returns form detail for any authorized caller; the mutating draft / publish
+  // handlers below stay on adminGate so location admins can't edit forms.
+  const gate = await submissionGate(env, req);
   if (!gate.ok) return adminGateResponse(gate);
 
   if (!FORM_ID_RE.test(formId)) {
@@ -263,8 +301,85 @@ export async function handlePublish(
     );
   }
 
+  // ---------------------------------------------------------------------------
+  // Location-scoping: auto-inject / designate the site-number field.
+  //
+  // Internal + link-only forms are reused across every site, so a submission
+  // needs a site number to know which location it belongs to. On the first
+  // publish of such a form (scope_location_field_key still NULL) we designate a
+  // `site_number` field — reusing one the operator already added, or appending
+  // a plain short-text field mirroring the builder's default shape. The submit
+  // path resolves that field's value to a canonical location_code and stamps it
+  // (db/forms.ts resolveSubmissionLocationCode); location admins then see only
+  // their sites' submissions.
+  //
+  // FAIL-SAFE: if the augmented schema fails strict validation for any reason
+  // (e.g. the injected field shape drifts from @splash/forms-schema), we log
+  // and publish the form UNSCOPED rather than block the publish. A missed
+  // scope is recoverable on a later publish; a blocked publish is not.
+  // Public forms are never scoped (anonymous fillers don't know site numbers).
+  let scopeKeyToSet: string | null = null;
+  try {
+    const ctx = await getFormScopingContext(env, formId);
+    if (
+      ctx &&
+      ctx.scopeFieldKey === null &&
+      (ctx.audience === "internal" || ctx.audience === "link-only")
+    ) {
+      const base = strictResult.data as FormSchema;
+      const existing = base.fields.find((f) => f.key === SCOPE_FIELD_KEY);
+      if (existing) {
+        // Operator already added a `site_number` field — designate it, don't
+        // duplicate. No schema change; just stamp the key after publish.
+        scopeKeyToSet = SCOPE_FIELD_KEY;
+      } else {
+        const siteField = {
+          type: "short_text",
+          label: "Site number",
+          required: true,
+          maxLength: 500,
+          id: randomFieldId(),
+          key: SCOPE_FIELD_KEY
+        };
+        const augmented = { ...base, fields: [...base.fields, siteField] };
+        const augCheck = formSchemaSchema.safeParse(augmented);
+        if (augCheck.success) {
+          await updateDraft(
+            env,
+            formId,
+            augCheck.data as FormSchema,
+            gate.session.userId
+          );
+          scopeKeyToSet = SCOPE_FIELD_KEY;
+        } else {
+          console.error(
+            "[forms.admin] publish: site-number injection failed strict validation; publishing unscoped",
+            augCheck.error.issues
+          );
+        }
+      }
+    }
+  } catch (err) {
+    console.error(
+      "[forms.admin] publish: scope-injection step threw; publishing unscoped",
+      err
+    );
+  }
+
   try {
     const result = await publishDraft(env, formId, gate.session.userId);
+    if (scopeKeyToSet) {
+      try {
+        await setFormScopeFieldKey(env, formId, scopeKeyToSet);
+      } catch (err) {
+        // Form is published; the scope key just didn't stamp. Recoverable on
+        // the next publish (scopeFieldKey is still NULL, so we retry).
+        console.error(
+          "[forms.admin] publish: setFormScopeFieldKey failed; form published but unscoped",
+          err
+        );
+      }
+    }
     return new Response(
       JSON.stringify({
         published_version_number: result.versionNumber,

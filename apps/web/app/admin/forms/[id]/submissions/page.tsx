@@ -96,13 +96,11 @@ export default async function FormSubmissionsPage({
       />
     );
   }
-  const allowed =
-    session.role === "super_admin" ||
-    session.dcRole === "admin" ||
-    session.dcRole === "super_admin";
-  if (!allowed) {
-    return <NoAccessCard reason="forbidden" />;
-  }
+  // Authorization is delegated to the worker (submissionGate): a full admin
+  // sees all submissions, a location admin sees only their sites' rows for this
+  // form, everyone else gets 403 → null from the worker fetches below. We don't
+  // gate on session.role here so location admins reach the scoped view (mirrors
+  // the pricing admin page).
 
   const form = await getFormAdmin(id);
   if (!form) {

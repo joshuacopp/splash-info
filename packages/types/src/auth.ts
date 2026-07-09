@@ -30,10 +30,22 @@ export const USER_ROLES: readonly UserRole[] = ["super_admin", "location_admin"]
  * step 5 — checkToolAccess generalization). "pricing" gates /admin/* in
  * signup-worker. "pertrack" gates /pertrack/* in performance-worker.
  * sysadmin-worker is super_admin-only and not gated by a tool grant.
+ *
+ * "form_submissions" gates the custom-forms submission-reading surface in
+ * forms-worker (list / csv / report / detail / pending-approvals) for
+ * LOCATION admins, scoped to their own site(s). super_admin / dc-admin see
+ * every submission without needing the grant. A dedicated tool (not reusing
+ * "pricing") so a pricing admin doesn't automatically gain form-submission
+ * visibility.
  */
-export type ToolName = "pricing" | "claims" | "pertrack";
+export type ToolName = "pricing" | "claims" | "pertrack" | "form_submissions";
 
-export const VALID_TOOLS: readonly ToolName[] = ["pricing", "claims", "pertrack"] as const;
+export const VALID_TOOLS: readonly ToolName[] = [
+  "pricing",
+  "claims",
+  "pertrack",
+  "form_submissions"
+] as const;
 
 /**
  * Row shape of `user_permissions`.

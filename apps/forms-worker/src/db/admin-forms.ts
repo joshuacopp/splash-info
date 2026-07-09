@@ -95,6 +95,11 @@ export interface ListFormsFilter {
   status?: string;
   search?: string;
   audience?: string;
+  // Location scoping for the SUBMISSIONS index. When set, the embedded
+  // submission `count` is filtered to these location_codes so a location admin
+  // sees per-site counts (not org-wide totals). Undefined = unscoped totals
+  // (super_admin / dc-admin). Only affects the count, not which forms return.
+  submissionLocationScope?: string[];
 }
 
 /**
@@ -117,6 +122,24 @@ export async function listForms(
     "id,slug,title,audience,status,current_version_id,last_edited_at,created_at,versions:form_versions!form_id(count),submissions:form_submissions!form_id(count)"
   );
   url.searchParams.set("order", "last_edited_at.desc");
+
+  // Scoped submission counts — filter the embedded `submissions` aggregate by
+  // location_code. PostgREST filters an embedded resource via `<alias>.<col>`;
+  // the parent form still returns (with count 0 when nothing matches). Guarded
+  // against an empty array with a sentinel that matches no real code.
+  if (filter?.submissionLocationScope) {
+    const codes =
+      filter.submissionLocationScope.length > 0
+        ? filter.submissionLocationScope
+        : ["__no_location__"];
+    const list = codes.map((c) => `"${c.replace(/"/g, '""')}"`).join(",");
+    url.searchParams.set("submissions.location_code", `in.(${list})`);
+    // A location admin should only see location-scoped forms. An unscoped form
+    // (scope_location_field_key IS NULL) has only NULL-location submissions —
+    // super_admin / dc-admin visibility — so for a scoped caller it would
+    // always show a 0 count and drill into an empty list. Hide it entirely.
+    url.searchParams.set("scope_location_field_key", "not.is.null");
+  }
 
   if (filter?.status && filter.status !== "all") {
     url.searchParams.set("status", `eq.${filter.status}`);
@@ -186,6 +209,77 @@ export async function listForms(
       createdAt: r.created_at
     };
   });
+}
+
+// =============================================================================
+// Scoping context + designation (submission location scoping)
+// =============================================================================
+//
+// `scope_location_field_key` is a `forms`-table column (not part of the version
+// schema — field keys are stable across versions and it isn't in the
+// unmodifiable @splash/forms-schema `FormMeta` type). These helpers read the
+// scoping context and stamp the designated field key at publish time. See
+// project memory "Forms submission scoping to location admins".
+
+export interface FormScopingContext {
+  audience: "public" | "internal" | "link-only";
+  scopeFieldKey: string | null;
+}
+
+/**
+ * Read a form's audience + current scope field designation in one call.
+ * Returns null when the form id doesn't exist. Used by handlePublish to decide
+ * whether to auto-inject / designate a site-number scope field.
+ */
+export async function getFormScopingContext(
+  env: SupabaseEnv,
+  formId: string
+): Promise<FormScopingContext | null> {
+  const url = new URL("/rest/v1/forms", env.SUPABASE_URL);
+  url.searchParams.set("id", `eq.${formId}`);
+  url.searchParams.set("select", "audience,scope_location_field_key");
+  url.searchParams.set("limit", "1");
+  const resp = await fetch(url.toString(), { headers: headers(env) });
+  if (!resp.ok) {
+    throw new Error(`getFormScopingContext: ${resp.status}`);
+  }
+  const rows = (await resp.json().catch(() => [])) as Array<{
+    audience: "public" | "internal" | "link-only";
+    scope_location_field_key: string | null;
+  }>;
+  const row = rows[0];
+  if (!row) return null;
+  return {
+    audience: row.audience,
+    scopeFieldKey:
+      typeof row.scope_location_field_key === "string" &&
+      row.scope_location_field_key.trim()
+        ? row.scope_location_field_key.trim()
+        : null
+  };
+}
+
+/** Stamp the designated scope field key on a form. */
+export async function setFormScopeFieldKey(
+  env: SupabaseEnv,
+  formId: string,
+  fieldKey: string
+): Promise<void> {
+  const url = new URL("/rest/v1/forms", env.SUPABASE_URL);
+  url.searchParams.set("id", `eq.${formId}`);
+  const resp = await fetch(url.toString(), {
+    method: "PATCH",
+    headers: {
+      ...headers(env),
+      "Content-Type": "application/json",
+      Prefer: "return=minimal"
+    },
+    body: JSON.stringify({ scope_location_field_key: fieldKey })
+  });
+  if (!resp.ok) {
+    const errText = await resp.text().catch(() => "");
+    throw new Error(`setFormScopeFieldKey: ${resp.status}: ${errText}`);
+  }
 }
 
 // =============================================================================

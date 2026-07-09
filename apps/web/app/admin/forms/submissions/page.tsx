@@ -45,14 +45,11 @@ export default async function FormsSubmissionsIndexPage({ searchParams }: PagePr
     return <NoAccessCard reason="signin" returnPath="/admin/forms/submissions" />;
   }
 
-  const allowed =
-    session.role === "super_admin" ||
-    session.dcRole === "admin" ||
-    session.dcRole === "super_admin";
-  if (!allowed) {
-    return <NoAccessCard reason="forbidden" />;
-  }
-
+  // Authorization is delegated to the worker (submissionGate): full admins see
+  // every form, location admins see only their location-scoped forms with
+  // per-site counts, everyone else gets a 403 → null → forbidden card below.
+  // We intentionally do NOT gate on session.role here (mirrors the pricing
+  // admin page) so location admins aren't blocked before the scoped fetch.
   let items: FormListItem[] | null = null;
   let fetchError: string | null = null;
   try {

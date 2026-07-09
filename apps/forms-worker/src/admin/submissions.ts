@@ -26,7 +26,12 @@ import type {
   WorkflowHistoryEntry,
   WorkflowStage
 } from "@splash/forms-schema";
-import { adminGate, adminGateResponse, requireServiceKey } from "./auth.js";
+import {
+  adminGateResponse,
+  requireServiceKey,
+  submissionGate,
+  type SubmissionScope
+} from "./auth.js";
 import {
   listSubmissions,
   getSubmission,
@@ -36,6 +41,7 @@ import {
   type SubmissionStatus
 } from "../db/admin-submissions.js";
 import { getFormDetail } from "../db/admin-forms.js";
+import { getFormScopeFieldKey } from "../db/forms.js";
 import {
   generateReportPdf,
   type ReportQuestion,
@@ -91,6 +97,33 @@ function resolveDateRange(url: URL): DateRange {
   };
 }
 
+/**
+ * Convert a caller's SubmissionScope into the `locationScope` value the db
+ * helpers expect: `undefined` for full-admin ("all") callers, or the location
+ * code array for scoped callers.
+ */
+function locationScopeFor(scope: SubmissionScope): string[] | undefined {
+  return scope === "all" ? undefined : scope.locations;
+}
+
+/**
+ * For a scoped (location-admin) caller, a form that carries no
+ * `scope_location_field_key` isn't location-scoped at all — its submissions
+ * have NULL location_code and belong to super_admin / dc-admin only. Return a
+ * 403 in that case so the caller gets a clear "not your surface" signal rather
+ * than a confusing empty list. Full-admin ("all") callers always pass.
+ */
+async function denyUnscopedFormForScopedCaller(
+  env: Env,
+  formId: string,
+  scope: SubmissionScope
+): Promise<Response | null> {
+  if (scope === "all") return null;
+  const key = await getFormScopeFieldKey(env, formId);
+  if (!key) return jsonError(403, "form_not_location_scoped");
+  return null;
+}
+
 // =============================================================================
 // GET /forms/admin/api/forms/{id}/submissions
 // =============================================================================
@@ -102,10 +135,13 @@ export async function handleListSubmissions(
 ): Promise<Response> {
   const sk = requireServiceKey(env);
   if (sk) return sk;
-  const gate = await adminGate(env, req);
+  const gate = await submissionGate(env, req);
   if (!gate.ok) return adminGateResponse(gate);
 
   if (!FORM_ID_RE.test(formId)) return jsonError(400, "bad_id");
+  const denied = await denyUnscopedFormForScopedCaller(env, formId, gate.scope);
+  if (denied) return denied;
+  const locationScope = locationScopeFor(gate.scope);
 
   const url = new URL(req.url);
   const range = resolveDateRange(url);
@@ -134,7 +170,8 @@ export async function handleListSubmissions(
       status,
       submitterKind,
       limit: limit + 1,
-      includePayload
+      includePayload,
+      locationScope
     });
     const limitHit = items.length > limit;
     const trimmed = limitHit ? items.slice(0, limit) : items;
@@ -171,15 +208,16 @@ export async function handleGetSubmission(
 ): Promise<Response> {
   const sk = requireServiceKey(env);
   if (sk) return sk;
-  const gate = await adminGate(env, req);
+  const gate = await submissionGate(env, req);
   if (!gate.ok) return adminGateResponse(gate);
 
   if (!FORM_ID_RE.test(formId) || !SUB_ID_RE.test(subId)) {
     return jsonError(400, "bad_id");
   }
+  const locationScope = locationScopeFor(gate.scope);
 
   try {
-    const submission = await getSubmission(env, formId, subId);
+    const submission = await getSubmission(env, formId, subId, locationScope);
     if (!submission) return jsonError(404, "not_found");
     return new Response(JSON.stringify({ submission }), {
       status: 200,
@@ -207,12 +245,13 @@ export async function handlePatchSubmission(
   const sk = requireServiceKey(env);
   if (sk) return sk;
   if (!isOriginAllowed(req)) return jsonError(403, "bad_origin");
-  const gate = await adminGate(env, req);
+  const gate = await submissionGate(env, req);
   if (!gate.ok) return adminGateResponse(gate);
 
   if (!FORM_ID_RE.test(formId) || !SUB_ID_RE.test(subId)) {
     return jsonError(400, "bad_id");
   }
+  const locationScope = locationScopeFor(gate.scope);
 
   let body: { splash_notes?: unknown; status?: unknown };
   try {
@@ -254,7 +293,8 @@ export async function handlePatchSubmission(
       formId,
       subId,
       gate.session.userId,
-      patch
+      patch,
+      locationScope
     );
     if (!row) return jsonError(404, "not_found");
     return new Response(JSON.stringify({ ok: true, id: row.id }), {
@@ -278,10 +318,13 @@ export async function handleSubmissionsCsv(
 ): Promise<Response> {
   const sk = requireServiceKey(env);
   if (sk) return sk;
-  const gate = await adminGate(env, req);
+  const gate = await submissionGate(env, req);
   if (!gate.ok) return adminGateResponse(gate);
 
   if (!FORM_ID_RE.test(formId)) return jsonError(400, "bad_id");
+  const denied = await denyUnscopedFormForScopedCaller(env, formId, gate.scope);
+  if (denied) return denied;
+  const locationScope = locationScopeFor(gate.scope);
 
   const url = new URL(req.url);
   const range = resolveDateRange(url);
@@ -293,7 +336,8 @@ export async function handleSubmissionsCsv(
       formId,
       range.fromIso,
       range.toIso,
-      CSV_ROW_CAP
+      CSV_ROW_CAP,
+      locationScope
     );
   } catch (err) {
     console.error("[forms.admin] csv export failed", err);
@@ -453,10 +497,13 @@ export async function handleSubmissionsReport(
 ): Promise<Response> {
   const sk = requireServiceKey(env);
   if (sk) return sk;
-  const gate = await adminGate(env, req);
+  const gate = await submissionGate(env, req);
   if (!gate.ok) return adminGateResponse(gate);
 
   if (!FORM_ID_RE.test(formId)) return jsonError(400, "bad_id");
+  const denied = await denyUnscopedFormForScopedCaller(env, formId, gate.scope);
+  if (denied) return denied;
+  const locationScope = locationScopeFor(gate.scope);
 
   const url = new URL(req.url);
   const range = resolveDateRange(url);
@@ -470,7 +517,8 @@ export async function handleSubmissionsReport(
       formId,
       range.fromIso,
       range.toIso,
-      CSV_ROW_CAP
+      CSV_ROW_CAP,
+      locationScope
     );
   } catch (err) {
     console.error("[forms.admin] report export failed", err);
@@ -707,7 +755,12 @@ export async function handleTransition(
   }
 
   // Auth: any session works at this gate; per-stage authority is
-  // resolved against the submission payload below.
+  // resolved against the submission payload below. Location scoping is
+  // intentionally NOT applied here: transition authority is approver-email
+  // membership (admin-tier bypasses). A location admin is not admin-tier, so
+  // they can only advance stages where they're the resolved approver — already
+  // narrower than location scope. Scoping getSubmission here would instead
+  // break legitimate non-location approvers (RM/RD/GM) who hold no locations.
   const auth = await authenticate(req, env);
   if (auth.status !== "authenticated") {
     return new Response(JSON.stringify({ error: "unauthenticated" }), {
