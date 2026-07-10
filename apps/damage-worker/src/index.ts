@@ -2201,6 +2201,35 @@ async function handleStatusTransition(
     }
   }
 
+  // Feature 2 — $500 approver-note threshold on Submit for Payment.
+  //
+  // When Incidents clicks Submit for Payment, the value that lands in the
+  // check request's "Approval" (approved-by) field and the AP audit trail is
+  // computed here from the check request amount (claim.approved_amount, set
+  // at the prior RM quote-approval transition):
+  //   - >= $500 : the operator MUST hand-enter who approved it + date in the
+  //               Note field (e.g. "Dan - 7/10/2026 incidents@splashcarwashes.com").
+  //               That note IS the approval attribution.
+  //   - <  $500 : no note required; auto-attribute to the acting user with an
+  //               "under $500 threshold" marker.
+  // Threshold is per check request. paymentApprovalValue flows into the AP
+  // PDF Approval field below and is persisted on the activity timeline.
+  let paymentApprovalValue: string | null = null;
+  if (finalTo === "Approved — Submitted for Payment") {
+    const checkAmount = claim.approved_amount ?? 0;
+    if (checkAmount >= 500) {
+      if (!noteText) {
+        return jsonError(
+          400,
+          'A check request of $500 or more requires an approver note in the Note field — who approved it and the date (e.g. "Dan - 7/10/2026 incidents@splashcarwashes.com").'
+        );
+      }
+      paymentApprovalValue = noteText;
+    } else {
+      paymentApprovalValue = `${session.email} - under $500 threshold`;
+    }
+  }
+
   // i. Build the writes — UPDATE claims + INSERT claim_activity, atomic batch.
   const setParts: string[] = [
     "claim_status = ?",
@@ -2288,6 +2317,12 @@ async function handleStatusTransition(
   // we don't introduce a separate activity_type for the override).
   const noteParts: string[] = [];
   if (noteText) noteParts.push(noteText);
+  // Feature 2 — persist the payment approval attribution on the timeline.
+  // For >= $500 the operator's manual note IS the attribution (already pushed
+  // above), so only add the sentinel when it differs (the auto <$500 marker).
+  if (paymentApprovalValue && paymentApprovalValue !== noteText) {
+    noteParts.push(`[Approved for payment] ${paymentApprovalValue}`);
+  }
   if (approvalReset) noteParts.push("[Reset approval details on revert]");
   if (autoNoFaultOnDenial) noteParts.push("[Cause auto-set to No Fault on denial]");
   if (applyEquipmentOverride) {
@@ -2400,17 +2435,50 @@ async function handleStatusTransition(
       // user (incidents). Source: legacy:2059-2063.
       const requestorEmail =
         claim.rm_approved_by ?? claim.gm_approved_by ?? "(unknown)";
+
+      // Feature 3 — the AP package must include a PDF of the claim itself as
+      // a separate attachment, alongside the check request (with the quote
+      // already bundled inside it). Read the summary PDF generated at
+      // submission time from R2. Best-effort: if it's missing we still send
+      // the check request and hand PA the public summary URL as a fallback.
+      const claimPdfUrl = `https://splashcarwashes.info/claims-api/summary/${encodeURIComponent(
+        claimId
+      )}`;
+      let claimPdfBytes: Uint8Array | null = null;
+      try {
+        const summaryObj = await env.R2_BUCKET.get(
+          `claims/${claimId}/summary.pdf`
+        );
+        if (summaryObj) {
+          claimPdfBytes = new Uint8Array(await summaryObj.arrayBuffer());
+        } else {
+          console.warn(
+            `Submit for Payment: claim summary PDF missing for ${claimId}; AP package will use link fallback.`
+          );
+        }
+      } catch (err) {
+        console.error(
+          `Submit for Payment: failed to read claim summary PDF for ${claimId}:`,
+          err
+        );
+      }
+
       await runCheckRequestPdfStep({
         db: env.DB,
         bucket: env.R2_BUCKET,
         claim,
         quote: quoteForPdf,
         requestorEmail,
-        approvalEmail: session.email,
+        // Feature 2 — approval attribution computed from the check amount.
+        approvalEmail: paymentApprovalValue ?? session.email,
         stageLabel: "Submitted to AP",
         webhookUrl: env.AP_WEBHOOK_URL,
         recipientLabel: "AP",
-        images: env.IMAGES
+        images: env.IMAGES,
+        // Feature 3 — separate claim PDF attachment for the AP package.
+        claimPdfBytes,
+        claimPdfFilename: `claim-${claimId}.pdf`,
+        claimPdfUrl
       });
     } else {
       // No approved quote on this claim — log + continue. Activity row

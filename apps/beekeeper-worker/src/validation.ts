@@ -30,7 +30,8 @@ export interface ProposedShift {
   /** Present on edits — excluded from the overlap comparison so a shift never
    *  conflicts with itself. Absent on creates. */
   id?: string;
-  userId: string;
+  /** Empty/absent for an OPEN/UNASSIGNED shift. */
+  userId?: string;
   start: string;
   end: string;
   title: string;
@@ -60,9 +61,7 @@ export function validateShift(
 ): ValidationError[] {
   const errors: ValidationError[] = [];
 
-  if (!proposed.userId || typeof proposed.userId !== "string") {
-    errors.push({ field: "userId", message: "userId is required" });
-  }
+  // userId is optional: an empty/absent userId is an OPEN/UNASSIGNED shift.
   if (!proposed.title || proposed.title.length === 0) {
     errors.push({ field: "title", message: "title is required" });
   } else if (proposed.title.length > MAX_TITLE_LEN) {
@@ -80,6 +79,12 @@ export function validateShift(
 
   // Only run overlap detection when the instants are well-formed.
   if (errors.some((e) => e.field === "start" || e.field === "end")) {
+    return errors;
+  }
+
+  // Open/unassigned shifts don't belong to an employee, so per-employee overlap
+  // doesn't apply — any number of open shifts may coexist in the same window.
+  if (!proposed.userId) {
     return errors;
   }
 

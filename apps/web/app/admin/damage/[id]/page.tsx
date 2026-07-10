@@ -338,6 +338,7 @@ export default async function DamageClaimDetailPage({ params, searchParams }: Pa
         transitions={transitions}
         quotes={activeQuotes}
         equipmentRelated={claim.equipment_related}
+        approvedAmount={claim.approved_amount ?? null}
       />
       <PhotoGalleryCard
         claimId={claim.claim_id}
@@ -876,12 +877,14 @@ function TransitionSection({
   claimId,
   transitions,
   quotes,
-  equipmentRelated
+  equipmentRelated,
+  approvedAmount
 }: {
   claimId: string;
   transitions: TransitionRow[];
   quotes: ClaimPhotoRow[];
   equipmentRelated: 0 | 1;
+  approvedAmount: number | null;
 }) {
   return (
     <div className="mb-6 rounded-splash-lg border border-gray-light bg-white p-6 shadow-splash-card">
@@ -901,6 +904,7 @@ function TransitionSection({
               enabled={row.enabled}
               disabledHint={row.disabledHint}
               equipmentRelated={equipmentRelated}
+              approvedAmount={approvedAmount}
             />
           ))}
         </div>
@@ -921,7 +925,8 @@ function TransitionForm({
   quotes,
   enabled,
   disabledHint,
-  equipmentRelated
+  equipmentRelated,
+  approvedAmount
 }: {
   claimId: string;
   transition: UITransition;
@@ -929,10 +934,20 @@ function TransitionForm({
   enabled: boolean;
   disabledHint: string;
   equipmentRelated: 0 | 1;
+  approvedAmount: number | null;
 }) {
   const { label, to, requiresAmount, requiresQuoteSelection, requiresNote } =
     transition;
   const noQuotesAvailable = requiresQuoteSelection && quotes.length === 0;
+
+  // Feature 2 — a Submit-for-Payment check request of $500+ requires the
+  // operator to hand-enter who approved it + date (the worker re-validates
+  // and rejects a blank note in that case). Under $500 the worker
+  // auto-attributes to the acting user, so no note field is shown.
+  const requiresPaymentApproverNote =
+    to === "Approved — Submitted for Payment" &&
+    approvedAmount !== null &&
+    approvedAmount >= 500;
 
   const inputCls =
     "w-full rounded-splash-sm border border-gray-light bg-white px-3 py-2 text-sm text-splash-navy placeholder:text-splash-navy/40 focus:border-splash-blue focus:outline-none";
@@ -1061,6 +1076,23 @@ function TransitionForm({
             rows={2}
             className={inputCls}
           />
+        </label>
+      ) : requiresPaymentApproverNote ? (
+        <label className="flex flex-1 flex-col gap-1 sm:min-w-[260px]">
+          <span className={labelCls}>Approved by (required — $500+)</span>
+          <textarea
+            name="note"
+            required
+            maxLength={5000}
+            rows={2}
+            placeholder="Dan - 7/10/2026 incidents@splashcarwashes.com"
+            className={inputCls}
+          />
+          <span className="text-[11px] text-splash-navy/60">
+            Enter who approved this payment and the date. This becomes the
+            &ldquo;approved by&rdquo; on the check request sent to Accounts
+            Payable.
+          </span>
         </label>
       ) : null}
 

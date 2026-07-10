@@ -21,10 +21,12 @@ import { resolveBeekeeperBaseUrl, type Env } from "./env.js";
  * ============================================================ */
 
 /** A Beekeeper shift. Shifts reference `userId` (internal UUID) only — no name
- *  is embedded; resolve names via the beekeeper_users cache. */
+ *  is embedded; resolve names via the beekeeper_users cache. `userId` is absent
+ *  on OPEN/UNASSIGNED shifts (a first-class Beekeeper concept), so it is
+ *  optional here — never assume it's present. */
 export interface BeekeeperShift {
   id: string;
-  userId: string;
+  userId?: string;
   scheduleId: string;
   /** ISO-8601 UTC (…Z). */
   start: string;
@@ -74,7 +76,9 @@ export interface BeekeeperUser {
  *  tenantuserid/tenantUserId casing mismatch. */
 export interface ShiftWriteBody {
   id: string;
-  userId: string;
+  /** Omitted entirely for an OPEN/UNASSIGNED shift (matches how the tenant
+   *  returns open shifts on read — with no userId field at all). */
+  userId?: string;
   scheduleId: string;
   start: string;
   end: string;

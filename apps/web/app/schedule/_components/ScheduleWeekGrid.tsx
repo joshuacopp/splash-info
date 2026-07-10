@@ -296,10 +296,7 @@ export function ScheduleWeekGrid({
 
   async function saveForm() {
     if (!form) return;
-    if (!form.userId) {
-      setError("Pick an employee.");
-      return;
-    }
+    // An empty userId is intentional — it creates an open/unassigned shift.
     if (!form.date) {
       setError("Pick a date.");
       return;
@@ -571,15 +568,12 @@ function EditorModal({
               onChange={(e) => set("userId", e.target.value)}
               className="w-full rounded-splash-md border border-gray-light bg-white px-3 py-2 text-sm text-splash-navy focus:border-splash-blue focus:outline-none focus:ring-1 focus:ring-splash-blue"
             >
-              {roster.length === 0 ? (
-                <option value="">No employees available</option>
-              ) : (
-                roster.map((r) => (
-                  <option key={r.id} value={r.id}>
-                    {rosterName(r.id)}
-                  </option>
-                ))
-              )}
+              <option value="">Unassigned (open shift)</option>
+              {roster.map((r) => (
+                <option key={r.id} value={r.id}>
+                  {rosterName(r.id)}
+                </option>
+              ))}
             </select>
           </Field>
 

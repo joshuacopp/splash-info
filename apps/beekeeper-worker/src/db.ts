@@ -34,12 +34,21 @@ export interface BeekeeperScheduleRow {
   location_code: string | null;
 }
 
-/** Best-effort display name from a cache row, falling back through the fields. */
-export function nameFromRow(row: BeekeeperUserRow | undefined, userId: string): string {
-  if (!row) return `User ${userId.slice(0, 8)}`;
+/** Label shown for an open/unassigned shift (no userId). */
+export const UNASSIGNED_LABEL = "Unassigned";
+
+/** Best-effort display name from a cache row, falling back through the fields.
+ *  `userId` may be absent (open/unassigned shift) — in that case there is no id
+ *  to slice, so we return the UNASSIGNED_LABEL instead of crashing. */
+export function nameFromRow(
+  row: BeekeeperUserRow | undefined,
+  userId: string | null | undefined
+): string {
+  const id = typeof userId === "string" ? userId : "";
+  if (!row) return id ? `User ${id.slice(0, 8)}` : UNASSIGNED_LABEL;
   if (row.display_name) return row.display_name;
   const joined = [row.firstname, row.lastname].filter(Boolean).join(" ").trim();
-  return joined || `User ${userId.slice(0, 8)}`;
+  return joined || (id ? `User ${id.slice(0, 8)}` : UNASSIGNED_LABEL);
 }
 
 /* ============================================================
@@ -96,9 +105,9 @@ export async function listMappedSchedules(
 /** Bulk-resolve users by id for a shift list. Empty input -> empty Map. */
 export async function getUsersByIds(
   sb: SupabaseClient,
-  ids: string[]
+  ids: Array<string | null | undefined>
 ): Promise<Map<string, BeekeeperUserRow>> {
-  const distinct = [...new Set(ids.filter(Boolean))];
+  const distinct = [...new Set(ids.filter((id): id is string => !!id))];
   if (distinct.length === 0) return new Map();
   const { data, error } = await sb
     .from("beekeeper_users")

@@ -526,7 +526,11 @@ export async function sendCheckRequestEmail(
   pdfBytes: Uint8Array,
   pdfFilename: string,
   requestorEmail: string,
-  quoteBundled: boolean
+  quoteBundled: boolean,
+  // Feature 3 — optional claim summary PDF for the AP package, attached as a
+  // SEPARATE document (distinct from the check request PDF + its bundled
+  // quote). `bytes: null` means "link-only fallback" (R2 object was missing).
+  claimPdf?: { bytes: Uint8Array | null; filename: string; url: string | null }
 ): Promise<SendEmailResult> {
   if (!webhookUrl) {
     console.warn("sendCheckRequestEmail: webhook URL not configured, skipping");
@@ -556,7 +560,14 @@ export async function sendCheckRequestEmail(
     // `quoteUrl` is always sent (cheap, canonical reference); operator
     // wires the conditional "View Quote" link in PA on `quoteBundled === false`.
     quoteUrl,
-    quoteBundled
+    quoteBundled,
+    // Feature 3 — claim PDF for the AP package (separate attachment). Additive;
+    // present only when the caller supplies claimPdf (the Submit-for-Payment
+    // path). claimPdfBase64 is null when the R2 summary object was missing —
+    // PA should then fall back to the claimPdfUrl link.
+    claimPdfBase64: claimPdf ? (claimPdf.bytes ? bytesToBase64(claimPdf.bytes) : null) : null,
+    claimPdfFilename: claimPdf?.filename ?? null,
+    claimPdfUrl: claimPdf?.url ?? null
   };
 
   try {
@@ -617,6 +628,15 @@ export async function runCheckRequestPdfStep(args: {
    *  during the bundled-quote append step. Optional; when undefined the
    *  HEIC branch falls back to the link in the webhook payload. */
   images: ImagesBinding | undefined;
+  /** Feature 3 — optional claim summary PDF, attached to the AP webhook
+   *  payload as a SEPARATE document (the AP package = check request +
+   *  bundled quote + claim PDF). Only the Submit-for-Payment call site
+   *  supplies these; the Incidents-review call site omits them. When
+   *  claimPdfBytes is null the payload carries only claimPdfUrl so PA can
+   *  wire a link fallback. */
+  claimPdfBytes?: Uint8Array | null;
+  claimPdfFilename?: string;
+  claimPdfUrl?: string | null;
 }): Promise<void> {
   const {
     db,
@@ -628,7 +648,10 @@ export async function runCheckRequestPdfStep(args: {
     stageLabel,
     webhookUrl,
     recipientLabel,
-    images
+    images,
+    claimPdfBytes = null,
+    claimPdfFilename,
+    claimPdfUrl = null
   } = args;
 
   let stored: StoredCheckRequestPdf;
@@ -672,7 +695,18 @@ export async function runCheckRequestPdfStep(args: {
     stored.pdfBytes,
     stored.filename,
     requestorEmail,
-    stored.quoteBundled
+    stored.quoteBundled,
+    // Feature 3 — pass the claim PDF (separate attachment) through to the
+    // AP webhook payload. Undefined at the Incidents call site.
+    claimPdfBytes
+      ? {
+          bytes: claimPdfBytes,
+          filename: claimPdfFilename ?? `claim-${claim.claim_id}.pdf`,
+          url: claimPdfUrl ?? null
+        }
+      : claimPdfUrl
+        ? { bytes: null, filename: claimPdfFilename ?? `claim-${claim.claim_id}.pdf`, url: claimPdfUrl }
+        : undefined
   );
   // Brief 171 — surface the bundled-quote outcome in the activity-log
   // note so the claim timeline records which path fired (in-PDF vs.

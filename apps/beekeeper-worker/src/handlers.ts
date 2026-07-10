@@ -140,6 +140,7 @@ export async function handleContext(
 
 interface ShiftView {
   id: string;
+  /** "" for an open/unassigned shift. */
   userId: string;
   userName: string;
   title: string;
@@ -164,7 +165,7 @@ function toShiftView(shift: BeekeeperShift, userName: string): ShiftView {
     typeof shift.metadata?.color === "string" ? shift.metadata.color : undefined;
   return {
     id: shift.id,
-    userId: shift.userId,
+    userId: shift.userId ?? "",
     userName,
     title: shift.title,
     color,
@@ -220,7 +221,9 @@ export async function handleListShifts(
       : shifts;
 
   const names = await getUsersByIds(sb, inWindow.map((s) => s.userId));
-  const views = inWindow.map((s) => toShiftView(s, nameFromRow(names.get(s.userId), s.userId)));
+  const views = inWindow.map((s) =>
+    toShiftView(s, nameFromRow(names.get(s.userId ?? ""), s.userId))
+  );
   return json({ shifts: views });
 }
 
@@ -324,7 +327,10 @@ async function buildAndValidate(
     ok: true,
     body: {
       id: shiftId,
-      userId: input.userId,
+      // Omit userId entirely for an open/unassigned shift — matches the shape
+      // the tenant returns for open shifts on read (no userId field). Sending
+      // an empty string instead risks an upstream reject or a ghost user.
+      ...(input.userId ? { userId: input.userId } : {}),
       scheduleId: schedule.schedule_id,
       start: times.start,
       end: times.end,
@@ -352,9 +358,9 @@ export async function handleCreateShift(
 
   const input = parseWriteInput(await request.json().catch(() => null));
   if (!input) return jsonError(400, "Invalid shift body");
-  if (!input.userId) return jsonError(400, "userId is required");
+  // An empty userId is allowed: it creates an OPEN/UNASSIGNED shift.
 
-  // Stable, meaningful app-side id: schedule + user + start instant.
+  // Stable app-side id (open shifts get a UUID like any other).
   const shiftId = crypto.randomUUID();
   const built = await buildAndValidate(env, schedule, input, shiftId);
   if (!built.ok) return built.response;
@@ -387,7 +393,7 @@ export async function handleUpdateShift(
 
   const input = parseWriteInput(await request.json().catch(() => null));
   if (!input) return jsonError(400, "Invalid shift body");
-  if (!input.userId) return jsonError(400, "userId is required");
+  // An empty userId is allowed: an open/unassigned shift can stay open on edit.
 
   const built = await buildAndValidate(env, schedule, input, shiftId, shiftId);
   if (!built.ok) return built.response;
