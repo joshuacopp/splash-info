@@ -71,6 +71,10 @@ export function CreateUserToolsAndDcRole() {
             <input type="checkbox" name="tools" value="form_submissions" />
             form_submissions
           </label>
+          <label className="inline-flex items-center gap-2 text-sm text-splash-navy">
+            <input type="checkbox" name="tools" value="schedule" />
+            schedule
+          </label>
         </div>
         {claimsChecked ? (
           <p className="mt-1.5 text-[0.6875rem] text-splash-navy/60">
