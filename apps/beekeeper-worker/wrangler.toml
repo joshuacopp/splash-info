@@ -19,7 +19,7 @@
 #   (no staging twin needed — greenfield, per operator). Add a CNAME/route for
 #   `schedule` on the splashcarwashes.info zone before first deploy.
 
-name = "splash-beekeeper"
+name = "beekeeper-worker"
 main = "src/index.ts"
 compatibility_date = "2026-05-01"
 compatibility_flags = ["nodejs_compat"]
