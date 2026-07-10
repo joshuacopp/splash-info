@@ -15,9 +15,8 @@
 #     DEL  schedule.splashcarwashes.info/api/schedules/{id}/shifts/{shiftId}
 #     POST schedule.splashcarwashes.info/api/sync-users         manual cache refill
 #
-#   The subdomain doesn't exist yet, so we bind the production route directly
-#   (no staging twin needed — greenfield, per operator). Add a CNAME/route for
-#   `schedule` on the splashcarwashes.info zone before first deploy.
+#   Served via a Custom Domain on `schedule` (splashcarwashes.info zone),
+#   added in the dashboard — see the note by workers_dev below.
 
 name = "beekeeper-worker"
 main = "src/index.ts"
@@ -26,9 +25,12 @@ compatibility_flags = ["nodejs_compat"]
 
 workers_dev = true
 
-routes = [
-  { pattern = "schedule.splashcarwashes.info/*", zone_name = "splashcarwashes.info" }
-]
+# schedule.splashcarwashes.info is attached as a Custom Domain in the dashboard
+# (Add Domain), which auto-provisions the DNS record + TLS cert — same setup as
+# fleet.splashcarwashes.info. Custom Domains are managed in the dashboard, not
+# here, so there is no `routes` block. (An earlier `schedule.../*` Route was
+# removed: a Route matches traffic to the worker but never creates DNS, which is
+# why the subdomain wouldn't resolve.)
 
 # Bindings:
 # SUPABASE_URL          — string. `wrangler secret put SUPABASE_URL` (same
