@@ -205,10 +205,10 @@ export async function handleListShifts(
     return mapBeekeeperError(err);
   }
 
-  // Defensive window clamp. The upstream /shifts endpoint has been observed to
-  // ignore the start/end query params and return the full retained history, so
-  // enforce the requested [start, end) window here on the shift's start instant
-  // (matches the week-based grid, which keys rows by start day).
+  // Defensive window clamp. The upstream after/before params now filter server-
+  // side (see listShifts), so this rarely trims anything — but it's kept as cheap
+  // belt-and-suspenders and to enforce a half-open [start, end) on the shift's
+  // start instant (matches the week-based grid, which keys rows by start day).
   const startMs = Date.parse(start);
   const endMs = Date.parse(end);
   const inWindow =

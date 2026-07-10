@@ -174,8 +174,12 @@ export function getSchedule(
 }
 
 /**
- * GET /shifts/schedules/{scheduleId}/shifts?start={ISO}&end={ISO}
- * `start`/`end` are ISO-8601 UTC (…Z). Only ~4 months of history is retained.
+ * GET /shifts/schedules/{scheduleId}/shifts?after={ISO}&before={ISO}
+ * The window params are `after`/`before` (confirmed against the live tenant +
+ * docs, 2026-07-10). Plain UTC (…Z) is accepted — no TZ-offset conversion
+ * needed. `start`/`end` are silently ignored, which is why an unfiltered call
+ * returns the full ~4-month retention; passing after/before filters upstream.
+ * Only ~4 months of history is retained regardless.
  */
 export function listShifts(
   env: Env,
@@ -187,7 +191,7 @@ export function listShifts(
     env,
     "GET",
     `/shifts/schedules/${encodeURIComponent(scheduleId)}/shifts`,
-    { query: { start: startIso, end: endIso } }
+    { query: { after: startIso, before: endIso } }
   );
 }
 
