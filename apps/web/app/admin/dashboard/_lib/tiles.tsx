@@ -329,7 +329,7 @@ export const TILES: ReadonlyArray<Tile> = [
     eyebrow: "Scheduling",
     title: "Shift Schedule",
     description: "Add and edit employee shifts by location.",
-    href: "https://schedule.splashcarwashes.info",
+    href: "/schedule",
     icon: calendarIcon,
     visibleTo: hasScheduleAccess
   },

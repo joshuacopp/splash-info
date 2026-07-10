@@ -8,6 +8,8 @@
 // The picker model matches the ET dropdown design: employee + date + four
 // time dropdowns (start H:M, end H:M). Titles auto-generate server-side.
 
+import { ROUTE_PREFIX } from "./routePrefix.js";
+
 function esc(s: string): string {
   return s.replace(/[&<>"']/g, (c) =>
     c === "&" ? "&amp;" : c === "<" ? "&lt;" : c === ">" ? "&gt;" : c === '"' ? "&quot;" : "&#39;"
@@ -60,7 +62,7 @@ function showMsg(t){ var m=document.getElementById("msg"); m.textContent=t; m.cl
 async function load(){
   var grid=document.getElementById("grid");
   try {
-    var res=await fetch("/api/locations",{ credentials:"same-origin", headers:{ "Content-Type":"application/json" } });
+    var res=await fetch("${ROUTE_PREFIX}/api/locations",{ credentials:"same-origin", headers:{ "Content-Type":"application/json" } });
     if(res.status===401){ throw new Error("Not signed in — open the dashboard, sign in, then reload."); }
     var data=await res.json().catch(function(){ return {}; });
     if(!res.ok){ throw new Error((data && data.error) || ("Error "+res.status)); }
@@ -68,7 +70,7 @@ async function load(){
     if(!locs.length){ grid.innerHTML='<p class="muted">No locations are available for your account.</p>'; return; }
     locs.sort(function(a,b){ return String(a.name||a.code).localeCompare(String(b.name||b.code)); });
     grid.innerHTML=locs.map(function(l){
-      return '<a class="loc" href="/'+encodeURIComponent(l.code)+'">'
+      return '<a class="loc" href="${ROUTE_PREFIX}/'+encodeURIComponent(l.code)+'">'
         + '<div class="code">'+esc(l.code)+'</div>'
         + '<div class="name">'+esc(l.name||l.code)+'</div></a>';
     }).join("");
@@ -180,7 +182,7 @@ export function renderScheduleUi(locationCode: string): string {
 
 <script>
 const LOC = ${codeJson};
-const API = "/api/loc/" + encodeURIComponent(LOC);
+const API = "${ROUTE_PREFIX}/api/loc/" + encodeURIComponent(LOC);
 let editingId = null;
 let roster = [];
 

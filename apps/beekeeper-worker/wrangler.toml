@@ -5,18 +5,22 @@
 # The Beekeeper bot token stays server-side; the frontend never sees it.
 #
 # ROUTE LAYOUT
-#   Mounted on a dedicated subdomain: schedule.splashcarwashes.info
-#     GET  schedule.splashcarwashes.info/{location_code}        HTML app shell
-#     GET  schedule.splashcarwashes.info/api/schedules          list schedules
-#     GET  schedule.splashcarwashes.info/api/schedules/{id}/shifts?start=&end=
-#     GET  schedule.splashcarwashes.info/api/schedules/{id}/roster
-#     POST schedule.splashcarwashes.info/api/schedules/{id}/shifts
-#     PUT  schedule.splashcarwashes.info/api/schedules/{id}/shifts/{shiftId}
-#     DEL  schedule.splashcarwashes.info/api/schedules/{id}/shifts/{shiftId}
-#     POST schedule.splashcarwashes.info/api/sync-users         manual cache refill
+#   Path-carved onto the apex host at splashcarwashes.info/schedule/* — same
+#   pattern as /pertrack, /manage, /workorders. This is deliberate: the SSO
+#   sb-access-token cookie the dashboard sets is host-only (no Domain=), so a
+#   tool only receives the session if it shares the apex hostname. A dedicated
+#   subdomain (the first attempt) never got the cookie → every request 401'd.
+#   index.ts strips the /schedule prefix; ui.ts prefixes its links + fetches.
 #
-#   Served via a Custom Domain on `schedule` (splashcarwashes.info zone),
-#   added in the dashboard — see the note by workers_dev below.
+#     GET  splashcarwashes.info/schedule/                    location picker
+#     GET  splashcarwashes.info/schedule/{location_code}     HTML app shell
+#     GET  splashcarwashes.info/schedule/api/locations       accessible locations
+#     GET  splashcarwashes.info/schedule/api/loc/{code}/context
+#     GET  splashcarwashes.info/schedule/api/loc/{code}/shifts?start=&end=
+#     POST splashcarwashes.info/schedule/api/loc/{code}/shifts
+#     PUT  splashcarwashes.info/schedule/api/loc/{code}/shifts/{shiftId}
+#     DEL  splashcarwashes.info/schedule/api/loc/{code}/shifts/{shiftId}
+#     POST splashcarwashes.info/schedule/api/sync-users      manual cache refill
 
 name = "beekeeper-worker"
 main = "src/index.ts"
@@ -25,12 +29,15 @@ compatibility_flags = ["nodejs_compat"]
 
 workers_dev = true
 
-# schedule.splashcarwashes.info is attached as a Custom Domain in the dashboard
-# (Add Domain), which auto-provisions the DNS record + TLS cert — same setup as
-# fleet.splashcarwashes.info. Custom Domains are managed in the dashboard, not
-# here, so there is no `routes` block. (An earlier `schedule.../*` Route was
-# removed: a Route matches traffic to the worker but never creates DNS, which is
-# why the subdomain wouldn't resolve.)
+# Path carve on the apex host so the worker shares the dashboard's host-only SSO
+# cookie (see ROUTE LAYOUT above). Staging twin bound so apps/web on
+# staging.splashcarwashes.info can reach /schedule/* same-origin. Before first
+# deploy, delete the old `schedule.splashcarwashes.info` Custom Domain in the
+# Cloudflare dashboard — the apex route below replaces it entirely.
+routes = [
+  { pattern = "splashcarwashes.info/schedule/*",         zone_name = "splashcarwashes.info" },
+  { pattern = "staging.splashcarwashes.info/schedule/*", zone_name = "splashcarwashes.info" }
+]
 
 # Bindings:
 # SUPABASE_URL          — string. `wrangler secret put SUPABASE_URL` (same

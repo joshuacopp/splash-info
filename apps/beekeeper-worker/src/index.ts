@@ -21,6 +21,7 @@ import {
 } from "./handlers.js";
 import { renderPickerUi, renderScheduleUi } from "./ui.js";
 import { runBeekeeperSync } from "./sync.js";
+import { ROUTE_PREFIX } from "./routePrefix.js";
 import type { Env } from "./env.js";
 
 function html(body: string, status = 200): Response {
@@ -36,8 +37,21 @@ const RESERVED = new Set(["api", "favicon.ico", "robots.txt"]);
 export default {
   async fetch(request: Request, env: Env, _ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
-    const segments = url.pathname.split("/").filter(Boolean);
+    let pathname = url.pathname;
     const method = request.method;
+
+    // Path-carve prefix strip. Production serves under splashcarwashes.info/schedule/*;
+    // after the strip the router below reads paths naturally as "/", "/{code}",
+    // "/api/...". Bare "/schedule" redirects to "/schedule/" so the picker's
+    // relative links resolve. On the workers.dev fallback the prefix is absent,
+    // so both checks are no-ops.
+    if (pathname === ROUTE_PREFIX) {
+      return Response.redirect(url.origin + ROUTE_PREFIX + "/", 302);
+    }
+    if (pathname.startsWith(ROUTE_PREFIX + "/")) {
+      pathname = pathname.slice(ROUTE_PREFIX.length);
+    }
+    const segments = pathname.split("/").filter(Boolean);
 
     try {
       // ---- Root: location picker -----------------------------------------
