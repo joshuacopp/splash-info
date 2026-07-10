@@ -67,6 +67,87 @@ function snapMinute(m: number): number {
 }
 
 /* ============================================================
+ * Shift colors + presets.
+ *
+ * `color` is stored on the shift as metadata.color (a hex string) and
+ * round-trips to Beekeeper's own scheduler, so a color set here shows up
+ * identically on both splashcarwashes.info and the Beekeeper app.
+ * ============================================================ */
+
+const SHIFT_COLORS = {
+  unavailableAllDay: "#F4B6B6", // light red
+  ptoFull: "#8B5CF6", // purple
+  ptoHalf: "#C4B5FD", // lighter purple
+  unavailable: "#FACC15", // yellow (partial-day unavailable)
+  manager: "#9CA3AF", // grey
+  csa: "#22C55E", // green
+  attendant: "#3B82F6" // blue
+} as const;
+
+/** Presets that set the full shift (times + title + color) in one click. */
+interface TimePreset {
+  key: string;
+  label: string;
+  startHour: number;
+  startMinute: number;
+  endHour: number;
+  endMinute: number;
+  title: string;
+  color: string;
+}
+
+const TIME_PRESETS: TimePreset[] = [
+  {
+    key: "unavail-all",
+    label: "Unavailable — all day",
+    startHour: 0,
+    startMinute: 0,
+    endHour: 23,
+    endMinute: 59,
+    title: "Unavailable",
+    color: SHIFT_COLORS.unavailableAllDay
+  },
+  {
+    key: "pto-full",
+    label: "PTO — full day",
+    startHour: 8,
+    startMinute: 0,
+    endHour: 16,
+    endMinute: 0,
+    title: "PTO",
+    color: SHIFT_COLORS.ptoFull
+  },
+  {
+    key: "pto-half",
+    label: "PTO — half day",
+    startHour: 8,
+    startMinute: 0,
+    endHour: 12,
+    endMinute: 0,
+    title: "PTO (half day)",
+    color: SHIFT_COLORS.ptoHalf
+  }
+];
+
+/** Presets that set title + color but leave the chosen times alone. */
+interface TitlePreset {
+  title: string;
+  color: string;
+}
+
+const TITLE_PRESETS: TitlePreset[] = [
+  { title: "Manager", color: SHIFT_COLORS.manager },
+  { title: "CSA", color: SHIFT_COLORS.csa },
+  { title: "Attendant", color: SHIFT_COLORS.attendant }
+];
+
+/** Inline style for a colored chip — soft tinted fill with a solid color
+ *  border. `color` is a hex like "#8B5CF6"; the "22" suffix is ~13% alpha. */
+function chipStyle(color: string): React.CSSProperties {
+  return { backgroundColor: `${color}22`, borderColor: color };
+}
+
+/* ============================================================
  * Component
  * ============================================================ */
 
@@ -80,6 +161,8 @@ interface FormState {
   endHour: number;
   endMinute: number;
   title: string;
+  /** Hex color string, or "" for none. */
+  color: string;
 }
 
 interface Props {
@@ -189,7 +272,8 @@ export function ScheduleWeekGrid({
       startMinute: 0,
       endHour: 17,
       endMinute: 0,
-      title: ""
+      title: "",
+      color: ""
     });
   }
 
@@ -205,7 +289,8 @@ export function ScheduleWeekGrid({
       startMinute: snapMinute(s.startMinute),
       endHour: s.endHour,
       endMinute: snapMinute(s.endMinute),
-      title: s.title || ""
+      title: s.title || "",
+      color: s.color ?? ""
     });
   }
 
@@ -228,7 +313,8 @@ export function ScheduleWeekGrid({
       startMinute: form.startMinute,
       endHour: form.endHour,
       endMinute: form.endMinute,
-      title: form.title.trim() || undefined
+      title: form.title.trim() || undefined,
+      color: form.color || undefined
     });
     try {
       if (form.mode === "edit" && form.editingId) {
@@ -368,11 +454,21 @@ export function ScheduleWeekGrid({
                       key={s.id}
                       type="button"
                       onClick={() => openEdit(s)}
-                      className="rounded-splash-md border border-sudsy-blue/30 bg-sudsy-blue-soft/40 px-2 py-1.5 text-left transition-colors hover:border-splash-blue hover:bg-sudsy-blue-soft/70"
+                      style={s.color ? chipStyle(s.color) : undefined}
+                      className={
+                        s.color
+                          ? "rounded-splash-md border px-2 py-1.5 text-left transition-opacity hover:opacity-80"
+                          : "rounded-splash-md border border-sudsy-blue/30 bg-sudsy-blue-soft/40 px-2 py-1.5 text-left transition-colors hover:border-splash-blue hover:bg-sudsy-blue-soft/70"
+                      }
                     >
                       <span className="block truncate text-xs font-semibold text-splash-navy">
                         {s.userName}
                       </span>
+                      {s.title ? (
+                        <span className="block truncate text-xs font-medium text-splash-navy/80">
+                          {s.title}
+                        </span>
+                      ) : null}
                       <span className="block text-xs text-splash-navy/70">
                         {fmt12(s.startHour, s.startMinute)} –{" "}
                         {fmt12(s.endHour, s.endMinute)}
@@ -441,6 +537,20 @@ function EditorModal({
   const set = <K extends keyof FormState>(k: K, v: FormState[K]) =>
     onChange({ ...form, [k]: v });
 
+  const applyTimePreset = (p: TimePreset) =>
+    onChange({
+      ...form,
+      startHour: p.startHour,
+      startMinute: p.startMinute,
+      endHour: p.endHour,
+      endMinute: p.endMinute,
+      title: p.title,
+      color: p.color
+    });
+
+  const applyTitlePreset = (p: TitlePreset) =>
+    onChange({ ...form, title: p.title, color: p.color });
+
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-splash-navy/40 p-4"
@@ -482,6 +592,55 @@ function EditorModal({
             />
           </Field>
 
+          <Field label="Presets">
+            <div className="flex flex-wrap gap-1.5">
+              {TIME_PRESETS.map((p) => (
+                <button
+                  key={p.key}
+                  type="button"
+                  onClick={() => applyTimePreset(p)}
+                  style={chipStyle(p.color)}
+                  className="rounded-splash-md border px-2.5 py-1 text-xs font-semibold text-splash-navy transition-opacity hover:opacity-80"
+                >
+                  {p.label}
+                </button>
+              ))}
+              <button
+                type="button"
+                onClick={() => set("color", SHIFT_COLORS.unavailable)}
+                style={chipStyle(SHIFT_COLORS.unavailable)}
+                className="rounded-splash-md border px-2.5 py-1 text-xs font-semibold text-splash-navy transition-opacity hover:opacity-80"
+              >
+                Unavailable (keep times)
+              </button>
+            </div>
+          </Field>
+
+          <Field label="Role">
+            <div className="flex flex-wrap items-center gap-1.5">
+              {TITLE_PRESETS.map((p) => (
+                <button
+                  key={p.title}
+                  type="button"
+                  onClick={() => applyTitlePreset(p)}
+                  style={chipStyle(p.color)}
+                  className="rounded-splash-md border px-2.5 py-1 text-xs font-semibold text-splash-navy transition-opacity hover:opacity-80"
+                >
+                  {p.title}
+                </button>
+              ))}
+              {form.color ? (
+                <button
+                  type="button"
+                  onClick={() => set("color", "")}
+                  className="rounded-splash-md border border-gray-light px-2.5 py-1 text-xs font-medium text-splash-navy/60 hover:text-splash-navy"
+                >
+                  Clear color
+                </button>
+              ) : null}
+            </div>
+          </Field>
+
           <div className="grid grid-cols-2 gap-4">
             <Field label="Start">
               <TimeSelect
@@ -508,14 +667,23 @@ function EditorModal({
           ) : null}
 
           <Field label="Title (optional)">
-            <input
-              type="text"
-              value={form.title}
-              maxLength={80}
-              placeholder="Auto-generated from the times"
-              onChange={(e) => set("title", e.target.value)}
-              className="w-full rounded-splash-md border border-gray-light bg-white px-3 py-2 text-sm text-splash-navy focus:border-splash-blue focus:outline-none focus:ring-1 focus:ring-splash-blue"
-            />
+            <div className="flex items-center gap-2">
+              {form.color ? (
+                <span
+                  aria-hidden
+                  className="h-5 w-5 shrink-0 rounded-full border border-gray-light"
+                  style={{ backgroundColor: form.color }}
+                />
+              ) : null}
+              <input
+                type="text"
+                value={form.title}
+                maxLength={80}
+                placeholder="Auto-generated from the times"
+                onChange={(e) => set("title", e.target.value)}
+                className="w-full rounded-splash-md border border-gray-light bg-white px-3 py-2 text-sm text-splash-navy focus:border-splash-blue focus:outline-none focus:ring-1 focus:ring-splash-blue"
+              />
+            </div>
           </Field>
         </div>
 
@@ -580,6 +748,11 @@ function TimeSelect({
 }) {
   const selCls =
     "rounded-splash-md border border-gray-light bg-white px-2 py-2 text-sm text-splash-navy focus:border-splash-blue focus:outline-none focus:ring-1 focus:ring-splash-blue";
+  // Include the current minute even if it isn't a quarter step, so preset
+  // values like :59 (11:59pm "all day") display correctly instead of blank.
+  const minuteOptions = MINUTE_STEPS.includes(minute)
+    ? MINUTE_STEPS
+    : [...MINUTE_STEPS, minute].sort((a, b) => a - b);
   return (
     <div className="flex gap-2">
       <select
@@ -598,7 +771,7 @@ function TimeSelect({
         onChange={(e) => onMinute(Number(e.target.value))}
         className={selCls}
       >
-        {MINUTE_STEPS.map((m) => (
+        {minuteOptions.map((m) => (
           <option key={m} value={m}>
             :{pad(m)}
           </option>

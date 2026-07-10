@@ -143,6 +143,8 @@ interface ShiftView {
   userId: string;
   userName: string;
   title: string;
+  /** metadata.color round-tripped from Beekeeper (hex string, or undefined). */
+  color?: string;
   /** Raw UTC (…Z) for round-tripping edits. */
   startUtc: string;
   endUtc: string;
@@ -158,11 +160,14 @@ interface ShiftView {
 function toShiftView(shift: BeekeeperShift, userName: string): ShiftView {
   const s = utcIsoToLocalParts(shift.start);
   const e = utcIsoToLocalParts(shift.end);
+  const color =
+    typeof shift.metadata?.color === "string" ? shift.metadata.color : undefined;
   return {
     id: shift.id,
     userId: shift.userId,
     userName,
     title: shift.title,
+    color,
     startUtc: shift.start,
     endUtc: shift.end,
     startDate: s.date,
@@ -233,12 +238,19 @@ interface ShiftWriteInput {
   endMinute: number;
   /** Optional override; auto-generated from the times when absent/blank. */
   title?: string;
+  /** Optional shift color (hex string). Persisted to metadata.color so it
+   *  round-trips to Beekeeper's own scheduler. */
+  color?: string;
 }
 
 function parseWriteInput(raw: unknown): ShiftWriteInput | null {
   if (!raw || typeof raw !== "object") return null;
   const o = raw as Record<string, unknown>;
   const num = (v: unknown): number => (typeof v === "number" ? v : Number(v));
+  const color =
+    typeof o.color === "string" && o.color.trim().length > 0
+      ? o.color.trim().slice(0, 32)
+      : undefined;
   const input: ShiftWriteInput = {
     userId: String(o.userId ?? ""),
     date: String(o.date ?? ""),
@@ -246,7 +258,8 @@ function parseWriteInput(raw: unknown): ShiftWriteInput | null {
     startMinute: num(o.startMinute),
     endHour: num(o.endHour),
     endMinute: num(o.endMinute),
-    title: typeof o.title === "string" ? o.title : undefined
+    title: typeof o.title === "string" ? o.title : undefined,
+    color
   };
   const nums = [input.startHour, input.startMinute, input.endHour, input.endMinute];
   if (nums.some((n) => !Number.isInteger(n) || n < 0)) return null;
@@ -315,7 +328,10 @@ async function buildAndValidate(
       scheduleId: schedule.schedule_id,
       start: times.start,
       end: times.end,
-      title
+      title,
+      // Only set metadata when a color is present. Writes are a full replace,
+      // so an absent color intentionally clears any prior color.
+      ...(input.color ? { metadata: { color: input.color } } : {})
     }
   };
 }

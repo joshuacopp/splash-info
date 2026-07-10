@@ -45,6 +45,8 @@ export interface ShiftView {
   userId: string;
   userName: string;
   title: string;
+  /** metadata.color from Beekeeper (hex string), or undefined. */
+  color?: string;
   startUtc: string;
   endUtc: string;
   startDate: string;
