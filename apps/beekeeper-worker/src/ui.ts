@@ -14,6 +14,72 @@ function esc(s: string): string {
   );
 }
 
+/**
+ * Root landing page (schedule.splashcarwashes.info/). Dependency-free shell
+ * that fetches GET /api/locations and renders one card per accessible location,
+ * each linking to /{location_code}. Location scope is enforced server-side; the
+ * page just surfaces 401 as a sign-in prompt and an empty list as "no access".
+ */
+export function renderPickerUi(): string {
+  return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Shift Schedule</title>
+<style>
+  :root { --bg:#0f172a; --card:#1e293b; --line:#334155; --ink:#e2e8f0; --muted:#94a3b8; --accent:#38bdf8; }
+  * { box-sizing:border-box; }
+  body { margin:0; font:15px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif; background:var(--bg); color:var(--ink); }
+  header { padding:16px 20px; border-bottom:1px solid var(--line); }
+  h1 { font-size:18px; margin:0; }
+  .sub { color:var(--muted); font-size:13px; }
+  main { padding:20px; max-width:820px; margin:0 auto; }
+  .msg { padding:10px 12px; border-radius:8px; margin-bottom:14px; display:none; }
+  .msg.err { background:#3f1d1d; color:#fecaca; display:block; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(220px,1fr)); gap:12px; }
+  a.loc { display:block; text-decoration:none; background:var(--card); border:1px solid var(--line); border-radius:10px; padding:16px; color:var(--ink); }
+  a.loc:hover { border-color:var(--accent); }
+  a.loc .code { color:var(--muted); font-size:12px; text-transform:uppercase; letter-spacing:.04em; }
+  a.loc .name { font-weight:600; margin-top:2px; }
+  .muted { color:var(--muted); }
+</style>
+</head>
+<body>
+<header>
+  <h1>Shift Schedule</h1>
+  <span class="sub">Choose a location to edit its shifts.</span>
+</header>
+<main>
+  <div class="msg" id="msg"></div>
+  <div class="grid" id="grid"><p class="muted">Loading…</p></div>
+</main>
+<script>
+function esc(s){ return String(s).replace(/[&<>"']/g, function(c){ return c==="&"?"&amp;":c==="<"?"&lt;":c===">"?"&gt;":c==='"'?"&quot;":"&#39;"; }); }
+function showMsg(t){ var m=document.getElementById("msg"); m.textContent=t; m.className=t?"msg err":"msg"; }
+async function load(){
+  var grid=document.getElementById("grid");
+  try {
+    var res=await fetch("/api/locations",{ credentials:"same-origin", headers:{ "Content-Type":"application/json" } });
+    if(res.status===401){ throw new Error("Not signed in — open the dashboard, sign in, then reload."); }
+    var data=await res.json().catch(function(){ return {}; });
+    if(!res.ok){ throw new Error((data && data.error) || ("Error "+res.status)); }
+    var locs=(data && data.locations) || [];
+    if(!locs.length){ grid.innerHTML='<p class="muted">No locations are available for your account.</p>'; return; }
+    locs.sort(function(a,b){ return String(a.name||a.code).localeCompare(String(b.name||b.code)); });
+    grid.innerHTML=locs.map(function(l){
+      return '<a class="loc" href="/'+encodeURIComponent(l.code)+'">'
+        + '<div class="code">'+esc(l.code)+'</div>'
+        + '<div class="name">'+esc(l.name||l.code)+'</div></a>';
+    }).join("");
+  } catch(e){ showMsg(e.message); grid.innerHTML='<p class="muted">—</p>'; }
+}
+load();
+</script>
+</body>
+</html>`;
+}
+
 /** Render the shell for a location_code. The code is JSON-embedded so the
  *  inline script can key every API call to it. */
 export function renderScheduleUi(locationCode: string): string {

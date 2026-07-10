@@ -65,6 +65,16 @@ function hasPerformanceAccess(session: Session | null): boolean {
   return session.tools.includes("pertrack");
 }
 
+// Shift Schedule (beekeeper-worker). Mirrors the worker's scheduleGate: a
+// `schedule` grant OR a `pricing` grant unlocks it (the operator rule that
+// MaxPass pricing admins get shift access to their locations), plus super_admin.
+// Per-location scope is enforced at the worker; this only decides tile visibility.
+function hasScheduleAccess(session: Session | null): boolean {
+  if (!session) return false;
+  if (session.role === "super_admin") return true;
+  return session.tools.includes("schedule") || session.tools.includes("pricing");
+}
+
 function anySession(_session: Session | null): boolean {
   // Page-level dcRole / email-on-locations gates apply at the destination.
   return true;
@@ -206,6 +216,15 @@ const ticketIcon: ReactNode = (
   </svg>
 );
 
+const calendarIcon: ReactNode = (
+  <svg {...SvgProps}>
+    <rect x="3" y="4" width="18" height="18" rx="2" ry="2" />
+    <line x1="16" y1="2" x2="16" y2="6" />
+    <line x1="8" y1="2" x2="8" y2="6" />
+    <line x1="3" y1="10" x2="21" y2="10" />
+  </svg>
+);
+
 // ---------------------------------------------------------------------------
 // Tile registry.
 // ---------------------------------------------------------------------------
@@ -303,6 +322,16 @@ export const TILES: ReadonlyArray<Tile> = [
     href: "/admin/performance",
     icon: barChartIcon,
     visibleTo: hasPerformanceAccess
+  },
+  {
+    id: "schedule",
+    group: "operations",
+    eyebrow: "Scheduling",
+    title: "Shift Schedule",
+    description: "Add and edit employee shifts by location.",
+    href: "https://schedule.splashcarwashes.info",
+    icon: calendarIcon,
+    visibleTo: hasScheduleAccess
   },
   // Brief 158a — Promotions feature. Visible to any user with a promo_role
   // (super_admin / it / marketing / ops); page-level gate re-checks at the

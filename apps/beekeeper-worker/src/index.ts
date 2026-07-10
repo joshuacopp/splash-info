@@ -14,11 +14,12 @@ import {
   handleContext,
   handleCreateShift,
   handleDeleteShift,
+  handleListLocations,
   handleListShifts,
   handleSyncUsers,
   handleUpdateShift
 } from "./handlers.js";
-import { renderScheduleUi } from "./ui.js";
+import { renderPickerUi, renderScheduleUi } from "./ui.js";
 import { runBeekeeperSync } from "./sync.js";
 import type { Env } from "./env.js";
 
@@ -39,19 +40,20 @@ export default {
     const method = request.method;
 
     try {
-      // ---- Root ----------------------------------------------------------
+      // ---- Root: location picker -----------------------------------------
       if (segments.length === 0) {
-        return html(
-          "<!doctype html><meta charset=utf-8><title>Splash Schedule</title>" +
-            "<body style='font:15px system-ui;padding:40px;background:#0f172a;color:#e2e8f0'>" +
-            "<h1>Splash Shift Schedule</h1><p>Open your location at " +
-            "<code>schedule.splashcarwashes.info/{location_code}</code>.</p></body>",
-          200
-        );
+        if (method !== "GET") return jsonError(405, "method not allowed");
+        return html(renderPickerUi());
       }
 
       // ---- API -----------------------------------------------------------
       if (segments[0] === "api") {
+        // GET /api/locations  — picker: accessible location_codes for the session
+        if (segments[1] === "locations" && segments.length === 2) {
+          if (method !== "GET") return jsonError(405, "method not allowed");
+          return handleListLocations(request, env);
+        }
+
         // POST /api/sync-users
         if (segments[1] === "sync-users" && segments.length === 2) {
           if (method !== "POST") return jsonError(405, "method not allowed");

@@ -27,6 +27,7 @@ import {
 import {
   getRoster,
   getUsersByIds,
+  listMappedSchedules,
   nameFromRow,
   resolveScheduleByLocationCode,
   type BeekeeperScheduleRow
@@ -74,6 +75,33 @@ async function gateAndResolve(
     return { ok: false, response: jsonError(404, `No schedule mapped for "${locationCode}"`) };
   }
   return { ok: true, ctx: { session: gate.session, sb: gate.sb, schedule } };
+}
+
+/* ============================================================
+ * Read: locations picker (worker-root landing page)
+ * ============================================================ */
+
+/**
+ * GET /api/locations
+ *   200 { locations: [{ code, name }] }
+ * Powers the root landing-page picker. Auth only (NOT location-scoped — the
+ * whole point is to enumerate accessible locations): every location_code-mapped
+ * schedule this session may reach. super_admin sees all; everyone else is
+ * limited to session.locations, exactly like userCanAccessLocation.
+ */
+export async function handleListLocations(request: Request, env: Env): Promise<Response> {
+  const gate = await scheduleGate(request, env);
+  if (!gate.ok) return gate.response;
+
+  const rows = await listMappedSchedules(gate.sb);
+  const locations = rows
+    .filter(
+      (r): r is BeekeeperScheduleRow & { location_code: string } =>
+        !!r.location_code && userCanAccessLocation(gate.session, r.location_code)
+    )
+    .map((r) => ({ code: r.location_code, name: r.name ?? r.location_code }));
+
+  return json({ locations });
 }
 
 /* ============================================================
