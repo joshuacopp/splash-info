@@ -3,15 +3,16 @@
 // Brief 67 — By Location table with per-row drill-down expansion.
 //
 // Each location row is clickable; clicking toggles a per-location expanded
-// panel beneath it that renders four damage-type breakdown tables (Open /
-// Closed / Approved with cost / Denied). Multiple rows can be expanded
-// simultaneously; state is session-only (mirrors the audit-log expansion
-// posture from Brief 53).
+// panel beneath it that renders five damage-type breakdown tables (Open /
+// Awaiting Payment / Closed / Approved with cost / Denied). Multiple rows can
+// be expanded simultaneously; state is session-only (mirrors the audit-log
+// expansion posture from Brief 53).
 
 import { useState } from "react";
 
 type DrilldownBucket =
   | "open"
+  | "awaiting_payment"
   | "denied"
   | "approved"
   | "closed_approved"
@@ -21,6 +22,7 @@ interface ByLocationRow {
   location_code: string;
   location_pretty: string | null;
   open: number;
+  awaiting_payment: number;
   closed: number;
   approved: number;
   denied: number;
@@ -130,21 +132,35 @@ function DrilldownPanel({
 }) {
   const forLocation = drilldown.filter((r) => r.location_code === locationCode);
   const openRows = aggregateDrilldown(forLocation, ["open"], false);
+  const awaitingRows = aggregateDrilldown(
+    forLocation,
+    ["awaiting_payment"],
+    false
+  );
   const closedRows = aggregateDrilldown(
     forLocation,
     ["denied", "closed_approved", "closed_other"],
     false
   );
+  // Approved (verdict axis) intentionally includes awaiting_payment claims:
+  // they're approved but not yet paid, matching the per-location Approved
+  // column's claim_status filter. A claim can appear in both Approved and
+  // Awaiting Payment — the two axes overlap by design.
   const approvedRows = aggregateDrilldown(
     forLocation,
-    ["approved", "closed_approved"],
+    ["approved", "closed_approved", "awaiting_payment"],
     true
   );
   const deniedRows = aggregateDrilldown(forLocation, ["denied"], false);
 
   return (
-    <div className="grid grid-cols-1 gap-3 p-4 md:grid-cols-2 xl:grid-cols-4">
+    <div className="grid grid-cols-1 gap-3 p-4 md:grid-cols-2 xl:grid-cols-5">
       <DamageTypeMiniTable heading="Open" rows={openRows} showCost={false} />
+      <DamageTypeMiniTable
+        heading="Awaiting Payment"
+        rows={awaitingRows}
+        showCost={false}
+      />
       <DamageTypeMiniTable heading="Closed" rows={closedRows} showCost={false} />
       <DamageTypeMiniTable
         heading="Approved"
@@ -187,6 +203,7 @@ export function ByLocationTableClient({
               <th className="px-4 py-3 w-8" aria-hidden="true"></th>
               <th className="px-4 py-3">Location</th>
               <th className="px-4 py-3 text-right">Open</th>
+              <th className="px-4 py-3 text-right">Awaiting Payment</th>
               <th className="px-4 py-3 text-right">Closed</th>
               <th className="px-4 py-3 text-right">Approved</th>
               <th className="px-4 py-3 text-right">Denied</th>
@@ -247,6 +264,9 @@ function DrilldownRowFragment({
           {row.open}
         </td>
         <td className="px-4 py-3 text-right font-mono text-xs text-splash-navy/80">
+          {row.awaiting_payment}
+        </td>
+        <td className="px-4 py-3 text-right font-mono text-xs text-splash-navy/80">
           {row.closed}
         </td>
         <td className="px-4 py-3 text-right font-mono text-xs text-splash-navy/80">
@@ -264,7 +284,7 @@ function DrilldownRowFragment({
       </tr>
       {isOpen ? (
         <tr className="bg-splash-navy/[0.02]">
-          <td colSpan={8} className="p-0">
+          <td colSpan={9} className="p-0">
             <DrilldownPanel
               locationCode={row.location_code}
               drilldown={drilldown}

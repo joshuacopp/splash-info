@@ -1,0 +1,5 @@
+{
+  "extends": "@splash/config/tsconfig.worker.json",
+  "include": ["src/**/*", "worker-configuration.d.ts"],
+  "exclude": ["node_modules", ".wrangler", ".turbo"]
+}

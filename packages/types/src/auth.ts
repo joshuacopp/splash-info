@@ -37,14 +37,22 @@ export const USER_ROLES: readonly UserRole[] = ["super_admin", "location_admin"]
  * every submission without needing the grant. A dedicated tool (not reusing
  * "pricing") so a pricing admin doesn't automatically gain form-submission
  * visibility.
+ *
+ * "schedule" gates the Beekeeper shift editor (beekeeper-worker) for LOCATION
+ * admins, scoped to their own site(s). A distinct grantable tool so schedule
+ * access can be assigned independently — but the beekeeper-worker gate ALSO
+ * accepts a "pricing" grant, so anyone who can change MaxPass pricing for a
+ * location can edit that location's shifts without a separate grant (operator
+ * decision, 2026-07-10).
  */
-export type ToolName = "pricing" | "claims" | "pertrack" | "form_submissions";
+export type ToolName = "pricing" | "claims" | "pertrack" | "form_submissions" | "schedule";
 
 export const VALID_TOOLS: readonly ToolName[] = [
   "pricing",
   "claims",
   "pertrack",
-  "form_submissions"
+  "form_submissions",
+  "schedule"
 ] as const;
 
 /**

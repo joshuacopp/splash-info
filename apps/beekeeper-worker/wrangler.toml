@@ -1,0 +1,69 @@
+# Splash Beekeeper Shift Worker.
+#
+# Lets the schedule UI add / edit / delete Beekeeper shifts directly via the
+# Shifts API, replacing the old xlsx download -> fill -> reupload workflow.
+# The Beekeeper bot token stays server-side; the frontend never sees it.
+#
+# ROUTE LAYOUT
+#   Mounted on a dedicated subdomain: schedule.splashcarwashes.info
+#     GET  schedule.splashcarwashes.info/{location_code}        HTML app shell
+#     GET  schedule.splashcarwashes.info/api/schedules          list schedules
+#     GET  schedule.splashcarwashes.info/api/schedules/{id}/shifts?start=&end=
+#     GET  schedule.splashcarwashes.info/api/schedules/{id}/roster
+#     POST schedule.splashcarwashes.info/api/schedules/{id}/shifts
+#     PUT  schedule.splashcarwashes.info/api/schedules/{id}/shifts/{shiftId}
+#     DEL  schedule.splashcarwashes.info/api/schedules/{id}/shifts/{shiftId}
+#     POST schedule.splashcarwashes.info/api/sync-users         manual cache refill
+#
+#   The subdomain doesn't exist yet, so we bind the production route directly
+#   (no staging twin needed — greenfield, per operator). Add a CNAME/route for
+#   `schedule` on the splashcarwashes.info zone before first deploy.
+
+name = "splash-beekeeper"
+main = "src/index.ts"
+compatibility_date = "2026-05-01"
+compatibility_flags = ["nodejs_compat"]
+
+workers_dev = true
+
+routes = [
+  { pattern = "schedule.splashcarwashes.info/*", zone_name = "splashcarwashes.info" }
+]
+
+# Bindings:
+# SUPABASE_URL          — string. `wrangler secret put SUPABASE_URL` (same
+#                         Supabase project URL bound on every other worker).
+# SUPABASE_ANON_KEY     — secret. Required by authenticate() in @splash/auth
+#                         (the /auth/v1/user round-trip uses the anon key).
+# SUPABASE_SERVICE_KEY  — secret. Service-role client for the beekeeper_users /
+#                         beekeeper_schedules cache reads+writes and the
+#                         sysadmin_audit_log shift-mutation audit. Same value as
+#                         on splash-sysadmin / splash-damage.
+# BEEKEEPER_TOKEN       — secret. Beekeeper bot-account API token (Admin or
+#                         location-admin scope). `wrangler secret put
+#                         BEEKEEPER_TOKEN`. Sent as `Authorization: Token <v>`.
+
+# Non-secret env vars.
+#   BEEKEEPER_BASE_URL — upstream API root. Defaults in code to the production
+#                        tenant (splashcarwashes.us.beekeeper.io/api/2). Only
+#                        set here to point at a sandbox tenant.
+#   SYNC_ADMIN_EMAILS  — comma-separated operator emails allowed to fire the
+#                        manual POST /api/sync-users in addition to super_admins.
+[vars]
+# BEEKEEPER_BASE_URL = "https://splashcarwashes.us.beekeeper.io/api/2"
+SYNC_ADMIN_EMAILS = "joshua.copp@gmail.com"
+
+# Daily Beekeeper user + schedule cache sync. 10:00 UTC = 6:00 AM ET. Runs
+# before the workorders MaintainX sync (11:30 UTC) — no dependency, just a
+# tidy "overnight caches refill before the workday" ordering. The scheduled
+# handler in src/index.ts paginates /users + /shifts/schedules and upserts the
+# beekeeper_users / beekeeper_schedules tables. Fail-soft: logs + exits on
+# error, never throws out of the scheduled handler.
+[triggers]
+crons = ["0 10 * * *"]
+
+# Keeps Workers Logs sticky across deploys (Brief 63 convention). Scheduled
+# invocations show up here too with eventType: scheduled.
+[observability.logs]
+enabled = true
+invocation_logs = true

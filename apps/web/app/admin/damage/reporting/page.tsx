@@ -64,6 +64,7 @@ interface ReportingResponse {
     location_code: string;
     location_pretty: string | null;
     open: number;
+    awaiting_payment: number;
     closed: number;
     approved: number;
     denied: number;
@@ -71,6 +72,10 @@ interface ReportingResponse {
     avg_days_open: number | null;
   }>;
   by_damage_type_open: Array<{ damage_type: string; count: number }>;
+  by_damage_type_awaiting_payment: Array<{
+    damage_type: string;
+    count: number;
+  }>;
   by_damage_type_approved: Array<{
     damage_type: string;
     count: number;
@@ -82,6 +87,7 @@ interface ReportingResponse {
     location_pretty: string | null;
     outcome_bucket:
       | "open"
+      | "awaiting_payment"
       | "denied"
       | "approved"
       | "closed_approved"
@@ -397,10 +403,14 @@ export default async function DamageReportingPage({ searchParams }: PageProps) {
 
       <section id="by-damage-type" className="mb-8 scroll-mt-20">
         <h2 className="mb-3 text-lg font-bold text-splash-navy">By Damage Type</h2>
-        <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
           <DamageTypeTable
             heading="Open"
             rows={report.by_damage_type_open}
+          />
+          <DamageTypeTable
+            heading="Awaiting Payment"
+            rows={report.by_damage_type_awaiting_payment}
           />
           <DamageTypeTable
             heading="Approved"

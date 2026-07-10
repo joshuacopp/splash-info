@@ -867,6 +867,8 @@ interface ReportingByLocationRow {
   location_code: string;
   location_pretty: string | null;
   open: number;
+  /** Brief 172 — derived bucket; carved out of `open`, sits before `closed`. */
+  awaiting_payment: number;
   closed: number;
   approved: number;
   denied: number;
@@ -887,6 +889,7 @@ interface ReportingByDamageTypeApprovedRow {
 
 type ReportingDrilldownBucket =
   | "open"
+  | "awaiting_payment"
   | "denied"
   | "approved"
   | "closed_approved"
@@ -913,6 +916,8 @@ interface ReportingResponse {
   totals: ReportingTotals;
   by_location: ReportingByLocationRow[];
   by_damage_type_open: ReportingByDamageTypeRow[];
+  /** Brief 172 — AP claims carved out of the Open damage-type breakdown. */
+  by_damage_type_awaiting_payment: ReportingByDamageTypeRow[];
   by_damage_type_approved: ReportingByDamageTypeApprovedRow[];
   by_damage_type_denied: ReportingByDamageTypeRow[];
   by_location_drilldown: ReportingByLocationDrilldownRow[];
@@ -1016,14 +1021,16 @@ async function getReporting(env: Env, session: Session, url: URL): Promise<Respo
   // 'awaiting_payment', then anything still with stored lifecycle_state =
   // 'Open' goes to 'open'. Rows whose stored lifecycle is already
   // 'Closed' (CASE branch 1) never reach the awaiting-payment branch.
-  const apTotalsPlaceholders = AWAITING_PAYMENT_STATUSES.map(
+  // AP claim_status placeholders — bound after baseBindings (from, to, codes)
+  // on every statement that carves out or targets the Awaiting Payment bucket.
+  const apPlaceholders = AWAITING_PAYMENT_STATUSES.map(
     (_, i) => `?${i + 3 + codes.length}`
   ).join(",");
   const lifecycleSql = `
     SELECT
       CASE
         WHEN lifecycle_state = 'Closed' THEN 'closed'
-        WHEN claim_status IN (${apTotalsPlaceholders}) THEN 'awaiting_payment'
+        WHEN claim_status IN (${apPlaceholders}) THEN 'awaiting_payment'
         WHEN lifecycle_state = 'Open' THEN 'open'
         ELSE 'open'
       END AS bucket,
@@ -1070,16 +1077,23 @@ async function getReporting(env: Env, session: Session, url: URL): Promise<Respo
         OR c.claim_status = 'Closed — Approved/No Response'
       )
   `;
+  // Brief 172 — per-location lifecycle counts use the same 3-way derived
+  // bucket as the KPI totals (Closed / Awaiting Payment / Open), so AP claims
+  // are carved out of Open here too.
   const byLocationSql = `
     SELECT location_code,
            MAX(location_pretty) AS location_pretty,
-           lifecycle_state,
+           CASE
+             WHEN lifecycle_state = 'Closed' THEN 'closed'
+             WHEN claim_status IN (${apPlaceholders}) THEN 'awaiting_payment'
+             ELSE 'open'
+           END AS bucket,
            COUNT(*) AS n
     FROM claims
     WHERE submitted_at BETWEEN ?1 AND ?2
       AND location_code IN (${inPlaceholders})
       AND deleted_at IS NULL
-    GROUP BY location_code, lifecycle_state
+    GROUP BY location_code, bucket
     ORDER BY location_code
   `;
   const byLocationApprovedSql = `
@@ -1121,6 +1135,8 @@ async function getReporting(env: Env, session: Session, url: URL): Promise<Respo
       )
     GROUP BY c.location_code
   `;
+  // Brief 172 — Open damage-type breakdown excludes AP claims (they get their
+  // own card below), matching the carve-out applied to the Open KPI/column.
   const byDamageTypeOpenSql = `
     SELECT COALESCE(damage_type, '(none)') AS damage_type, COUNT(*) AS n
     FROM claims
@@ -1128,6 +1144,17 @@ async function getReporting(env: Env, session: Session, url: URL): Promise<Respo
       AND location_code IN (${inPlaceholders})
       AND deleted_at IS NULL
       AND lifecycle_state = 'Open'
+      AND claim_status NOT IN (${apPlaceholders})
+    GROUP BY damage_type
+    ORDER BY n DESC
+  `;
+  const byDamageTypeAwaitingPaymentSql = `
+    SELECT COALESCE(damage_type, '(none)') AS damage_type, COUNT(*) AS n
+    FROM claims
+    WHERE submitted_at BETWEEN ?1 AND ?2
+      AND location_code IN (${inPlaceholders})
+      AND deleted_at IS NULL
+      AND claim_status IN (${apPlaceholders})
     GROUP BY damage_type
     ORDER BY n DESC
   `;
@@ -1181,6 +1208,7 @@ async function getReporting(env: Env, session: Session, url: URL): Promise<Respo
       AND location_code IN (${inPlaceholders})
       AND deleted_at IS NULL
       AND lifecycle_state = 'Open'
+      AND claim_status NOT IN (${apPlaceholders})
     GROUP BY location_code
   `;
   // Brief 67: per-location drill-down — one row per
@@ -1194,6 +1222,7 @@ async function getReporting(env: Env, session: Session, url: URL): Promise<Respo
       c.location_code,
       MAX(c.location_pretty) AS location_pretty,
       CASE
+        WHEN c.claim_status IN (${apPlaceholders}) THEN 'awaiting_payment'
         WHEN c.lifecycle_state = 'Open' THEN 'open'
         WHEN c.claim_status = 'Closed — Denied' THEN 'denied'
         WHEN c.claim_status LIKE 'Approved —%' THEN 'approved'
@@ -1218,22 +1247,25 @@ async function getReporting(env: Env, session: Session, url: URL): Promise<Respo
   `;
 
   const stmts = [
-    // Brief 172 — lifecycleSql needs the AP claim_status list appended
-    // after baseBindings (placeholders are ?N where N starts at
-    // 3+codes.length, see SQL above).
+    // Brief 172 — statements that reference the AP claim_status list append
+    // ...AWAITING_PAYMENT_STATUSES after baseBindings (placeholders are ?N
+    // where N starts at 3+codes.length, see apPlaceholders above).
     env.DB.prepare(lifecycleSql).bind(...baseBindings, ...AWAITING_PAYMENT_STATUSES),
     env.DB.prepare(approvedSql).bind(...baseBindings),
     env.DB.prepare(deniedSql).bind(...baseBindings),
     env.DB.prepare(costSql).bind(...baseBindings),
-    env.DB.prepare(byLocationSql).bind(...baseBindings),
+    env.DB.prepare(byLocationSql).bind(...baseBindings, ...AWAITING_PAYMENT_STATUSES),
     env.DB.prepare(byLocationApprovedSql).bind(...baseBindings),
     env.DB.prepare(byLocationDeniedSql).bind(...baseBindings),
     env.DB.prepare(byLocationCostSql).bind(...baseBindings),
-    env.DB.prepare(byDamageTypeOpenSql).bind(...baseBindings),
+    env.DB.prepare(byDamageTypeOpenSql).bind(...baseBindings, ...AWAITING_PAYMENT_STATUSES),
     env.DB.prepare(byDamageTypeApprovedSql).bind(...baseBindings),
     env.DB.prepare(byDamageTypeDeniedSql).bind(...baseBindings),
-    env.DB.prepare(byLocationAvgDaysOpenSql).bind(...baseBindings),
-    env.DB.prepare(byLocationDrilldownSql).bind(...baseBindings)
+    env.DB.prepare(byLocationAvgDaysOpenSql).bind(...baseBindings, ...AWAITING_PAYMENT_STATUSES),
+    env.DB.prepare(byLocationDrilldownSql).bind(...baseBindings, ...AWAITING_PAYMENT_STATUSES),
+    env.DB
+      .prepare(byDamageTypeAwaitingPaymentSql)
+      .bind(...baseBindings, ...AWAITING_PAYMENT_STATUSES)
   ];
   const batchResult = await env.DB.batch(stmts);
   const lifecycleRes = batchResult[0];
@@ -1245,6 +1277,7 @@ async function getReporting(env: Env, session: Session, url: URL): Promise<Respo
   const byLocationDeniedRes = batchResult[6];
   const byLocationCostRes = batchResult[7];
   const byDamageOpenRes = batchResult[8];
+  const byDamageAwaitingPaymentRes = batchResult[13];
   const byDamageApprovedRes = batchResult[9];
   const byDamageDeniedRes = batchResult[10];
   const byLocationAvgDaysOpenRes = batchResult[11];
@@ -1281,12 +1314,13 @@ async function getReporting(env: Env, session: Session, url: URL): Promise<Respo
   const deniedTotal = Number((deniedRes?.results?.[0] as { n?: number } | undefined)?.n ?? 0);
   const costTotal = Number((costRes?.results?.[0] as { cost?: number } | undefined)?.cost ?? 0);
 
-  // Pivot per-location lifecycle rows into one row per location.
+  // Pivot per-location 3-way bucket rows (open / awaiting_payment / closed)
+  // into one row per location.
   const perLoc = new Map<string, ReportingByLocationRow>();
   for (const r of (byLocationRes?.results ?? []) as Array<{
     location_code: string;
     location_pretty: string | null;
-    lifecycle_state: string;
+    bucket: string;
     n: number;
   }>) {
     let row = perLoc.get(r.location_code);
@@ -1295,6 +1329,7 @@ async function getReporting(env: Env, session: Session, url: URL): Promise<Respo
         location_code: r.location_code,
         location_pretty: r.location_pretty ?? null,
         open: 0,
+        awaiting_payment: 0,
         closed: 0,
         approved: 0,
         denied: 0,
@@ -1303,8 +1338,10 @@ async function getReporting(env: Env, session: Session, url: URL): Promise<Respo
       };
       perLoc.set(r.location_code, row);
     }
-    if (r.lifecycle_state === "Open") row.open = Number(r.n) || 0;
-    else if (r.lifecycle_state === "Closed") row.closed = Number(r.n) || 0;
+    if (r.bucket === "open") row.open = Number(r.n) || 0;
+    else if (r.bucket === "awaiting_payment") {
+      row.awaiting_payment = Number(r.n) || 0;
+    } else if (r.bucket === "closed") row.closed = Number(r.n) || 0;
   }
   for (const r of (byLocationApprovedRes?.results ?? []) as Array<{
     location_code: string;
@@ -1347,6 +1384,10 @@ async function getReporting(env: Env, session: Session, url: URL): Promise<Respo
     damage_type: string;
     n: number;
   }>).map((r) => ({ damage_type: r.damage_type, count: Number(r.n) || 0 }));
+  const byDamageAwaitingPayment = ((byDamageAwaitingPaymentRes?.results ?? []) as Array<{
+    damage_type: string;
+    n: number;
+  }>).map((r) => ({ damage_type: r.damage_type, count: Number(r.n) || 0 }));
   const byDamageApproved: ReportingByDamageTypeApprovedRow[] = ((byDamageApprovedRes?.results ?? []) as Array<{
     damage_type: string;
     n: number;
@@ -1363,6 +1404,7 @@ async function getReporting(env: Env, session: Session, url: URL): Promise<Respo
 
   const DRILLDOWN_BUCKETS: ReadonlySet<ReportingDrilldownBucket> = new Set([
     "open",
+    "awaiting_payment",
     "denied",
     "approved",
     "closed_approved",
@@ -1405,6 +1447,7 @@ async function getReporting(env: Env, session: Session, url: URL): Promise<Respo
     },
     by_location: byLocation,
     by_damage_type_open: byDamageOpen,
+    by_damage_type_awaiting_payment: byDamageAwaitingPayment,
     by_damage_type_approved: byDamageApproved,
     by_damage_type_denied: byDamageDenied,
     by_location_drilldown: byLocationDrilldown,
@@ -1479,6 +1522,7 @@ function emptyReportingResponse(
     },
     by_location: [],
     by_damage_type_open: [],
+    by_damage_type_awaiting_payment: [],
     by_damage_type_approved: [],
     by_damage_type_denied: [],
     by_location_drilldown: [],
