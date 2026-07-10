@@ -200,8 +200,22 @@ export async function handleListShifts(
     return mapBeekeeperError(err);
   }
 
-  const names = await getUsersByIds(sb, shifts.map((s) => s.userId));
-  const views = shifts.map((s) => toShiftView(s, nameFromRow(names.get(s.userId), s.userId)));
+  // Defensive window clamp. The upstream /shifts endpoint has been observed to
+  // ignore the start/end query params and return the full retained history, so
+  // enforce the requested [start, end) window here on the shift's start instant
+  // (matches the week-based grid, which keys rows by start day).
+  const startMs = Date.parse(start);
+  const endMs = Date.parse(end);
+  const inWindow =
+    Number.isFinite(startMs) && Number.isFinite(endMs)
+      ? shifts.filter((s) => {
+          const t = Date.parse(s.start);
+          return Number.isFinite(t) && t >= startMs && t < endMs;
+        })
+      : shifts;
+
+  const names = await getUsersByIds(sb, inWindow.map((s) => s.userId));
+  const views = inWindow.map((s) => toShiftView(s, nameFromRow(names.get(s.userId), s.userId)));
   return json({ shifts: views });
 }
 

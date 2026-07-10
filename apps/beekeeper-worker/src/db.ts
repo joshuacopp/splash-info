@@ -128,10 +128,14 @@ export async function getRoster(
   const byId = new Map<string, BeekeeperUserRow>();
 
   if (primaryLocationId) {
+    // org_unit_ids is JSONB. postgrest-js serializes a JS array as a Postgres
+    // array literal (cs.{uuid}), which Postgres tries to parse as JSON and
+    // rejects ("invalid input syntax for type json"). Pass a JSON-stringified
+    // array so the jsonb-containment form (cs.["uuid"]) is emitted instead.
     const { data, error } = await sb
       .from("beekeeper_users")
       .select("id,tenantuserid,display_name,firstname,lastname,org_unit_ids")
-      .contains("org_unit_ids", [primaryLocationId]);
+      .contains("org_unit_ids", JSON.stringify([primaryLocationId]));
     if (error) throw new Error(`getRoster(location): ${error.message}`);
     for (const r of (data as BeekeeperUserRow[]) ?? []) byId.set(r.id, r);
   }

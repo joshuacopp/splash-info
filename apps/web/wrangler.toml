@@ -113,6 +113,15 @@ service = "splash-jotform"
 binding = "PROMO_WORKER"
 service = "splash-promo"
 
+# beekeeper-worker (Beekeeper shift editor). Worker name on Cloudflare:
+# `beekeeper-worker`. After the UI port, apps/web owns the /schedule and
+# /schedule/{location} pages and calls this worker's API-only surface
+# (/schedule/api/*) via the binding for SSR; interactive writes post
+# same-origin from the browser (CF routes /schedule/api/* to the worker).
+[[services]]
+binding = "BEEKEEPER_WORKER"
+service = "beekeeper-worker"
+
 # OpenNext static asset binding (CSS/JS/public/).
 [assets]
 directory = ".open-next/assets"

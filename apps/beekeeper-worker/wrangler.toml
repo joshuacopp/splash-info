@@ -5,15 +5,20 @@
 # The Beekeeper bot token stays server-side; the frontend never sees it.
 #
 # ROUTE LAYOUT
-#   Path-carved onto the apex host at splashcarwashes.info/schedule/* — same
-#   pattern as /pertrack, /manage, /workorders. This is deliberate: the SSO
-#   sb-access-token cookie the dashboard sets is host-only (no Domain=), so a
-#   tool only receives the session if it shares the apex hostname. A dedicated
-#   subdomain (the first attempt) never got the cookie → every request 401'd.
-#   index.ts strips the /schedule prefix; ui.ts prefixes its links + fetches.
+#   API-ONLY surface, path-carved onto the apex host at
+#   splashcarwashes.info/schedule/api/* — same pattern as workorders-worker's
+#   /workorders/api/*. The UI (location picker + week-grid calendar) now lives
+#   in apps/web at app/schedule/* and inherits the shared design system + navy
+#   header. apps/web SSR reaches this worker via the BEEKEEPER_WORKER service
+#   binding; interactive writes post same-origin from the browser.
 #
-#     GET  splashcarwashes.info/schedule/                    location picker
-#     GET  splashcarwashes.info/schedule/{location_code}     HTML app shell
+#   The API-only carve is deliberate for routing: apps/web owns the catch-all
+#   splashcarwashes.info/* and serves the /schedule and /schedule/{code} pages;
+#   this worker's more-specific /schedule/api/* out-ranks that catch-all so the
+#   JSON API keeps resolving. The SSO sb-access-token cookie is host-only, so
+#   sharing the apex hostname is what lets both the pages and the API see the
+#   session. index.ts still strips the /schedule prefix before segment routing.
+#
 #     GET  splashcarwashes.info/schedule/api/locations       accessible locations
 #     GET  splashcarwashes.info/schedule/api/loc/{code}/context
 #     GET  splashcarwashes.info/schedule/api/loc/{code}/shifts?start=&end=
@@ -29,22 +34,17 @@ compatibility_flags = ["nodejs_compat"]
 
 workers_dev = true
 
-# Path carve on the apex host so the worker shares the dashboard's host-only SSO
-# cookie (see ROUTE LAYOUT above). Staging twin bound so apps/web on
-# staging.splashcarwashes.info can reach /schedule/* same-origin. Before first
-# deploy, delete the old `schedule.splashcarwashes.info` Custom Domain in the
-# Cloudflare dashboard — the apex route below replaces it entirely.
-# Two patterns per host: the bare "/schedule" (dashboard tile + hand-typed URL)
-# AND "/schedule/*" (everything below it). Cloudflare's "/schedule/*" wildcard
-# does NOT match the slash-less "/schedule", so without the bare route the tile
-# falls through to apps/web's catch-all "splashcarwashes.info/*" and 404s.
-# index.ts redirects bare "/schedule" -> "/schedule/" so the picker's relative
-# links resolve.
+# API-only carve on the apex host so the worker shares the dashboard's host-only
+# SSO cookie (see ROUTE LAYOUT above). ONLY /schedule/api/* is bound now — the
+# bare /schedule and /schedule/{code} page routes are owned by apps/web's
+# catch-all, which renders the ported React UI. This more-specific /schedule/api/*
+# out-ranks apps/web's splashcarwashes.info/* on path specificity, so the JSON
+# API keeps resolving here while the pages fall through to apps/web.
+# Before first deploy, delete the old `schedule.splashcarwashes.info` Custom
+# Domain in the Cloudflare dashboard — the apex route below replaces it entirely.
 routes = [
-  { pattern = "splashcarwashes.info/schedule",           zone_name = "splashcarwashes.info" },
-  { pattern = "splashcarwashes.info/schedule/*",         zone_name = "splashcarwashes.info" },
-  { pattern = "staging.splashcarwashes.info/schedule",   zone_name = "splashcarwashes.info" },
-  { pattern = "staging.splashcarwashes.info/schedule/*", zone_name = "splashcarwashes.info" }
+  { pattern = "splashcarwashes.info/schedule/api/*",         zone_name = "splashcarwashes.info" },
+  { pattern = "staging.splashcarwashes.info/schedule/api/*", zone_name = "splashcarwashes.info" }
 ]
 
 # Bindings:

@@ -9,7 +9,7 @@
 //      This is the per-location pricing bookmark fall-through (legacy URL was
 //      /admin/binghamton; canonical is /admin/pricing/binghamton).
 //   3. Auth gate — runs after redirects.
-//      /admin/*, /sysadmin/*, /workorders/*, /forms (incl. /forms/*)
+//      /admin/*, /sysadmin/*, /workorders/*, /schedule/*, /forms (incl. /forms/*)
 //                                            — require sb-access-token cookie
 //      /change-password?required=true        — same
 //      /login                                — bounce authenticated users to /admin/dashboard
@@ -150,7 +150,7 @@ export function middleware(request: NextRequest) {
     return NextResponse.next();
   }
 
-  // /admin/*, /sysadmin/*, /workorders/*, /forms (and /forms/*) — always gated.
+  // /admin/*, /sysadmin/*, /workorders/*, /schedule/*, /forms (and /forms/*) — always gated.
   if (!hasCookie) {
     return redirectToLogin(request);
   }
@@ -188,6 +188,7 @@ export const config = {
     "/admin/:path*",
     "/sysadmin/:path*",
     "/workorders/:path*",
+    "/schedule/:path*",
     "/forms/:path*",
     "/change-password",
     "/login",

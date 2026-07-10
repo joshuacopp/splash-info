@@ -25,6 +25,7 @@ declare global {
     FORMS_WORKER: Fetcher;
     JOTFORM_WORKER: Fetcher;
     PROMO_WORKER: Fetcher;
+    BEEKEEPER_WORKER: Fetcher;
   }
 }
 

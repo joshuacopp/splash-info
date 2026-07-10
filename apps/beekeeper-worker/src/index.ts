@@ -1,9 +1,12 @@
 // beekeeper-worker entry point.
 //
-// Mounted on schedule.splashcarwashes.info/*. Two surfaces:
-//   1. GET /{location_code}          — the single-file shift-editor UI shell
-//   2. /api/loc/{location_code}/*    — the JSON API the UI talks to
-//   3. POST /api/sync-users          — manual cache refill (super_admin / allowlist)
+// API-ONLY surface, path-carved at splashcarwashes.info/schedule/api/*. The UI
+// (location picker + week-grid calendar) lives in apps/web at app/schedule/*
+// and reaches these endpoints via the BEEKEEPER_WORKER service binding (SSR)
+// or same-origin browser fetches (interactive writes). Surfaces:
+//   1. GET  /api/locations          — accessible location picker data
+//   2. /api/loc/{location_code}/*   — the JSON API the UI talks to
+//   3. POST /api/sync-users         — manual cache refill (super_admin / allowlist)
 //
 // The `scheduled` handler runs the daily cache sync (cron in wrangler.toml),
 // mirroring the workorders-worker MaintainX posture: a warm cache is a nicety,
@@ -19,20 +22,9 @@ import {
   handleSyncUsers,
   handleUpdateShift
 } from "./handlers.js";
-import { renderPickerUi, renderScheduleUi } from "./ui.js";
 import { runBeekeeperSync } from "./sync.js";
 import { ROUTE_PREFIX } from "./routePrefix.js";
 import type { Env } from "./env.js";
-
-function html(body: string, status = 200): Response {
-  return new Response(body, {
-    status,
-    headers: { "Content-Type": "text/html; charset=utf-8" }
-  });
-}
-
-/** Reserved first-segment paths that are NOT location codes. */
-const RESERVED = new Set(["api", "favicon.ico", "robots.txt"]);
 
 export default {
   async fetch(request: Request, env: Env, _ctx: ExecutionContext): Promise<Response> {
@@ -40,26 +32,16 @@ export default {
     let pathname = url.pathname;
     const method = request.method;
 
-    // Path-carve prefix strip. Production serves under splashcarwashes.info/schedule/*;
-    // after the strip the router below reads paths naturally as "/", "/{code}",
-    // "/api/...". Bare "/schedule" redirects to "/schedule/" so the picker's
-    // relative links resolve. On the workers.dev fallback the prefix is absent,
-    // so both checks are no-ops.
-    if (pathname === ROUTE_PREFIX) {
-      return Response.redirect(url.origin + ROUTE_PREFIX + "/", 302);
-    }
+    // Path-carve prefix strip. Production serves under
+    // splashcarwashes.info/schedule/api/*; after the strip the router below
+    // reads paths naturally as "/api/...". On the workers.dev fallback the
+    // prefix is absent, so the strip is a no-op.
     if (pathname.startsWith(ROUTE_PREFIX + "/")) {
       pathname = pathname.slice(ROUTE_PREFIX.length);
     }
     const segments = pathname.split("/").filter(Boolean);
 
     try {
-      // ---- Root: location picker -----------------------------------------
-      if (segments.length === 0) {
-        if (method !== "GET") return jsonError(405, "method not allowed");
-        return html(renderPickerUi());
-      }
-
       // ---- API -----------------------------------------------------------
       if (segments[0] === "api") {
         // GET /api/locations  — picker: accessible location_codes for the session
@@ -103,14 +85,10 @@ export default {
         return jsonError(404, "not found");
       }
 
-      // ---- UI shell:  GET /{location_code} -------------------------------
-      if (segments.length === 1 && !RESERVED.has(segments[0]!)) {
-        if (method !== "GET") return jsonError(405, "method not allowed");
-        const locationCode = decodeURIComponent(segments[0]!);
-        return html(renderScheduleUi(locationCode));
-      }
-
-      return new Response("Not found", { status: 404 });
+      // Non-API paths are owned by apps/web (the ported React UI). This worker
+      // is only routed /schedule/api/* in production, so anything else here is
+      // a stray/dev request.
+      return jsonError(404, "not found");
     } catch (err) {
       console.error("beekeeper-worker request failed:", url.pathname, err);
       return jsonError(500, err instanceof Error ? err.message : "server error");
