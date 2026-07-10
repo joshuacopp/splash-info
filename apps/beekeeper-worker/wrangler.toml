@@ -34,8 +34,16 @@ workers_dev = true
 # staging.splashcarwashes.info can reach /schedule/* same-origin. Before first
 # deploy, delete the old `schedule.splashcarwashes.info` Custom Domain in the
 # Cloudflare dashboard — the apex route below replaces it entirely.
+# Two patterns per host: the bare "/schedule" (dashboard tile + hand-typed URL)
+# AND "/schedule/*" (everything below it). Cloudflare's "/schedule/*" wildcard
+# does NOT match the slash-less "/schedule", so without the bare route the tile
+# falls through to apps/web's catch-all "splashcarwashes.info/*" and 404s.
+# index.ts redirects bare "/schedule" -> "/schedule/" so the picker's relative
+# links resolve.
 routes = [
+  { pattern = "splashcarwashes.info/schedule",           zone_name = "splashcarwashes.info" },
   { pattern = "splashcarwashes.info/schedule/*",         zone_name = "splashcarwashes.info" },
+  { pattern = "staging.splashcarwashes.info/schedule",   zone_name = "splashcarwashes.info" },
   { pattern = "staging.splashcarwashes.info/schedule/*", zone_name = "splashcarwashes.info" }
 ]
 
@@ -60,7 +68,7 @@ routes = [
 #                        manual POST /api/sync-users in addition to super_admins.
 [vars]
 # BEEKEEPER_BASE_URL = "https://splashcarwashes.us.beekeeper.io/api/2"
-SYNC_ADMIN_EMAILS = "joshua.copp@gmail.com"
+SYNC_ADMIN_EMAILS = "josh.copp@splashcarwashes.com"
 
 # Daily Beekeeper user + schedule cache sync. 10:00 UTC = 6:00 AM ET. Runs
 # before the workorders MaintainX sync (11:30 UTC) — no dependency, just a
