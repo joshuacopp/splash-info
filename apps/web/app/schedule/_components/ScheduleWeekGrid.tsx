@@ -129,16 +129,22 @@ const TIME_PRESETS: TimePreset[] = [
   }
 ];
 
-/** Presets that set title + color but leave the chosen times alone. */
+/** Role presets: set the color (role -> color) and a TIME-PREFIXED title
+ *  (e.g. "8 AM–1 PM Manager"), NOT the bare role word. Beekeeper's grid lanes
+ *  shifts by title, so a bare "Manager" collapses every manager under one
+ *  header and breaks the linear coverage view. A time-prefixed title is unique
+ *  per start time, so Beekeeper renders shifts in start-time order while the
+ *  color still codes the role and the role word stays in the label. */
 interface TitlePreset {
-  title: string;
+  /** Role word appended after the time prefix. */
+  role: string;
   color: string;
 }
 
 const TITLE_PRESETS: TitlePreset[] = [
-  { title: "Manager", color: SHIFT_COLORS.manager },
-  { title: "CSA", color: SHIFT_COLORS.csa },
-  { title: "Attendant", color: SHIFT_COLORS.attendant }
+  { role: "Manager", color: SHIFT_COLORS.manager },
+  { role: "CSA", color: SHIFT_COLORS.csa },
+  { role: "Attendant", color: SHIFT_COLORS.attendant }
 ];
 
 /** Inline style for a colored chip — soft tinted fill with a solid color
@@ -546,7 +552,15 @@ function EditorModal({
     });
 
   const applyTitlePreset = (p: TitlePreset) =>
-    onChange({ ...form, title: p.title, color: p.color });
+    onChange({
+      ...form,
+      // Time-prefix the role so the title is unique per start time and Beekeeper
+      // renders linearly by start instead of laning every same-role shift under
+      // one header. Composed from the CURRENT times — set the times first, then
+      // click the role (re-click if you change the times afterward).
+      title: `${fmt12(form.startHour, form.startMinute)}–${fmt12(form.endHour, form.endMinute)} ${p.role}`,
+      color: p.color
+    });
 
   return (
     <div
@@ -614,13 +628,13 @@ function EditorModal({
             <div className="flex flex-wrap items-center gap-1.5">
               {TITLE_PRESETS.map((p) => (
                 <button
-                  key={p.title}
+                  key={p.role}
                   type="button"
                   onClick={() => applyTitlePreset(p)}
                   style={chipStyle(p.color)}
                   className="rounded-splash-md border px-2.5 py-1 text-xs font-semibold text-splash-navy transition-opacity hover:opacity-80"
                 >
-                  {p.title}
+                  {p.role}
                 </button>
               ))}
               {form.color ? (
