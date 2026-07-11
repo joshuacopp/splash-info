@@ -58,6 +58,13 @@ function fmt12(h: number, m: number): string {
   return m === 0 ? `${h12} ${ap}` : `${h12}:${pad(m)} ${ap}`;
 }
 
+/** Compact hour label for shift titles: no AM/PM (implied by the shift), minutes
+ *  glued on when non-zero. 8:00 -> "8", 7:30 -> "730", 20:30 -> "830". */
+function fmtCompact(h: number, m: number): string {
+  const h12 = ((h + 11) % 12) + 1;
+  return m === 0 ? `${h12}` : `${h12}${pad(m)}`;
+}
+
 const MINUTE_STEPS = [0, 15, 30, 45];
 
 /** Snap an arbitrary minute to the nearest quarter for the dropdowns. */
@@ -558,7 +565,7 @@ function EditorModal({
       // renders linearly by start instead of laning every same-role shift under
       // one header. Composed from the CURRENT times — set the times first, then
       // click the role (re-click if you change the times afterward).
-      title: `${fmt12(form.startHour, form.startMinute)}–${fmt12(form.endHour, form.endMinute)} ${p.role}`,
+      title: `${fmtCompact(form.startHour, form.startMinute)}-${fmtCompact(form.endHour, form.endMinute)} ${p.role}`,
       color: p.color
     });
 
