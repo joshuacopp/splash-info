@@ -42,6 +42,28 @@ export interface ClaimSummaryPdfInput {
     determination: string;
     whatCustomerWasTold: string;
   };
+  /**
+   * Optional internal detail block. When present, the renderer treats this
+   * as the FULL claim summary destined for Accounts Payable (bundled into
+   * the check request) rather than the pared-down customer copy: it adds an
+   * "Internal Assessment" section, retitles the document, and swaps the
+   * footer note. Omitted (undefined) for the customer-facing summary, which
+   * therefore renders exactly as before. None of these fields ever appear on
+   * the customer copy — deliberately, e.g. vehicle_condition ("Poor").
+   */
+  internal?: {
+    mailingAddress: string | null;
+    damageType: string | null;
+    equipmentRelated: boolean;
+    equipmentPiece: string | null;
+    preexistingDamage: string | null;
+    vehicleCondition: string | null;
+    faultCategory: string | null;
+    staffNotes: string | null;
+    approvedAmount: number | null;
+    vendorName: string | null;
+    claimStatus: string;
+  };
   /** PNG bytes for the brand logo embedded in the header band. */
   logoPng: Uint8Array;
 }
@@ -64,6 +86,16 @@ const HEADER_SUBTITLE = rgb(1, 1, 1); // 70% opacity not directly supported; usi
 function dash(v: string | null | undefined): string {
   const s = (v ?? "").toString().trim();
   return s ? s : "—";
+}
+
+// USD formatter for the internal (AP) block's Approved Amount. Returns null
+// for null/undefined so the caller's dash() renders an em-dash.
+function formatCurrency(v: number | null | undefined): string | null {
+  if (v === null || v === undefined || Number.isNaN(v)) return null;
+  return `$${v.toLocaleString("en-US", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2
+  })}`;
 }
 
 // Brief 36 — turn enum-shaped values like `no_responsibility` /
@@ -330,7 +362,7 @@ export async function generateClaimSummaryPdf(input: ClaimSummaryPdfInput): Prom
     });
   }
 
-  const titleText = "Vehicle Issue Report";
+  const titleText = input.internal ? "Damage Claim Summary" : "Vehicle Issue Report";
   const titleSize = 18;
   const titleW = fontBold.widthOfTextAtSize(titleText, titleSize);
   page.drawText(titleText, {
@@ -419,11 +451,44 @@ export async function generateClaimSummaryPdf(input: ClaimSummaryPdfInput): Prom
   layout.drawTextBlock(input.assessment.whatCustomerWasTold || "—", 11);
 
   // ============================================================
+  // 5b. Internal Assessment — full-detail block, AP copy only.
+  //     Present ONLY when input.internal is supplied (check-request
+  //     bundle for Accounts Payable). The customer copy omits this
+  //     section entirely, so none of these fields — including
+  //     vehicle_condition — ever reach the customer.
+  // ============================================================
+  if (input.internal) {
+    const it = input.internal;
+    layout.drawSectionHeading("Internal Assessment");
+    layout.drawKeyValueGrid([
+      ["Vehicle Condition", dash(it.vehicleCondition)],
+      ["Damage Type", dash(it.damageType)],
+      ["Equipment Related", it.equipmentRelated ? "Yes" : "No"],
+      ["Equipment Piece", dash(it.equipmentPiece)],
+      ["Fault Category", dash(it.faultCategory)],
+      ["Approved Amount", dash(formatCurrency(it.approvedAmount))],
+      ["Vendor", dash(it.vendorName)],
+      ["Claim Status", dash(it.claimStatus)]
+    ]);
+
+    layout.drawFullWidthLabel("Mailing Address");
+    layout.drawTextBlock(dash(it.mailingAddress), 11);
+
+    layout.drawFullWidthLabel("Pre-Existing Damage Noted");
+    layout.drawTextBlock(dash(it.preexistingDamage), 11);
+
+    layout.drawFullWidthLabel("Staff Notes");
+    layout.drawTextBlock(dash(it.staffNotes), 11);
+  }
+
+  // ============================================================
   // 6. Footer — claim ID + contact note. Drawn at the bottom of the
   //    LAST page (which may not be page 1 if the body overflowed).
   // ============================================================
   const footerText1 = `Claim ID: ${input.claimId}`;
-  const footerText2 = "This summary was generated automatically. For questions, contact the location directly.";
+  const footerText2 = input.internal
+    ? "Internal claim summary — generated automatically for Accounts Payable."
+    : "This summary was generated automatically. For questions, contact the location directly.";
   // Footer is positioned at MARGIN/2 from the bottom — guaranteed to fit.
   const lastPage = layout.page;
   lastPage.drawText(footerText1, {

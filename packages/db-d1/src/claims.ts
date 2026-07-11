@@ -76,6 +76,8 @@ export interface ClaimInsert {
 
   damage_description: string | null;
   preexisting_damage: string | null;
+  /** Feature 4 — "Poor" | "Fair" | "Good" | "Excellent" (validated in the worker). */
+  vehicle_condition: string | null;
   staff_notes: string | null;
 
   determination: string | null;
@@ -135,6 +137,7 @@ export async function writeClaimBatch(db: D1Database, c: ClaimInsert): Promise<v
         license_plate,
         damage_description,
         preexisting_damage,
+        vehicle_condition,
         staff_notes,
         determination,
         submitted_by,
@@ -147,7 +150,7 @@ export async function writeClaimBatch(db: D1Database, c: ClaimInsert): Promise<v
         status_updated_by,
         submitted_at,
         idempotency_key
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Open', ?, ?, ?, ?)`
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Open', ?, ?, ?, ?)`
     )
     .bind(
       c.claim_id,
@@ -164,6 +167,7 @@ export async function writeClaimBatch(db: D1Database, c: ClaimInsert): Promise<v
       c.license_plate,
       c.damage_description,
       c.preexisting_damage,
+      c.vehicle_condition,
       c.staff_notes,
       c.determination,
       c.submitted_by,
@@ -198,9 +202,14 @@ export async function writeClaimBatch(db: D1Database, c: ClaimInsert): Promise<v
     await db.batch([claimInsert, ...photoInserts, activityInsert]);
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err);
-    if (/no such column.*idempotency_key/i.test(errMsg)) {
+    // Feature 4 — the legacy INSERT shape omits BOTH idempotency_key and
+    // vehicle_condition, so it doubles as the migration-window fallback for
+    // either column being absent. During that window we lose dedup and/or the
+    // condition value for the affected submissions (best-effort, same posture
+    // as Brief 140); R2 retains the canonical submission JSON.
+    if (/no such column.*(idempotency_key|vehicle_condition)/i.test(errMsg)) {
       console.warn(
-        "[claim.d1] idempotency_key column missing — fell back to legacy INSERT shape (apply schema migration)"
+        "[claim.d1] idempotency_key/vehicle_condition column missing — fell back to legacy INSERT shape (apply schema migration)"
       );
       const legacyClaimInsert = db
         .prepare(

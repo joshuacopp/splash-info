@@ -292,6 +292,15 @@ const ALLOWED_DAMAGE_TYPES: ReadonlySet<string> = new Set([
   "Other"
 ]);
 
+// Feature 4 — vehicle condition allow-list. Required at submission; the
+// claim form renders these as a fixed dropdown and the worker re-validates.
+const ALLOWED_VEHICLE_CONDITIONS: ReadonlySet<string> = new Set([
+  "Poor",
+  "Fair",
+  "Good",
+  "Excellent"
+]);
+
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
@@ -2436,30 +2445,24 @@ async function handleStatusTransition(
       const requestorEmail =
         claim.rm_approved_by ?? claim.gm_approved_by ?? "(unknown)";
 
-      // Feature 3 — the AP package must include a PDF of the claim itself as
-      // a separate attachment, alongside the check request (with the quote
-      // already bundled inside it). Read the summary PDF generated at
-      // submission time from R2. Best-effort: if it's missing we still send
-      // the check request and hand PA the public summary URL as a fallback.
-      const claimPdfUrl = `https://splashcarwashes.info/claims-api/summary/${encodeURIComponent(
+      // Feature 3 — the AP package must include the FULL claim summary,
+      // bundled INTO the check request PDF (alongside the quote, which is
+      // already bundled inside it). Generated fresh from the current claim
+      // row so it reflects post-submission assessment and includes the
+      // internal-only fields the customer copy omits. Best-effort: if
+      // generation fails we still send the check request and hand PA the
+      // public summary URL (customer copy) as a degraded fallback.
+      const claimSummaryUrl = `https://splashcarwashes.info/claims-api/summary/${encodeURIComponent(
         claimId
       )}`;
-      let claimPdfBytes: Uint8Array | null = null;
-      try {
-        const summaryObj = await env.R2_BUCKET.get(
-          `claims/${claimId}/summary.pdf`
-        );
-        if (summaryObj) {
-          claimPdfBytes = new Uint8Array(await summaryObj.arrayBuffer());
-        } else {
-          console.warn(
-            `Submit for Payment: claim summary PDF missing for ${claimId}; AP package will use link fallback.`
-          );
-        }
-      } catch (err) {
-        console.error(
-          `Submit for Payment: failed to read claim summary PDF for ${claimId}:`,
-          err
+      const claimSummaryBytes = await buildFullClaimSummaryPdf(
+        env,
+        claim,
+        finalTo
+      );
+      if (!claimSummaryBytes) {
+        console.warn(
+          `Submit for Payment: full claim summary generation failed for ${claimId}; AP package will use link fallback.`
         );
       }
 
@@ -2475,10 +2478,9 @@ async function handleStatusTransition(
         webhookUrl: env.AP_WEBHOOK_URL,
         recipientLabel: "AP",
         images: env.IMAGES,
-        // Feature 3 — separate claim PDF attachment for the AP package.
-        claimPdfBytes,
-        claimPdfFilename: `claim-${claimId}.pdf`,
-        claimPdfUrl
+        // Feature 3 — claim summary bundled into the check request PDF.
+        claimSummaryBytes,
+        claimSummaryUrl
       });
     } else {
       // No approved quote on this claim — log + continue. Activity row
@@ -2999,6 +3001,8 @@ interface ClaimSubmissionPayload {
   locationPretty: string;
   membershipNumber: string;
   preExistingDamage: string;
+  // Feature 4 — required "Poor"|"Fair"|"Good"|"Excellent".
+  vehicleCondition: string;
   damageType: string;
   damageOther: string;
   equipmentInvolved: string;
@@ -3209,6 +3213,7 @@ async function handleClaimSubmission(
       locationPretty: inputs.get("locationPretty"),
       membershipNumber: inputs.get("membershipNumber"),
       preExistingDamage: inputs.get("preExistingDamage"),
+      vehicleCondition: inputs.get("vehicleCondition"),
       damageType: inputs.get("damageType"),
       damageOther: inputs.get("damageOther"),
       equipmentInvolved: inputs.get("equipmentInvolved"),
@@ -3313,6 +3318,26 @@ async function handleClaimSubmission(
       return json({ ok: false, error: message, success: false }, 400);
     }
     claimData.customerEmail = emailTrimmed;
+
+    // Feature 4 — vehicle_condition is required and must match the fixed
+    // dropdown allow-list. Same dual-mode 303/JSON 400 pattern as the gates
+    // above. Normalized back onto claimData so the row stores the trimmed value.
+    const vehicleConditionTrimmed = (claimData.vehicleCondition ?? "").trim();
+    if (!vehicleConditionTrimmed || !ALLOWED_VEHICLE_CONDITIONS.has(vehicleConditionTrimmed)) {
+      const message = vehicleConditionTrimmed
+        ? "Invalid vehicle condition"
+        : "Vehicle condition required";
+      if (browserMode) {
+        const slug =
+          encodeURIComponent(claimData.location || "") || "unknown";
+        const target = new URL(
+          `${baseOrigin}/claims/${slug}?error=${encodeURIComponent(message)}`
+        );
+        return Response.redirect(target.toString(), 303);
+      }
+      return json({ ok: false, error: message, success: false }, 400);
+    }
+    claimData.vehicleCondition = vehicleConditionTrimmed;
 
     // Brief 41 — damage_type is required and must match the form's
     // allow-list. When 'Other' is selected, damage_other (≤200 chars) is
@@ -3505,6 +3530,7 @@ async function handleClaimSubmission(
         license_plate: claimData.licensePlate || null,
         damage_description: claimData.issueDescription || null,
         preexisting_damage: claimData.preExistingDamage || null,
+        vehicle_condition: claimData.vehicleCondition || null,
         staff_notes: staffNotesParts.length > 0 ? staffNotesParts.join("\n\n") : null,
         determination: (claimData.determination || null) as ClaimDetermination | null,
         submitted_by: submittedBy,
@@ -3583,6 +3609,7 @@ async function handleClaimSubmission(
             license_plate: insert.license_plate,
             damage_description: insert.damage_description,
             preexisting_damage: insert.preexisting_damage,
+            vehicle_condition: insert.vehicle_condition,
             staff_notes: insert.staff_notes,
             determination: insert.determination as ClaimDetermination | null,
             submitted_by: insert.submitted_by,
@@ -4331,6 +4358,79 @@ async function buildAndStoreClaimSummaryPdf(
     return null;
   }
   return pdfBytes;
+}
+
+/**
+ * Feature 3 — build the FULL internal claim summary for Accounts Payable,
+ * bundled into the check request PDF. Distinct from the customer-facing
+ * summary.pdf (buildAndStoreClaimSummaryPdf): this one is generated fresh
+ * from the current ClaimRow at submit-for-payment time — so it reflects any
+ * post-submission assessment (determination, approved amount, fault
+ * category, vehicle condition) — and includes the internal-only fields the
+ * customer copy deliberately omits. Ephemeral: NOT stored in R2. Fail-soft:
+ * returns null on any error so the caller falls back to the summary link.
+ */
+async function buildFullClaimSummaryPdf(
+  env: Env,
+  claim: ClaimRow,
+  // The AP-branch `claim` is a pre-update snapshot; pass the destination
+  // status so the summary shows the current ("Submitted for Payment")
+  // status rather than the one it's transitioning away from.
+  statusOverride?: ClaimStatus
+): Promise<Uint8Array | null> {
+  try {
+    const logoPng = await loadSummaryLogoBytes(env);
+    const damageType =
+      claim.damage_type === "Other" && claim.damage_other
+        ? `Other — ${claim.damage_other}`
+        : claim.damage_type;
+    const input: ClaimSummaryPdfInput = {
+      claimId: claim.claim_id,
+      submittedAt: claim.submitted_at,
+      locationPretty: claim.location_pretty || claim.location_code,
+      locationCode: claim.location_code,
+      customer: {
+        name: claim.customer_name,
+        email: claim.customer_email ?? "",
+        phone: claim.customer_phone,
+        vehicleMake: claim.vehicle_make ?? "",
+        vehicleModel: claim.vehicle_model ?? "",
+        vehicleYear: claim.vehicle_year != null ? String(claim.vehicle_year) : "",
+        vehicleColor: claim.vehicle_color,
+        licensePlate: claim.license_plate,
+        licenseState: null,
+        whatHappened: claim.damage_description ?? ""
+      },
+      assessment: {
+        staffName: claim.submitted_by || null,
+        determination: claim.determination ?? "",
+        // Not persisted on the claims row — the customer-facing "Splash
+        // Response" text lives only on the submission payload. Blank here.
+        whatCustomerWasTold: ""
+      },
+      internal: {
+        mailingAddress: claim.customer_mailing_address,
+        damageType,
+        equipmentRelated: claim.equipment_related === 1,
+        equipmentPiece: claim.equipment_piece,
+        preexistingDamage: claim.preexisting_damage,
+        vehicleCondition: claim.vehicle_condition,
+        faultCategory: claim.fault_category,
+        staffNotes: claim.staff_notes,
+        approvedAmount: claim.approved_amount,
+        vendorName: claim.vendor_name,
+        claimStatus: statusOverride ?? claim.claim_status
+      },
+      logoPng
+    };
+    return await generateClaimSummaryPdf(input);
+  } catch (err) {
+    console.error(
+      `buildFullClaimSummaryPdf failed for ${claim.claim_id}:`,
+      err
+    );
+    return null;
+  }
 }
 
 /**

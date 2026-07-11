@@ -215,6 +215,12 @@ export interface ClaimRow {
   // Damage description
   damage_description: string | null;
   preexisting_damage: string | null;
+  /**
+   * Feature 4 — required at submission from a fixed dropdown on the claim
+   * form: one of "Poor" | "Fair" | "Good" | "Excellent". Nullable on the row
+   * type for pre-migration claims (column added after existing rows).
+   */
+  vehicle_condition: string | null;
   staff_notes: string | null;
 
   // Initial assessment

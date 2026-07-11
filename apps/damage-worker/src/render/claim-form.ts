@@ -506,6 +506,19 @@ export function renderClaimForm(args: RenderClaimFormArgs): string {
             <textarea id="preExistingDamage" name="preExistingDamage" placeholder="e.g., Scratch on rear bumper, dent on driver door..."></textarea>
           </div>
 
+          <!-- Feature 4: vehicle condition. Required; worker enforces the
+               same allow-list on POST. -->
+          <div class="form-group">
+            <label for="vehicleCondition">Vehicle Condition <span class="required">*</span></label>
+            <select id="vehicleCondition" name="vehicleCondition" required>
+              <option value="">Select condition...</option>
+              <option value="Poor">Poor</option>
+              <option value="Fair">Fair</option>
+              <option value="Good">Good</option>
+              <option value="Excellent">Excellent</option>
+            </select>
+          </div>
+
           <!-- Damage type (Brief 41): selecting "Other" reveals the
                free-text description input. Worker enforces the same
                allow-list on POST. -->

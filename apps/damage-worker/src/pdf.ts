@@ -63,8 +63,13 @@ export async function generateCheckRequestPdf(
   bucket: R2Bucket,
   fields: CheckRequestFields,
   quote?: ClaimPhotoRow,
-  images?: ImagesBinding
-): Promise<{ pdfBytes: Uint8Array; quoteBundled: boolean }> {
+  images?: ImagesBinding,
+  // Feature 3 — claim summary PDF bytes to merge into the check request as
+  // extra page(s) after the quote. When absent/empty the check request is
+  // built exactly as before. Fail-soft: a merge failure returns
+  // claimSummaryBundled=false and the caller falls back to a link.
+  claimSummaryBytes?: Uint8Array | null
+): Promise<{ pdfBytes: Uint8Array; quoteBundled: boolean; claimSummaryBundled: boolean }> {
   const templateObj = await bucket.get(CHECK_REQUEST_TEMPLATE_KEY);
   if (!templateObj) {
     throw new Error(
@@ -111,6 +116,14 @@ export async function generateCheckRequestPdf(
     quoteBundled = await appendQuoteToPdf(pdfDoc, bucket, images, quote);
   }
 
+  // Feature 3 — append the claim summary pages AFTER the quote (order:
+  // check-request form → quote → claim summary). Same copy-pages mechanism
+  // as the PDF-quote branch; never throws.
+  let claimSummaryBundled = false;
+  if (claimSummaryBytes && claimSummaryBytes.length > 0) {
+    claimSummaryBundled = await appendClaimSummaryToPdf(pdfDoc, claimSummaryBytes);
+  }
+
   // Flatten the form so AP receives a non-editable PDF. Failures here are
   // non-fatal — better an unflattened PDF than no PDF. The appended quote
   // pages have no form fields (PDF branch) or are drawn-content images,
@@ -125,7 +138,40 @@ export async function generateCheckRequestPdf(
   }
 
   const pdfBytes = await pdfDoc.save();
-  return { pdfBytes, quoteBundled };
+  return { pdfBytes, quoteBundled, claimSummaryBundled };
+}
+
+/**
+ * Feature 3 — append every page of a claim summary PDF to `pdfDoc`. Same
+ * copy-pages mechanism as the PDF-quote branch. Returns true when the pages
+ * were merged, false on load/copy failure (caller falls back to a link in
+ * the webhook payload). NEVER throws.
+ */
+async function appendClaimSummaryToPdf(
+  pdfDoc: PDFDocument,
+  bytes: Uint8Array
+): Promise<boolean> {
+  try {
+    let src: PDFDocument;
+    try {
+      src = await PDFDocument.load(bytes);
+    } catch (loadErr) {
+      console.warn(
+        "[checkreq.claim] append failed (fallback to link): claim summary PDF load threw:",
+        loadErr instanceof Error ? loadErr.message : loadErr
+      );
+      return false;
+    }
+    const pages = await pdfDoc.copyPages(src, src.getPageIndices());
+    for (const p of pages) pdfDoc.addPage(p);
+    return true;
+  } catch (err) {
+    console.warn(
+      "[checkreq.claim] append failed (fallback to link):",
+      err instanceof Error ? err.message : err
+    );
+    return false;
+  }
 }
 
 /**
@@ -402,6 +448,10 @@ interface StoredCheckRequestPdf {
    *  false the caller should include the quote link in the webhook
    *  payload so PA can surface the "View Quote" link. */
   quoteBundled: boolean;
+  /** Feature 3 — true when the claim summary PDF was merged into the check
+   *  request. When false the caller includes the claim summary link in the
+   *  webhook payload as a fallback. */
+  claimSummaryBundled: boolean;
 }
 
 /**
@@ -419,14 +469,18 @@ export async function storeCheckRequestPdf(
   requestorEmail: string,
   approvalEmail: string,
   stageLabel: string,
-  images: ImagesBinding | undefined
+  images: ImagesBinding | undefined,
+  // Feature 3 — claim summary PDF bytes to merge into the check request.
+  // Only the Submit-for-Payment (AP) call site supplies these.
+  claimSummaryBytes?: Uint8Array | null
 ): Promise<StoredCheckRequestPdf> {
   const fields = buildCheckRequestFields(claim, quote, requestorEmail, approvalEmail);
-  const { pdfBytes, quoteBundled } = await generateCheckRequestPdf(
+  const { pdfBytes, quoteBundled, claimSummaryBundled } = await generateCheckRequestPdf(
     bucket,
     fields,
     quote,
-    images
+    images,
+    claimSummaryBytes
   );
 
   const stageSlug = stageLabel
@@ -470,7 +524,8 @@ export async function storeCheckRequestPdf(
     r2Key,
     filename,
     pdfBytes,
-    quoteBundled
+    quoteBundled,
+    claimSummaryBundled
   };
 }
 
@@ -527,10 +582,11 @@ export async function sendCheckRequestEmail(
   pdfFilename: string,
   requestorEmail: string,
   quoteBundled: boolean,
-  // Feature 3 — optional claim summary PDF for the AP package, attached as a
-  // SEPARATE document (distinct from the check request PDF + its bundled
-  // quote). `bytes: null` means "link-only fallback" (R2 object was missing).
-  claimPdf?: { bytes: Uint8Array | null; filename: string; url: string | null }
+  // Feature 3 — the claim summary is merged INTO the check request PDF (not a
+  // separate attachment). These fields let PA surface a "View Claim" link when
+  // the merge failed (claimSummaryBundled === false), mirroring quoteUrl /
+  // quoteBundled. Omitted at the Incidents call site.
+  claimSummary?: { bundled: boolean; url: string | null }
 ): Promise<SendEmailResult> {
   if (!webhookUrl) {
     console.warn("sendCheckRequestEmail: webhook URL not configured, skipping");
@@ -561,13 +617,12 @@ export async function sendCheckRequestEmail(
     // wires the conditional "View Quote" link in PA on `quoteBundled === false`.
     quoteUrl,
     quoteBundled,
-    // Feature 3 — claim PDF for the AP package (separate attachment). Additive;
-    // present only when the caller supplies claimPdf (the Submit-for-Payment
-    // path). claimPdfBase64 is null when the R2 summary object was missing —
-    // PA should then fall back to the claimPdfUrl link.
-    claimPdfBase64: claimPdf ? (claimPdf.bytes ? bytesToBase64(claimPdf.bytes) : null) : null,
-    claimPdfFilename: claimPdf?.filename ?? null,
-    claimPdfUrl: claimPdf?.url ?? null
+    // Feature 3 — the claim summary is bundled INTO pdfBase64 above. These are
+    // additive, mirroring quoteUrl/quoteBundled: claimSummaryBundled tells PA
+    // whether the claim pages are already in the attached PDF; claimSummaryUrl
+    // is the link fallback to surface when the merge failed.
+    claimSummaryUrl: claimSummary?.url ?? null,
+    claimSummaryBundled: claimSummary?.bundled ?? false
   };
 
   try {
@@ -628,15 +683,13 @@ export async function runCheckRequestPdfStep(args: {
    *  during the bundled-quote append step. Optional; when undefined the
    *  HEIC branch falls back to the link in the webhook payload. */
   images: ImagesBinding | undefined;
-  /** Feature 3 — optional claim summary PDF, attached to the AP webhook
-   *  payload as a SEPARATE document (the AP package = check request +
-   *  bundled quote + claim PDF). Only the Submit-for-Payment call site
-   *  supplies these; the Incidents-review call site omits them. When
-   *  claimPdfBytes is null the payload carries only claimPdfUrl so PA can
-   *  wire a link fallback. */
-  claimPdfBytes?: Uint8Array | null;
-  claimPdfFilename?: string;
-  claimPdfUrl?: string | null;
+  /** Feature 3 — optional claim summary PDF, MERGED into the check request
+   *  PDF (the AP package = single PDF: check request + bundled quote + claim
+   *  summary). Only the Submit-for-Payment call site supplies these; the
+   *  Incidents-review call site omits them. claimSummaryUrl is the link
+   *  fallback PA surfaces when the merge fails (R2 object missing / corrupt). */
+  claimSummaryBytes?: Uint8Array | null;
+  claimSummaryUrl?: string | null;
 }): Promise<void> {
   const {
     db,
@@ -649,9 +702,8 @@ export async function runCheckRequestPdfStep(args: {
     webhookUrl,
     recipientLabel,
     images,
-    claimPdfBytes = null,
-    claimPdfFilename,
-    claimPdfUrl = null
+    claimSummaryBytes = null,
+    claimSummaryUrl = null
   } = args;
 
   let stored: StoredCheckRequestPdf;
@@ -664,7 +716,9 @@ export async function runCheckRequestPdfStep(args: {
       requestorEmail,
       approvalEmail,
       stageLabel,
-      images
+      images,
+      // Feature 3 — merge the claim summary into this PDF (AP call site only).
+      claimSummaryBytes
     );
   } catch (err) {
     console.error("runCheckRequestPdfStep: PDF generation/storage failed:", err);
@@ -696,17 +750,12 @@ export async function runCheckRequestPdfStep(args: {
     stored.filename,
     requestorEmail,
     stored.quoteBundled,
-    // Feature 3 — pass the claim PDF (separate attachment) through to the
-    // AP webhook payload. Undefined at the Incidents call site.
-    claimPdfBytes
-      ? {
-          bytes: claimPdfBytes,
-          filename: claimPdfFilename ?? `claim-${claim.claim_id}.pdf`,
-          url: claimPdfUrl ?? null
-        }
-      : claimPdfUrl
-        ? { bytes: null, filename: claimPdfFilename ?? `claim-${claim.claim_id}.pdf`, url: claimPdfUrl }
-        : undefined
+    // Feature 3 — the claim summary is merged into stored.pdfBytes; pass the
+    // bundled flag + link fallback so PA can surface "View Claim" on failure.
+    // Supplied only when the AP call site passed a claim summary URL/bytes.
+    claimSummaryUrl !== null || claimSummaryBytes !== null
+      ? { bundled: stored.claimSummaryBundled, url: claimSummaryUrl }
+      : undefined
   );
   // Brief 171 — surface the bundled-quote outcome in the activity-log
   // note so the claim timeline records which path fired (in-PDF vs.

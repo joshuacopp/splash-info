@@ -550,6 +550,12 @@ function SummaryCard({
           </div>
         </Field>
 
+        <Field label="Vehicle condition">
+          <div className="text-sm text-splash-navy">
+            {valueOrDash(claim.vehicle_condition)}
+          </div>
+        </Field>
+
         <Field label="Location">
           <div className="space-y-0.5 text-splash-navy">
             <div>{claim.location_pretty}</div>
