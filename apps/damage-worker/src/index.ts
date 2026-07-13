@@ -476,6 +476,18 @@ async function dispatchManageApi(
       if (action === "fault-category" && method === "POST") {
         return handleSetFaultCategory(request, env, session, claimId);
       }
+      // Super-admin hard delete. `purge-preview` (GET) reports the blast
+      // radius — every D1 row and R2 object the purge would remove — so
+      // the operator confirms against real counts. `purge` (POST) performs
+      // the irreversible delete. Both re-gate on dcRole === "super_admin"
+      // inside the handler (the /manage/api gate only proves "claims"
+      // access; delete-everything is a strictly higher bar).
+      if (action === "purge-preview" && method === "GET") {
+        return handleClaimPurgePreview(env, session, claimId);
+      }
+      if (action === "purge" && method === "POST") {
+        return handleClaimPurge(request, env, session, claimId);
+      }
     }
 
     // /manage/api/claim/{id}/document/{docId}/{action}
@@ -2967,6 +2979,233 @@ async function handleDocumentDelete(
     return jsonError(500, "Failed to delete document.");
   }
   return json({ ok: true });
+}
+
+/* ============================================================
+ * SUPER-ADMIN HARD DELETE ("purge")
+ *
+ * GET  /manage/api/claim/{id}/purge-preview   — count the blast radius
+ * POST /manage/api/claim/{id}/purge           — irreversible delete
+ *
+ * Removes EVERYTHING tied to one claim:
+ *   D1:  claim_photos, claim_activity, and the claims row itself.
+ *   R2:  every object under the claim's key families —
+ *          claims/{claimId}/...              (summary PDF + uploaded docs)
+ *          submissions/{claimId}.json        (canonical submission archive)
+ *          failed_submissions/{claimId}.json (PA-failure fallback)
+ *          claim-uploads/{idempotencyKey}/.. (Brief 146 OOB customer photos)
+ *        plus every claim_photos.r2_key on record (catches legacy keys and
+ *        any object that lives outside the prefixes above).
+ *
+ * Auth: the /manage/api gate only proves "claims" tool access. Purging is a
+ * strictly higher bar, so both handlers hard-require dcRole === "super_admin"
+ * and reject everyone else with 403 — admins included.
+ *
+ * There is no soft-delete / recycle bin. This is intentional and permanent.
+ * The POST body must carry `confirm_claim_id` exactly equal to the claim id
+ * (the UI's type-to-confirm), a server-side backstop against a stray POST.
+ * ============================================================ */
+
+const R2_LIST_PAGE_CAP = 100;
+
+/**
+ * Gather every R2 object key associated with a claim. Best-effort: R2 list
+ * failures are pushed to `errors` rather than aborting, so a purge still
+ * clears whatever it can enumerate (and D1). Returns a de-duplicated key
+ * list. `errors` surfaces to the caller for logging / partial-failure
+ * reporting.
+ */
+async function collectClaimR2Keys(
+  env: Env,
+  claim: ClaimRow,
+  errors: string[]
+): Promise<string[]> {
+  const keys = new Set<string>();
+  const claimId = claim.claim_id;
+
+  // 1. Explicit single-object keys.
+  keys.add(`submissions/${claimId}.json`);
+  keys.add(`failed_submissions/${claimId}.json`);
+
+  // 2. Every r2_key recorded on claim_photos (photos + Quote/Receipt docs),
+  //    including soft-deleted rows — we want the underlying objects gone too.
+  try {
+    const photoRows = await env.DB.prepare(
+      `SELECT r2_key FROM claim_photos WHERE claim_id = ?`
+    )
+      .bind(claimId)
+      .all<{ r2_key: string }>();
+    for (const row of photoRows.results ?? []) {
+      if (row.r2_key) keys.add(row.r2_key);
+    }
+  } catch (err) {
+    errors.push(`claim_photos r2_key query failed: ${String(err)}`);
+  }
+
+  // 3. Prefix sweeps. `claims/{claimId}/` holds the summary PDF and any
+  //    server-generated document files; `claim-uploads/{idempotencyKey}/`
+  //    holds the Brief 146 out-of-band customer uploads (keyed by the
+  //    pending-submission id, which is the claim's idempotency_key).
+  const prefixes = [`claims/${claimId}/`];
+  const idempotencyKey = (claim as { idempotency_key?: string | null })
+    .idempotency_key;
+  if (idempotencyKey) {
+    prefixes.push(`claim-uploads/${idempotencyKey}/`);
+  }
+
+  for (const prefix of prefixes) {
+    try {
+      let cursor: string | undefined;
+      let pages = 0;
+      do {
+        const list = await env.R2_BUCKET.list({ prefix, cursor, limit: 1000 });
+        for (const obj of list.objects) keys.add(obj.key);
+        cursor = list.truncated ? list.cursor : undefined;
+        pages++;
+      } while (cursor && pages < R2_LIST_PAGE_CAP);
+    } catch (err) {
+      errors.push(`R2 list ${prefix} failed: ${String(err)}`);
+    }
+  }
+
+  return Array.from(keys);
+}
+
+/**
+ * GET /manage/api/claim/{id}/purge-preview — super-admin only.
+ * Reports how many D1 rows and R2 objects a purge would remove, without
+ * touching anything. Powers the UI's type-to-confirm blast-radius panel.
+ */
+async function handleClaimPurgePreview(
+  env: Env,
+  session: Session,
+  claimId: string
+): Promise<Response> {
+  if (session.dcRole !== "super_admin") {
+    return jsonError(403, "Only a super admin can delete a claim.");
+  }
+  const claim = await getClaimById(env.DB, claimId);
+  if (!claim) return jsonError(404, "not found");
+
+  const errors: string[] = [];
+  const [photoCount, activityCount] = await Promise.all([
+    countRows(env.DB, "claim_photos", claimId, errors),
+    countRows(env.DB, "claim_activity", claimId, errors)
+  ]);
+  const r2Keys = await collectClaimR2Keys(env, claim, errors);
+
+  return json({
+    ok: true,
+    claim_id: claimId,
+    d1: {
+      claims: 1,
+      claim_photos: photoCount,
+      claim_activity: activityCount
+    },
+    r2: { objects: r2Keys.length },
+    warnings: errors
+  });
+}
+
+/** COUNT(*) for a claim's rows in one child table. Errors → 0 + note. */
+async function countRows(
+  db: D1Database,
+  table: "claim_photos" | "claim_activity",
+  claimId: string,
+  errors: string[]
+): Promise<number> {
+  try {
+    const row = await db
+      .prepare(`SELECT COUNT(*) AS n FROM ${table} WHERE claim_id = ?`)
+      .bind(claimId)
+      .first<{ n: number }>();
+    return row?.n ?? 0;
+  } catch (err) {
+    errors.push(`count ${table} failed: ${String(err)}`);
+    return 0;
+  }
+}
+
+/**
+ * POST /manage/api/claim/{id}/purge — super-admin only, irreversible.
+ * Deletes all R2 objects first (best-effort), then the D1 child rows, then
+ * the claims row. R2-before-D1 ordering means a mid-run failure leaves the
+ * claims row intact so the operator can retry rather than orphaning storage.
+ */
+async function handleClaimPurge(
+  request: Request,
+  env: Env,
+  session: Session,
+  claimId: string
+): Promise<Response> {
+  if (!isOriginAllowed(request)) return jsonError(403, "bad origin");
+  if (session.dcRole !== "super_admin") {
+    return jsonError(403, "Only a super admin can delete a claim.");
+  }
+
+  const claim = await getClaimById(env.DB, claimId);
+  if (!claim) return jsonError(404, "not found");
+
+  // Server-side backstop for the UI's type-to-confirm. The confirm value
+  // must equal the claim id exactly; a mismatch means the POST didn't come
+  // from the intended confirmation flow.
+  const form = await readForm(request);
+  const confirm = (form.get("confirm_claim_id") ?? "").trim();
+  if (confirm !== claimId) {
+    return jsonError(400, "Confirmation text does not match the claim id.");
+  }
+
+  const errors: string[] = [];
+  const r2Keys = await collectClaimR2Keys(env, claim, errors);
+
+  // Delete R2 objects in chunks (R2 delete accepts ≤1000 keys per call).
+  let r2Deleted = 0;
+  for (let i = 0; i < r2Keys.length; i += 1000) {
+    const chunk = r2Keys.slice(i, i + 1000);
+    try {
+      await env.R2_BUCKET.delete(chunk);
+      r2Deleted += chunk.length;
+    } catch (err) {
+      errors.push(`R2 delete chunk @${i} failed: ${String(err)}`);
+    }
+  }
+
+  // Delete D1 rows: children first, then the parent claims row. Batched so
+  // it commits atomically on D1.
+  let d1 = { claim_photos: 0, claim_activity: 0, claims: 0 };
+  try {
+    const results = await env.DB.batch([
+      env.DB.prepare(`DELETE FROM claim_photos WHERE claim_id = ?`).bind(claimId),
+      env.DB.prepare(`DELETE FROM claim_activity WHERE claim_id = ?`).bind(claimId),
+      env.DB.prepare(`DELETE FROM claims WHERE claim_id = ?`).bind(claimId)
+    ]);
+    d1 = {
+      claim_photos: results[0]?.meta?.changes ?? 0,
+      claim_activity: results[1]?.meta?.changes ?? 0,
+      claims: results[2]?.meta?.changes ?? 0
+    };
+  } catch (err) {
+    console.error("handleClaimPurge D1 delete failed:", err);
+    return jsonError(
+      500,
+      `Deleted ${r2Deleted} storage object(s), but removing the database rows failed: ${
+        err instanceof Error ? err.message : String(err)
+      }. The claim may be partially deleted — retry to finish.`
+    );
+  }
+
+  console.warn(
+    `[claim.purge] super_admin=${session.email} purged claim=${claimId} ` +
+      `r2=${r2Deleted} d1=${JSON.stringify(d1)} warnings=${errors.length}`
+  );
+
+  return json({
+    ok: true,
+    claim_id: claimId,
+    r2: { deleted: r2Deleted },
+    d1,
+    warnings: errors
+  });
 }
 
 /* ============================================================

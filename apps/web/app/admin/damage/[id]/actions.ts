@@ -36,7 +36,10 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import { damagePostForm } from "../_lib/worker-fetch";
+import {
+  damageGetJsonOrStatus,
+  damagePostForm
+} from "../_lib/worker-fetch";
 import type { ActionResult } from "../../_components/ActionForm";
 
 function detailPath(claimId: string): string {
@@ -259,4 +262,112 @@ export async function setFaultCategoryAction(
   const label =
     typeof next === "string" && next.length > 0 ? next : "Undetermined";
   return { ok: true, message: `Cause set to ${label}` };
+}
+
+/* ============================================================
+ * Super-admin hard delete ("purge")
+ *
+ * Two actions consumed by the client DangerZoneCard island (not the shared
+ * <ActionForm> useActionState flow — the card drives its own two-step
+ * type-to-confirm UX and does a client router.push on success):
+ *
+ *   purgePreviewAction — GET  /manage/api/claim/{id}/purge-preview
+ *                        Returns the blast-radius counts for the confirm panel.
+ *   purgeClaimAction   — POST /manage/api/claim/{id}/purge
+ *                        Irreversible. Worker re-gates on super_admin and
+ *                        re-checks the confirm text server-side.
+ *
+ * Both take a plain claimId string (serializable) rather than FormData
+ * because the client island calls them directly as RPCs.
+ * ============================================================ */
+
+export type PurgeCounts = {
+  claims: number;
+  claim_photos: number;
+  claim_activity: number;
+  r2_objects: number;
+};
+
+export type PurgePreviewResult =
+  | { ok: true; counts: PurgeCounts }
+  | { ok: false; error: string };
+
+interface PurgePreviewResponse {
+  ok: boolean;
+  d1?: { claims?: number; claim_photos?: number; claim_activity?: number };
+  r2?: { objects?: number };
+}
+
+export async function purgePreviewAction(
+  claimId: string
+): Promise<PurgePreviewResult> {
+  const id = claimId.trim();
+  if (!id) return { ok: false, error: "Missing claim id." };
+
+  try {
+    const result = await damageGetJsonOrStatus<PurgePreviewResponse>(
+      `/manage/api/claim/${encodeURIComponent(id)}/purge-preview`
+    );
+    if ("status" in result) {
+      if (result.status === 403) {
+        return { ok: false, error: "Only a super admin can delete a claim." };
+      }
+      if (result.status === 404) {
+        return { ok: false, error: "Claim not found." };
+      }
+      return { ok: false, error: `Preview failed (status ${result.status}).` };
+    }
+    const d = result.data;
+    return {
+      ok: true,
+      counts: {
+        claims: d.d1?.claims ?? 1,
+        claim_photos: d.d1?.claim_photos ?? 0,
+        claim_activity: d.d1?.claim_activity ?? 0,
+        r2_objects: d.r2?.objects ?? 0
+      }
+    };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return { ok: false, error: `Preview failed: ${msg}` };
+  }
+}
+
+export type PurgeResult =
+  | { ok: true }
+  | { ok: false; error: string };
+
+export async function purgeClaimAction(
+  claimId: string,
+  confirmClaimId: string
+): Promise<PurgeResult> {
+  const id = claimId.trim();
+  if (!id) return { ok: false, error: "Missing claim id." };
+  if (confirmClaimId.trim() !== id) {
+    return {
+      ok: false,
+      error: "Confirmation text does not match the claim id."
+    };
+  }
+
+  const formData = new FormData();
+  formData.set("confirm_claim_id", confirmClaimId.trim());
+
+  try {
+    const result = await damagePostForm(
+      `/manage/api/claim/${encodeURIComponent(id)}/purge`,
+      formData
+    );
+    if (!result.ok) {
+      return { ok: false, error: result.error };
+    }
+    // Claim no longer exists — invalidate the list + detail caches so a
+    // subsequent navigation reflects the removal.
+    revalidatePath("/admin/damage");
+    revalidatePath(detailPath(id));
+    return { ok: true };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return { ok: false, error: `Delete failed: ${msg}` };
+  }
 }

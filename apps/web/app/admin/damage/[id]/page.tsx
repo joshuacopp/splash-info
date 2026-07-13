@@ -61,6 +61,7 @@ import {
   damageGetJsonOrStatus,
   damagePhotoUrl
 } from "../_lib/worker-fetch";
+import { DangerZoneCard } from "../_components/DangerZoneCard";
 import { DocumentEditDetails } from "../_components/DocumentEditDetails";
 import { EquipmentOverrideSubmit } from "../_components/EquipmentOverrideModal";
 import { LifecycleBadge } from "../_components/LifecycleBadge";
@@ -349,6 +350,9 @@ export default async function DamageClaimDetailPage({ params, searchParams }: Pa
       <UploadDocumentCard claimId={claim.claim_id} />
       <ActivityTimelineCard activity={activity} />
       <AddNoteCard claimId={claim.claim_id} />
+      {dcRole === "super_admin" ? (
+        <DangerZoneCard claimId={claim.claim_id} />
+      ) : null}
     </section>
   );
 }
