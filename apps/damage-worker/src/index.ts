@@ -386,7 +386,7 @@ export default {
         if (auth.status !== "authenticated") return jsonError(401, "unauthorized");
         if (!checkToolAccess(auth.session, "claims")) return jsonError(403, "forbidden");
 
-        return dispatchManageApi(request, env, auth.session, parts.slice(2), method);
+        return dispatchManageApi(request, env, auth.session, parts.slice(2), method, ctx);
       }
 
       return new Response("Not found", { status: 404 });
@@ -421,7 +421,8 @@ async function dispatchManageApi(
   env: Env,
   session: Session,
   subParts: string[],
-  method: string
+  method: string,
+  ctx: ExecutionContext
 ): Promise<Response> {
   // GET /manage/api/claims — list claims, dc_role-scoped.
   if (subParts.length === 1 && subParts[0] === "claims" && method === "GET") {
@@ -462,10 +463,10 @@ async function dispatchManageApi(
     if (tail.length === 1) {
       const action = tail[0];
       if (action === "note" && method === "POST") {
-        return handleAddNote(request, env, session, claimId);
+        return handleAddNote(request, env, session, claimId, ctx);
       }
       if (action === "transition" && method === "POST") {
-        return handleStatusTransition(request, env, session, claimId);
+        return handleStatusTransition(request, env, session, claimId, ctx);
       }
       if (action === "document" && method === "POST") {
         return handleDocumentUpload(request, env, session, claimId);
@@ -1995,7 +1996,8 @@ async function handleAddNote(
   request: Request,
   env: Env,
   session: Session,
-  claimId: string
+  claimId: string,
+  ctx: ExecutionContext
 ): Promise<Response> {
   if (!isOriginAllowed(request)) return jsonError(403, "bad origin");
 
@@ -2025,15 +2027,22 @@ async function handleAddNote(
   // Fail-soft: helper swallows all errors so the note response is never
   // blocked on the webhook round-trip.
   if (env.CLAIM_UPDATE_WEBHOOK_URL) {
-    void notifyClaimUpdate({
-      env,
-      request,
-      changeType: "note",
-      claim: guard.claim,
-      actorEmail: session.email,
-      actorRole: session.dcRole ?? null,
-      noteText
-    });
+    // Brief 101 fix — hand the promise to ctx.waitUntil so the runtime
+    // keeps the isolate alive until the webhook fetch completes. A bare
+    // `void` here left it a dangling promise: the handler returned 200 in
+    // ~300ms and the un-awaited fetch to Power Automate was cancelled
+    // before it went out (PA showed 0 runs, nothing logged).
+    ctx.waitUntil(
+      notifyClaimUpdate({
+        env,
+        request,
+        changeType: "note",
+        claim: guard.claim,
+        actorEmail: session.email,
+        actorRole: session.dcRole ?? null,
+        noteText
+      })
+    );
   }
 
   return json({ ok: true });
@@ -2058,7 +2067,8 @@ async function handleStatusTransition(
   request: Request,
   env: Env,
   session: Session,
-  claimId: string
+  claimId: string,
+  ctx: ExecutionContext
 ): Promise<Response> {
   if (!isOriginAllowed(request)) return jsonError(403, "bad origin");
 
@@ -2375,17 +2385,21 @@ async function handleStatusTransition(
   // the MaintainX block so the two side-effects don't serialize on
   // each other.
   if (env.CLAIM_UPDATE_WEBHOOK_URL) {
-    void notifyClaimUpdate({
-      env,
-      request,
-      changeType: "status",
-      claim,
-      actorEmail: session.email,
-      actorRole: session.dcRole ?? null,
-      fromStatus: claim.claim_status,
-      toStatus: finalTo,
-      noteText: noteText || undefined
-    });
+    // Brief 101 fix — see handleAddNote: waitUntil, not a bare void, so the
+    // fetch to Power Automate isn't cancelled when the handler returns.
+    ctx.waitUntil(
+      notifyClaimUpdate({
+        env,
+        request,
+        changeType: "status",
+        claim,
+        actorEmail: session.email,
+        actorRole: session.dcRole ?? null,
+        fromStatus: claim.claim_status,
+        toStatus: finalTo,
+        noteText: noteText || undefined
+      })
+    );
   }
 
   // Brief 43 — fire the existing createMaintainXWorkOrder helper when the
