@@ -111,6 +111,21 @@ export async function fireClaimUpdateWebhook(
   webhookUrl: string,
   payload: ClaimUpdateWebhookPayload
 ): Promise<void> {
+  // TEMP DIAGNOSTIC — proves whether the fire path executes, what host it
+  // targets, and whether the secret value is well-formed. `wrangler tail
+  // splash-damage --format pretty` shows these lines. Remove once the
+  // no-PA-runs issue is diagnosed.
+  let host = "<unparseable-url>";
+  try {
+    host = new URL(webhookUrl).host;
+  } catch {
+    // fall through with the sentinel — an unparseable URL (e.g. a pasted
+    // value with a stray newline/space) is itself the finding.
+  }
+  console.log(
+    `[claim-update] firing ${payload.change_type} for ${payload.claim_id} → host=${host} urlLen=${webhookUrl.length} recipients=${payload.recipients.length} candidates=${JSON.stringify(payload.candidates)}`
+  );
+
   try {
     const res = await fetch(webhookUrl, {
       method: "POST",
@@ -118,6 +133,9 @@ export async function fireClaimUpdateWebhook(
       body: JSON.stringify(payload),
       signal: AbortSignal.timeout(15_000)
     });
+    console.log(
+      `[claim-update] POST returned status ${res.status} for ${payload.claim_id}`
+    );
     if (!res.ok) {
       console.error(
         `[claim-update] POST failed for ${payload.claim_id}: status ${res.status}`
