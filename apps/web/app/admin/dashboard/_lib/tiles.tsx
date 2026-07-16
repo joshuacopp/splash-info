@@ -242,16 +242,6 @@ export const TILES: ReadonlyArray<Tile> = [
     visibleTo: anySession
   },
   {
-    id: "fleet-inquiries",
-    group: "submissions",
-    eyebrow: "B2B leads",
-    title: "Fleet Inquiries",
-    description: "View and edit fleet customer inquiries.",
-    href: "/admin/fleet",
-    icon: truckIcon,
-    visibleTo: isAdminTier
-  },
-  {
     id: "jotform",
     group: "submissions",
     eyebrow: "Field forms",
@@ -281,6 +271,16 @@ export const TILES: ReadonlyArray<Tile> = [
     icon: sendIcon,
     visibleTo: anySession
   },
+  {
+    id: "fleet-inquiries",
+    group: "submissions",
+    eyebrow: "B2B leads",
+    title: "Fleet Inquiries",
+    description: "View and edit fleet customer inquiries.",
+    href: "/admin/fleet",
+    icon: truckIcon,
+    visibleTo: isAdminTier
+  },
 
   // ---- Operations group ----
   {
@@ -292,6 +292,16 @@ export const TILES: ReadonlyArray<Tile> = [
     href: "/admin/damage",
     icon: wrenchIcon,
     visibleTo: anySession
+  },
+  {
+    id: "schedule",
+    group: "operations",
+    eyebrow: "Scheduling",
+    title: "Shift Schedule",
+    description: "Add and edit employee shifts by location.",
+    href: "/schedule",
+    icon: calendarIcon,
+    visibleTo: hasScheduleAccess
   },
   {
     id: "workorders",
@@ -322,16 +332,6 @@ export const TILES: ReadonlyArray<Tile> = [
     href: "/admin/performance",
     icon: barChartIcon,
     visibleTo: hasPerformanceAccess
-  },
-  {
-    id: "schedule",
-    group: "operations",
-    eyebrow: "Scheduling",
-    title: "Shift Schedule",
-    description: "Add and edit employee shifts by location.",
-    href: "/schedule",
-    icon: calendarIcon,
-    visibleTo: hasScheduleAccess
   },
   // Brief 158a — Promotions feature. Visible to any user with a promo_role
   // (super_admin / it / marketing / ops); page-level gate re-checks at the
@@ -383,16 +383,6 @@ export const TILES: ReadonlyArray<Tile> = [
     visibleTo: isAdminTier
   },
   {
-    id: "scorm-builder",
-    group: "admin",
-    eyebrow: "Training",
-    title: "SCORM Package Builder",
-    description: "Build training packages — video + quiz — for upload to your LMS.",
-    href: "/admin/scorm-builder",
-    icon: graduationCapIcon,
-    visibleTo: isAdminTier
-  },
-  {
     id: "database-admin",
     group: "admin",
     eyebrow: "Admin",
@@ -410,6 +400,16 @@ export const TILES: ReadonlyArray<Tile> = [
     description: "Pending, sent, and stuck outbound emails.",
     href: "/admin/email-queue",
     icon: mailIcon,
+    visibleTo: isAdminTier
+  },
+  {
+    id: "scorm-builder",
+    group: "admin",
+    eyebrow: "Training",
+    title: "SCORM Package Builder",
+    description: "Build training packages — video + quiz — for upload to your LMS.",
+    href: "/admin/scorm-builder",
+    icon: graduationCapIcon,
     visibleTo: isAdminTier
   }
 ];
