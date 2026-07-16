@@ -73,6 +73,27 @@ function snapMinute(m: number): number {
   return m < 8 ? 0 : m < 23 ? 15 : m < 38 ? 30 : m < 53 ? 45 : 0;
 }
 
+/** Whole-day delta between two YYYY-MM-DD strings (b - a). */
+function daysBetween(a: string, b: string): number {
+  const [ay, am, ad] = a.split("-").map(Number);
+  const [by, bm, bd] = b.split("-").map(Number);
+  return Math.round(
+    (Date.UTC(by!, bm! - 1, bd!) - Date.UTC(ay!, am! - 1, ad!)) / 86400000
+  );
+}
+
+/** Duration of a shift in minutes, spanning midnight via endDate. */
+function shiftDurationMinutes(s: ShiftView): number {
+  const startMin = s.startHour * 60 + s.startMinute;
+  const endMin = s.endHour * 60 + s.endMinute;
+  return daysBetween(s.startDate, s.endDate) * 1440 + endMin - startMin;
+}
+
+/** Compact hours label: 480 -> "8", 510 -> "8.5", 495 -> "8.25". */
+function fmtHours(min: number): string {
+  return `${Math.round((min / 60) * 100) / 100}`;
+}
+
 /* ============================================================
  * Shift colors + presets.
  *
@@ -90,6 +111,23 @@ const SHIFT_COLORS = {
   csa: "#22C55E", // green
   attendant: "#3B82F6" // blue
 } as const;
+
+/** Colors that mark time-OFF / unavailability, not worked coverage. Excluded
+ *  from the daily + weekly hour totals so PTO and all-day "Unavailable" markers
+ *  (0:00–23:59 ≈ 24h) don't inflate the numbers. */
+const NON_WORKING_COLORS = new Set<string>([
+  SHIFT_COLORS.unavailableAllDay,
+  SHIFT_COLORS.ptoFull,
+  SHIFT_COLORS.ptoHalf,
+  SHIFT_COLORS.unavailable
+]);
+
+/** A shift counts toward scheduled hours unless it's tagged a non-working
+ *  color. Compared case-insensitively — colors round-trip through Beekeeper,
+ *  which may hand hex back lowercased. */
+function isWorkingShift(s: ShiftView): boolean {
+  return !(s.color && NON_WORKING_COLORS.has(s.color.toUpperCase()));
+}
 
 /** Presets that set the full shift (times + title + color) in one click. */
 interface TimePreset {
@@ -202,6 +240,7 @@ export function ScheduleWeekGrid({
   const [okMsg, setOkMsg] = useState<string | null>(null);
   const [form, setForm] = useState<FormState | null>(null);
   const [saving, setSaving] = useState(false);
+  const [copying, setCopying] = useState(false);
 
   const apiBase = `/schedule/api/loc/${encodeURIComponent(locationCode)}`;
   const days = useMemo(() => weekDates(monday), [monday]);
@@ -267,6 +306,46 @@ export function ScheduleWeekGrid({
     }
     return map;
   }, [days, shifts]);
+
+  // Worked minutes bucketed by day (non-working markers excluded) — powers the
+  // per-column daily total under "+ Add".
+  const dailyMinutes = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const d of days) map.set(d, 0);
+    for (const s of shifts) {
+      if (!isWorkingShift(s)) continue;
+      const cur = map.get(s.startDate);
+      if (cur !== undefined) map.set(s.startDate, cur + shiftDurationMinutes(s));
+    }
+    return map;
+  }, [days, shifts]);
+
+  // Worked minutes per employee for the visible week — powers the summary
+  // panel. Keyed by userId; "" collects open/unassigned shifts.
+  const weeklyByUser = useMemo(() => {
+    const inWeek = new Set(days);
+    const map = new Map<string, number>();
+    for (const s of shifts) {
+      if (!inWeek.has(s.startDate) || !isWorkingShift(s)) continue;
+      const key = s.userId || "";
+      map.set(key, (map.get(key) ?? 0) + shiftDurationMinutes(s));
+    }
+    return map;
+  }, [days, shifts]);
+
+  const weeklyRows = useMemo(
+    () =>
+      roster
+        .map((r) => ({ id: r.id, name: r.name, minutes: weeklyByUser.get(r.id) ?? 0 }))
+        .filter((r) => r.minutes > 0)
+        .sort((a, b) => b.minutes - a.minutes),
+    [roster, weeklyByUser]
+  );
+  const openMinutes = weeklyByUser.get("") ?? 0;
+  const weekTotalMinutes = useMemo(
+    () => [...weeklyByUser.values()].reduce((a, b) => a + b, 0),
+    [weeklyByUser]
+  );
 
   const rosterName = useCallback(
     (id: string) => roster.find((r) => r.id === id)?.name ?? id,
@@ -365,6 +444,56 @@ export function ScheduleWeekGrid({
     }
   }
 
+  // Duplicate every shift in the visible week onto the same weekday next week
+  // (date + 7). Reuses the create endpoint per shift so the worker still runs
+  // its overlap/validation checks; shifts that collide with something already
+  // next week are skipped and tallied rather than aborting the whole copy.
+  async function copyWeekForward() {
+    const src = shifts.filter((s) => days.includes(s.startDate));
+    if (src.length === 0) {
+      setError("No shifts this week to copy.");
+      return;
+    }
+    const nextMon = addDays(monday, 7);
+    if (
+      !window.confirm(
+        `Copy ${src.length} shift${src.length === 1 ? "" : "s"} into the week of ${weekRangeLabel(nextMon)}? Existing shifts there are kept; overlaps are skipped.`
+      )
+    )
+      return;
+    setCopying(true);
+    setError(null);
+    setOkMsg(null);
+    let ok = 0;
+    let failed = 0;
+    for (const s of src) {
+      const body = JSON.stringify({
+        userId: s.userId || "",
+        date: addDays(s.startDate, 7),
+        startHour: s.startHour,
+        startMinute: s.startMinute,
+        endHour: s.endHour,
+        endMinute: s.endMinute,
+        title: s.title || undefined,
+        color: s.color || undefined
+      });
+      try {
+        await api(`${apiBase}/shifts`, { method: "POST", body });
+        ok++;
+      } catch {
+        failed++;
+      }
+    }
+    setCopying(false);
+    setMonday(nextMon);
+    await loadShifts(nextMon);
+    setOkMsg(
+      failed === 0
+        ? `Copied ${ok} shift${ok === 1 ? "" : "s"} into this week. Adjust as needed.`
+        : `Copied ${ok} shift${ok === 1 ? "" : "s"}; ${failed} skipped (overlap or validation). Adjust as needed.`
+    );
+  }
+
   const overnight =
     form != null &&
     form.endHour * 60 + form.endMinute <= form.startHour * 60 + form.startMinute;
@@ -414,8 +543,16 @@ export function ScheduleWeekGrid({
         ) : null}
         <button
           type="button"
+          onClick={copyWeekForward}
+          disabled={copying || loading || saving}
+          className="ml-auto rounded-splash-md border border-gray-light bg-white px-4 py-2 text-sm font-semibold text-splash-navy hover:bg-gray-light/40 disabled:opacity-50"
+        >
+          {copying ? "Copying…" : "Copy week → next"}
+        </button>
+        <button
+          type="button"
           onClick={() => openAdd(days[0]!)}
-          className="ml-auto rounded-splash-md bg-splash-navy px-4 py-2 text-sm font-semibold text-white shadow-splash-btn hover:bg-splash-blue-dark"
+          className="rounded-splash-md bg-splash-navy px-4 py-2 text-sm font-semibold text-white shadow-splash-btn hover:bg-splash-blue-dark"
         >
           + Add shift
         </button>
@@ -495,11 +632,61 @@ export function ScheduleWeekGrid({
                   >
                     + Add
                   </button>
+                  <div className="mt-1 border-t border-gray-light pt-1 text-center text-[11px] font-semibold text-splash-navy/70">
+                    {(dailyMinutes.get(date) ?? 0) > 0
+                      ? `${fmtHours(dailyMinutes.get(date) ?? 0)}h scheduled`
+                      : "—"}
+                  </div>
                 </div>
               </div>
             );
           })}
         </div>
+      </div>
+
+      {/* Per-employee weekly hours. Non-working markers (PTO / Unavailable) are
+          excluded so this reads as actual scheduled coverage. */}
+      <div className="mt-6 rounded-splash-lg border border-gray-light bg-white p-4">
+        <h2 className="mb-3 text-sm font-bold text-splash-navy">
+          Hours per employee · week of {weekRangeLabel(monday)}
+        </h2>
+        {weeklyRows.length === 0 && openMinutes === 0 ? (
+          <p className="text-sm text-splash-navy/60">
+            No scheduled hours this week.
+          </p>
+        ) : (
+          <table className="w-full max-w-md text-sm">
+            <tbody>
+              {weeklyRows.map((r) => (
+                <tr
+                  key={r.id}
+                  className="border-b border-gray-light/60 last:border-0"
+                >
+                  <td className="py-1.5 pr-4 text-splash-navy">{r.name}</td>
+                  <td className="py-1.5 text-right font-semibold tabular-nums text-splash-navy">
+                    {fmtHours(r.minutes)}h
+                  </td>
+                </tr>
+              ))}
+              {openMinutes > 0 ? (
+                <tr className="border-b border-gray-light/60 last:border-0">
+                  <td className="py-1.5 pr-4 italic text-splash-navy/70">
+                    Open / unassigned
+                  </td>
+                  <td className="py-1.5 text-right font-semibold tabular-nums text-splash-navy">
+                    {fmtHours(openMinutes)}h
+                  </td>
+                </tr>
+              ) : null}
+              <tr>
+                <td className="pr-4 pt-2 font-bold text-splash-navy">Total</td>
+                <td className="pt-2 text-right font-bold tabular-nums text-splash-navy">
+                  {fmtHours(weekTotalMinutes)}h
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        )}
       </div>
 
       {form ? (
