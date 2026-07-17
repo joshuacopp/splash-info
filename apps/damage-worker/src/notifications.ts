@@ -116,7 +116,11 @@ export async function fireClaimUpdateWebhook(
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
-      signal: AbortSignal.timeout(15_000)
+      // Brief 101 fix v2 — bounded at 5s because this fetch is now awaited in
+      // handleAddNote / handleStatusTransition (not waitUntil'd), so it sits on
+      // the response's critical path. Fail-soft either way: a timeout is caught
+      // below and the note/transition still succeeds.
+      signal: AbortSignal.timeout(5_000)
     });
     if (!res.ok) {
       console.error(

@@ -2027,22 +2027,30 @@ async function handleAddNote(
   // Fail-soft: helper swallows all errors so the note response is never
   // blocked on the webhook round-trip.
   if (env.CLAIM_UPDATE_WEBHOOK_URL) {
-    // Brief 101 fix — hand the promise to ctx.waitUntil so the runtime
-    // keeps the isolate alive until the webhook fetch completes. A bare
-    // `void` here left it a dangling promise: the handler returned 200 in
-    // ~300ms and the un-awaited fetch to Power Automate was cancelled
-    // before it went out (PA showed 0 runs, nothing logged).
-    ctx.waitUntil(
-      notifyClaimUpdate({
-        env,
-        request,
-        changeType: "note",
-        claim: guard.claim,
-        actorEmail: session.email,
-        actorRole: session.dcRole ?? null,
-        noteText
-      })
-    );
+    // Brief 101 fix v2 — AWAIT, not ctx.waitUntil. History: the original
+    // bare `void` left a dangling promise that was cancelled before the PA
+    // fetch went out (PA showed 0 runs). Switching to ctx.waitUntil made the
+    // email send, but broke the caller: apps/web reaches this worker through
+    // a service binding, and a callee's waitUntil work is tied to the
+    // CALLER's request lifetime — the dangling webhook fetch (up to the PA
+    // timeout) held the subrequest open past the response handoff, so
+    // apps/web's fetch rejected and the admin UI showed a failure even though
+    // the DB batch had committed and the email had sent (operators retried
+    // and created duplicate rows). Awaiting completes the notification before
+    // the Response returns, exactly like the check-request emails below,
+    // which use `await` and never exhibited this. Safe to await: the helper
+    // is fully fail-soft (try/catch swallows everything), so it never throws
+    // and never blocks the response on an error — it only adds the webhook
+    // round-trip to latency, bounded by the 5s timeout in fireClaimUpdateWebhook.
+    await notifyClaimUpdate({
+      env,
+      request,
+      changeType: "note",
+      claim: guard.claim,
+      actorEmail: session.email,
+      actorRole: session.dcRole ?? null,
+      noteText
+    });
   }
 
   return json({ ok: true });
@@ -2385,21 +2393,23 @@ async function handleStatusTransition(
   // the MaintainX block so the two side-effects don't serialize on
   // each other.
   if (env.CLAIM_UPDATE_WEBHOOK_URL) {
-    // Brief 101 fix — see handleAddNote: waitUntil, not a bare void, so the
-    // fetch to Power Automate isn't cancelled when the handler returns.
-    ctx.waitUntil(
-      notifyClaimUpdate({
-        env,
-        request,
-        changeType: "status",
-        claim,
-        actorEmail: session.email,
-        actorRole: session.dcRole ?? null,
-        fromStatus: claim.claim_status,
-        toStatus: finalTo,
-        noteText: noteText || undefined
-      })
-    );
+    // Brief 101 fix v2 — see handleAddNote: AWAIT, not ctx.waitUntil. Under
+    // the apps/web -> damage-worker service binding, a dangling waitUntil
+    // held the subrequest open past the response, so the admin UI reported a
+    // failure even though the batch committed and the email sent (operators
+    // retried and produced duplicate rows). Awaiting finishes the fail-soft
+    // notification before the Response returns.
+    await notifyClaimUpdate({
+      env,
+      request,
+      changeType: "status",
+      claim,
+      actorEmail: session.email,
+      actorRole: session.dcRole ?? null,
+      fromStatus: claim.claim_status,
+      toStatus: finalTo,
+      noteText: noteText || undefined
+    });
   }
 
   // Brief 43 — fire the existing createMaintainXWorkOrder helper when the
