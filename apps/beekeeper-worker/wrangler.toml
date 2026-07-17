@@ -66,9 +66,14 @@ routes = [
 #                        set here to point at a sandbox tenant.
 #   SYNC_ADMIN_EMAILS  — comma-separated operator emails allowed to fire the
 #                        manual POST /api/sync-users in addition to super_admins.
+#   UNAVAILABILITY_FORM_ID — form_submissions.form_id of the published employee
+#                        unavailability form. Drives the read-only overlay on the
+#                        week grid (approved submissions → "unavailable" markers).
+#                        Unset ⇒ overlay endpoint fails soft (empty list).
 [vars]
 # BEEKEEPER_BASE_URL = "https://splashcarwashes.us.beekeeper.io/api/2"
 SYNC_ADMIN_EMAILS = "josh.copp@splashcarwashes.com"
+UNAVAILABILITY_FORM_ID = "144e3f7a-eff2-4280-bd6f-769f44766929"
 
 # Daily Beekeeper user + schedule cache sync. 10:00 UTC = 6:00 AM ET. Runs
 # before the workorders MaintainX sync (11:30 UTC) — no dependency, just a

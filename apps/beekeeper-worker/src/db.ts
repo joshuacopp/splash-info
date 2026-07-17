@@ -161,6 +161,49 @@ export async function getRoster(
 }
 
 /* ============================================================
+ * Approved-unavailability overlay (read-only)
+ * ============================================================ */
+
+/** One approved unavailability submission, raw payload straight from the form.
+ *  Field keys are the published form's (see UNAVAILABILITY_FIELD_KEYS in
+ *  handlers.ts). Kept as-is here; the handler maps to the client shape. */
+export interface UnavailabilityRow {
+  id: string;
+  payload: Record<string, unknown>;
+}
+
+/**
+ * Approved unavailability submissions for a location + date window. Reads the
+ * shared form_submissions table (same Supabase project) filtered to the mapped
+ * form, the denormalized location_code stamped at submit, workflow_stage
+ * "approved", and the unavailability DATE inside [startDate, endDate] (inclusive
+ * — the grid passes Mon..Sun). The date lives in the JSONB payload, so the
+ * bound comparison is a PostgREST `payload->>{key}` text filter (ISO
+ * "YYYY-MM-DD" strings sort lexically, so >= / <= are correct).
+ */
+export async function listApprovedUnavailability(
+  sb: SupabaseClient,
+  formId: string,
+  locationCode: string,
+  dateKey: string,
+  startDate: string,
+  endDate: string
+): Promise<UnavailabilityRow[]> {
+  const code = locationCode.trim().toLowerCase();
+  if (!code) return [];
+  const { data, error } = await sb
+    .from("form_submissions")
+    .select("id,payload")
+    .eq("form_id", formId)
+    .eq("location_code", code)
+    .eq("workflow_stage", "approved")
+    .gte(`payload->>${dateKey}`, startDate)
+    .lte(`payload->>${dateKey}`, endDate);
+  if (error) throw new Error(`listApprovedUnavailability: ${error.message}`);
+  return (data as UnavailabilityRow[]) ?? [];
+}
+
+/* ============================================================
  * Sync upserts (Beekeeper-owned columns only)
  * ============================================================ */
 

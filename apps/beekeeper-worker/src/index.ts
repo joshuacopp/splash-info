@@ -19,6 +19,7 @@ import {
   handleDeleteShift,
   handleListLocations,
   handleListShifts,
+  handleListUnavailability,
   handleSyncUsers,
   handleUpdateShift
 } from "./handlers.js";
@@ -63,6 +64,11 @@ export default {
 
           if (rest.length === 1 && rest[0] === "context" && method === "GET") {
             return handleContext(request, env, locationCode);
+          }
+
+          // GET /shifts overlay: approved employee unavailability for the week.
+          if (rest.length === 1 && rest[0] === "unavailability" && method === "GET") {
+            return handleListUnavailability(request, env, locationCode);
           }
 
           if (rest[0] === "shifts") {

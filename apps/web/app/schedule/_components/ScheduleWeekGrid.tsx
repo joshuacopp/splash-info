@@ -10,7 +10,11 @@
 // beekeeper-worker, which enforces auth, overlap validation, and audit.
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import type { RosterMember, ShiftView } from "../_lib/worker-fetch";
+import type {
+  RosterMember,
+  ShiftView,
+  UnavailabilityMarker
+} from "../_lib/worker-fetch";
 
 /* ============================================================
  * Pure date helpers (no server imports — safe in a client island).
@@ -92,6 +96,21 @@ function shiftDurationMinutes(s: ShiftView): number {
 /** Compact hours label: 480 -> "8", 510 -> "8.5", 495 -> "8.25". */
 function fmtHours(min: number): string {
   return `${Math.round((min / 60) * 100) / 100}`;
+}
+
+/** Format an unavailability marker's time range. Times are "HH:MM" 24h strings
+ *  straight off the form; a blank on either end means the employee didn't scope
+ *  it, so we read it as all-day. */
+function fmtMarkerRange(start: string, end: string): string {
+  const parse = (t: string): [number, number] | null => {
+    const m = /^(\d{1,2}):(\d{2})$/.exec(t.trim());
+    if (!m) return null;
+    return [Number(m[1]), Number(m[2])];
+  };
+  const s = parse(start);
+  const e = parse(end);
+  if (!s || !e) return "All day";
+  return `${fmt12(s[0]!, s[1]!)} – ${fmt12(e[0]!, e[1]!)}`;
 }
 
 /* ============================================================
@@ -241,6 +260,7 @@ export function ScheduleWeekGrid({
   const [form, setForm] = useState<FormState | null>(null);
   const [saving, setSaving] = useState(false);
   const [copying, setCopying] = useState(false);
+  const [unavail, setUnavail] = useState<UnavailabilityMarker[]>([]);
 
   const apiBase = `/schedule/api/loc/${encodeURIComponent(locationCode)}`;
   const days = useMemo(() => weekDates(monday), [monday]);
@@ -293,6 +313,36 @@ export function ScheduleWeekGrid({
     if (monday === initialMonday) return;
     void loadShifts(monday);
   }, [monday, initialMonday, loadShifts]);
+
+  // Approved-unavailability overlay. Read-only; not SSR'd, so it loads on mount
+  // AND on every week change. Fails soft — a fetch error just leaves the overlay
+  // empty (logged) rather than blocking the schedule.
+  const loadUnavailability = useCallback(
+    async (mon: string) => {
+      const start = mon;
+      const end = addDays(mon, 6);
+      try {
+        const data = await api(
+          `${apiBase}/unavailability?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}`
+        );
+        setUnavail((data.unavailability as UnavailabilityMarker[]) || []);
+      } catch {
+        setUnavail([]);
+      }
+    },
+    [api, apiBase]
+  );
+
+  useEffect(() => {
+    void loadUnavailability(monday);
+  }, [monday, loadUnavailability]);
+
+  const unavailByDay = useMemo(() => {
+    const map = new Map<string, UnavailabilityMarker[]>();
+    for (const d of days) map.set(d, []);
+    for (const u of unavail) map.get(u.date)?.push(u);
+    return map;
+  }, [days, unavail]);
 
   const shiftsByDay = useMemo(() => {
     const map = new Map<string, ShiftView[]>();
@@ -624,6 +674,20 @@ export function ScheduleWeekGrid({
                         ) : null}
                       </span>
                     </button>
+                  ))}
+                  {(unavailByDay.get(date) ?? []).map((u) => (
+                    <div
+                      key={u.id}
+                      title="Approved unavailability (read-only)"
+                      className="rounded-splash-md border border-dashed border-amber-400 bg-amber-50 px-2 py-1"
+                    >
+                      <span className="block truncate text-xs font-semibold text-amber-900">
+                        {u.name}
+                      </span>
+                      <span className="block text-xs text-amber-800/80">
+                        Unavailable · {fmtMarkerRange(u.start, u.end)}
+                      </span>
+                    </div>
                   ))}
                   <button
                     type="button"

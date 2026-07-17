@@ -34,6 +34,16 @@ export interface Env extends SupabaseEnv {
    * Optional — when unset, only super_admins may trigger a manual sync.
    */
   SYNC_ADMIN_EMAILS?: string;
+
+  /**
+   * form_submissions.form_id of the published "employee unavailability" form.
+   * Powers the read-only unavailability overlay on the week grid: approved
+   * submissions for the location + week are surfaced as non-editable markers so
+   * managers see who's unavailable while building the schedule. Optional — when
+   * unset the overlay endpoint fails soft (returns an empty list), so the
+   * schedule keeps working before the form is wired in any environment.
+   */
+  UNAVAILABILITY_FORM_ID?: string;
 }
 
 /** Production Beekeeper tenant base (the `.us.` DC segment is load-bearing). */

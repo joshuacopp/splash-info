@@ -27,6 +27,7 @@ import {
 import {
   getRoster,
   getUsersByIds,
+  listApprovedUnavailability,
   listMappedSchedules,
   nameFromRow,
   resolveScheduleByLocationCode,
@@ -225,6 +226,92 @@ export async function handleListShifts(
     toShiftView(s, nameFromRow(names.get(s.userId ?? ""), s.userId))
   );
   return json({ shifts: views });
+}
+
+/* ============================================================
+ * Read: approved-unavailability overlay (read-only)
+ * ============================================================ */
+
+/** Payload field keys of the published unavailability form (form_id bound as
+ *  UNAVAILABILITY_FORM_ID). Employee↔Beekeeper-user matching is deliberately
+ *  NOT attempted — this is a read-only manager reference, so a display name off
+ *  the form is enough even if it doesn't exactly match the Beekeeper roster. */
+const UNAVAILABILITY_FIELD_KEYS = {
+  date: "date_dw6m18",
+  start: "time_7b0057",
+  end: "time_n6adqt",
+  name: "name_4cmz03"
+} as const;
+
+interface UnavailabilityMarker {
+  id: string;
+  /** Employee name as typed on the form (may not match a Beekeeper user). */
+  name: string;
+  /** ET calendar date "YYYY-MM-DD". */
+  date: string;
+  /** "HH:MM" 24h, or "" when the form left it blank (treat as all-day). */
+  start: string;
+  end: string;
+}
+
+function asStr(v: unknown): string {
+  return typeof v === "string" ? v : "";
+}
+
+/**
+ * GET /api/loc/{location_code}/unavailability?start={YYYY-MM-DD}&end={YYYY-MM-DD}
+ *   200 { unavailability: UnavailabilityMarker[] }
+ * Approved unavailability submissions for the location + week, surfaced as
+ * read-only markers on the grid. Same gate/scope as the shift reads. Fails soft
+ * to an empty list when the form id is unbound so the schedule never hard-errors
+ * on a missing overlay.
+ */
+export async function handleListUnavailability(
+  request: Request,
+  env: Env,
+  locationCode: string
+): Promise<Response> {
+  const g = await gateAndResolve(request, env, locationCode);
+  if (!g.ok) return g.response;
+  const { schedule, sb } = g.ctx;
+
+  const formId = (env.UNAVAILABILITY_FORM_ID ?? "").trim();
+  if (!formId) return json({ unavailability: [] });
+
+  const url = new URL(request.url);
+  const start = url.searchParams.get("start");
+  const end = url.searchParams.get("end");
+  if (!start || !end) return jsonError(400, "start and end (YYYY-MM-DD) are required");
+
+  // location_code is the operator-set Splash mapping; the overlay keys off the
+  // same code the submission was stamped with at submit time.
+  const code = schedule.location_code ?? locationCode;
+
+  let rows;
+  try {
+    rows = await listApprovedUnavailability(
+      sb,
+      formId,
+      code,
+      UNAVAILABILITY_FIELD_KEYS.date,
+      start,
+      end
+    );
+  } catch (err) {
+    return jsonError(500, err instanceof Error ? err.message : "unavailability query failed");
+  }
+
+  const markers: UnavailabilityMarker[] = rows
+    .map((r) => ({
+      id: r.id,
+      name: asStr(r.payload[UNAVAILABILITY_FIELD_KEYS.name]).trim() || "Employee",
+      date: asStr(r.payload[UNAVAILABILITY_FIELD_KEYS.date]),
+      start: asStr(r.payload[UNAVAILABILITY_FIELD_KEYS.start]),
+      end: asStr(r.payload[UNAVAILABILITY_FIELD_KEYS.end])
+    }))
+    .filter((m) => m.date);
+
+  return json({ unavailability: markers });
 }
 
 /* ============================================================

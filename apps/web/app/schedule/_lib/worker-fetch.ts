@@ -57,6 +57,18 @@ export interface ShiftView {
   endMinute: number;
 }
 
+/** One approved-unavailability marker (GET .../unavailability). Read-only
+ *  overlay data: an employee name as typed on the unavailability form (NOT
+ *  necessarily a Beekeeper roster name), the ET date, and start/end "HH:MM"
+ *  24h strings ("" when the form left a time blank → treat as all-day). */
+export interface UnavailabilityMarker {
+  id: string;
+  name: string;
+  date: string;
+  start: string;
+  end: string;
+}
+
 export type ScheduleResult<T> =
   | { kind: "ok"; data: T }
   | { kind: "denied" } // 401 or 403
