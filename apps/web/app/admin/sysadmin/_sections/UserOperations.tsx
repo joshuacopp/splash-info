@@ -22,6 +22,7 @@ import {
 } from "../_components/OperationCard";
 import { CreateUserToolsAndDcRole } from "../_components/CreateUserToolsAndDcRole";
 import { LocationCodePicker } from "../_components/LocationCodePicker";
+import { PermissionsViewer } from "../_components/PermissionsViewer";
 import { SetDcRoleCard } from "../_components/SetDcRoleCard";
 import { SetPromoRoleCard } from "../_components/SetPromoRoleCard";
 import { UserPicker } from "../_components/UserPicker";
@@ -36,6 +37,7 @@ import {
 export function UserOperations() {
   return (
     <>
+      <ViewPermissionsCard />
       <CreateUserCard />
       <SetRoleCard />
       <SetDcRoleCard />
@@ -44,6 +46,21 @@ export function UserOperations() {
       <RevokeToolCard />
       <ResetPasswordCard />
     </>
+  );
+}
+
+/* ============================================================
+ * 0. View permissions (read + inline remove)
+ * ============================================================ */
+
+function ViewPermissionsCard() {
+  return (
+    <OperationCard
+      title="View permissions"
+      description="Look up a user and see all of their access in one place — with inline remove."
+    >
+      <PermissionsViewer />
+    </OperationCard>
   );
 }
 

@@ -456,6 +456,70 @@ export async function revokeToolAction(
 }
 
 /* ============================================================
+ * Permissions viewer — inline remove actions (plain-arg)
+ *
+ * The View Permissions card removes grants inline (per-chip ✕) instead of
+ * through <ActionForm>, so these take plain args rather than FormData. They
+ * run the SAME sysadminPostJson transport as the FormData actions above —
+ * service binding in prod, Origin header set for the worker's isOriginAllowed
+ * CSRF gate — so the client component never POSTs to /sysadmin/api directly.
+ * Each returns a small {ok,error,changed} object the client surfaces inline;
+ * the client re-fetches the panel on success.
+ * ============================================================ */
+
+// NOT exported: a "use server" module may only export async functions, so
+// this result type stays module-local. The client component defines its own
+// structurally-identical copy.
+interface ViewerActionResult {
+  ok: boolean;
+  error?: string;
+  changed?: boolean;
+}
+
+export async function viewerRevokeToolAction(
+  userId: string,
+  tool: string
+): Promise<ViewerActionResult> {
+  const result = await sysadminPostJson("/sysadmin/api/revoke-tool", {
+    user_id: userId,
+    tool: tool as ToolName
+  });
+  if (!result.ok) return { ok: false, error: result.error };
+  revalidatePath(PAGE_PATH);
+  return { ok: true, changed: readChanged(result.body) };
+}
+
+export async function viewerRemoveLocationAction(
+  userId: string,
+  locationCode: string
+): Promise<ViewerActionResult> {
+  const result = await sysadminPostJson("/sysadmin/api/remove-location", {
+    user_id: userId,
+    location_code: locationCode
+  });
+  if (!result.ok) return { ok: false, error: result.error };
+  revalidatePath(PAGE_PATH);
+  return { ok: true, changed: readChanged(result.body) };
+}
+
+export async function viewerRemoveDcLocationAction(
+  userId: string,
+  dcRole: string,
+  remaining: string[]
+): Promise<ViewerActionResult> {
+  // dc-location removal is a replace: re-send the dc_role with the remaining
+  // codes. The worker rejects an empty array for gm/rm, so removing the LAST
+  // claims location returns that 400, surfaced inline.
+  const result = await sysadminPostJson(
+    `/sysadmin/api/users/${encodeURIComponent(userId)}/dc-role`,
+    { role: dcRole, location_codes: remaining }
+  );
+  if (!result.ok) return { ok: false, error: result.error };
+  revalidatePath(PAGE_PATH);
+  return { ok: true };
+}
+
+/* ============================================================
  * Reset password
  * ============================================================ */
 

@@ -165,6 +165,10 @@ const DC_ROLE_MAX_LOCATIONS = 50;
 const DC_ROLE_PATH_RE = /^\/sysadmin\/api\/users\/([^/]+)\/dc-role$/;
 // Brief 159 — second dynamic-path endpoint, sibling to DC_ROLE_PATH_RE.
 const PROMO_ROLE_PATH_RE = /^\/sysadmin\/api\/users\/([^/]+)\/promo-role$/;
+// Permissions viewer — dynamic GET /sysadmin/api/users/{userId}/permissions.
+// Backs apps/web's PermissionsViewer card (friendly read of auth_unified for
+// one user). Sibling to DC_ROLE_PATH_RE / PROMO_ROLE_PATH_RE but GET, not POST.
+const USER_PERMS_PATH_RE = /^\/sysadmin\/api\/users\/([^/]+)\/permissions$/;
 
 const OWNED_POST_PATHS = new Set([
   "/sysadmin/api/grant-tool",
@@ -172,7 +176,9 @@ const OWNED_POST_PATHS = new Set([
   "/sysadmin/api/set-role",
   "/sysadmin/api/reset-password",
   "/sysadmin/api/create-user",
-  "/sysadmin/api/pricing-simple/create-location"
+  "/sysadmin/api/pricing-simple/create-location",
+  // Permissions viewer inline action — delete one user_permissions location row.
+  "/sysadmin/api/remove-location"
 ]);
 
 const OWNED_PATCH_PATHS = new Set([
@@ -204,12 +210,16 @@ export default {
     // Brief 159 — dynamic POST /sysadmin/api/users/{userId}/promo-role.
     const promoRolePathMatch = PROMO_ROLE_PATH_RE.exec(path);
     const isOwnedPromoRolePost = promoRolePathMatch !== null;
+    // Permissions viewer — dynamic GET /sysadmin/api/users/{userId}/permissions.
+    const userPermsPathMatch = USER_PERMS_PATH_RE.exec(path);
+    const isOwnedUserPermsGet = userPermsPathMatch !== null;
     if (
       !isOwnedPost &&
       !isOwnedPatch &&
       !isOwnedGet &&
       !isOwnedDcRolePost &&
-      !isOwnedPromoRolePost
+      !isOwnedPromoRolePost &&
+      !isOwnedUserPermsGet
     ) {
       return new Response("Not found", { status: 404 });
     }
@@ -223,7 +233,7 @@ export default {
     if (isOwnedPatch && method !== "PATCH") {
       return jsonError(405, "PATCH required");
     }
-    if (isOwnedGet && method !== "GET") {
+    if ((isOwnedGet || isOwnedUserPermsGet) && method !== "GET") {
       return jsonError(405, "GET required");
     }
 
@@ -259,6 +269,13 @@ export default {
         }
       }
 
+      // Permissions viewer read — dynamic GET, no body. Handled before the
+      // JSON body parse below (GET carries none).
+      if (isOwnedUserPermsGet && userPermsPathMatch) {
+        const userId = decodeURIComponent(userPermsPathMatch[1] ?? "");
+        return await handleGetUserPermissions(env, userId);
+      }
+
       let body: Record<string, unknown>;
       try {
         body = (await request.json()) as Record<string, unknown>;
@@ -289,6 +306,8 @@ export default {
           return await handleCreateUser(env, body, actor);
         case "/sysadmin/api/pricing-simple/create-location":
           return await handleCreateLocation(env, body, actor);
+        case "/sysadmin/api/remove-location":
+          return await handleRemoveLocation(env, body, actor);
         case "/sysadmin/api/pricing-simple/package":
           return await handleUpdatePackage(env, body, actor);
         case "/sysadmin/api/pricing-simple/packages-bulk":
@@ -1092,6 +1111,131 @@ async function handleCreateLocation(
     site_number: siteNumber,
     package_count: packages.length
   });
+}
+
+/* ============================================================
+ * GET /sysadmin/api/users/{userId}/permissions
+ *
+ * Friendly single-user permissions read backing apps/web's
+ * PermissionsViewer card. Returns the full `auth_unified` row for one
+ * user (role + locations + tools + dc_role + dc_locations + promo_role),
+ * so the UI can render one human-readable panel instead of the operator
+ * eyeballing the raw view. Direct Supabase REST (same posture as
+ * handleSearchPricingSimple) — apps/web has no direct-Supabase client.
+ *
+ * auth_unified is a VIEW; its JSON-ish array columns (locations, tools,
+ * dc_locations) come back as text-encoded JSON arrays, which the client
+ * parses. 404 if no row (unknown / never-provisioned user_id).
+ *
+ * Auth gate is super_admin (single gate at the top of fetch()). No
+ * isOriginAllowed gate per Brief 11b convention (read, non-state-changing).
+ * ============================================================ */
+
+async function handleGetUserPermissions(env: Env, userId: string): Promise<Response> {
+  if (!userId) return jsonError(400, "user_id required");
+
+  const restUrl =
+    `${env.SUPABASE_URL}/rest/v1/auth_unified` +
+    `?user_id=eq.${encodeURIComponent(userId)}` +
+    `&limit=1`;
+
+  const resp = await fetch(restUrl, {
+    headers: {
+      apikey: env.SUPABASE_SERVICE_KEY,
+      Authorization: `Bearer ${env.SUPABASE_SERVICE_KEY}`
+    }
+  });
+  if (!resp.ok) {
+    const errText = await resp.text().catch(() => "");
+    return jsonError(500, `Lookup failed: ${resp.status} ${errText}`);
+  }
+  const rows = (await resp.json().catch(() => [])) as unknown[];
+  if (!Array.isArray(rows) || rows.length === 0) {
+    return jsonError(404, "user not found");
+  }
+  return json(rows[0]);
+}
+
+/* ============================================================
+ * POST /sysadmin/api/remove-location
+ *
+ * PermissionsViewer inline action — delete ONE user_permissions row
+ * identified by (user_id, location_code). This unassigns a single
+ * location from a location_admin's pricing/schedule scope. Body:
+ * { user_id, location_code }.
+ *
+ * Semantics mirror handleRevokeTool: idempotent (missing row is a no-op),
+ * audit-logged with before/after, and a `changed` flag returned so the UI
+ * can distinguish a real removal from a no-op.
+ *
+ * CAVEAT (operator-visible): if this location was assigned by the
+ * pricing_simple -> user_permissions email trigger (site_email match), a
+ * future locations/pricing edit can re-insert the row. Manual removal is
+ * still the correct affordance for scope the operator granted directly via
+ * Set Role; the trigger interplay matches how Set Role already behaves.
+ *
+ * super_admin gate + isOriginAllowed both enforced at the top of fetch().
+ * ============================================================ */
+
+async function handleRemoveLocation(
+  env: Env,
+  body: Record<string, unknown>,
+  actor: { id: string; email: string }
+): Promise<Response> {
+  const userId = stringOrNull(body.user_id);
+  const locationCode = stringOrNull(body.location_code);
+  if (!userId || !locationCode) {
+    return jsonError(400, "user_id and location_code required");
+  }
+  if (!LOCATION_CODE_RE.test(locationCode)) {
+    return jsonError(
+      400,
+      "location_code must contain only lowercase letters, numbers, and underscores"
+    );
+  }
+
+  const restUrl =
+    `${env.SUPABASE_URL}/rest/v1/user_permissions` +
+    `?user_id=eq.${encodeURIComponent(userId)}` +
+    `&location_code=eq.${encodeURIComponent(locationCode)}`;
+
+  const resp = await fetch(restUrl, {
+    method: "DELETE",
+    headers: {
+      apikey: env.SUPABASE_SERVICE_KEY,
+      Authorization: `Bearer ${env.SUPABASE_SERVICE_KEY}`,
+      Prefer: "return=representation"
+    }
+  });
+  if (!resp.ok) {
+    const errText = await resp.text().catch(() => "");
+    return jsonError(500, `Remove failed: ${resp.status} ${errText}`);
+  }
+  const deleted = (await resp.json().catch(() => [])) as unknown[];
+  const wasPresent = Array.isArray(deleted) && deleted.length > 0;
+
+  const sb = createServiceClient(env);
+  if (wasPresent) {
+    await logSysadminAudit(sb, {
+      actor,
+      action: "remove_location",
+      target_type: "user_permissions",
+      target_id: `${userId}|${locationCode}`,
+      before: deleted[0] ?? null,
+      after: null
+    });
+  } else {
+    await logSysadminAudit(sb, {
+      actor,
+      action: "remove_location_noop",
+      target_type: "user_permissions",
+      target_id: `${userId}|${locationCode}`,
+      before: null,
+      after: null,
+      notes: "Remove attempted; location was not assigned (no change)"
+    });
+  }
+  return json({ ok: true, changed: wasPresent });
 }
 
 /* ============================================================
