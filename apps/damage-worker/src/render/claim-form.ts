@@ -543,6 +543,7 @@ export function renderClaimForm(args: RenderClaimFormArgs): string {
               <option value="Antenna">Antenna</option>
               <option value="Collision">Collision</option>
               <option value="Roof Rack/Roof Accessory">Roof Rack/Roof Accessory</option>
+              <option value="Running Board">Running Board</option>
               <option value="PS Mirror">PS Mirror</option>
               <option value="DS Mirror">DS Mirror</option>
               <option value="Window">Window</option>

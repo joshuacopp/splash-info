@@ -284,6 +284,7 @@ const ALLOWED_DAMAGE_TYPES: ReadonlySet<string> = new Set([
   "Antenna",
   "Collision",
   "Roof Rack/Roof Accessory",
+  "Running Board",
   "PS Mirror",
   "DS Mirror",
   "Window",
