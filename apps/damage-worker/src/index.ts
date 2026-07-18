@@ -1625,6 +1625,7 @@ const CLAIMS_CSV_COLUMNS = [
   "claim_status",
   "lifecycle",
   "submitted_at",
+  "incident_date",
   "status_updated_at",
   "age_days"
 ] as const;
@@ -1646,6 +1647,7 @@ interface ClaimsCsvRow {
   fault_category: string | null;
   claim_status: ClaimStatus;
   submitted_at: string;
+  incident_date: string | null;
   status_updated_at: string | null;
   age_days: number | null;
 }
@@ -1731,16 +1733,22 @@ async function getClaimsCsv(env: Env, session: Session, url: URL): Promise<Respo
     customer_phone, customer_email, vehicle_year, vehicle_make, vehicle_model,
     vehicle_color, license_plate, damage_type, damage_other,
     {fault_category_expr} AS fault_category,
-    claim_status, submitted_at, status_updated_at,
+    claim_status, submitted_at, {incident_date_expr} AS incident_date, status_updated_at,
     CAST((julianday('now') - julianday(submitted_at)) AS INTEGER) AS age_days`;
 
-  // Brief 138/140 — column-missing tolerance. Try with fault_category
-  // first; on the specific "no such column" error, retry with NULL in
-  // its place so the export keeps working pre-migration.
+  // Brief 138/140 — column-missing tolerance. Try with the real columns
+  // first; on a "no such column" error for either fault_category or
+  // incident_date (both added after existing rows), retry with NULL in
+  // their place so the export keeps working pre-migration. Both degrade
+  // together — the realistic pre-migration state has neither column.
+  const withColumns = (expr: (col: string) => string) =>
+    projection
+      .replace("{fault_category_expr}", expr("fault_category"))
+      .replace("{incident_date_expr}", expr("incident_date"));
   let rows: ClaimsCsvRow[];
   try {
     const sql = `
-      SELECT ${projection.replace("{fault_category_expr}", "fault_category")}
+      SELECT ${withColumns((c) => c)}
       FROM claims
       WHERE ${where.join(" AND ")}
       ORDER BY submitted_at DESC
@@ -1750,12 +1758,12 @@ async function getClaimsCsv(env: Env, session: Session, url: URL): Promise<Respo
     rows = res.results ?? [];
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err);
-    if (!/no such column.*fault_category/i.test(errMsg)) throw err;
+    if (!/no such column.*(fault_category|incident_date)/i.test(errMsg)) throw err;
     console.warn(
-      "[claims.csv] fault_category column missing — exporting with empty cell (apply schema migration)"
+      "[claims.csv] fault_category/incident_date column missing — exporting with empty cell (apply schema migration)"
     );
     const sql = `
-      SELECT ${projection.replace("{fault_category_expr}", "NULL")}
+      SELECT ${withColumns(() => "NULL")}
       FROM claims
       WHERE ${where.join(" AND ")}
       ORDER BY submitted_at DESC
@@ -1794,6 +1802,7 @@ async function getClaimsCsv(env: Env, session: Session, url: URL): Promise<Respo
         r.claim_status,
         derived,
         r.submitted_at,
+        r.incident_date ?? "",
         r.status_updated_at ?? "",
         r.age_days ?? ""
       ]
@@ -3602,6 +3611,29 @@ async function handleClaimSubmission(
     }
     claimData.vehicleCondition = vehicleConditionTrimmed;
 
+    // incident_date — the date AND time the customer says the damage occurred.
+    // The only date/time field on the form, so it's required. Same dual-mode
+    // 303/JSON 400 pattern as the gates above. <input type="datetime-local">
+    // posts 'YYYY-MM-DDTHH:MM' (optionally :SS); we store it with a space
+    // separator ('YYYY-MM-DD HH:MM[:SS]') so SQLite's datetime()/julianday()
+    // read it cleanly and it sorts lexically alongside submitted_at.
+    const incidentDateRaw = (inputs.get("incidentDate") ?? "").trim();
+    const incidentDateOk = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2})?$/.test(incidentDateRaw);
+    if (!incidentDateOk) {
+      const message = incidentDateRaw
+        ? "Invalid incident date/time"
+        : "Incident date/time required";
+      if (browserMode) {
+        const slug = encodeURIComponent(claimData.location || "") || "unknown";
+        const target = new URL(
+          `${baseOrigin}/claims/${slug}?error=${encodeURIComponent(message)}`
+        );
+        return Response.redirect(target.toString(), 303);
+      }
+      return json({ ok: false, error: message, success: false }, 400);
+    }
+    const incidentDateNormalized = incidentDateRaw.replace("T", " ");
+
     // Brief 41 — damage_type is required and must match the form's
     // allow-list. When 'Other' is selected, damage_other (≤200 chars) is
     // required; for any other value, server-side blanks damageOther so the
@@ -3778,6 +3810,16 @@ async function handleClaimSubmission(
       }
       const submittedBy = claimData.employeeName || "Unknown";
 
+      // Staff-entered date AND time the customer says the damage occurred.
+      // Required — validated by the incidentDate gate earlier in the handler,
+      // so incidentDateNormalized is a non-null string by the time we build
+      // the insert. Kept OUT of claimData/the PA payload (avoids SharePoint
+      // schema drift — see the drift warning on the claimData construction
+      // above) and only persisted to D1. <input type="datetime-local"> posts
+      // 'YYYY-MM-DDTHH:MM' (optionally :SS); stored with a space separator so
+      // SQLite datetime()/julianday() read it cleanly.
+      const incidentDate = incidentDateNormalized;
+
       const insert: ClaimInsert = {
         claim_id: claimData.claimId,
         location_code: claimData.location.toLowerCase(),
@@ -3803,6 +3845,7 @@ async function handleClaimSubmission(
         damage_other: claimData.damageOther || null,
         initial_status: initialStatus,
         submitted_at: claimData.submittedAt,
+        incident_date: incidentDate,
         // Brief 138 Phase 3 — persist the client-supplied UUID so a future
         // retry hits getClaimByIdempotencyKey above and dedups onto this row.
         idempotency_key: idempotencyKey,
@@ -3884,6 +3927,7 @@ async function handleClaimSubmission(
             claim_status: insert.initial_status,
             contact_status: null,
             submitted_at: insert.submitted_at,
+            incident_date: insert.incident_date,
             status_updated_at: null,
             status_updated_by: insert.submitted_by,
             updated_at: null,

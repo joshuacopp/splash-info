@@ -59,7 +59,7 @@ values (
   '2838f08a-7fe2-42a5-8e91-7ec405baaceb',
   'Johnson City',
   '["fef0485e-cdaa-4c1a-a5e8-955e156d0174"]'::jsonb,
-  'johnsoncity'
+  'johnson_city'
 )
 on conflict (schedule_id) do update
   set location_code = coalesce(public.beekeeper_schedules.location_code, excluded.location_code),

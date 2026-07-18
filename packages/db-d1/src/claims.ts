@@ -89,6 +89,13 @@ export interface ClaimInsert {
 
   initial_status: ClaimStatus;
   submitted_at: string;
+  /**
+   * Date + time the customer says the damage occurred, 'YYYY-MM-DD HH:MM[:SS]'.
+   * Required on the claim form (validated in the worker); nullable here so
+   * backfill/legacy rows — which may hold a date-only value or none — are
+   * still expressible.
+   */
+  incident_date: string | null;
 
   /**
    * Brief 138 — client-generated UUID v4 used to dedup retried submissions.
@@ -149,8 +156,9 @@ export async function writeClaimBatch(db: D1Database, c: ClaimInsert): Promise<v
         claim_status,
         status_updated_by,
         submitted_at,
+        incident_date,
         idempotency_key
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Open', ?, ?, ?, ?)`
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Open', ?, ?, ?, ?, ?)`
     )
     .bind(
       c.claim_id,
@@ -178,6 +186,7 @@ export async function writeClaimBatch(db: D1Database, c: ClaimInsert): Promise<v
       c.initial_status,
       c.submitted_by,
       c.submitted_at,
+      c.incident_date ?? null,
       c.idempotency_key ?? null
     );
 
@@ -202,14 +211,15 @@ export async function writeClaimBatch(db: D1Database, c: ClaimInsert): Promise<v
     await db.batch([claimInsert, ...photoInserts, activityInsert]);
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err);
-    // Feature 4 — the legacy INSERT shape omits BOTH idempotency_key and
-    // vehicle_condition, so it doubles as the migration-window fallback for
-    // either column being absent. During that window we lose dedup and/or the
-    // condition value for the affected submissions (best-effort, same posture
-    // as Brief 140); R2 retains the canonical submission JSON.
-    if (/no such column.*(idempotency_key|vehicle_condition)/i.test(errMsg)) {
+    // Feature 4 — the legacy INSERT shape omits idempotency_key,
+    // vehicle_condition, AND incident_date, so it doubles as the
+    // migration-window fallback for any of those columns being absent. During
+    // that window we lose dedup and/or the condition/incident-date value for
+    // the affected submissions (best-effort, same posture as Brief 140); R2
+    // retains the canonical submission JSON.
+    if (/no such column.*(idempotency_key|vehicle_condition|incident_date)/i.test(errMsg)) {
       console.warn(
-        "[claim.d1] idempotency_key/vehicle_condition column missing — fell back to legacy INSERT shape (apply schema migration)"
+        "[claim.d1] idempotency_key/vehicle_condition/incident_date column missing — fell back to legacy INSERT shape (apply schema migration)"
       );
       const legacyClaimInsert = db
         .prepare(

@@ -242,6 +242,14 @@ export interface ClaimRow {
 
   // Timestamps
   submitted_at: string;
+  /**
+   * Date + time the customer says the damage actually occurred, stored as
+   * 'YYYY-MM-DD HH:MM[:SS]'. Required on the claim form (validated in the
+   * worker), but nullable on the row type: backfill/legacy rows may hold a
+   * date-only value or none, and reads collapse to null when the column is
+   * briefly absent during the deploy window.
+   */
+  incident_date: string | null;
   status_updated_at: string | null;
   status_updated_by: string | null;
   updated_at: string | null;

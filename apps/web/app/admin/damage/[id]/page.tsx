@@ -581,6 +581,16 @@ function SummaryCard({
           </div>
         </Field>
 
+        <Field label="Incident date/time">
+          <div className="font-mono text-sm text-splash-navy/80">
+            {/* Date + time the customer says the damage occurred, stored as a
+                no-timezone wall-clock string ('YYYY-MM-DD HH:MM'). Rendered raw
+                (no Date parsing) so it never shifts across time zones. Legacy
+                backfill rows show a date only. */}
+            {valueOrDash(claim.incident_date)}
+          </div>
+        </Field>
+
         <Field label="Determination">
           <div className="text-splash-navy">
             <span>{determinationLabel(claim.determination)}</span>

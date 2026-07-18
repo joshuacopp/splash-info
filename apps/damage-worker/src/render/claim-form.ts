@@ -448,6 +448,18 @@ export function renderClaimForm(args: RenderClaimFormArgs): string {
           <p class="section-sub">For Splash employees only.</p>
           <div class="staff-warning">⚠️ This section must be completed by a Splash employee.</div>
 
+          <!-- Date AND time the customer says the damage occurred. This is the
+               only date/time field on the form, so it is REQUIRED (validated
+               server-side; no HTML required attr because this section starts
+               hidden and a hidden required field is non-focusable). Maps to
+               claims.incident_date. Worker parses "incidentDate" on POST. -->
+          <div class="form-group">
+            <label for="incidentDate">Date &amp; Time Damage Occurred <span class="required">*</span>
+              <span class="hint">When the customer says the damage happened — their visit date and time</span>
+            </label>
+            <input type="datetime-local" id="incidentDate" name="incidentDate">
+          </div>
+
           <div class="form-row">
             <div class="form-group">
               <label for="employeeName">Employee Name <span class="required">*</span></label>
