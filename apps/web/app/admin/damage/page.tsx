@@ -116,7 +116,7 @@ export default async function DamageClaimsListPage({ searchParams }: PageProps) 
   const search = firstParam(sp.search).trim();
   const locationParam = firstParam(sp.location) || "All";
   const statusParam = firstParam(sp.status) || "All";
-  const lifecycleRaw = firstParam(sp.lifecycle) || "Open";
+  const lifecycleRaw = firstParam(sp.lifecycle) || "All";
   const lifecycleParam: LifecycleParam =
     lifecycleRaw === "Closed" ||
     lifecycleRaw === "All" ||
@@ -197,7 +197,7 @@ export default async function DamageClaimsListPage({ searchParams }: PageProps) 
     if (search) currentQs.set("search", search);
     if (locationParam && locationParam !== "All") currentQs.set("location", locationParam);
     if (statusParam && statusParam !== "All") currentQs.set("status", statusParam);
-    if (lifecycleParam !== "Open") currentQs.set("lifecycle", lifecycleParam);
+    if (lifecycleParam !== "All") currentQs.set("lifecycle", lifecycleParam);
     if (rdEmailParam) currentQs.set("regional_director_email", rdEmailParam);
     if (rmEmailParam) currentQs.set("regional_manager_email", rmEmailParam);
     if (submittedFromParam) currentQs.set("submitted_from", submittedFromParam);

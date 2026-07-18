@@ -540,6 +540,7 @@ export function renderClaimForm(args: RenderClaimFormArgs): string {
               <option value="">Select damage type...</option>
               <option value="License Plate">License Plate</option>
               <option value="Wiper">Wiper</option>
+              <option value="Antenna">Antenna</option>
               <option value="Collision">Collision</option>
               <option value="Roof Rack/Roof Accessory">Roof Rack/Roof Accessory</option>
               <option value="PS Mirror">PS Mirror</option>

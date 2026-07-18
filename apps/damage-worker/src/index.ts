@@ -281,6 +281,7 @@ const PHOTO_CATEGORIES = [
 const ALLOWED_DAMAGE_TYPES: ReadonlySet<string> = new Set([
   "License Plate",
   "Wiper",
+  "Antenna",
   "Collision",
   "Roof Rack/Roof Accessory",
   "PS Mirror",

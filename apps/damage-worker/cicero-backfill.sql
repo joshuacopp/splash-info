@@ -35,13 +35,13 @@ INSERT INTO claims
 VALUES
   ('1252026001','cicero','Cicero','Fran Coudriet',
    2020,'Lexus','ES350','Good',
-   'vehicle in front of jumped roller and was hit','DM Review',
+   'vehicle in front of jumped roller and was hit','RM Review',
    'Closed','Closed — Paid',1812.99,
    'backfill','2026-01-28','2026-02-06 00:00:00'),
 
   ('1252026002','cicero','Cicero','Purna Tamang',
    2026,'Honda','Civic','Excellent',
-   'rear bumper hit by another vehicle','DM Review',
+   'rear bumper hit by another vehicle','RM Review',
    'Closed','Closed — Paid',1029.24,
    'backfill','2026-03-04','2026-03-04 00:00:00'),
 
@@ -53,7 +53,7 @@ VALUES
 
   ('1252026004','cicero','Cicero','David Bliss',
    2015,'Kia','Sorento','Fair',
-   'front grille and trim damaged','DM Review',
+   'front grille and trim damaged','RM Review',
    'Closed','Closed — Paid',110.00,
    'backfill','2026-03-12','2026-03-19 00:00:00'),
 
@@ -71,6 +71,6 @@ VALUES
 
   ('1252026007','cicero','Cicero','Jennifer Clark',
    2013,'BMW','X3','Good',
-   'roof rack and crossbars ripped off due to top brushes not being retracted','DM Review',
+   'roof rack and crossbars ripped off due to top brushes not being retracted','RM Review',
    'Closed','Closed — Paid',1314.26,
    'backfill','2026-04-24','2026-05-07 00:00:00');
