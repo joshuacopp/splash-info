@@ -1,30 +1,40 @@
 "use client";
 
-// Brief 71 — Reactive / Preventative tabbed view of MaintainX work orders.
+// Brief 81 — location-first view of MaintainX work orders + requests.
 //
-// Server hands two pre-grouped buckets (one per type); this client tracks:
-//   • which tab is active (useState<"reactive"|"preventive"|"new">)
-//   • which WO IDs are expanded (useState<Set<string>>) — flipping tabs
-//     does NOT clear the expansion set; keys are unique across both
-//     buckets.
+// Replaces the Brief 71/74/80 type-level tabs (Reactive / Preventative /
+// Requests / New Request) with one block per location, each holding four
+// collapsible sections: Reactive, Preventative, Pending Requests, Declined
+// Requests. The server still hands three type-keyed buckets (reactive,
+// preventive, requests) all grouped by the same maintainx_id;
+// `buildLocationBlocks` merges them into one row per location and splits
+// requests by status (REJECTED → Declined, else → Pending).
 //
-// Expanded rows surface full description, created date (YYYY-MM-DD), the
-// assignee list, and category badges.
+// This client tracks:
+//   • which top-level view is showing (useState<"list"|"new">) — the New
+//     Request form is now a full-screen view reached from a header button
+//     or any location's "+ New request", not a tab.
+//   • which row IDs are expanded (useState<Set<string>>) — one shared set
+//     across work orders and requests; MaintainX ids are unique across both
+//     entity types so there's no collision.
 //
-// Brief 73 — collapsed-row additions: muted age label "Nd" beneath the
-// priority pill on both tabs, and a Due column on the Preventative tab only
-// (Reactive dueDate is auto-set to same-day by MaintainX and not
-// operationally meaningful for Splash). The expanded-row Age field was
-// removed because it now duplicates the collapsed-row label.
+// Section defaults: Reactive / Preventative / Pending open; Declined
+// collapsed (the requests endpoint has no date param, so collapsing is how
+// a long rejected history is kept from dominating the screen). Empty
+// sections render muted and non-interactive.
 //
-// Brief 74 — third tab "New Request" renders a form (NewRequestForm.tsx)
-// that POSTs to /workorders/api/request as multipart/form-data, bypassing
-// Next 15 server actions per Brief 37/38 pattern. URL search params
-// (?tab=new&request_ok=N | ?tab=new&request_error=...) drive a banner
-// above the form on the next render — the worker's 303 redirect lands
-// the operator back on this page with those params set.
+// Brief 73 — collapsed-row age label "Nd" beneath the priority pill, and a
+// Due column on Preventative only (Reactive dueDate is auto-set same-day by
+// MaintainX). Requests sort newest-first (created desc, priority tiebreak),
+// inverting the work-order priority-then-age emphasis.
+//
+// Brief 74 — NewRequestForm.tsx POSTs to /workorders/api/request as
+// multipart/form-data, bypassing Next 15 server actions per Brief 37/38.
+// URL params (?tab=new&request_ok=N | ?tab=new&request_error=...) drive a
+// banner above the form on the next render — the worker's 303 redirect
+// lands the operator back on this page with those params set.
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { PriorityPill } from "./PriorityPill";
 import { StatusPill } from "./StatusPill";
 import { RequestStatusPill } from "./RequestStatusPill";
@@ -39,9 +49,6 @@ import type {
   WorkRequestsGroup
 } from "../_lib/worker-fetch";
 
-// Brief 80 — "requests" joins the tab set (PENDING/REJECTED work requests).
-type TabKey = "reactive" | "preventive" | "requests" | "new";
-
 interface Props {
   reactive: WorkOrdersGroup[];
   preventive: WorkOrdersGroup[];
@@ -53,21 +60,102 @@ interface Props {
   requestsTruncated: boolean;
   accessibleLocationCount: number;
   mappedLocationCount: number;
-  /** Brief 74 — passed through to the New Request tab. */
+  /** Brief 74 — passed through to the New Request form. */
   accessibleLocations: AccessibleLocation[];
   currentUser: WorkOrdersCurrentUser;
 }
 
-function bucketCount(groups: WorkOrdersGroup[]): number {
-  let total = 0;
-  for (const g of groups) total += g.work_orders.length;
-  return total;
+// Brief 81 — the page is now location-first: one block per location, each
+// with collapsible Reactive / Preventative / Pending / Declined sections
+// (replacing the Brief 71/80 type-level tabs). This aggregate merges the
+// three server buckets — which arrive keyed by the same maintainx_id — into
+// one row per location. Requests split by status: PENDING → pending,
+// REJECTED → declined.
+interface LocationBlockData {
+  maintainx_id: number;
+  location_pretty: string;
+  reactive: WorkOrderItem[];
+  preventive: WorkOrderItem[];
+  pending: WorkRequestItem[];
+  declined: WorkRequestItem[];
 }
 
-function requestsCount(groups: WorkRequestsGroup[]): number {
-  let total = 0;
-  for (const g of groups) total += g.work_requests.length;
-  return total;
+const PRIORITY_RANK: Record<string, number> = {
+  HIGH: 0,
+  MEDIUM: 1,
+  LOW: 2,
+  NONE: 3
+};
+
+function priorityRank(priority: string): number {
+  return PRIORITY_RANK[(priority ?? "").toUpperCase()] ?? 3;
+}
+
+// Brief 81 — requests sort newest-first by created date, priority breaking
+// ties. This inverts the work-order emphasis (priority-then-age): for
+// requests, recency is what matters, and a declined item from 2023 should
+// never float above a fresh one just because it's HIGH.
+function compareRequestsNewestFirst(
+  a: WorkRequestItem,
+  b: WorkRequestItem
+): number {
+  const pa = a.createdAt ? Date.parse(a.createdAt) : NaN;
+  const pb = b.createdAt ? Date.parse(b.createdAt) : NaN;
+  const ta = Number.isNaN(pa) ? 0 : pa;
+  const tb = Number.isNaN(pb) ? 0 : pb;
+  if (tb !== ta) return tb - ta;
+  return priorityRank(a.priority) - priorityRank(b.priority);
+}
+
+// Brief 81 — fold the three server buckets into one block per location.
+function buildLocationBlocks(props: Props): LocationBlockData[] {
+  const byId = new Map<number, LocationBlockData>();
+  const ensure = (id: number, pretty: string): LocationBlockData => {
+    let block = byId.get(id);
+    if (!block) {
+      block = {
+        maintainx_id: id,
+        location_pretty: pretty,
+        reactive: [],
+        preventive: [],
+        pending: [],
+        declined: []
+      };
+      byId.set(id, block);
+    } else if (
+      block.location_pretty === "(unknown location)" &&
+      pretty !== "(unknown location)"
+    ) {
+      // Prefer a resolved name if any bucket carries one for this id.
+      block.location_pretty = pretty;
+    }
+    return block;
+  };
+
+  for (const g of props.reactive) {
+    ensure(g.maintainx_id, g.location_pretty).reactive.push(...g.work_orders);
+  }
+  for (const g of props.preventive) {
+    ensure(g.maintainx_id, g.location_pretty).preventive.push(...g.work_orders);
+  }
+  for (const g of props.requests) {
+    const block = ensure(g.maintainx_id, g.location_pretty);
+    for (const wr of g.work_requests) {
+      if ((wr.status ?? "").toUpperCase() === "REJECTED") {
+        block.declined.push(wr);
+      } else {
+        block.pending.push(wr);
+      }
+    }
+  }
+
+  const blocks = [...byId.values()];
+  for (const block of blocks) {
+    block.pending.sort(compareRequestsNewestFirst);
+    block.declined.sort(compareRequestsNewestFirst);
+  }
+  blocks.sort((a, b) => a.location_pretty.localeCompare(b.location_pretty));
+  return blocks;
 }
 
 interface RequestResultBanner {
@@ -82,25 +170,21 @@ interface RequestResultBanner {
   requestId: number | null;
 }
 
-function readResultBannerFromUrl(): { tab: TabKey | null; banner: RequestResultBanner | null } {
-  if (typeof window === "undefined") return { tab: null, banner: null };
+function readResultBannerFromUrl(): {
+  isNew: boolean;
+  banner: RequestResultBanner | null;
+} {
+  if (typeof window === "undefined") return { isNew: false, banner: null };
   const params = new URLSearchParams(window.location.search);
-  const tabParam = params.get("tab");
   const okParam = params.get("request_ok");
   const errorParam = params.get("request_error");
   // Brief 76 uses `photo_warn`; Brief 75 used `request_warn` for the
   // same purpose. Read both for backwards compatibility with any
   // in-flight tab that landed on the old shape.
   const warnParam = params.get("photo_warn") ?? params.get("request_warn");
-  let tab: TabKey | null = null;
-  if (
-    tabParam === "new" ||
-    tabParam === "reactive" ||
-    tabParam === "preventive" ||
-    tabParam === "requests"
-  ) {
-    tab = tabParam;
-  }
+  // Brief 81 — the type-tabs are gone; `?tab=new` is the only value the
+  // worker still 303s back with after a submit, and it opens the form view.
+  const isNew = params.get("tab") === "new";
   let banner: RequestResultBanner | null = null;
   if (okParam) {
     const id = Number.parseInt(okParam, 10);
@@ -112,22 +196,26 @@ function readResultBannerFromUrl(): { tab: TabKey | null; banner: RequestResultB
   } else if (errorParam) {
     banner = { kind: "error", message: errorParam, requestId: null };
   }
-  return { tab, banner };
+  return { isNew, banner };
 }
 
 export function WorkOrdersTabsClient(props: Props) {
-  const [tab, setTab] = useState<TabKey>("reactive");
+  // Brief 81 — two top-level views: the location-first list, or the New
+  // Request form. `newLocationId` prefills the form's Location dropdown
+  // when opened from a specific location's "+ New request" button.
+  const [view, setView] = useState<"list" | "new">("list");
+  const [newLocationId, setNewLocationId] = useState<number | null>(null);
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
   const [banner, setBanner] = useState<RequestResultBanner | null>(null);
 
   // Worker 303-redirects back to /workorders?tab=new&request_ok=N (or
   // &request_error=...) after a New Request submit. Read those once on
-  // mount, force the tab to "new" so the operator lands back on the
-  // form, and clear the params from the URL bar so a refresh doesn't
-  // resurrect a stale banner.
+  // mount, open the form view so the operator lands back on it, and clear
+  // the params from the URL bar so a refresh doesn't resurrect a stale
+  // banner.
   useEffect(() => {
-    const { tab: tabFromUrl, banner: bannerFromUrl } = readResultBannerFromUrl();
-    if (tabFromUrl) setTab(tabFromUrl);
+    const { isNew, banner: bannerFromUrl } = readResultBannerFromUrl();
+    if (isNew) setView("new");
     if (bannerFromUrl) {
       setBanner(bannerFromUrl);
       const url = new URL(window.location.href);
@@ -149,84 +237,80 @@ export function WorkOrdersTabsClient(props: Props) {
     });
   };
 
-  const reactiveCount = bucketCount(props.reactive);
-  const preventiveCount = bucketCount(props.preventive);
-  const reqCount = requestsCount(props.requests);
-  const activeGroups = tab === "reactive" ? props.reactive : props.preventive;
+  const openNewRequest = (locationId: number | null) => {
+    setNewLocationId(locationId);
+    setView("new");
+  };
 
-  const totalAcrossBuckets = reactiveCount + preventiveCount + reqCount;
-  // WO list tabs share the Due/Assignee column layout; the Requests tab is
-  // its own list-style tab but renders a distinct table.
-  const isWorkOrderTab = tab === "reactive" || tab === "preventive";
-  const isListTab = isWorkOrderTab || tab === "requests";
-  const showEmpty =
-    isListTab && totalAcrossBuckets === 0 && props.mappedLocationCount === 0;
+  const backToList = () => {
+    setView("list");
+    setBanner(null);
+    setNewLocationId(null);
+  };
+
+  const blocks = useMemo(
+    () => buildLocationBlocks(props),
+    [props.reactive, props.preventive, props.requests]
+  );
+
+  // The New Request form is a full-screen view (not a tab). Reached from
+  // the header button or any location's "+ New request".
+  if (view === "new") {
+    return (
+      <>
+        <button
+          type="button"
+          onClick={backToList}
+          className="mb-4 inline-flex items-center gap-1 text-sm font-semibold text-splash-blue hover:underline"
+        >
+          ← Back to work orders
+        </button>
+        {banner ? <RequestResultBannerView banner={banner} /> : null}
+        <NewRequestForm
+          accessibleLocations={props.accessibleLocations}
+          currentUser={props.currentUser}
+          initialLocationId={newLocationId}
+        />
+      </>
+    );
+  }
+
+  // No mapped locations at all → nothing the worker could have returned.
+  const showNoAccess =
+    blocks.length === 0 && props.mappedLocationCount === 0;
 
   return (
     <>
-      <FetchedAtBanner fetchedAt={props.fetchedAt} />
+      <div className="mb-4 flex items-start justify-between gap-3">
+        <FetchedAtBanner fetchedAt={props.fetchedAt} />
+        <button
+          type="button"
+          onClick={() => openNewRequest(null)}
+          className="whitespace-nowrap rounded-splash-md bg-splash-navy px-4 py-2 text-sm font-semibold text-white shadow-splash-btn hover:bg-splash-blue-dark"
+        >
+          + New Request
+        </button>
+      </div>
 
-      {props.truncated && isWorkOrderTab ? <TruncatedNotice /> : null}
+      {props.truncated ? <TruncatedNotice /> : null}
+      {props.requestsTruncated ? <RequestsTruncatedNotice /> : null}
 
-      {props.requestsTruncated && tab === "requests" ? (
-        <RequestsTruncatedNotice />
-      ) : null}
-
-      {tab === "new" && banner ? (
-        <RequestResultBannerView banner={banner} />
-      ) : null}
-
-      {showEmpty ? (
+      {showNoAccess ? (
         <NoAccessEmptyState
           accessibleLocationCount={props.accessibleLocationCount}
         />
+      ) : blocks.length === 0 ? (
+        <AllClearEmptyState />
       ) : (
-        <>
-          <TabNav
-            active={tab}
-            onChange={(next) => {
-              setTab(next);
-              // Switching tabs clears any stale banner so the next visit
-              // to "new" starts blank.
-              if (next !== "new") setBanner(null);
-            }}
-            reactiveCount={reactiveCount}
-            preventiveCount={preventiveCount}
-            requestsCount={reqCount}
+        blocks.map((block) => (
+          <LocationBlock
+            key={block.maintainx_id}
+            block={block}
+            expanded={expanded}
+            onToggle={toggle}
+            onNewRequest={openNewRequest}
           />
-
-          {tab === "new" ? (
-            <NewRequestForm
-              accessibleLocations={props.accessibleLocations}
-              currentUser={props.currentUser}
-            />
-          ) : tab === "requests" ? (
-            props.requests.length === 0 ? (
-              <RequestsEmptyState />
-            ) : (
-              props.requests.map((group) => (
-                <RequestGroupSection
-                  key={group.maintainx_id}
-                  group={group}
-                  expanded={expanded}
-                  onToggle={toggle}
-                />
-              ))
-            )
-          ) : activeGroups.length === 0 ? (
-            <BucketEmptyState tab={tab} />
-          ) : (
-            activeGroups.map((group) => (
-              <GroupSection
-                key={group.maintainx_id}
-                group={group}
-                expanded={expanded}
-                onToggle={toggle}
-                tab={tab}
-              />
-            ))
-          )}
-        </>
+        ))
       )}
     </>
   );
@@ -314,91 +398,6 @@ function FetchedAtBanner({ fetchedAt }: { fetchedAt: string }) {
   );
 }
 
-function TabNav({
-  active,
-  onChange,
-  reactiveCount,
-  preventiveCount,
-  requestsCount
-}: {
-  active: TabKey;
-  onChange: (t: TabKey) => void;
-  reactiveCount: number;
-  preventiveCount: number;
-  requestsCount: number;
-}) {
-  return (
-    <div
-      role="tablist"
-      className="mb-5 inline-flex items-center gap-1 rounded-full border border-gray-light bg-white p-1 shadow-splash-card"
-    >
-      <TabButton
-        active={active === "reactive"}
-        onClick={() => onChange("reactive")}
-        label="Reactive"
-        count={reactiveCount}
-      />
-      <TabButton
-        active={active === "preventive"}
-        onClick={() => onChange("preventive")}
-        label="Preventative"
-        count={preventiveCount}
-      />
-      <TabButton
-        active={active === "requests"}
-        onClick={() => onChange("requests")}
-        label="Requests"
-        count={requestsCount}
-      />
-      <TabButton
-        active={active === "new"}
-        onClick={() => onChange("new")}
-        label="New Request"
-      />
-    </div>
-  );
-}
-
-function TabButton({
-  active,
-  onClick,
-  label,
-  count
-}: {
-  active: boolean;
-  onClick: () => void;
-  label: string;
-  count?: number;
-}) {
-  return (
-    <button
-      type="button"
-      role="tab"
-      aria-selected={active}
-      onClick={onClick}
-      className={`rounded-full px-4 py-1.5 text-sm font-semibold transition-colors ${
-        active
-          ? "bg-splash-navy text-white"
-          : "text-splash-navy/70 hover:bg-gray-light/40"
-      }`}
-    >
-      {label}
-      {typeof count === "number" ? (
-        <>
-          {" "}
-          <span
-            className={`ml-1 inline-block rounded-full px-1.5 text-[11px] ${
-              active ? "bg-white/20 text-white" : "bg-gray-light text-splash-navy/70"
-            }`}
-          >
-            {count}
-          </span>
-        </>
-      ) : null}
-    </button>
-  );
-}
-
 function TruncatedNotice() {
   return (
     <div className="mb-5 rounded-md border border-amber-200 bg-amber-50 px-4 py-2 text-sm text-amber-900">
@@ -448,45 +447,178 @@ function NoAccessEmptyState({
   );
 }
 
-function BucketEmptyState({ tab }: { tab: "reactive" | "preventive" }) {
-  const label = tab === "reactive" ? "Reactive" : "Preventative";
+// Brief 81 — shown when the operator has mapped locations but every one of
+// them is empty across all four sections. Replaces the per-tab
+// BucketEmptyState / RequestsEmptyState.
+function AllClearEmptyState() {
   return (
     <div className="rounded-splash-lg border border-gray-light bg-white px-6 py-10 text-center">
       <p className="text-base font-semibold text-splash-navy">
-        No open {label} work orders for your locations.
+        All clear — no open work orders or requests for your locations.
       </p>
       <p className="mt-1 text-sm text-splash-navy/70">
-        For closed work orders, log into MaintainX directly.
+        Closed work orders and approved requests live in MaintainX. Start a
+        new request with the button above.
       </p>
     </div>
   );
 }
 
-// Brief 80 — Requests-tab empty state (mapped locations exist, but no
-// PENDING/REJECTED requests). Distinct copy from BucketEmptyState.
-function RequestsEmptyState() {
+// Brief 81 — one location's block: a header with a per-location "+ New
+// request" button, followed by four collapsible sections. Reactive,
+// Preventative and Pending default open; Declined defaults collapsed so a
+// long rejected history doesn't dominate the screen (there's no date param
+// on the requests endpoint to bound it server-side).
+function LocationBlock({
+  block,
+  expanded,
+  onToggle,
+  onNewRequest
+}: {
+  block: LocationBlockData;
+  expanded: Set<string>;
+  onToggle: (id: number) => void;
+  onNewRequest: (locationId: number | null) => void;
+}) {
   return (
-    <div className="rounded-splash-lg border border-gray-light bg-white px-6 py-10 text-center">
-      <p className="text-base font-semibold text-splash-navy">
-        No pending or rejected requests for your locations.
-      </p>
-      <p className="mt-1 text-sm text-splash-navy/70">
-        Approved requests become work orders and show on the Reactive or
-        Preventative tabs. Submit a new one from the New Request tab.
-      </p>
+    <section className="mb-8">
+      <div className="mb-3 flex items-center justify-between gap-3">
+        <h2 className="text-lg font-bold text-splash-navy">
+          {block.location_pretty}
+        </h2>
+        <button
+          type="button"
+          onClick={() => onNewRequest(block.maintainx_id)}
+          className="whitespace-nowrap rounded-splash-md border border-splash-navy/20 px-3 py-1.5 text-xs font-semibold text-splash-navy hover:bg-gray-light/40"
+        >
+          + New request
+        </button>
+      </div>
+
+      <div className="space-y-2">
+        <CollapsibleSection
+          title="Reactive"
+          count={block.reactive.length}
+          defaultOpen
+        >
+          <WorkOrderTable
+            workOrders={block.reactive}
+            expanded={expanded}
+            onToggle={onToggle}
+            showDueColumn={false}
+          />
+        </CollapsibleSection>
+
+        <CollapsibleSection
+          title="Preventative"
+          count={block.preventive.length}
+          defaultOpen
+        >
+          <WorkOrderTable
+            workOrders={block.preventive}
+            expanded={expanded}
+            onToggle={onToggle}
+            showDueColumn
+          />
+        </CollapsibleSection>
+
+        <CollapsibleSection
+          title="Pending Requests"
+          count={block.pending.length}
+          defaultOpen
+        >
+          <RequestTable
+            requests={block.pending}
+            expanded={expanded}
+            onToggle={onToggle}
+          />
+        </CollapsibleSection>
+
+        <CollapsibleSection
+          title="Declined Requests"
+          count={block.declined.length}
+          defaultOpen={false}
+        >
+          <RequestTable
+            requests={block.declined}
+            expanded={expanded}
+            onToggle={onToggle}
+          />
+        </CollapsibleSection>
+      </div>
+    </section>
+  );
+}
+
+// Brief 81 — a titled, count-badged collapsible. When count === 0 it's
+// rendered muted and non-interactive (no chevron affordance, no body) so an
+// operator can see at a glance that a section is empty without being able to
+// expand into nothing.
+function CollapsibleSection({
+  title,
+  count,
+  defaultOpen,
+  children
+}: {
+  title: string;
+  count: number;
+  defaultOpen: boolean;
+  children: ReactNode;
+}) {
+  const [open, setOpen] = useState(defaultOpen);
+  const empty = count === 0;
+
+  if (empty) {
+    return (
+      <div className="flex items-center gap-2 rounded-splash-md border border-gray-light bg-white px-3 py-2 text-sm">
+        <span className="w-3 text-splash-navy/30" aria-hidden="true">
+          ▶
+        </span>
+        <span className="font-semibold text-splash-navy/40">{title}</span>
+        <CountPill count={count} muted />
+      </div>
+    );
+  }
+
+  return (
+    <div className="rounded-splash-md border border-gray-light bg-white">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+        className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm hover:bg-gray-light/30"
+      >
+        <Chevron expanded={open} />
+        <span className="font-semibold text-splash-navy">{title}</span>
+        <CountPill count={count} />
+      </button>
+      {open ? <div className="border-t border-gray-light">{children}</div> : null}
     </div>
   );
 }
 
-// Brief 80 — one location's block of work requests. Mirrors GroupSection
-// but with a request-specific column set (no Assignees/Due; a Requested by
-// column instead) and the request status pill.
-function RequestGroupSection({
-  group,
+function CountPill({ count, muted }: { count: number; muted?: boolean }) {
+  return (
+    <span
+      className={`ml-0.5 inline-block rounded-full px-1.5 text-[11px] font-semibold ${
+        muted
+          ? "bg-gray-light/60 text-splash-navy/40"
+          : "bg-gray-light text-splash-navy/70"
+      }`}
+    >
+      {count}
+    </span>
+  );
+}
+
+// Brief 81 — request table body (no location header — LocationBlock owns
+// that now). Same columns as the old RequestGroupSection.
+function RequestTable({
+  requests,
   expanded,
   onToggle
 }: {
-  group: WorkRequestsGroup;
+  requests: WorkRequestItem[];
   expanded: Set<string>;
   onToggle: (id: number) => void;
 }) {
@@ -495,41 +627,32 @@ function RequestGroupSection({
   // collision risk from reusing the same set.
   const colSpan = 6;
   return (
-    <section className="mb-7">
-      <h2 className="mb-2 text-lg font-bold text-splash-navy">
-        {group.location_pretty}{" "}
-        <span className="text-sm font-normal text-splash-navy/60">
-          · {group.work_requests.length} request
-          {group.work_requests.length === 1 ? "" : "s"}
-        </span>
-      </h2>
-      <div className="overflow-x-auto rounded-splash-lg border border-gray-light bg-white shadow-splash-card">
-        <table className="w-full border-collapse text-sm">
-          <thead>
-            <tr className="bg-gray-light/40 text-left text-[11px] font-semibold uppercase tracking-wide text-splash-navy/70">
-              <th className="w-6 px-2 py-2" aria-hidden="true"></th>
-              <th className="px-3 py-2">Priority</th>
-              <th className="px-3 py-2">Title</th>
-              <th className="px-3 py-2">Status</th>
-              <th className="px-3 py-2">Requested by</th>
-              <th className="px-3 py-2">Updated</th>
-              <th className="px-3 py-2 text-right">MaintainX</th>
-            </tr>
-          </thead>
-          <tbody>
-            {group.work_requests.map((wr) => (
-              <WorkRequestRow
-                key={wr.id}
-                wr={wr}
-                isExpanded={expanded.has(String(wr.id))}
-                onToggle={onToggle}
-                colSpan={colSpan}
-              />
-            ))}
-          </tbody>
-        </table>
-      </div>
-    </section>
+    <div className="overflow-x-auto">
+      <table className="w-full border-collapse text-sm">
+        <thead>
+          <tr className="bg-gray-light/40 text-left text-[11px] font-semibold uppercase tracking-wide text-splash-navy/70">
+            <th className="w-6 px-2 py-2" aria-hidden="true"></th>
+            <th className="px-3 py-2">Priority</th>
+            <th className="px-3 py-2">Title</th>
+            <th className="px-3 py-2">Status</th>
+            <th className="px-3 py-2">Requested by</th>
+            <th className="px-3 py-2">Updated</th>
+            <th className="px-3 py-2 text-right">MaintainX</th>
+          </tr>
+        </thead>
+        <tbody>
+          {requests.map((wr) => (
+            <WorkRequestRow
+              key={wr.id}
+              wr={wr}
+              isExpanded={expanded.has(String(wr.id))}
+              onToggle={onToggle}
+              colSpan={colSpan}
+            />
+          ))}
+        </tbody>
+      </table>
+    </div>
   );
 }
 
@@ -656,56 +779,50 @@ function RequestExpandedRow({
   );
 }
 
-function GroupSection({
-  group,
+// Brief 81 — work-order table body (no location header — LocationBlock owns
+// that now). Reactive passes showDueColumn={false}; Preventative passes it
+// true (Reactive dueDate is auto-set same-day by MaintainX, per Brief 73).
+function WorkOrderTable({
+  workOrders,
   expanded,
   onToggle,
-  tab
+  showDueColumn
 }: {
-  group: WorkOrdersGroup;
+  workOrders: WorkOrderItem[];
   expanded: Set<string>;
   onToggle: (id: number) => void;
-  tab: "reactive" | "preventive";
+  showDueColumn: boolean;
 }) {
-  const showDueColumn = tab === "preventive";
   const colSpan = showDueColumn ? 8 : 7;
   return (
-    <section className="mb-7">
-      <h2 className="mb-2 text-lg font-bold text-splash-navy">
-        {group.location_pretty}{" "}
-        <span className="text-sm font-normal text-splash-navy/60">
-          · {group.work_orders.length} open
-        </span>
-      </h2>
-      <div className="overflow-x-auto rounded-splash-lg border border-gray-light bg-white shadow-splash-card">
-        <table className="w-full border-collapse text-sm">
-          <thead>
-            <tr className="bg-gray-light/40 text-left text-[11px] font-semibold uppercase tracking-wide text-splash-navy/70">
-              <th className="w-6 px-2 py-2" aria-hidden="true"></th>
-              <th className="px-3 py-2">Priority</th>
-              <th className="px-3 py-2">Title</th>
-              <th className="px-3 py-2">Status</th>
-              {showDueColumn ? <th className="px-3 py-2">Due</th> : null}
-              <th className="px-3 py-2">Assignees</th>
-              <th className="px-3 py-2">Updated</th>
-              <th className="px-3 py-2 text-right">MaintainX</th>
-            </tr>
-          </thead>
-          <tbody>
-            {group.work_orders.map((wo) => (
-              <WorkOrderRow
-                key={wo.id}
-                wo={wo}
-                isExpanded={expanded.has(String(wo.id))}
-                onToggle={onToggle}
-                showDueColumn={showDueColumn}
-                colSpan={colSpan}
-              />
-            ))}
-          </tbody>
-        </table>
-      </div>
-    </section>
+    <div className="overflow-x-auto">
+      <table className="w-full border-collapse text-sm">
+        <thead>
+          <tr className="bg-gray-light/40 text-left text-[11px] font-semibold uppercase tracking-wide text-splash-navy/70">
+            <th className="w-6 px-2 py-2" aria-hidden="true"></th>
+            <th className="px-3 py-2">Priority</th>
+            <th className="px-3 py-2">Title</th>
+            <th className="px-3 py-2">Status</th>
+            {showDueColumn ? <th className="px-3 py-2">Due</th> : null}
+            <th className="px-3 py-2">Assignees</th>
+            <th className="px-3 py-2">Updated</th>
+            <th className="px-3 py-2 text-right">MaintainX</th>
+          </tr>
+        </thead>
+        <tbody>
+          {workOrders.map((wo) => (
+            <WorkOrderRow
+              key={wo.id}
+              wo={wo}
+              isExpanded={expanded.has(String(wo.id))}
+              onToggle={onToggle}
+              showDueColumn={showDueColumn}
+              colSpan={colSpan}
+            />
+          ))}
+        </tbody>
+      </table>
+    </div>
   );
 }
 

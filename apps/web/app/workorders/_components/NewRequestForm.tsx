@@ -18,12 +18,28 @@ import type { AccessibleLocation, WorkOrdersCurrentUser } from "../_lib/worker-f
 interface Props {
   accessibleLocations: AccessibleLocation[];
   currentUser: WorkOrdersCurrentUser;
+  // Brief 81 — prefills the Location dropdown when the form is opened from a
+  // specific location's "+ New request" button. null → no prefill (opened
+  // from the page-level "+ New Request" header button).
+  initialLocationId?: number | null;
 }
 
-export function NewRequestForm({ accessibleLocations, currentUser }: Props) {
+export function NewRequestForm({
+  accessibleLocations,
+  currentUser,
+  initialLocationId
+}: Props) {
   const mappable = accessibleLocations.filter(
     (l) => typeof l.maintainx_id === "number" && Number.isFinite(l.maintainx_id)
   );
+
+  // Only prefill if the passed id is actually one of the operator's mappable
+  // locations — otherwise fall back to the empty "Pick a location…" state.
+  const prefill =
+    initialLocationId != null &&
+    mappable.some((l) => l.maintainx_id === initialLocationId)
+      ? String(initialLocationId)
+      : "";
 
   if (mappable.length === 0) {
     return (
@@ -55,7 +71,7 @@ export function NewRequestForm({ accessibleLocations, currentUser }: Props) {
           id="nr-location"
           name="location_id"
           required
-          defaultValue=""
+          defaultValue={prefill}
           className="w-full rounded-splash-md border border-gray-light bg-white px-3 py-2 text-sm text-splash-navy focus:border-splash-blue focus:outline-none focus:ring-1 focus:ring-splash-blue"
         >
           <option value="" disabled>
