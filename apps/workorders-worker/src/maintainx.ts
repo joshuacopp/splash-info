@@ -311,6 +311,278 @@ export async function fetchMaintainXWorkOrders(input: FetchInput): Promise<Fetch
 }
 
 /* ============================================================
+ * Brief 80 — Work Request READ client (GET /v1/workrequests).
+ *
+ * Companion to the WO read path above. Powers the /workorders
+ * "Requests" sub-tab: surfaces the informal intake queue
+ * (`/v1/workrequests`) that the New Request tab writes to.
+ *
+ * Two facts drive the shape of this helper, learned from a live
+ * `GET /v1/workrequests` sample plus the endpoint's query-param docs
+ * (both 2026-07-22):
+ *   1. The plain call returns the WHOLE org's requests (all locations,
+ *      all statuses), sorted `updatedAt` desc, cursor-paginated (100/
+ *      page). The docs confirm `locations=` AND `statuses=` filters on
+ *      this resource, so Brief 80 sends both server-side (locations =
+ *      the user's mapped IDs; statuses = PENDING+REJECTED) to keep the
+ *      cursor walk short. The CALLER still hard-filters by mapped
+ *      location IDs and visible statuses as defense-in-depth — correct
+ *      even if a param were silently dropped.
+ *   2. Request rows carry `requestStatus` (PENDING / APPROVED /
+ *      REJECTED / DONE) and a `workOrderId` once promoted — NOT the
+ *      WO `type` field.
+ *
+ * Same fail-soft posture as `fetchMaintainXWorkOrders`: never throws;
+ * fetch errors / non-2xx / non-JSON collapse to `ok: false`.
+ * ============================================================ */
+
+/** Subset of the MaintainX work-request JSON we consume. Forward-
+ *  compatible: unknown extra fields are ignored. */
+export interface RawWorkRequest {
+  id: number;
+  title?: string | null;
+  description?: string | null;
+  priority?: string | null;
+  /** PENDING / APPROVED / REJECTED / DONE. */
+  requestStatus?: string | null;
+  createdAt?: string | null;
+  updatedAt?: string | null;
+  /** Integer ID, present without expand. */
+  locationId?: number | null;
+  /** Resolved only when the endpoint honors `expand=location`. */
+  location?: { id?: number; name?: string | null } | null;
+  /** Set once staff promote the request to a work order. */
+  workOrderId?: number | null;
+  /** MaintainX user ID of the filer; resolved to a name caller-side
+   *  via the `maintainx_users` cache. */
+  creatorId?: number | null;
+  assetId?: number | null;
+}
+
+const WORK_REQUEST_PAGE_LIMIT = 100;
+
+export interface FetchWorkRequestsInput {
+  apiKey: string;
+  baseUrl: string;
+  /** Server-side location filter — confirmed supported on this resource
+   *  (docs verified 2026-07-22). The caller still re-filters by mapped IDs
+   *  as defense-in-depth. */
+  maintainxLocationIds?: number[];
+  /** Server-side status filter — confirmed supported (Items Enum:
+   *  APPROVED / DONE / PENDING / REJECTED). Brief 80 passes
+   *  ["PENDING","REJECTED"] so the cursor walk skips promoted/closed
+   *  requests entirely. Caller re-filters regardless. */
+  statuses?: string[];
+  /** Cap on accumulated rows across the cursor walk. */
+  maxWorkRequests: number;
+  signal?: AbortSignal;
+}
+
+export interface FetchWorkRequestsResult {
+  ok: boolean;
+  workRequests: RawWorkRequest[];
+  /** True iff more rows exist upstream than we returned (hit the row
+   *  cap or the page-iteration ceiling before the cursor went null). */
+  truncated: boolean;
+  pageCount: number;
+  error: string | null;
+  status: number;
+}
+
+function buildWorkRequestsUrl(input: FetchWorkRequestsInput, cursor: string | null): string {
+  const base = input.baseUrl.replace(/\/$/, "");
+  const url = new URL(`${base}/workrequests`);
+  url.searchParams.append("expand", "location");
+  url.searchParams.set("limit", String(WORK_REQUEST_PAGE_LIMIT));
+  if (input.maintainxLocationIds && input.maintainxLocationIds.length > 0) {
+    for (const id of input.maintainxLocationIds) {
+      url.searchParams.append("locations", String(id));
+    }
+  }
+  if (input.statuses && input.statuses.length > 0) {
+    for (const status of input.statuses) {
+      url.searchParams.append("statuses", status);
+    }
+  }
+  if (cursor) url.searchParams.set("cursor", cursor);
+  return url.toString();
+}
+
+function extractWorkRequests(body: unknown): {
+  workRequests: RawWorkRequest[];
+  nextCursor: string | null;
+} {
+  if (!body || typeof body !== "object") {
+    return { workRequests: [], nextCursor: null };
+  }
+  const obj = body as Record<string, unknown>;
+
+  let arr: unknown = null;
+  if (Array.isArray(obj)) {
+    arr = obj;
+  } else if (Array.isArray(obj.workRequests)) {
+    arr = obj.workRequests;
+  } else if (Array.isArray(obj.data)) {
+    arr = obj.data;
+  } else if (Array.isArray((obj as { results?: unknown }).results)) {
+    arr = (obj as { results: unknown }).results;
+  }
+
+  const cursorRaw =
+    (obj as { nextCursor?: unknown }).nextCursor ?? null;
+  const nextCursor =
+    typeof cursorRaw === "string" && cursorRaw !== "" ? cursorRaw : null;
+
+  if (!Array.isArray(arr)) return { workRequests: [], nextCursor };
+
+  const workRequests: RawWorkRequest[] = [];
+  for (const raw of arr) {
+    if (!raw || typeof raw !== "object") continue;
+    const r = raw as Record<string, unknown>;
+    const id = typeof r.id === "number" ? r.id : Number.parseInt(String(r.id ?? ""), 10);
+    if (!Number.isFinite(id)) continue;
+    workRequests.push(raw as RawWorkRequest);
+  }
+  return { workRequests, nextCursor };
+}
+
+interface SingleWorkRequestPage {
+  ok: boolean;
+  workRequests: RawWorkRequest[];
+  nextCursor: string | null;
+  error: string | null;
+  status: number;
+}
+
+async function fetchOneWorkRequestPage(
+  input: FetchWorkRequestsInput,
+  cursor: string | null
+): Promise<SingleWorkRequestPage> {
+  const url = buildWorkRequestsUrl(input, cursor);
+
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${input.apiKey}`,
+        Accept: "application/json"
+      },
+      signal: input.signal
+    });
+  } catch (e) {
+    return {
+      ok: false,
+      workRequests: [],
+      nextCursor: null,
+      error: e instanceof Error ? e.message : String(e),
+      status: 0
+    };
+  }
+
+  if (!res.ok) {
+    let errText = "";
+    try {
+      errText = await res.text();
+    } catch {
+      // ignore
+    }
+    return {
+      ok: false,
+      workRequests: [],
+      nextCursor: null,
+      error: `MX ${res.status}: ${errText.slice(0, ERROR_BODY_MAX_BYTES)}`,
+      status: res.status
+    };
+  }
+
+  let parsed: unknown = null;
+  try {
+    parsed = await res.json();
+  } catch {
+    return {
+      ok: false,
+      workRequests: [],
+      nextCursor: null,
+      error: `MX ${res.status}: response was not valid JSON`,
+      status: res.status
+    };
+  }
+
+  const { workRequests, nextCursor } = extractWorkRequests(parsed);
+  return { ok: true, workRequests, nextCursor, error: null, status: res.status };
+}
+
+/**
+ * Walk the `/workrequests` cursor chain until the row cap or the
+ * iteration ceiling is hit (or the cursor goes null). Always
+ * paginates — unlike the WO path there's no single-location fast
+ * path, because location filtering isn't guaranteed server-side, so
+ * a single-location user may still need several pages of org-wide
+ * results to surface all of their PENDING/REJECTED requests. The
+ * caller hard-filters what comes back.
+ */
+export async function fetchMaintainXWorkRequests(
+  input: FetchWorkRequestsInput
+): Promise<FetchWorkRequestsResult> {
+  const accumulator: RawWorkRequest[] = [];
+  let cursor: string | null = null;
+  let pageCount = 0;
+  let truncated = false;
+  let lastStatus = 0;
+
+  while (pageCount < MAX_PAGE_ITERATIONS) {
+    const page: SingleWorkRequestPage = await fetchOneWorkRequestPage(input, cursor);
+    pageCount += 1;
+    lastStatus = page.status;
+
+    if (!page.ok) {
+      // Partial-result fail-soft: return what we accumulated so far.
+      return {
+        ok: false,
+        workRequests: accumulator,
+        truncated: false,
+        pageCount,
+        error: page.error,
+        status: page.status
+      };
+    }
+
+    for (const wr of page.workRequests) accumulator.push(wr);
+
+    if (accumulator.length >= input.maxWorkRequests) {
+      truncated = true;
+      accumulator.length = input.maxWorkRequests;
+      break;
+    }
+
+    if (page.nextCursor === null) {
+      truncated = false;
+      break;
+    }
+
+    cursor = page.nextCursor;
+
+    if (pageCount >= MAX_PAGE_ITERATIONS) {
+      console.warn(
+        `workorders-worker workrequests pagination hit MAX_PAGE_ITERATIONS=${MAX_PAGE_ITERATIONS}; force-breaking with truncated=true`
+      );
+      truncated = true;
+      break;
+    }
+  }
+
+  return {
+    ok: true,
+    workRequests: accumulator,
+    truncated,
+    pageCount,
+    error: null,
+    status: lastStatus
+  };
+}
+
+/* ============================================================
  * Brief 74 — Work Request create + photo-upload helpers.
  *
  * MaintainX distinguishes "work requests" (informal, anyone-can-file

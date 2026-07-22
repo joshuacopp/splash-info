@@ -56,8 +56,10 @@ function Body({ data }: { data: WorkOrdersListResponse }) {
     <WorkOrdersTabsClient
       reactive={data.reactive.groups}
       preventive={data.preventive.groups}
+      requests={data.requests.groups}
       fetchedAt={data.fetchedAt}
       truncated={data.truncated}
+      requestsTruncated={data.requestsTruncated}
       accessibleLocationCount={data.accessibleLocationCount}
       mappedLocationCount={data.mappedLocationCount}
       accessibleLocations={data.accessibleLocations}

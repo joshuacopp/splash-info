@@ -43,6 +43,45 @@ export interface WorkOrdersBucket {
   groups: WorkOrdersGroup[];
 }
 
+/* ============================================================
+ * Brief 80 — work-request shapes for the Requests sub-tab.
+ * Mirrors the worker's WorkRequestOut / RequestGroupOut. A
+ * request carries `status` (PENDING/REJECTED), an optional
+ * promoted `workOrderId`, and a single `creator` rather than
+ * an assignee list.
+ * ============================================================ */
+
+export interface WorkRequestCreator {
+  id: number | null;
+  name: string;
+  email: string | null;
+}
+
+export interface WorkRequestItem {
+  id: number;
+  title: string;
+  /** MaintainX requestStatus — PENDING or REJECTED. */
+  status: string;
+  priority: string;
+  createdAt: string | null;
+  updatedAt: string | null;
+  description: string | null;
+  locationId: number | null;
+  /** Set once staff promote the request; null while PENDING/REJECTED. */
+  workOrderId: number | null;
+  creator: WorkRequestCreator | null;
+}
+
+export interface WorkRequestsGroup {
+  maintainx_id: number;
+  location_pretty: string;
+  work_requests: WorkRequestItem[];
+}
+
+export interface WorkRequestsBucket {
+  groups: WorkRequestsGroup[];
+}
+
 /** Brief 74 — surfaced to apps/web alongside the read response so the
  *  New Request tab's Location dropdown has data without a second fetch.
  *  The form filters to entries with `maintainx_id !== null` (a request
@@ -61,8 +100,14 @@ export interface WorkOrdersCurrentUser {
 export interface WorkOrdersListResponse {
   reactive: WorkOrdersBucket;
   preventive: WorkOrdersBucket;
+  /** Brief 80 — PENDING + REJECTED work requests for the user's mapped
+   *  locations, grouped like the WO buckets. */
+  requests: WorkRequestsBucket;
   fetchedAt: string;
   truncated: boolean;
+  /** Brief 80 — true iff the work-requests fetch hit its row/page cap
+   *  before exhausting the cursor. Independent of `truncated` (WOs). */
+  requestsTruncated: boolean;
   /** Brief 72: number of MaintainX API calls made by the worker for
    *  this response (1 for single-location users, 1-5 for multi-location). */
   pageCount: number;

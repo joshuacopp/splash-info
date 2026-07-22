@@ -27,22 +27,30 @@
 import { useEffect, useState } from "react";
 import { PriorityPill } from "./PriorityPill";
 import { StatusPill } from "./StatusPill";
+import { RequestStatusPill } from "./RequestStatusPill";
 import { DueDatePill } from "./DueDatePill";
 import { NewRequestForm } from "./NewRequestForm";
 import type {
   AccessibleLocation,
   WorkOrderItem,
   WorkOrdersCurrentUser,
-  WorkOrdersGroup
+  WorkOrdersGroup,
+  WorkRequestItem,
+  WorkRequestsGroup
 } from "../_lib/worker-fetch";
 
-type TabKey = "reactive" | "preventive" | "new";
+// Brief 80 — "requests" joins the tab set (PENDING/REJECTED work requests).
+type TabKey = "reactive" | "preventive" | "requests" | "new";
 
 interface Props {
   reactive: WorkOrdersGroup[];
   preventive: WorkOrdersGroup[];
+  /** Brief 80 — PENDING + REJECTED work requests, grouped by location. */
+  requests: WorkRequestsGroup[];
   fetchedAt: string;
   truncated: boolean;
+  /** Brief 80 — work-requests fetch hit its cap (independent of `truncated`). */
+  requestsTruncated: boolean;
   accessibleLocationCount: number;
   mappedLocationCount: number;
   /** Brief 74 — passed through to the New Request tab. */
@@ -53,6 +61,12 @@ interface Props {
 function bucketCount(groups: WorkOrdersGroup[]): number {
   let total = 0;
   for (const g of groups) total += g.work_orders.length;
+  return total;
+}
+
+function requestsCount(groups: WorkRequestsGroup[]): number {
+  let total = 0;
+  for (const g of groups) total += g.work_requests.length;
   return total;
 }
 
@@ -79,7 +93,12 @@ function readResultBannerFromUrl(): { tab: TabKey | null; banner: RequestResultB
   // in-flight tab that landed on the old shape.
   const warnParam = params.get("photo_warn") ?? params.get("request_warn");
   let tab: TabKey | null = null;
-  if (tabParam === "new" || tabParam === "reactive" || tabParam === "preventive") {
+  if (
+    tabParam === "new" ||
+    tabParam === "reactive" ||
+    tabParam === "preventive" ||
+    tabParam === "requests"
+  ) {
     tab = tabParam;
   }
   let banner: RequestResultBanner | null = null;
@@ -132,10 +151,14 @@ export function WorkOrdersTabsClient(props: Props) {
 
   const reactiveCount = bucketCount(props.reactive);
   const preventiveCount = bucketCount(props.preventive);
+  const reqCount = requestsCount(props.requests);
   const activeGroups = tab === "reactive" ? props.reactive : props.preventive;
 
-  const totalAcrossBuckets = reactiveCount + preventiveCount;
-  const isListTab = tab === "reactive" || tab === "preventive";
+  const totalAcrossBuckets = reactiveCount + preventiveCount + reqCount;
+  // WO list tabs share the Due/Assignee column layout; the Requests tab is
+  // its own list-style tab but renders a distinct table.
+  const isWorkOrderTab = tab === "reactive" || tab === "preventive";
+  const isListTab = isWorkOrderTab || tab === "requests";
   const showEmpty =
     isListTab && totalAcrossBuckets === 0 && props.mappedLocationCount === 0;
 
@@ -143,7 +166,11 @@ export function WorkOrdersTabsClient(props: Props) {
     <>
       <FetchedAtBanner fetchedAt={props.fetchedAt} />
 
-      {props.truncated && isListTab ? <TruncatedNotice /> : null}
+      {props.truncated && isWorkOrderTab ? <TruncatedNotice /> : null}
+
+      {props.requestsTruncated && tab === "requests" ? (
+        <RequestsTruncatedNotice />
+      ) : null}
 
       {tab === "new" && banner ? (
         <RequestResultBannerView banner={banner} />
@@ -165,6 +192,7 @@ export function WorkOrdersTabsClient(props: Props) {
             }}
             reactiveCount={reactiveCount}
             preventiveCount={preventiveCount}
+            requestsCount={reqCount}
           />
 
           {tab === "new" ? (
@@ -172,6 +200,19 @@ export function WorkOrdersTabsClient(props: Props) {
               accessibleLocations={props.accessibleLocations}
               currentUser={props.currentUser}
             />
+          ) : tab === "requests" ? (
+            props.requests.length === 0 ? (
+              <RequestsEmptyState />
+            ) : (
+              props.requests.map((group) => (
+                <RequestGroupSection
+                  key={group.maintainx_id}
+                  group={group}
+                  expanded={expanded}
+                  onToggle={toggle}
+                />
+              ))
+            )
           ) : activeGroups.length === 0 ? (
             <BucketEmptyState tab={tab} />
           ) : (
@@ -277,12 +318,14 @@ function TabNav({
   active,
   onChange,
   reactiveCount,
-  preventiveCount
+  preventiveCount,
+  requestsCount
 }: {
   active: TabKey;
   onChange: (t: TabKey) => void;
   reactiveCount: number;
   preventiveCount: number;
+  requestsCount: number;
 }) {
   return (
     <div
@@ -300,6 +343,12 @@ function TabNav({
         onClick={() => onChange("preventive")}
         label="Preventative"
         count={preventiveCount}
+      />
+      <TabButton
+        active={active === "requests"}
+        onClick={() => onChange("requests")}
+        label="Requests"
+        count={requestsCount}
       />
       <TabButton
         active={active === "new"}
@@ -359,6 +408,16 @@ function TruncatedNotice() {
   );
 }
 
+// Brief 80 — requests-tab counterpart to TruncatedNotice.
+function RequestsTruncatedNotice() {
+  return (
+    <div className="mb-5 rounded-md border border-amber-200 bg-amber-50 px-4 py-2 text-sm text-amber-900">
+      Showing the most recent requests. Older items aren&apos;t visible
+      here — log into MaintainX directly for the full list.
+    </div>
+  );
+}
+
 function NoAccessEmptyState({
   accessibleLocationCount
 }: {
@@ -400,6 +459,200 @@ function BucketEmptyState({ tab }: { tab: "reactive" | "preventive" }) {
         For closed work orders, log into MaintainX directly.
       </p>
     </div>
+  );
+}
+
+// Brief 80 — Requests-tab empty state (mapped locations exist, but no
+// PENDING/REJECTED requests). Distinct copy from BucketEmptyState.
+function RequestsEmptyState() {
+  return (
+    <div className="rounded-splash-lg border border-gray-light bg-white px-6 py-10 text-center">
+      <p className="text-base font-semibold text-splash-navy">
+        No pending or rejected requests for your locations.
+      </p>
+      <p className="mt-1 text-sm text-splash-navy/70">
+        Approved requests become work orders and show on the Reactive or
+        Preventative tabs. Submit a new one from the New Request tab.
+      </p>
+    </div>
+  );
+}
+
+// Brief 80 — one location's block of work requests. Mirrors GroupSection
+// but with a request-specific column set (no Assignees/Due; a Requested by
+// column instead) and the request status pill.
+function RequestGroupSection({
+  group,
+  expanded,
+  onToggle
+}: {
+  group: WorkRequestsGroup;
+  expanded: Set<string>;
+  onToggle: (id: number) => void;
+}) {
+  // Requests and work orders share one `expanded` Set keyed by numeric id.
+  // MaintainX ids are unique across both entity types, so there's no
+  // collision risk from reusing the same set.
+  const colSpan = 6;
+  return (
+    <section className="mb-7">
+      <h2 className="mb-2 text-lg font-bold text-splash-navy">
+        {group.location_pretty}{" "}
+        <span className="text-sm font-normal text-splash-navy/60">
+          · {group.work_requests.length} request
+          {group.work_requests.length === 1 ? "" : "s"}
+        </span>
+      </h2>
+      <div className="overflow-x-auto rounded-splash-lg border border-gray-light bg-white shadow-splash-card">
+        <table className="w-full border-collapse text-sm">
+          <thead>
+            <tr className="bg-gray-light/40 text-left text-[11px] font-semibold uppercase tracking-wide text-splash-navy/70">
+              <th className="w-6 px-2 py-2" aria-hidden="true"></th>
+              <th className="px-3 py-2">Priority</th>
+              <th className="px-3 py-2">Title</th>
+              <th className="px-3 py-2">Status</th>
+              <th className="px-3 py-2">Requested by</th>
+              <th className="px-3 py-2">Updated</th>
+              <th className="px-3 py-2 text-right">MaintainX</th>
+            </tr>
+          </thead>
+          <tbody>
+            {group.work_requests.map((wr) => (
+              <WorkRequestRow
+                key={wr.id}
+                wr={wr}
+                isExpanded={expanded.has(String(wr.id))}
+                onToggle={onToggle}
+                colSpan={colSpan}
+              />
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  );
+}
+
+function WorkRequestRow({
+  wr,
+  isExpanded,
+  onToggle,
+  colSpan
+}: {
+  wr: WorkRequestItem;
+  isExpanded: boolean;
+  onToggle: (id: number) => void;
+  colSpan: number;
+}) {
+  return (
+    <>
+      <tr
+        className="cursor-pointer border-t border-gray-light/60 align-top hover:bg-gray-light/20"
+        onClick={() => onToggle(wr.id)}
+      >
+        <td className="px-2 py-2.5">
+          <Chevron expanded={isExpanded} />
+        </td>
+        <td className="px-3 py-2.5 whitespace-nowrap">
+          <PriorityPill priority={wr.priority} />
+          <div className="mt-0.5 px-2 text-xs text-gray-500">
+            {wr.createdAt ? ageLabel(wr.createdAt) : "—"}
+          </div>
+        </td>
+        <td className="px-3 py-2.5">
+          <div className="font-medium text-splash-navy">
+            {wr.title || "(no title)"}
+          </div>
+        </td>
+        <td className="px-3 py-2.5 whitespace-nowrap">
+          <RequestStatusPill status={wr.status} />
+        </td>
+        <td className="px-3 py-2.5 text-sm text-splash-navy">
+          {wr.creator?.name ? wr.creator.name : "—"}
+        </td>
+        <td
+          className="px-3 py-2.5 whitespace-nowrap text-xs text-splash-navy/70"
+          title={wr.updatedAt ?? undefined}
+        >
+          {wr.updatedAt ? formatRelativeTime(wr.updatedAt) : "—"}
+        </td>
+        <td className="px-3 py-2.5 whitespace-nowrap text-right">
+          <a
+            href={`https://app.getmaintainx.com/requests/${wr.id}`}
+            target="_blank"
+            rel="noreferrer"
+            onClick={(e) => e.stopPropagation()}
+            className="text-sm font-semibold text-splash-blue hover:underline"
+          >
+            Open ↗
+          </a>
+        </td>
+      </tr>
+      {isExpanded ? <RequestExpandedRow wr={wr} colSpan={colSpan} /> : null}
+    </>
+  );
+}
+
+function RequestExpandedRow({
+  wr,
+  colSpan
+}: {
+  wr: WorkRequestItem;
+  colSpan: number;
+}) {
+  const created = wr.createdAt ? formatYmd(wr.createdAt) : "—";
+  return (
+    <tr className="border-t border-gray-light/30 bg-gray-light/10">
+      <td colSpan={colSpan} className="px-6 py-4 text-sm text-splash-navy/90">
+        <dl className="grid grid-cols-1 gap-x-8 gap-y-2 sm:grid-cols-2">
+          <div>
+            <dt className="text-[11px] font-semibold uppercase tracking-wide text-splash-navy/60">
+              Created
+            </dt>
+            <dd>{created}</dd>
+          </div>
+          <div>
+            <dt className="text-[11px] font-semibold uppercase tracking-wide text-splash-navy/60">
+              Requested by
+            </dt>
+            <dd>
+              {wr.creator?.name ? wr.creator.name : "—"}
+              {wr.creator?.email ? (
+                <span className="text-splash-navy/60">
+                  {" "}
+                  ({wr.creator.email})
+                </span>
+              ) : null}
+            </dd>
+          </div>
+        </dl>
+        {/* A REJECTED request that also carries a workOrderId was promoted
+            before being rejected; surface the link so staff can trace it. */}
+        {wr.workOrderId != null ? (
+          <div className="mt-3">
+            <p className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-splash-navy/60">
+              Linked work order
+            </p>
+            <a
+              href={`https://app.getmaintainx.com/workorders/${wr.workOrderId}`}
+              target="_blank"
+              rel="noreferrer"
+              className="text-sm font-semibold text-splash-blue hover:underline"
+            >
+              Work order #{wr.workOrderId} ↗
+            </a>
+          </div>
+        ) : null}
+        <div className="mt-3">
+          <p className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-splash-navy/60">
+            Description
+          </p>
+          <p className="whitespace-pre-wrap text-sm text-splash-navy/90">
+            {wr.description ? wr.description : "(no description)"}
+          </p>
+        </div>
+      </td>
+    </tr>
   );
 }
 

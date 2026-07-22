@@ -41,8 +41,10 @@ import { isOriginAllowed, json, jsonError } from "@splash/http";
 import {
   createMaintainXWorkRequest,
   fetchMaintainXWorkOrders,
+  fetchMaintainXWorkRequests,
   uploadMaintainXWorkRequestFile,
-  type RawWorkOrder
+  type RawWorkOrder,
+  type RawWorkRequest
 } from "./maintainx.js";
 import { runMaintainXUserTeamSync, type SyncResult } from "./sync.js";
 
@@ -65,6 +67,17 @@ const MAX_WORK_ORDERS_SINGLE = 200;
 const MAX_WORK_ORDERS_MULTI = 1000;
 const TIMEOUT_SINGLE_MS = 8_000;
 const TIMEOUT_MULTI_MS = 30_000;
+
+// Brief 80: work-requests read path. Fetched in parallel with the WO
+// list (its own AbortController) so it never delays or aborts the main
+// fetch. Row cap bounds memory; the request queue we care about
+// (PENDING + REJECTED) is small, so this ceiling is generous headroom.
+const MAX_WORK_REQUESTS = 1000;
+const TIMEOUT_REQUESTS_MS = 20_000;
+// Brief 80: only these two statuses surface on the Requests tab.
+// APPROVED / DONE requests have been promoted to work orders and show
+// up on the Reactive/Preventative tabs instead.
+const REQUEST_VISIBLE_STATUSES = new Set<string>(["PENDING", "REJECTED"]);
 
 /** Hardcoded super-admin allow-list for the on-demand sync trigger. Mirrors
  *  the operator/super_admin list called out in CLAUDE.md "operator
@@ -116,6 +129,40 @@ interface GroupOut {
   work_orders: WorkOrderOut[];
 }
 
+/** Brief 80 — projected work request for the Requests sub-tab. Distinct
+ *  from WorkOrderOut: a request carries `requestStatus` + an optional
+ *  promoted `workOrderId`, and a single `creator` rather than an
+ *  assignee list. No `type` (reactive/preventive) — requests aren't
+ *  bucketed that way. */
+interface RequestCreatorOut {
+  id: number | null;
+  name: string;
+  email: string | null;
+}
+
+interface WorkRequestOut {
+  id: number;
+  title: string;
+  /** MaintainX `requestStatus` — PENDING or REJECTED (the only two the
+   *  Requests tab surfaces). */
+  status: string;
+  priority: "HIGH" | "MEDIUM" | "LOW" | "NONE" | string;
+  createdAt: string | null;
+  updatedAt: string | null;
+  description: string | null;
+  locationId: number | null;
+  /** Set once staff promote the request; null while PENDING/REJECTED. */
+  workOrderId: number | null;
+  /** Null when creatorId is absent or unresolved in the users cache. */
+  creator: RequestCreatorOut | null;
+}
+
+interface RequestGroupOut {
+  maintainx_id: number;
+  location_pretty: string;
+  work_requests: WorkRequestOut[];
+}
+
 /** Brief 74 — surfaced to apps/web so the New Request tab's Location
  *  dropdown has the data it needs without a second fetch. The shape is
  *  the read-path's `UserAccessibleLocation` plus `location_name` (from
@@ -140,8 +187,14 @@ interface CurrentUserOut {
 interface ListResponse {
   reactive: { groups: GroupOut[] };
   preventive: { groups: GroupOut[] };
+  /** Brief 80 — PENDING + REJECTED work requests for the user's mapped
+   *  locations, grouped like the WO buckets. */
+  requests: { groups: RequestGroupOut[] };
   fetchedAt: string;
   truncated: boolean;
+  /** Brief 80 — true iff the work-requests fetch hit its row/page cap
+   *  before exhausting the cursor. Independent of `truncated` (WOs). */
+  requestsTruncated: boolean;
   /** Brief 72: number of MaintainX API calls made (1 for single-location
    *  users, 1-5 for multi-location users on the paginated path). */
   pageCount: number;
@@ -247,8 +300,10 @@ async function handleList(env: Env, session: Session): Promise<Response> {
     return json({
       reactive: { groups: [] },
       preventive: { groups: [] },
+      requests: { groups: [] },
       fetchedAt,
       truncated: false,
+      requestsTruncated: false,
       pageCount: 0,
       accessibleLocationCount: accessible.length,
       mappedLocationCount: 0,
@@ -258,26 +313,51 @@ async function handleList(env: Env, session: Session): Promise<Response> {
     } satisfies ListResponse);
   }
 
-  // Phase 2 — fetch MaintainX work orders for those location IDs.
-  // Brief 72: multi-location users paginate the cursor; single-location
-  // users keep the original single-call posture.
+  // Phase 2 — fetch MaintainX work orders AND work requests for those
+  // location IDs, concurrently. Brief 72: multi-location WO users
+  // paginate the cursor; single-location users keep the single-call
+  // posture. Brief 80: the work-requests fetch runs in parallel under
+  // its own AbortController/timeout so it neither delays nor aborts the
+  // WO fetch — and a request-side failure is non-fatal (the WO tabs
+  // still render).
   const shouldPaginate = mappedMxIds.length > 1;
   const timeoutMs = shouldPaginate ? TIMEOUT_MULTI_MS : TIMEOUT_SINGLE_MS;
   const maxWorkOrders = shouldPaginate ? MAX_WORK_ORDERS_MULTI : MAX_WORK_ORDERS_SINGLE;
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+
+  const woController = new AbortController();
+  const woTimeout = setTimeout(() => woController.abort(), timeoutMs);
+  const requestsController = new AbortController();
+  const requestsTimeout = setTimeout(
+    () => requestsController.abort(),
+    TIMEOUT_REQUESTS_MS
+  );
+
   let result;
+  let requestsResult;
   try {
-    result = await fetchMaintainXWorkOrders({
-      apiKey: env.MAINTAINX_API_KEY,
-      baseUrl: env.MAINTAINX_BASE_URL,
-      maintainxLocationIds: mappedMxIds,
-      paginate: shouldPaginate,
-      maxWorkOrders,
-      signal: controller.signal
-    });
+    [result, requestsResult] = await Promise.all([
+      fetchMaintainXWorkOrders({
+        apiKey: env.MAINTAINX_API_KEY,
+        baseUrl: env.MAINTAINX_BASE_URL,
+        maintainxLocationIds: mappedMxIds,
+        paginate: shouldPaginate,
+        maxWorkOrders,
+        signal: woController.signal
+      }),
+      fetchMaintainXWorkRequests({
+        apiKey: env.MAINTAINX_API_KEY,
+        baseUrl: env.MAINTAINX_BASE_URL,
+        maintainxLocationIds: mappedMxIds,
+        // Docs confirm `statuses=` on /workrequests — pre-filter to the
+        // two we surface so the cursor walk skips APPROVED/DONE entirely.
+        statuses: Array.from(REQUEST_VISIBLE_STATUSES),
+        maxWorkRequests: MAX_WORK_REQUESTS,
+        signal: requestsController.signal
+      })
+    ]);
   } finally {
-    clearTimeout(timeout);
+    clearTimeout(woTimeout);
+    clearTimeout(requestsTimeout);
   }
 
   if (!result.ok) {
@@ -285,8 +365,33 @@ async function handleList(env: Env, session: Session): Promise<Response> {
     return jsonError(502, `MaintainX upstream returned ${result.status}`);
   }
 
+  // Brief 80 — filter work requests to the visible statuses (PENDING /
+  // REJECTED) AND the user's mapped locations. The fetch already sends
+  // `locations=` and `statuses=` server-side (both confirmed), but we
+  // re-apply the same gate here as defense-in-depth — the location gate
+  // in particular must never depend solely on an upstream param.
+  // A failed request fetch (`requestsResult.ok === false`) degrades to an
+  // empty Requests tab rather than failing the whole page.
+  const mappedMxIdSet = new Set<number>(mappedMxIds);
+  const visibleRequests: RawWorkRequest[] = requestsResult.ok
+    ? requestsResult.workRequests.filter((wr) => {
+        const status =
+          typeof wr.requestStatus === "string"
+            ? wr.requestStatus.toUpperCase()
+            : "";
+        if (!REQUEST_VISIBLE_STATUSES.has(status)) return false;
+        const locId = extractRequestLocationId(wr);
+        return locId != null && mappedMxIdSet.has(locId);
+      })
+    : [];
+
   // Phase 3 — resolve assignee + team names from the Supabase cache.
+  // Brief 80: request creator IDs share the `maintainx_users` cache, so
+  // fold them into the single users lookup.
   const userIds = collectAssigneeIdsByType(result.workOrders, "USER");
+  for (const id of collectRequestCreatorIds(visibleRequests)) {
+    if (!userIds.includes(id)) userIds.push(id);
+  }
   const teamIds = collectAssigneeIdsByType(result.workOrders, "TEAM");
   const [users, teams] = await Promise.all([
     userIds.length ? getMaintainXUsersByIds(env, userIds) : Promise.resolve(new Map<number, MaintainXUserRow>()),
@@ -302,9 +407,11 @@ async function handleList(env: Env, session: Session): Promise<Response> {
   const reactive = groupByLocation(buckets.reactive, users, teams, accessibleByMxId);
   const preventive = groupByLocation(buckets.preventive, users, teams, accessibleByMxId);
 
-  // Brief 74 — harvest MX-side location names from the WO list so the
-  // New Request tab's Location dropdown can label entries with the
-  // human-readable name MX uses internally.
+  // Brief 74 — harvest MX-side location names so the New Request tab's
+  // Location dropdown (and Brief 80's request group headers) can label
+  // entries with the human-readable name MX uses internally. Requests
+  // contribute names too (via `expand=location` when honored), covering
+  // a location that has requests but no open work orders.
   const mxNamesByLocId = new Map<number, string>();
   for (const wo of result.workOrders) {
     const id = extractRawLocationId(wo);
@@ -312,16 +419,33 @@ async function handleList(env: Env, session: Session): Promise<Response> {
     const name = extractRawLocationName(wo);
     if (name) mxNamesByLocId.set(id, name);
   }
+  for (const wr of visibleRequests) {
+    const id = extractRequestLocationId(wr);
+    if (id == null || mxNamesByLocId.has(id)) continue;
+    const name = extractRequestLocationName(wr);
+    if (name) mxNamesByLocId.set(id, name);
+  }
+
+  // Brief 80 — group the visible requests by location, same header
+  // resolution (MX name → Splash address → placeholder) as the WO
+  // buckets.
+  const requestGroups = groupRequestsByLocation(
+    visibleRequests,
+    users,
+    accessibleByMxId
+  );
 
   console.log(
-    `workorders-worker list: email=${email} mappedMxIds=${mappedMxIds.length} paginate=${shouldPaginate} pageCount=${result.pageCount} workOrders=${result.workOrders.length} truncated=${result.truncated} droppedOverduePreventive=${buckets.droppedOverduePreventive}`
+    `workorders-worker list: email=${email} mappedMxIds=${mappedMxIds.length} paginate=${shouldPaginate} pageCount=${result.pageCount} workOrders=${result.workOrders.length} truncated=${result.truncated} droppedOverduePreventive=${buckets.droppedOverduePreventive} requestsOk=${requestsResult.ok} requestsPageCount=${requestsResult.pageCount} requestsFetched=${requestsResult.workRequests.length} requestsVisible=${visibleRequests.length} requestsTruncated=${requestsResult.truncated}`
   );
 
   return json({
     reactive: { groups: reactive },
     preventive: { groups: preventive },
+    requests: { groups: requestGroups },
     fetchedAt,
     truncated: result.truncated,
+    requestsTruncated: requestsResult.ok ? requestsResult.truncated : false,
     pageCount: result.pageCount,
     accessibleLocationCount: accessible.length,
     mappedLocationCount: mappedMxIds.length,
@@ -583,6 +707,129 @@ function projectWorkOrder(
     categories: projectCategories(wo.categories),
     locationId: extractRawLocationId(wo)
   };
+}
+
+/* ============================================================
+ * Brief 80 — Work Request grouping + projection.
+ * ============================================================ */
+
+function extractRequestLocationId(wr: RawWorkRequest): number | null {
+  if (typeof wr.locationId === "number" && Number.isFinite(wr.locationId)) {
+    return wr.locationId;
+  }
+  if (wr.location && typeof wr.location.id === "number" && Number.isFinite(wr.location.id)) {
+    return wr.location.id;
+  }
+  return null;
+}
+
+function extractRequestLocationName(wr: RawWorkRequest): string | null {
+  if (wr.location && typeof wr.location.name === "string" && wr.location.name) {
+    return wr.location.name;
+  }
+  return null;
+}
+
+function collectRequestCreatorIds(requests: RawWorkRequest[]): number[] {
+  const out = new Set<number>();
+  for (const wr of requests) {
+    if (typeof wr.creatorId === "number" && Number.isFinite(wr.creatorId)) {
+      out.add(wr.creatorId);
+    }
+  }
+  return [...out];
+}
+
+function projectWorkRequest(
+  wr: RawWorkRequest,
+  users: Map<number, MaintainXUserRow>
+): WorkRequestOut | null {
+  if (typeof wr.id !== "number" || !Number.isFinite(wr.id)) return null;
+  const creatorId =
+    typeof wr.creatorId === "number" && Number.isFinite(wr.creatorId)
+      ? wr.creatorId
+      : null;
+  let creator: RequestCreatorOut | null = null;
+  if (creatorId != null) {
+    const cached = users.get(creatorId);
+    creator = {
+      id: creatorId,
+      name: cached?.full_name?.trim() || `User #${creatorId}`,
+      email: cached?.email ?? null
+    };
+  }
+  return {
+    id: wr.id,
+    title: typeof wr.title === "string" ? wr.title : "",
+    status: typeof wr.requestStatus === "string" ? wr.requestStatus.toUpperCase() : "",
+    priority: typeof wr.priority === "string" ? wr.priority : "NONE",
+    createdAt: typeof wr.createdAt === "string" ? wr.createdAt : null,
+    updatedAt: typeof wr.updatedAt === "string" ? wr.updatedAt : null,
+    description:
+      typeof wr.description === "string" && wr.description.trim()
+        ? wr.description.trim()
+        : null,
+    locationId: extractRequestLocationId(wr),
+    workOrderId:
+      typeof wr.workOrderId === "number" && Number.isFinite(wr.workOrderId)
+        ? wr.workOrderId
+        : null,
+    creator
+  };
+}
+
+function compareWorkRequests(a: WorkRequestOut, b: WorkRequestOut): number {
+  const pa = priorityRank(a.priority);
+  const pb = priorityRank(b.priority);
+  if (pa !== pb) return pa - pb;
+  const ua = a.updatedAt ?? "";
+  const ub = b.updatedAt ?? "";
+  if (ua === ub) return 0;
+  return ua < ub ? 1 : -1;
+}
+
+function groupRequestsByLocation(
+  requests: RawWorkRequest[],
+  users: Map<number, MaintainXUserRow>,
+  accessibleByMxId: Map<number, UserAccessibleLocation>
+): RequestGroupOut[] {
+  const buckets = new Map<number, { header: string; items: WorkRequestOut[] }>();
+  for (const wr of requests) {
+    const projected = projectWorkRequest(wr, users);
+    if (!projected) continue;
+    const mxId = projected.locationId;
+    if (mxId == null) continue;
+
+    let bucket = buckets.get(mxId);
+    if (!bucket) {
+      const headerFromMx = extractRequestLocationName(wr);
+      const fallbackAddress = accessibleByMxId.get(mxId)?.location_address ?? null;
+      bucket = {
+        header: headerFromMx ?? fallbackAddress ?? "(unknown location)",
+        items: []
+      };
+      buckets.set(mxId, bucket);
+    } else if (
+      bucket.header === "(unknown location)" ||
+      bucket.header === (accessibleByMxId.get(mxId)?.location_address ?? "")
+    ) {
+      const headerFromMx = extractRequestLocationName(wr);
+      if (headerFromMx) bucket.header = headerFromMx;
+    }
+    bucket.items.push(projected);
+  }
+
+  const groups: RequestGroupOut[] = [];
+  for (const [mxId, b] of buckets.entries()) {
+    b.items.sort(compareWorkRequests);
+    groups.push({
+      maintainx_id: mxId,
+      location_pretty: b.header,
+      work_requests: b.items
+    });
+  }
+  groups.sort((a, b) => a.location_pretty.localeCompare(b.location_pretty));
+  return groups;
 }
 
 /* ============================================================
