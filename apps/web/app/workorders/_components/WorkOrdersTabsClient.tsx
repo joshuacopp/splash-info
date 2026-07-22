@@ -18,10 +18,11 @@
 //     across work orders and requests; MaintainX ids are unique across both
 //     entity types so there's no collision.
 //
-// Section defaults: Reactive / Preventative / Pending open; Declined
-// collapsed (the requests endpoint has no date param, so collapsing is how
-// a long rejected history is kept from dominating the screen). Empty
-// sections render muted and non-interactive.
+// Section defaults: all four collapsed. The operator expands the sections
+// they care about per location; this keeps the page scannable at a glance
+// (especially with a long rejected history, since the requests endpoint has
+// no date param to bound Declined server-side). Empty sections render muted
+// and non-interactive.
 //
 // Brief 73 — collapsed-row age label "Nd" beneath the priority pill, and a
 // Due column on Preventative only (Reactive dueDate is auto-set same-day by
@@ -465,10 +466,9 @@ function AllClearEmptyState() {
 }
 
 // Brief 81 — one location's block: a header with a per-location "+ New
-// request" button, followed by four collapsible sections. Reactive,
-// Preventative and Pending default open; Declined defaults collapsed so a
-// long rejected history doesn't dominate the screen (there's no date param
-// on the requests endpoint to bound it server-side).
+// request" button, followed by four collapsible sections. All four default
+// collapsed so the page stays scannable per location; the operator expands
+// what they care about.
 function LocationBlock({
   block,
   expanded,
@@ -499,7 +499,7 @@ function LocationBlock({
         <CollapsibleSection
           title="Reactive"
           count={block.reactive.length}
-          defaultOpen
+          defaultOpen={false}
         >
           <WorkOrderTable
             workOrders={block.reactive}
@@ -512,7 +512,7 @@ function LocationBlock({
         <CollapsibleSection
           title="Preventative"
           count={block.preventive.length}
-          defaultOpen
+          defaultOpen={false}
         >
           <WorkOrderTable
             workOrders={block.preventive}
@@ -525,7 +525,7 @@ function LocationBlock({
         <CollapsibleSection
           title="Pending Requests"
           count={block.pending.length}
-          defaultOpen
+          defaultOpen={false}
         >
           <RequestTable
             requests={block.pending}
