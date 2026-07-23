@@ -181,7 +181,17 @@ export const CLAIM_TRANSITIONS: readonly ClaimTransitionDef[] = [
 
   // ===== From "Approved — Pending Quotes" =====
   tx({ from: "Approved — Pending Quotes", to: "Pending RM Quote Approval", role: "gm" }),
-  tx({ from: "Approved — Pending Quotes", to: "Closed — Approved/No Response", role: "gm" }),
+  // Operator change (2026-07-23) — tightened from role "gm"/no-note to
+  // role "rm" + requiresNote. Closing an approved claim as "no response"
+  // is now an RM-and-above action and must capture a reason, so the
+  // claims committee sees why (surfaces via last_note in the export). Not
+  // a revert — claim stays approved — so no clearApprovalDetails.
+  tx({
+    from: "Approved — Pending Quotes",
+    to: "Closed — Approved/No Response",
+    role: "rm",
+    requiresNote: true
+  }),
   // Brief 66 — RM revert paths from Approved — Pending Quotes. GM may
   // erroneously approve; RM catches it during quote-gathering and bounces
   // back to GM Review, RM Review, or denies outright without admin

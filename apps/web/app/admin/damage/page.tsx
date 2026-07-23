@@ -442,17 +442,23 @@ export default async function DamageClaimsListPage({ searchParams }: PageProps) 
             Reset
           </Link>
           {/*
-           * Brief 172 — CSV export. The href carries the SAME filter
-           * params the page is currently rendering against so a click
-           * downloads exactly the visible result set (no surprise
-           * widening). Brief 88 proxy-route pattern: the link points at
-           * apps/web's /admin/damage/export.csv, which proxies via the
-           * DAMAGE_WORKER service binding internally so the browser
-           * stays same-origin (cookies + auth all "just work").
+           * Brief 172/178 — CSV + XLSX export. Both hrefs carry the SAME
+           * filter params the page is currently rendering against so a
+           * click downloads exactly the visible result set (no surprise
+           * widening). Brief 88 proxy-route pattern: the links point at
+           * apps/web's /admin/damage/export.csv|.xlsx, which proxy via the
+           * DAMAGE_WORKER service binding internally so the browser stays
+           * same-origin (cookies + auth all "just work"). Same rows/columns
+           * in both; XLSX adds widths, a frozen bold header, autofilter,
+           * wrapped note columns, and real date typing.
            */}
-          <div className="ml-auto">
+          <div className="ml-auto flex items-center gap-2">
             <CsvExportButton
               href={`/admin/damage/export.csv${qs.toString() ? `?${qs.toString()}` : ""}`}
+            />
+            <CsvExportButton
+              href={`/admin/damage/export.xlsx${qs.toString() ? `?${qs.toString()}` : ""}`}
+              label="Export XLSX"
             />
           </div>
         </div>

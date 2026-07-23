@@ -138,6 +138,8 @@ import {
   type ClaimTransitionDef,
   findTransition
 } from "./transitions.js";
+import { waitingForStatus } from "./status-waiting-for.js";
+import { buildXlsxWorkbook, type XlsxColumn } from "./xlsx.js";
 import {
   STATUS_NOTIFIES_NEXT,
   fireClaimUpdateWebhook,
@@ -436,6 +438,12 @@ async function dispatchManageApi(
   // safety cap; RFC-4180 quoting; Content-Disposition: attachment.
   if (subParts.length === 1 && subParts[0] === "claims.csv" && method === "GET") {
     return getClaimsCsv(env, session, new URL(request.url));
+  }
+
+  // Brief 178 — GET /manage/api/claims.xlsx — formatted XLSX twin of the
+  // CSV export. Same rows/columns/scope; only the serialization differs.
+  if (subParts.length === 1 && subParts[0] === "claims.xlsx" && method === "GET") {
+    return getClaimsXlsx(env, session, new URL(request.url));
   }
 
   // Brief 59 — GET /manage/api/contact-roster?role=regional_director|regional_manager
@@ -1625,11 +1633,17 @@ const CLAIMS_CSV_COLUMNS = [
   "damage_other",
   "fault_category",
   "claim_status",
+  "waiting_on",
   "lifecycle",
   "submitted_at",
   "incident_date",
   "status_updated_at",
-  "age_days"
+  "age_days",
+  "last_action",
+  "last_action_at",
+  "last_note",
+  "last_note_by",
+  "last_note_at"
 ] as const;
 
 interface ClaimsCsvRow {
@@ -1652,11 +1666,41 @@ interface ClaimsCsvRow {
   incident_date: string | null;
   status_updated_at: string | null;
   age_days: number | null;
+  // Brief 178 — derived from claim_activity (windowed join below). Both
+  // "last action of any type" and "last pure note" are surfaced so the
+  // committee can see, per claim, what happened last and what was last
+  // said. last_action_* is the most recent row of ANY activity_type;
+  // last_note_* is the most recent activity_type='note' row only.
+  last_action_type: string | null;
+  last_action_status_to: string | null;
+  last_action_notes: string | null;
+  last_action_at: string | null;
+  last_note: string | null;
+  last_note_by: string | null;
+  last_note_at: string | null;
 }
 
-async function getClaimsCsv(env: Env, session: Session, url: URL): Promise<Response> {
+/** Discriminated result of the shared claims-export query so the CSV and
+ *  XLSX endpoints can share one code path and differ only in serialization. */
+type ClaimsExportResult =
+  | { kind: "denied" }
+  | { kind: "empty" }
+  | { kind: "overflow" }
+  | { kind: "rows"; rows: ClaimsCsvRow[] };
+
+/**
+ * Brief 172/178 — run the scoped, filtered claims-export query. Owns
+ * scope resolution, the filter WHERE clause, the two windowed
+ * claim_activity joins, the pre-migration column tolerance, and the 10k
+ * cap. Returns raw rows; callers serialize them (CSV or XLSX).
+ */
+async function fetchClaimsExportRows(
+  env: Env,
+  session: Session,
+  url: URL
+): Promise<ClaimsExportResult> {
   const scope = damageScopeForSession(session);
-  if (scope.kind === "denied") return jsonError(403, "no damage role assigned");
+  if (scope.kind === "denied") return { kind: "denied" };
 
   const requestedLocation = url.searchParams.get("location") ?? "All";
   const lifecycleParam = url.searchParams.get("lifecycle") ?? "Open";
@@ -1673,7 +1717,7 @@ async function getClaimsCsv(env: Env, session: Session, url: URL): Promise<Respo
     rmEmail
   });
   if (resolved.kind === "empty") {
-    return csvResponse(claimsCsvHeader(), claimsCsvFilename());
+    return { kind: "empty" };
   }
 
   // Build the WHERE clause inline — broader column projection than
@@ -1686,7 +1730,7 @@ async function getClaimsCsv(env: Env, session: Session, url: URL): Promise<Respo
 
   if (resolved.kind === "subset") {
     if (resolved.codes.length === 0) {
-      return csvResponse(claimsCsvHeader(), claimsCsvFilename());
+      return { kind: "empty" };
     }
     const placeholders = resolved.codes.map(() => "?").join(",");
     where.push(`location_code IN (${placeholders})`);
@@ -1731,12 +1775,55 @@ async function getClaimsCsv(env: Env, session: Session, url: URL): Promise<Respo
 
   // Probe one row past the cap so we can 416 cleanly on overflow.
   const cap = CLAIMS_CSV_MAX_ROWS + 1;
-  const projection = `claim_id, location_code, location_pretty, customer_name,
+  // claim_id qualified as claims.claim_id because the two activity joins
+  // below (la/ln) also carry a claim_id — leaving it bare would be an
+  // ambiguous-column error. Every other projected column is claims-only.
+  const projection = `claims.claim_id AS claim_id, location_code, location_pretty, customer_name,
     customer_phone, customer_email, vehicle_year, vehicle_make, vehicle_model,
     vehicle_color, license_plate, damage_type, damage_other,
     {fault_category_expr} AS fault_category,
     claim_status, submitted_at, {incident_date_expr} AS incident_date, status_updated_at,
-    CAST((julianday('now') - julianday(submitted_at)) AS INTEGER) AS age_days`;
+    CAST((julianday('now') - julianday(submitted_at)) AS INTEGER) AS age_days,
+    la.activity_type AS last_action_type,
+    la.status_to AS last_action_status_to,
+    la.notes AS last_action_notes,
+    la.created_at AS last_action_at,
+    ln.notes AS last_note,
+    ln.actor_name AS last_note_by,
+    ln.created_at AS last_note_at`;
+
+  // Brief 178 — two windowed joins on claim_activity. `la` = the single
+  // most-recent activity row of ANY type (drives last_action); `ln` = the
+  // most-recent activity_type='note' row (drives last_note). ROW_NUMBER
+  // partitioned by claim_id keeps this to one pass over claim_activity per
+  // join instead of a correlated subquery per column, so it stays cheap
+  // under the 10k cap. Ordering (created_at DESC, id DESC) is deterministic
+  // so the picked row is stable. claim_activity's schema is fixed, so these
+  // joins are unaffected by the fault_category/incident_date tolerance below.
+  const activityJoins = `
+    LEFT JOIN (
+      SELECT claim_id, activity_type, status_to, notes, created_at
+      FROM (
+        SELECT claim_id, activity_type, status_to, notes, created_at,
+               ROW_NUMBER() OVER (
+                 PARTITION BY claim_id ORDER BY created_at DESC, id DESC
+               ) AS rn
+        FROM claim_activity
+      )
+      WHERE rn = 1
+    ) la ON la.claim_id = claims.claim_id
+    LEFT JOIN (
+      SELECT claim_id, notes, actor_name, created_at
+      FROM (
+        SELECT claim_id, notes, actor_name, created_at,
+               ROW_NUMBER() OVER (
+                 PARTITION BY claim_id ORDER BY created_at DESC, id DESC
+               ) AS rn
+        FROM claim_activity
+        WHERE activity_type = 'note'
+      )
+      WHERE rn = 1
+    ) ln ON ln.claim_id = claims.claim_id`;
 
   // Brief 138/140 — column-missing tolerance. Try with the real columns
   // first; on a "no such column" error for either fault_category or
@@ -1751,7 +1838,7 @@ async function getClaimsCsv(env: Env, session: Session, url: URL): Promise<Respo
   try {
     const sql = `
       SELECT ${withColumns((c) => c)}
-      FROM claims
+      FROM claims${activityJoins}
       WHERE ${where.join(" AND ")}
       ORDER BY submitted_at DESC
       LIMIT ${cap}
@@ -1766,7 +1853,7 @@ async function getClaimsCsv(env: Env, session: Session, url: URL): Promise<Respo
     );
     const sql = `
       SELECT ${withColumns(() => "NULL")}
-      FROM claims
+      FROM claims${activityJoins}
       WHERE ${where.join(" AND ")}
       ORDER BY submitted_at DESC
       LIMIT ${cap}
@@ -1776,43 +1863,195 @@ async function getClaimsCsv(env: Env, session: Session, url: URL): Promise<Respo
   }
 
   if (rows.length > CLAIMS_CSV_MAX_ROWS) {
-    return new Response(
-      `Result set exceeds the ${CLAIMS_CSV_MAX_ROWS}-row export cap. Narrow your filters and try again.`,
-      { status: 416 }
-    );
+    return { kind: "overflow" };
   }
 
+  return { kind: "rows", rows };
+}
+
+/** Shared 416 body for both export formats when the result set is too big. */
+function claimsExportOverflow(): Response {
+  return new Response(
+    `Result set exceeds the ${CLAIMS_CSV_MAX_ROWS}-row export cap. Narrow your filters and try again.`,
+    { status: 416 }
+  );
+}
+
+/** Brief 178 — per-column width/typing for the XLSX export, in the exact
+ *  order of CLAIMS_CSV_COLUMNS (and therefore claimsCsvCells). Headers are
+ *  taken from CLAIMS_CSV_COLUMNS so the two exports can't disagree on
+ *  column names. A compile-time check below asserts the lengths match. */
+const CLAIMS_XLSX_COL_META = [
+  { width: 18, kind: "text" }, // claim_id
+  { width: 14, kind: "text" }, // location_code
+  { width: 22, kind: "text" }, // location_pretty
+  { width: 20, kind: "text" }, // customer_name
+  { width: 16, kind: "text" }, // customer_phone
+  { width: 26, kind: "text" }, // customer_email
+  { width: 10, kind: "number" }, // vehicle_year
+  { width: 14, kind: "text" }, // vehicle_make
+  { width: 16, kind: "text" }, // vehicle_model
+  { width: 14, kind: "text" }, // vehicle_color
+  { width: 14, kind: "text" }, // license_plate
+  { width: 18, kind: "text" }, // damage_type
+  { width: 22, kind: "text" }, // damage_other
+  { width: 18, kind: "text" }, // fault_category
+  { width: 28, kind: "text" }, // claim_status
+  { width: 20, kind: "text" }, // waiting_on
+  { width: 16, kind: "text" }, // lifecycle
+  { width: 20, kind: "datetime" }, // submitted_at
+  { width: 14, kind: "date" }, // incident_date
+  { width: 20, kind: "datetime" }, // status_updated_at
+  { width: 10, kind: "number" }, // age_days
+  { width: 48, kind: "wrap" }, // last_action
+  { width: 20, kind: "datetime" }, // last_action_at
+  { width: 48, kind: "wrap" }, // last_note
+  { width: 20, kind: "text" }, // last_note_by
+  { width: 20, kind: "datetime" } // last_note_at
+] as const;
+
+// Compile-time guard: the metadata list must line up 1:1 with the column
+// list. If someone adds a CSV column without a matching width/kind, this
+// errors at build instead of silently shifting the XLSX formatting.
+type _AssertXlsxColMetaLen =
+  typeof CLAIMS_XLSX_COL_META["length"] extends typeof CLAIMS_CSV_COLUMNS["length"]
+    ? true
+    : never;
+const _xlsxColMetaLenOk: _AssertXlsxColMetaLen = true;
+void _xlsxColMetaLenOk;
+
+const CLAIMS_XLSX_COLUMNS: XlsxColumn[] = CLAIMS_CSV_COLUMNS.map((header, i) => {
+  // Indices line up 1:1 (asserted above); the `!` satisfies
+  // noUncheckedIndexedAccess.
+  const meta = CLAIMS_XLSX_COL_META[i]!;
+  return { header, width: meta.width, kind: meta.kind };
+});
+
+function claimsXlsxFilename(): string {
+  const today = new Date().toISOString().slice(0, 10);
+  return `damage-claims-${today}.xlsx`;
+}
+
+function xlsxResponse(body: Uint8Array, filename: string): Response {
+  // Pass the underlying ArrayBuffer — the workbook's Uint8Array spans its
+  // whole (exact-size) buffer, so this is the same bytes with a BodyInit
+  // type the Workers Response accepts cleanly.
+  const buf = body.buffer as ArrayBuffer;
+  return new Response(buf, {
+    status: 200,
+    headers: {
+      "Content-Type":
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      "Content-Disposition": `attachment; filename="${filename}"`,
+      "Cache-Control": "no-store"
+    }
+  });
+}
+
+async function getClaimsCsv(env: Env, session: Session, url: URL): Promise<Response> {
+  const result = await fetchClaimsExportRows(env, session, url);
+  if (result.kind === "denied") return jsonError(403, "no damage role assigned");
+  if (result.kind === "overflow") return claimsExportOverflow();
+
   const lines: string[] = [claimsCsvHeader()];
-  for (const r of rows) {
-    const derived = displayLifecycleForStatus(r.claim_status);
-    lines.push(
-      [
-        r.claim_id,
-        r.location_code,
-        r.location_pretty,
-        r.customer_name,
-        r.customer_phone ?? "",
-        r.customer_email ?? "",
-        r.vehicle_year ?? "",
-        r.vehicle_make ?? "",
-        r.vehicle_model ?? "",
-        r.vehicle_color ?? "",
-        r.license_plate ?? "",
-        r.damage_type ?? "",
-        r.damage_other ?? "",
-        r.fault_category ?? "",
-        r.claim_status,
-        derived,
-        r.submitted_at,
-        r.incident_date ?? "",
-        r.status_updated_at ?? "",
-        r.age_days ?? ""
-      ]
-        .map(csvQuote)
-        .join(",")
-    );
+  if (result.kind === "rows") {
+    for (const r of result.rows) {
+      lines.push(claimsCsvCells(r).map(csvQuote).join(","));
+    }
   }
   return csvResponse(lines.join("\r\n"), claimsCsvFilename());
+}
+
+/**
+ * Brief 178 — XLSX twin of the CSV export. Same rows, same column order
+ * (both fed by claimsCsvCells / CLAIMS_CSV_COLUMNS), but formatted: fixed
+ * widths, bold frozen header, autofilter, wrapped note/action columns,
+ * and real date typing. Built with the in-tree dependency-free writer.
+ */
+async function getClaimsXlsx(env: Env, session: Session, url: URL): Promise<Response> {
+  const result = await fetchClaimsExportRows(env, session, url);
+  if (result.kind === "denied") return jsonError(403, "no damage role assigned");
+  if (result.kind === "overflow") return claimsExportOverflow();
+
+  const dataRows =
+    result.kind === "rows" ? result.rows.map((r) => claimsCsvCells(r)) : [];
+  const workbook = buildXlsxWorkbook(CLAIMS_XLSX_COLUMNS, dataRows);
+  return xlsxResponse(workbook, claimsXlsxFilename());
+}
+
+/**
+ * Brief 178 — one ordered row of cell values for a claim, shared by the
+ * CSV writer and (once built) the XLSX writer so the two exports can't
+ * drift in column count or order. Order must match CLAIMS_CSV_COLUMNS.
+ * Values are raw (numbers stay numbers, nulls become ""); the CSV path
+ * quotes them and the XLSX path types them.
+ */
+function claimsCsvCells(r: ClaimsCsvRow): (string | number)[] {
+  return [
+    r.claim_id,
+    r.location_code,
+    r.location_pretty,
+    r.customer_name,
+    r.customer_phone ?? "",
+    r.customer_email ?? "",
+    r.vehicle_year ?? "",
+    r.vehicle_make ?? "",
+    r.vehicle_model ?? "",
+    r.vehicle_color ?? "",
+    r.license_plate ?? "",
+    r.damage_type ?? "",
+    r.damage_other ?? "",
+    r.fault_category ?? "",
+    r.claim_status,
+    waitingForStatus(r.claim_status),
+    displayLifecycleForStatus(r.claim_status),
+    r.submitted_at,
+    r.incident_date ?? "",
+    r.status_updated_at ?? "",
+    r.age_days ?? "",
+    formatLastAction(r),
+    r.last_action_at ?? "",
+    r.last_note ?? "",
+    r.last_note_by ?? "",
+    r.last_note_at ?? ""
+  ];
+}
+
+/**
+ * Brief 178 — compact one-line rendering of a claim's most-recent
+ * activity row, mirroring the detail-page timeline (ActivityBody) so the
+ * export cell reads the way the UI does. A pure note's text is NOT
+ * repeated here — it surfaces in its own last_note column — but a status
+ * change's reason IS appended, since that reason has no other column.
+ */
+function formatLastAction(r: ClaimsCsvRow): string {
+  const type = r.last_action_type;
+  if (!type) return "";
+  switch (type) {
+    case "status_change": {
+      const to = r.last_action_status_to ?? "(none)";
+      const reason = r.last_action_notes?.trim();
+      return reason ? `Status → ${to} — ${reason}` : `Status → ${to}`;
+    }
+    case "note":
+      return "Added a note";
+    case "phone_call":
+      return "Logged a phone call";
+    case "email":
+      return "Logged an email";
+    case "contact_attempt":
+      return "Contact attempt";
+    case "photo_added":
+      return "Added photo(s)";
+    case "maintainx_created":
+      return r.last_action_notes?.trim() || "MaintainX work order created";
+    case "document_added":
+    default:
+      // document_added overloads uploads/edits/deletes; the prose in
+      // notes says which. Any unknown future type falls here too — show
+      // its notes verbatim rather than an opaque type string.
+      return r.last_action_notes?.trim() || "(document activity)";
+  }
 }
 
 function claimsCsvHeader(): string {

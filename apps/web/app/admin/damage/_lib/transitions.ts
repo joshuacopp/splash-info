@@ -224,11 +224,16 @@ export const CLAIM_TRANSITIONS_UI: readonly UITransition[] = [
     label: "Submit Quotes for RM Approval",
     role: "gm"
   }),
+  // Operator change (2026-07-23) — tightened from role "gm"/no-note to
+  // role "rm" + requiresNote, mirroring the worker entry. Keeps the
+  // dropdown option at RM-and-above and forces a reason note on the
+  // no-response close so the committee sees why it was closed.
   tx({
     from: "Approved — Pending Quotes",
     to: "Closed — Approved/No Response",
     label: "Close — Approved / No Response",
-    role: "gm"
+    role: "rm",
+    requiresNote: true
   }),
   // Brief 66 — RM-allowed revert. Mirrors the worker entry of the same
   // (from, to, role); see worker comment block for rationale.
