@@ -29,6 +29,7 @@ const REWRITE_TARGETS = [
   { source: "/api/logout",       envVar: "NEXT_PUBLIC_DASHBOARD_WORKER_URL" },
   { source: "/api/forced-reset", envVar: "NEXT_PUBLIC_DASHBOARD_WORKER_URL" },
   { source: "/api/me",           envVar: "NEXT_PUBLIC_DASHBOARD_WORKER_URL" },
+  { source: "/api/mfa/:path*",   envVar: "NEXT_PUBLIC_DASHBOARD_WORKER_URL" },
 
   // signup-worker: customer signup + /admin/api/* pricing JSON
   { source: "/admin/api/:path*",       envVar: "NEXT_PUBLIC_SIGNUP_WORKER_URL" },
