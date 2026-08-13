@@ -34,6 +34,7 @@ routes = [
   { pattern = "staging.splashcarwashes.info/api/logout",       zone_name = "splashcarwashes.info" },
   { pattern = "staging.splashcarwashes.info/api/forced-reset", zone_name = "splashcarwashes.info" },
   { pattern = "staging.splashcarwashes.info/api/me",           zone_name = "splashcarwashes.info" },
+  { pattern = "staging.splashcarwashes.info/api/mfa/*",        zone_name = "splashcarwashes.info" },
   # === CUTOVER §5 forward path (2026-06-11): admin-API carves LIVE on apex ===
   # Exact-host → these survive apps/web's future /* catch-all (path is more
   # specific than /*). Matches the live CF state (already bound during Phase A;
@@ -42,7 +43,8 @@ routes = [
   { pattern = "splashcarwashes.info/api/login",        zone_name = "splashcarwashes.info" },
   { pattern = "splashcarwashes.info/api/logout",       zone_name = "splashcarwashes.info" },
   { pattern = "splashcarwashes.info/api/forced-reset", zone_name = "splashcarwashes.info" },
-  { pattern = "splashcarwashes.info/api/me",           zone_name = "splashcarwashes.info" }   # (gap fix — Header /api/me, READINESS §2.2)
+  { pattern = "splashcarwashes.info/api/me",           zone_name = "splashcarwashes.info" },  # (gap fix — Header /api/me, READINESS §2.2)
+  { pattern = "splashcarwashes.info/api/mfa/*",        zone_name = "splashcarwashes.info" }   # MFA enroll/verify (additive; path more specific than apps/web /*)
 ]
 
 # Bindings (set with `wrangler secret put`):
