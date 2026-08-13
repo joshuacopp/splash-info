@@ -56,8 +56,11 @@ import {
   challengeAndVerify,
   enrollTotpFactor,
   getAccessToken,
+  getCookie,
   PASSWORD_POLICY,
   PASSWORD_POLICY_MESSAGE,
+  REFRESH_TOKEN_COOKIE,
+  refreshSession,
   requiresPasswordChange,
   supabasePasswordLogin,
   userCompleteForcedReset
@@ -114,6 +117,17 @@ export default {
     if (pathname === "/api/mfa/enroll/verify" && method === "POST") {
       if (!isOriginAllowed(request)) return jsonError(403, "bad origin");
       return handleMfaEnrollVerify(request, env);
+    }
+
+    // ── Sliding-session refresh (Phase 1 keepalive) ─────────────────────────
+    // Trades the sb-refresh-token cookie for a fresh access+refresh pair and
+    // re-sets both cookies. The apps/web client pings this on a timer + on
+    // tab-refocus so an open session never hits the 1-hour access-token wall.
+    // GoTrue preserves AAL on refresh, so an MFA'd session stays MFA'd — this
+    // does NOT elevate an aal1 session. Additive: nothing else changes.
+    if (pathname === "/api/refresh" && method === "POST") {
+      if (!isOriginAllowed(request)) return jsonError(403, "bad origin");
+      return handleRefresh(request, env);
     }
     if (pathname === "/api/me" && method === "GET") {
       // Read-only — no isOriginAllowed gate. Browsers don't send Origin on
@@ -354,6 +368,42 @@ async function handleMfaEnrollVerify(request: Request, env: Env): Promise<Respon
     headers.append("Set-Cookie", c);
   }
   headers.set("Content-Type", "application/json");
+  return new Response(JSON.stringify({ ok: true }), { status: 200, headers });
+}
+
+/**
+ * POST /api/refresh — sliding-session keepalive.
+ *
+ * Reads the sb-refresh-token cookie, exchanges it for a fresh access+refresh
+ * pair (grant_type=refresh_token), and re-sets BOTH cookies (the refresh token
+ * rotates, so we must persist the new one). Returns 200 {ok:true} on success,
+ * 401 when there's no refresh cookie or GoTrue rejects it (expired/revoked) —
+ * the client treats 401 as "session's really over" and lets the next
+ * navigation fall through to the normal login redirect.
+ *
+ * No authenticate() call here on purpose: the whole point is to run when the
+ * access token may already be dead. The refresh token IS the credential.
+ */
+async function handleRefresh(request: Request, env: Env): Promise<Response> {
+  const refreshToken = getCookie(request, REFRESH_TOKEN_COOKIE);
+  if (!refreshToken) {
+    return jsonError(401, "no_refresh_token");
+  }
+
+  let refreshed;
+  try {
+    refreshed = await refreshSession(env, refreshToken);
+  } catch {
+    // Expired/revoked/rotated-away — session is genuinely over.
+    return jsonError(401, "refresh_rejected");
+  }
+
+  const headers = new Headers();
+  for (const c of buildAuthCookies(refreshed.access_token, refreshed.refresh_token)) {
+    headers.append("Set-Cookie", c);
+  }
+  headers.set("Content-Type", "application/json");
+  headers.set("Cache-Control", "no-store");
   return new Response(JSON.stringify({ ok: true }), { status: 200, headers });
 }
 

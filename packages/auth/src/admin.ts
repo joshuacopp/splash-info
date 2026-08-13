@@ -74,6 +74,44 @@ export async function supabasePasswordLogin(
   return (await r.json()) as PasswordLoginResponse;
 }
 
+/**
+ * Exchange a refresh token for a fresh access+refresh token pair via
+ * /auth/v1/token?grant_type=refresh_token. This is the sliding-session
+ * primitive: it mints a new 1-hour access token WITHOUT re-authenticating,
+ * and — critically — GoTrue preserves the session's AAL on refresh, so an
+ * aal2 (MFA-completed) session stays aal2 and an aal1 session stays aal1.
+ * Refresh PRESERVES, never ELEVATES.
+ *
+ * GoTrue rotates the refresh token on each use (the returned refresh_token
+ * differs from the input); callers must persist the NEW one. A brief reuse
+ * grace window on GoTrue's side tolerates the occasional double-submit.
+ *
+ * Throws on failure (expired/revoked/rotated-away refresh token) with the
+ * Supabase error message — caller treats that as "session over, go to login".
+ */
+export async function refreshSession(
+  env: SupabaseEnv,
+  refreshToken: string
+): Promise<PasswordLoginResponse> {
+  const r = await fetch(`${env.SUPABASE_URL}/auth/v1/token?grant_type=refresh_token`, {
+    method: "POST",
+    headers: {
+      apikey: env.SUPABASE_ANON_KEY,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({ refresh_token: refreshToken })
+  });
+  if (!r.ok) {
+    const err = (await r.json().catch(() => ({}))) as {
+      error_description?: string;
+      msg?: string;
+      message?: string;
+    };
+    throw new Error(err.error_description ?? err.msg ?? err.message ?? "refresh failed");
+  }
+  return (await r.json()) as PasswordLoginResponse;
+}
+
 /* ============================================================
  * Sanctioned password-mutation paths
  * ============================================================ */

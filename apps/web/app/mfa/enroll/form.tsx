@@ -152,8 +152,13 @@ export function EnrollMfaForm({ next }: EnrollMfaFormProps) {
             <li>Enter the 6-digit code it shows to confirm.</li>
           </ol>
 
+          {/* White background + generous padding = the QR "quiet zone" scanners
+              need. ~256px render (h-72 minus p-4) is comfortably above the
+              size Google Authenticator's camera needs to lock on; the earlier
+              ~176px was borderline. shape-rendering keeps module edges crisp
+              when the vector scales up. */}
           <div
-            className="mx-auto mb-3 flex h-48 w-48 items-center justify-center rounded-splash-sm border border-gray-200 bg-white p-2 [&>svg]:h-full [&>svg]:w-full"
+            className="mx-auto mb-3 flex h-72 w-72 items-center justify-center rounded-splash-sm border border-gray-200 bg-white p-4 [&>svg]:h-full [&>svg]:w-full [&>svg]:[shape-rendering:crispEdges]"
             aria-label="Authenticator QR code"
             dangerouslySetInnerHTML={{ __html: enroll.qrCode }}
           />

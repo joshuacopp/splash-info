@@ -21,6 +21,7 @@ import type { Metadata } from "next";
 import type { ReactNode } from "react";
 import { ASSETS } from "@splash/storage-r2/assets";
 import { Header, type HeaderUser } from "./_components/Header";
+import { SessionKeepalive } from "./_components/SessionKeepalive";
 import { getMe, roleLabelFor } from "./_lib/me";
 import "./globals.css";
 
@@ -41,6 +42,10 @@ export default async function RootLayout({ children }: { children: ReactNode }) 
   return (
     <html lang="en">
       <body>
+        {/* Keepalive only for authenticated sessions — no pinging on /login
+            or other public pages. Refreshes the session on a timer + tab
+            refocus so an open tab never hits the 1-hour token wall. */}
+        {user ? <SessionKeepalive /> : null}
         <Header user={user} />
         <main>{children}</main>
       </body>
