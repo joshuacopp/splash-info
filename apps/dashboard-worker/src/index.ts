@@ -53,14 +53,24 @@ import {
   buildAuthCookies,
   buildLogoutCookies,
   buildSessionForUser,
+  PASSWORD_POLICY,
+  PASSWORD_POLICY_MESSAGE,
   requiresPasswordChange,
   supabasePasswordLogin,
   userCompleteForcedReset
 } from "@splash/auth";
 import type { SupabaseEnv } from "@splash/db-supabase";
 import { isOriginAllowed, jsonError, readForm } from "@splash/http";
+import { verifyTurnstile } from "./turnstile";
+import { recordAndCheck, clearEmail, type RateLimitEnv } from "./rate-limit";
 
-type Env = SupabaseEnv;
+// Base Supabase env + the login-hardening bindings (Brief: login abuse
+// protection). Both are optional so local dev works unbound (Turnstile
+// fail-soft, rate-limit fail-open); production binds them via wrangler.toml.
+type Env = SupabaseEnv &
+  RateLimitEnv & {
+    TURNSTILE_SECRET_KEY?: string;
+  };
 
 export default {
   async fetch(request: Request, env: Env, _ctx: ExecutionContext): Promise<Response> {
@@ -75,6 +85,7 @@ export default {
       if (!isOriginAllowed(request)) return jsonError(403, "bad origin");
       return handleLogin(request, env);
     }
+
     if (pathname === "/api/logout" && method === "POST") {
       if (!isOriginAllowed(request)) return jsonError(403, "bad origin");
       return handleLogout();
@@ -107,9 +118,30 @@ async function handleLogin(request: Request, env: Env): Promise<Response> {
   const email = (form.get("email") ?? "").trim();
   const password = (form.get("password") ?? "").trim();
   const redirect = (form.get("redirect") ?? "").trim();
+  const turnstileToken = (form.get("cf-turnstile-response") ?? "").trim() || null;
 
   if (!email || !password) {
     return jsonError(400, "email and password required");
+  }
+
+  const clientIp = request.headers.get("CF-Connecting-IP");
+
+  // ── Rate limit (defense-in-depth behind Turnstile) ──────────────────────
+  // Recorded BEFORE the password grant so failed guesses count. Fail-open
+  // if KV is unbound/erroring — Turnstile is still in front.
+  const rl = await recordAndCheck(env, clientIp, email);
+  if (!rl.allowed) {
+    const res = jsonError(429, "Too many attempts. Please wait and try again.");
+    res.headers.set("Retry-After", String(rl.retryAfterSec));
+    return res;
+  }
+
+  // ── Turnstile ───────────────────────────────────────────────────────────
+  // Fail-soft when the secret is unbound (dev); fail-closed on a bad/missing
+  // token once the secret IS bound (prod), so the widget can't be stripped.
+  const ts = await verifyTurnstile(env.TURNSTILE_SECRET_KEY, turnstileToken, clientIp);
+  if (!ts.ok) {
+    return jsonError(403, "Anti-abuse check failed. Please try again.");
   }
 
   let loginResult;
@@ -119,6 +151,10 @@ async function handleLogin(request: Request, env: Env): Promise<Response> {
     // Match legacy/dashboard.js:78 — generic 401 regardless of why.
     return jsonError(401, "Invalid email or password");
   }
+
+  // Successful password grant — clear the per-email throttle so a legit
+  // user who mistyped a few times isn't penalized on their next visit.
+  await clearEmail(env, email);
 
   // Build the session straight from the AuthUser supabasePasswordLogin
   // returns. No need to round-trip through /auth/v1/user — we already have
@@ -173,8 +209,8 @@ async function handleForcedReset(request: Request, env: Env): Promise<Response> 
   const confirmPassword = (form.get("confirm_password") ?? "").trim();
   const next = (form.get("next") ?? "").trim();
 
-  if (!newPassword || newPassword.length < 8) {
-    return jsonError(400, "Password must be at least 8 characters");
+  if (!PASSWORD_POLICY.test(newPassword)) {
+    return jsonError(400, PASSWORD_POLICY_MESSAGE);
   }
   if (newPassword !== confirmPassword) {
     return jsonError(400, "Passwords do not match");

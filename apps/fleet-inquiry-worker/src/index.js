@@ -1384,9 +1384,6 @@ function renderFleetForm(env) {
             <div class="success-message">
                 Thank you for your interest in Splash Car Wash fleet services. You will receive an email with your personalized quote, and a representative will contact you shortly to answer any questions you may have.
             </div>
-            <!-- Brief 85 — Fill Again button. Relative URL redirect works
-                 on workers.dev, staging, and production without per-env
-                 hardcoding. -->
             <button type="button" class="btn-submit" id="fillAgainBtn"
                     style="margin-top: 24px;">
                 Fill Again
@@ -1396,7 +1393,6 @@ function renderFleetForm(env) {
 
     <script>
     (function() {
-        // State
         var selectedLocation = null;
         var selectedPackages = [];
         var allPackagesMap = {}; // pkg -> { pkg, pretty_pkg, price, group }
@@ -1408,7 +1404,6 @@ function renderFleetForm(env) {
         var turnstileWidgetId = null;
         var TURNSTILE_SITE_KEY = "${turnstileSiteKey}";
 
-        // Elements
         var companyInput = document.getElementById('company');
         var nameInput = document.getElementById('name');
         var phoneInput = document.getElementById('phone');
@@ -1427,14 +1422,12 @@ function renderFleetForm(env) {
         var successOverlay = document.getElementById('successOverlay');
         var useLocationBtn = document.getElementById('useLocationBtn');
 
-        // Initialize Turnstile widget once the script loads
         function initTurnstile() {
             if (!TURNSTILE_SITE_KEY) {
                 console.warn('Turnstile site key not configured; skipping.');
                 return;
             }
             if (typeof window.turnstile === 'undefined') {
-                // Script not loaded yet — retry shortly
                 setTimeout(initTurnstile, 200);
                 return;
             }
@@ -1460,7 +1453,6 @@ function renderFleetForm(env) {
         }
         initTurnstile();
 
-        // Phone formatting
         phoneInput.addEventListener('input', function() {
             var digits = this.value.replace(/\\D/g, '');
             if (digits.length > 10) digits = digits.slice(0, 10);
@@ -1474,25 +1466,21 @@ function renderFleetForm(env) {
             validateForm();
         });
 
-        // Input validation listeners
         [companyInput, nameInput, emailInput].forEach(function(input) {
             input.addEventListener('input', validateForm);
             input.addEventListener('blur', validateForm);
         });
 
-        // Fleet sizing listeners
         [vehicleCountInput, washesPerMonthInput].forEach(function(input) {
             input.addEventListener('input', validateForm);
             input.addEventListener('blur', validateForm);
         });
 
-        // Find locations (by typed address)
         findBtn.addEventListener('click', findLocations);
         addressInput.addEventListener('keypress', function(e) {
             if (e.key === 'Enter') findLocations();
         });
 
-        // Use My Location (browser geolocation)
         useLocationBtn.addEventListener('click', useMyLocation);
 
         function findLocations() {
@@ -1546,7 +1534,6 @@ function renderFleetForm(env) {
         }
 
         function searchLocations(payload) {
-            // Reset downstream selections
             selectedLocation = null;
             selectedPackages = [];
             detailingRequested = false;
@@ -1598,22 +1585,18 @@ function renderFleetForm(env) {
                     '</div>';
             }).join('');
 
-            // Click handlers
             locationCards.querySelectorAll('.location-card').forEach(function(card) {
                 card.addEventListener('click', function() {
-                    // Reset and select this card
                     locationCards.querySelectorAll('.location-card').forEach(function(c) {
                         c.classList.remove('selected');
                         c.classList.remove('hidden');
                     });
                     this.classList.add('selected');
 
-                    // Hide all other cards
                     locationCards.querySelectorAll('.location-card').forEach(function(c) {
                         if (c !== this) c.classList.add('hidden');
                     }, this);
 
-                    // Add a "change location" link if not already there
                     var existingChangeLink = locationCards.querySelector('.change-location-link');
                     if (!existingChangeLink) {
                         var changeLink = document.createElement('div');
@@ -1676,20 +1659,17 @@ function renderFleetForm(env) {
                 var groupsHtml = '';
                 var totalPackages = 0;
 
-                // Express Exterior
                 if (data.groups.express_exterior && data.groups.express_exterior.length > 0) {
                     groupsHtml += renderGroup('Express Exterior', null, data.groups.express_exterior, 'express');
                     totalPackages += data.groups.express_exterior.length;
                 }
 
-                // Full Service (with info note)
                 if (data.groups.full_service && data.groups.full_service.length > 0) {
                     var fsNote = 'Includes vacuuming, towel dry, window cleaning, and dash &amp; door jambs wiped down.';
                     groupsHtml += renderGroup('Full Service', fsNote, data.groups.full_service, 'fullserve');
                     totalPackages += data.groups.full_service.length;
                 }
 
-                // Professional Detailing (fivestar) — single checkbox if available in range
                 if (data.fivestar && data.fivestar.available) {
                     detailingLocation = data.fivestar;
                     groupsHtml += renderDetailingGroup(data.fivestar);
@@ -1702,7 +1682,6 @@ function renderFleetForm(env) {
 
                 packageContent.innerHTML = groupsHtml;
 
-                // Click handlers for package checkboxes (excluding detailing which has its own handler)
                 packageContent.querySelectorAll('.package-checkbox:not(.detailing-checkbox)').forEach(function(box) {
                     box.addEventListener('click', function(e) {
                         if (e.target.tagName === 'INPUT') return;
@@ -1718,7 +1697,6 @@ function renderFleetForm(env) {
                     });
                 });
 
-                // Click handler for detailing checkbox
                 var detailingBox = packageContent.querySelector('.detailing-checkbox');
                 if (detailingBox) {
                     detailingBox.addEventListener('click', function(e) {
@@ -1771,7 +1749,6 @@ function renderFleetForm(env) {
             html += '<div class="package-checkboxes">';
             packages.forEach(function(pkg, i) {
                 var checkboxId = 'pkg-' + groupKey + '-' + i;
-                // Store pretty name keyed by pkg for submission
                 allPackagesMap[pkg.pkg] = pkg;
                 var priceStr = pkg.price ? ' <span class="package-price">- $' + Number(pkg.price).toFixed(2) + ' retail</span>' : '';
                 html += '<div class="package-checkbox" data-pkg="' + escHtml(pkg.pkg) + '">' +
@@ -1797,9 +1774,6 @@ function renderFleetForm(env) {
             var nameValid = nameInput.value.trim().length > 0;
             var phoneDigits = phoneInput.value.replace(/\\D/g, '');
             var phoneValid = phoneDigits.length === 10;
-            // Brief 152: client-side gate matches the server-side isValidEmail.
-            // DO NOT EDIT inline — fix packages/types/src/email-validate.ts and
-            // mirror here. Rejects trailing/leading/consecutive dots in local-part.
             var __emailVal = emailInput.value.trim();
             var emailValid = __emailVal.length > 0 && __emailVal.length <= 254 &&
                 /^[A-Za-z0-9](?:[A-Za-z0-9_+-]|\\.(?=[A-Za-z0-9_+-]))*@(?:[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?\\.)+[A-Za-z]{2,}$/.test(__emailVal);
@@ -1814,7 +1788,6 @@ function renderFleetForm(env) {
 
             var turnstileValid = !!turnstileToken;
 
-            // Show/hide errors only if field has content
             toggleError('err-company', !companyValid && companyInput.value.length > 0);
             toggleError('err-name', !nameValid && nameInput.value.length > 0);
             toggleError('err-phone', !phoneValid && phoneInput.value.length > 0);
@@ -1828,7 +1801,6 @@ function renderFleetForm(env) {
             return formValid;
         }
 
-        // Brief 85 — Fill Again button on success modal.
         var fillAgainBtn = document.getElementById('fillAgainBtn');
         if (fillAgainBtn) {
             fillAgainBtn.addEventListener('click', function() {
@@ -1836,7 +1808,6 @@ function renderFleetForm(env) {
             });
         }
 
-        // Submit
         submitBtn.addEventListener('click', function() {
             if (!validateForm()) return;
 
@@ -1845,13 +1816,11 @@ function renderFleetForm(env) {
 
             var phoneDigits = phoneInput.value.replace(/\\D/g, '');
 
-            // Build pretty display string like "Express, Bath, Full Serve Works"
             var prettyNames = selectedPackages.map(function(pkgKey) {
                 var info = allPackagesMap[pkgKey];
                 return info ? info.pretty_pkg : pkgKey;
             });
 
-            // Build structured detail array for each selected package (with prices)
             var packagesDetail = selectedPackages.map(function(pkgKey) {
                 var info = allPackagesMap[pkgKey] || {};
                 return {
@@ -1912,7 +1881,6 @@ function renderFleetForm(env) {
             validateForm();
         }
 
-        // Helpers
         function showError(id) {
             document.getElementById(id).classList.add('show');
         }

@@ -161,9 +161,6 @@ ${FORM_CSS}
 
   <script>
     (function(){
-      // Terms text is rendered into both the visible <div> and the hidden
-      // form field — the submit handler stores the exact string the
-      // customer agreed to in maxpass_signups.terms_text. Single source.
       var termsText = ${JSON.stringify(termsText)};
       document.getElementById('termsDisplay').textContent = termsText;
       document.getElementById('termsInput').value = termsText;
@@ -176,15 +173,8 @@ ${FORM_CSS}
       var submitBtn    = document.getElementById('submitBtn');
       var form         = document.getElementById('signupForm');
 
-      // Brief 152: email regex compiled from EMAIL_REGEX_SOURCE in
-      // @splash/types/email-validate so the client-side gate matches the
-      // server-side isValidEmail check exactly. DO NOT EDIT inline — fix
-      // the canonical source. Rejects trailing/leading/consecutive dots
-      // in local-part that pass the legacy /^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$/.
       var EMAIL_RE = new RegExp(${JSON.stringify(EMAIL_REGEX_SOURCE)});
 
-      // Phone auto-format: (XXX)XXX-XXXX, no space after closing paren —
-      // matches the documented format used by phone_usage_log + JotForm prefill.
       phoneInput.addEventListener('input', function(e){
         var digits = e.target.value.replace(/\\D/g, '').slice(0, 10);
         var out = '';
@@ -218,12 +208,6 @@ ${FORM_CSS}
         submitBtn.disabled = !(validatePhone() && validateEmail() && agree.checked);
       }
 
-      // -------------------------------------------------------------
-      // Modal kit — ported from legacy/signupworker.js:2882-3030.
-      // The four signup-flow modals (Deny / Warn / Monitor / Success)
-      // are created on demand and removed on dismiss. Branch keys on
-      // the response JSON: { denied, warning, monitor, success }.
-      // -------------------------------------------------------------
       var MODAL_OVERLAY_STYLE =
         'position:fixed;inset:0;background:rgba(0,0,0,0.7);' +
         'display:flex;align-items:center;justify-content:center;' +
@@ -257,7 +241,6 @@ ${FORM_CSS}
           '<h2 style="color:#dc2626;font-size:32px;margin-bottom:15px;font-weight:bold;">Invalid Phone Number</h2>' +
           '<p style="color:#64748b;font-size:16px;margin-bottom:35px;line-height:1.5;"></p>' +
           '<button id="denyOkBtn" style="' + btnStyle('linear-gradient(135deg,#dc2626 0%,#ef4444 100%)') + '">Enter Valid Number</button>';
-        // textContent on the <p> so server-supplied error strings can't inject HTML
         card.querySelector('p').textContent = errorMessage || 'Invalid phone number.';
         overlay.appendChild(card);
         document.body.appendChild(overlay);
@@ -314,9 +297,6 @@ ${FORM_CSS}
         document.body.appendChild(overlay);
         document.getElementById('monitorConfirmBtn').addEventListener('click', function(){
           closeOverlay(overlay);
-          // Carry user_confirmed forward as well — Monitor tier paths can
-          // re-enter the warn-tier branch on subsequent flows; both flags
-          // tell the server "user has acknowledged the friction."
           var resubmit = Object.assign({}, originalBody, {
             user_confirmed: true,
             monitor_acknowledged: true
@@ -343,11 +323,6 @@ ${FORM_CSS}
         overlay.appendChild(card);
         document.body.appendChild(overlay);
         document.getElementById('fillAgainBtn').addEventListener('click', function(){
-          // Brief 57 (2026-05-06): redirect to the package picker so the
-          // next signup can pick a different package. Previously this
-          // reset the form in-place which assumed the next signup was
-          // for the same package — operationally, "fill again" usually
-          // means a different vehicle in the same household.
           window.location.href = '/signup/${escHtml(locationCode)}';
         });
       }
@@ -366,17 +341,11 @@ ${FORM_CSS}
           terms: termsText,
           terms_agreed: agree.checked,
           timestamp: new Date().toISOString(),
-          // BOGO fields — defensive defaults so non-BOGO signups and older
-          // clients (which don't post these fields) land as is_bogo=false /
-          // recurring_start_date=null without breaking the insert.
           is_bogo: form.is_bogo.value === 'true',
           recurring_start_date: form.recurring_start_date.value || null
         };
       }
 
-      // submitToServer is reused by the form's submit event AND by the
-      // Warn / Monitor modal "confirm" buttons (which resubmit with
-      // user_confirmed / monitor_acknowledged set).
       async function submitToServer(body){
         submitBtn.disabled = true;
         submitBtn.textContent = 'Submitting…';
@@ -388,14 +357,11 @@ ${FORM_CSS}
           });
           var result = await resp.json().catch(function(){ return {}; });
 
-          // Branch on response shape — see handlers/submit-signup.ts
-          // contract block for the four modal JSON shapes.
           if (resp.ok && result.success) { showSuccessModal(); return; }
           if (result.denied)              { showDenyModal(result.error); return; }
           if (result.warning)             { showWarnModal(result.message, body); return; }
           if (result.monitor)             { showMonitorModal(result.message, body); return; }
 
-          // Unrecognized response — generic alert + recoverable.
           alert(result.error || result.message || ('Submission failed (' + resp.status + ').'));
           submitBtn.disabled = false;
           submitBtn.textContent = 'Complete Sign Up';

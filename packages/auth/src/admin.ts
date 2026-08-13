@@ -33,6 +33,7 @@ import {
 } from "@splash/db-supabase";
 import type { AuthUser } from "@splash/types/auth";
 import type { Session } from "./session.js";
+import { assertValidPassword } from "./password-policy.js";
 
 interface PasswordLoginResponse {
   access_token: string;
@@ -99,9 +100,7 @@ export async function adminResetPassword(
   newPassword: string
 ): Promise<void> {
   if (!userId) throw new Error("userId required");
-  if (!newPassword || newPassword.length < 8) {
-    throw new Error("Password must be at least 8 characters");
-  }
+  assertValidPassword(newPassword);
   const sb = createServiceClient(env);
   await setMustChangePassword(sb, userId, true);
   await setSupabasePassword(env, userId, newPassword);
@@ -132,9 +131,7 @@ export async function userCompleteForcedReset(
   session: Session,
   newPassword: string
 ): Promise<void> {
-  if (!newPassword || newPassword.length < 8) {
-    throw new Error("Password must be at least 8 characters");
-  }
+  assertValidPassword(newPassword);
   await setSupabasePassword(env, session.userId, newPassword);
   const sb = createServiceClient(env);
   await setMustChangePassword(sb, session.userId, false);
@@ -255,6 +252,7 @@ export async function adminCreateUser(
   env: SupabaseEnv,
   args: { email: string; password: string; emailConfirm?: boolean }
 ): Promise<AuthUser> {
+  assertValidPassword(args.password);
   const r = await fetch(`${env.SUPABASE_URL}/auth/v1/admin/users`, {
     method: "POST",
     headers: {

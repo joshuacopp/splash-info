@@ -2,6 +2,7 @@
 
 import {
   PASSWORD_MIN_LENGTH,
+  hasLowercase,
   hasNumber,
   hasSymbol,
   hasUppercase,
@@ -15,12 +16,13 @@ export interface PasswordRequirementsProps {
 export default function PasswordRequirements({ password }: PasswordRequirementsProps) {
   const empty = password.length === 0;
   const lengthOk = isMinimumMet(password);
+  const lowerOk = hasLowercase(password);
   const upperOk = hasUppercase(password);
   const numberOk = hasNumber(password);
   const symbolOk = hasSymbol(password);
 
-  const allOk = lengthOk && upperOk && numberOk && symbolOk;
-  const onlyMinimum = lengthOk && !(upperOk && numberOk && symbolOk);
+  const allOk = lengthOk && lowerOk && upperOk && numberOk && symbolOk;
+  const onlyMinimum = lengthOk && !(lowerOk && upperOk && numberOk && symbolOk);
 
   if (allOk) {
     return (
@@ -49,6 +51,7 @@ export default function PasswordRequirements({ password }: PasswordRequirementsP
 
   const rules: Array<{ key: string; label: string; met: boolean }> = [
     { key: "len", label: `At least ${PASSWORD_MIN_LENGTH} characters`, met: lengthOk },
+    { key: "low", label: "At least one lowercase letter", met: lowerOk },
     { key: "up", label: "At least one uppercase letter", met: upperOk },
     { key: "num", label: "At least one number", met: numberOk },
     { key: "sym", label: "At least one symbol", met: symbolOk }

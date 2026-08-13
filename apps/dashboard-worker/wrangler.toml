@@ -49,6 +49,17 @@ routes = [
 # SUPABASE_URL          — string
 # SUPABASE_ANON_KEY     — secret (used for /auth/v1/token + /auth/v1/user)
 # SUPABASE_SERVICE_KEY  — secret (used for user_permissions reads via @splash/db-supabase)
+# TURNSTILE_SECRET_KEY  — secret. Login anti-abuse. UNBOUND = Turnstile skipped
+#                         (dev). MUST be bound in production. Pairs with the
+#                         public NEXT_PUBLIC_TURNSTILE_SITE_KEY built into apps/web.
+
+# Login rate limiter (src/rate-limit.ts). Coarse fixed-window counters keyed
+# per-IP and per-email. UNBOUND = fail-open (dev). Create the namespace with
+#   wrangler kv namespace create LOGIN_RATE_LIMIT
+# then paste the returned id below before the production deploy.
+[[kv_namespaces]]
+binding = "LOGIN_RATE_LIMIT"
+id = "f9513ef94c844797984ec5606d882388"
 
 # Brief 63 (2026-05-07): keeps Workers Logs sticky across deploys. Without
 # this, CF Builds re-provisions the worker on every push and the dashboard

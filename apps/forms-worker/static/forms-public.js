@@ -1,23 +1,4 @@
-/*!
- * Splash Forms — public-form client wiring (Brief 92 + Brief 93 + Brief 122).
- *
- * Loaded via <script src="/forms/api/static/forms-public.js" defer> on every
- * public render. Wires:
- *   - signature canvases (signature_pad library, loaded separately)
- *   - file inputs (immediate POST to /forms/api/upload, hidden-input r2_key)
- *   - lookup fields — listen for changes on the configured key field and
- *     POST to /forms/api/lookup/{slug}; populate the dependent lookup UI
- *     (Brief 93)
- *   - per-field error/status display under each affected field wrapper
- *   - Brief 122: localStorage autosave keyed by form slug, resume banner on
- *     page load when a <30-day draft exists, clear-on-successful-submit.
- *     Survives refresh / browser close / multi-day gaps on the same
- *     browser+device.
- *
- * No framework. Vanilla JS. Reads pending_submission_id from the form's
- * <input name="pending_submission_id"> hidden input written by the Brief 90
- * renderer.
- */
+
 (function () {
   "use strict";
 
@@ -36,15 +17,11 @@
     Array.prototype.forEach.call(forms, function (formEl) {
       var pending = formEl.querySelector('input[name="pending_submission_id"]');
       if (!pending) return;
-      // Form action is /forms/api/submit/{slug} — slug is the last path segment.
+      
       var actionUrl = formEl.getAttribute("action") || "";
       var slug = actionUrl.split("/").pop();
       if (!slug) return;
 
-      // Per-form wiring. Note that the signature / file handlers read the
-      // pending_submission_id from the live <input> element at upload time
-      // (not capture-time), so a Brief 122 resume that rewrites the hidden
-      // input flows through naturally to new uploads.
       var sigWraps = formEl.querySelectorAll('[data-field-type="signature"]');
       Array.prototype.forEach.call(sigWraps, function (wrap) {
         wireSignature(wrap, slug, formEl);
@@ -56,17 +33,11 @@
       wireLookups(formEl, slug);
       wireMultiMax(formEl);
 
-      // Brief 122 — autosave / resume. Submit interception (below) owns
-      // clear-on-submit now (only clears on a confirmed 200 success).
       maybeRenderResumeBanner(formEl, slug);
       wireAutosave(formEl, slug);
       wireSubmitInterception(formEl, slug);
     });
   }
-
-  // ---------------------------------------------------------------------
-  // Signature
-  // ---------------------------------------------------------------------
 
   function wireSignature(wrap, slug, formEl) {
     var canvas = wrap.querySelector("canvas.field-signature-canvas");
@@ -132,16 +103,11 @@
       .catch(function () { showError(wrap, "Failed to save signature. Please try again."); });
   }
 
-  // ---------------------------------------------------------------------
-  // File
-  // ---------------------------------------------------------------------
-
   function wireFile(wrap, slug, formEl) {
     var input = wrap.querySelector('input[type="file"]');
     var fieldKey = wrap.getAttribute("data-field-key");
     if (!input || !fieldKey) return;
 
-    // Hidden companion input carries the r2_key reference for submit.
     var hidden = wrap.querySelector('input[type="hidden"][data-r2-key="1"]');
     if (!hidden) {
       hidden = document.createElement("input");
@@ -197,17 +163,6 @@
     return el ? el.value : "";
   }
 
-  // ---------------------------------------------------------------------
-  // Multi-select max enforcement
-  //
-  // The `maxSelected` ceiling is validated server-side at submit, but that
-  // only surfaces AFTER a failed submit. Here we prevent the over-selection
-  // in the first place: once `max` boxes are checked, disable the remaining
-  // unchecked ones; re-enable them the moment the user unchecks one. Groups
-  // with no `data-max-selected` (no ceiling) are left alone. `minSelected`
-  // can't be enforced this way — you can't force a user to check boxes — so
-  // it stays a submit-time check.
-  // ---------------------------------------------------------------------
   function wireMultiMax(formEl) {
     var groups = formEl.querySelectorAll(
       '[data-field-type="multi"][data-max-selected]'
@@ -229,29 +184,15 @@
       }
 
       group.addEventListener("change", enforce);
-      // Initial pass covers restored drafts / back-button bfcache state.
+      
       enforce();
     });
   }
-
-  // ---------------------------------------------------------------------
-  // Lookup (Brief 93)
-  //
-  // Per planning Decision 5b: when the user changes the key field's value,
-  // POST to /forms/api/lookup/{slug} with {lookup_field_id, key_value};
-  // populate the dependent lookup field's UI from the response.
-  //
-  // The displayed value is for UX only — the submit handler always
-  // re-resolves server-side and writes the canonical value, regardless of
-  // what's in the visible input. So a tampered or stale visible value
-  // never reaches form_submissions.payload.
-  // ---------------------------------------------------------------------
 
   function wireLookups(formEl, slug) {
     var lookupWraps = formEl.querySelectorAll('[data-field-type="lookup"]');
     if (!lookupWraps.length) return;
 
-    // Group lookups by their key field id.
     var keyFieldDependencies = {};
     Array.prototype.forEach.call(lookupWraps, function (wrap) {
       var keyId = wrap.getAttribute("data-lookup-key-field");
@@ -279,8 +220,6 @@
       keyEl.addEventListener("input", onKeyChange);
       keyEl.addEventListener("change", onKeyChange);
 
-      // Initial resolve if the key field already has a value (e.g.,
-      // browser-restored form state on back-button, or Brief 122 resume).
       if (keyEl.value) {
         deps.forEach(function (wrap) {
           resolveLookupField(wrap, slug, keyEl.value);
@@ -313,7 +252,7 @@
     }
 
     if (!keyValue) {
-      // Cleared key — reset to empty / placeholder.
+      
       if (resolutionMode === "display_only" && displayDiv) {
         displayDiv.innerHTML = "<em>Select to populate</em>";
       } else if (input) {
@@ -322,7 +261,6 @@
       return;
     }
 
-    // Loading hint.
     if (resolutionMode === "display_only" && displayDiv) {
       displayDiv.innerHTML = "<em>Resolving...</em>";
     } else if (input && resolutionMode !== "prefill_hidden") {
@@ -358,23 +296,9 @@
       });
   }
 
-  // Minimal CSS-attribute escape for [id="..."] selectors. The renderer
-  // emits UUID-shaped ids (hex + hyphen), so the universe of dangerous
-  // chars is small; this guards against accidental quote injection
-  // without pulling in the full CSS.escape polyfill.
   function cssAttrEscape(s) {
     return String(s).replace(/["\\]/g, "\\$&");
   }
-
-  // ---------------------------------------------------------------------
-  // Brief 122 — localStorage draft persistence
-  //
-  // Key shape: `forms.draft.{slug}` → JSON {values, pendingSubmissionId,
-  // savedAt}. Values is a flat name→value map (string OR string[] for
-  // multi-checkbox / select-multiple groups). pendingSubmissionId is the
-  // form's hidden-input id at save time; restoring it keeps file/signature
-  // r2_keys (which embed that id in their R2 path) wired to the form.
-  // ---------------------------------------------------------------------
 
   function loadDraft(slug) {
     try {
@@ -409,8 +333,6 @@
         JSON.stringify(payload)
       );
     } catch (e) {
-      // Quota-exceeded, storage disabled, etc. — degrade silently.
-      // Form behavior is unaffected; operator just loses persistence.
       try { console.warn("[forms.autosave] saveDraft failed", e); } catch (_) {}
     }
   }
@@ -419,19 +341,9 @@
     try {
       window.localStorage.removeItem(DRAFT_KEY_PREFIX + slug);
     } catch (e) {
-      // ignored
     }
   }
 
-  // Serialize the form's named inputs into a flat name→value map.
-  // - file inputs: skipped (browser security prevents programmatic
-  //   restore of <input type=file>; the OOB upload's hidden _r2 companion
-  //   captures the r2_key as an ordinary hidden input).
-  // - radio: only the checked option's value.
-  // - checkbox (single or grouped): collected as a string[] of checked
-  //   values per name. Empty array if none checked.
-  // - select multiple: string[] of selected option values.
-  // - everything else: el.value.
   function serializeForm(formEl) {
     var values = {};
     var checkboxNames = {};
@@ -447,7 +359,6 @@
         continue;
       }
       if (type === "checkbox") {
-        // Collect as array per name. First sighting initializes [].
         if (!checkboxNames[el.name]) {
           checkboxNames[el.name] = true;
           values[el.name] = [];
@@ -468,11 +379,6 @@
     return values;
   }
 
-  // Restore a saved name→value map onto the form. Silently skips names
-  // whose <input> no longer exists (form schema changed between save and
-  // resume — operator gets partial restore, not a crash). Dispatches
-  // input + change events on each touched element so wired handlers
-  // (lookup resolver, etc.) re-fire.
   function restoreForm(formEl, values) {
     var dispatchedNames = {};
     var elements = formEl.elements;
@@ -505,10 +411,6 @@
       el.value = saved == null ? "" : String(saved);
       dispatchedNames[el.name] = el;
     }
-    // Fire one input + change event per touched element so downstream
-    // listeners (lookup wiring, etc.) re-resolve. Wrapped in try/catch
-    // because some environments throw on synthetic events for non-text
-    // inputs.
     Object.keys(dispatchedNames).forEach(function (name) {
       var el = dispatchedNames[name];
       try { el.dispatchEvent(new Event("input", { bubbles: true })); } catch (_) {}
@@ -526,8 +428,6 @@
         saveDraft(slug, values, pendingId);
       }, SAVE_DEBOUNCE_MS);
     }
-    // Bind on the form so we capture bubbling input/change events from
-    // every <input>, <textarea>, <select> without per-element listeners.
     formEl.addEventListener("input", scheduleSave);
     formEl.addEventListener("change", scheduleSave);
   }
@@ -537,7 +437,6 @@
     if (!draft) return;
     var age = Date.now() - draft.savedAt;
     if (age < 0 || age > DRAFT_TTL_MS) {
-      // Stale or future-dated draft — drop and render fresh.
       clearDraft(slug);
       return;
     }
@@ -608,7 +507,6 @@
       if (banner.parentNode) banner.parentNode.removeChild(banner);
     }
 
-    // Insert at the top of the form (before any field).
     if (formEl.firstChild) {
       formEl.insertBefore(banner, formEl.firstChild);
     } else {
@@ -646,19 +544,6 @@
     return d === 1 ? "1 day ago" : d + " days ago";
   }
 
-  // ---------------------------------------------------------------------
-  // Submit interception + inline validation UX
-  //
-  // Replaces the old native-POST flow (which navigated the browser to the
-  // raw 422 JSON body on validation failure). We now fetch() the submit,
-  // and:
-  //   - 200  → clear the saved draft, swap in the success-page HTML.
-  //   - 422  → render each `fields` entry inline under its field wrapper
-  //            (reusing showError), plus a summary banner + scroll-to-first.
-  //   - other → friendly form-level banner keyed off the `error` code.
-  // The draft is cleared ONLY on a confirmed 200, so a failed submit no
-  // longer wipes the user's in-progress data.
-  // ---------------------------------------------------------------------
   function wireSubmitInterception(formEl, slug) {
     var actionUrl = formEl.getAttribute("action") || "";
     var submitBtn = formEl.querySelector('button[type="submit"], .submit-btn');
@@ -681,8 +566,6 @@
       })
         .then(function (resp) {
           if (resp.ok) {
-            // Server returns the full success-page HTML. Clear the draft
-            // and replace the document with it.
             clearDraft(slug);
             return resp.text().then(function (html) {
               document.open();
@@ -694,8 +577,6 @@
             var body = null;
             try { body = JSON.parse(text); } catch (_) {}
             restoreSubmitBtn(submitBtn, origLabel);
-            // A single-use Turnstile token is consumed on submit; reset the
-            // widget so a retry gets a fresh one.
             resetTurnstile();
 
             if (resp.status === 422 && body && body.fields) {
@@ -792,8 +673,6 @@
     }
   }
 
-  // Map a server error code (possibly "code: detail") to a friendly line.
-  // Unknown codes fall through to the raw string so nothing is swallowed.
   function humanizeError(code) {
     var first = String(code).split(":")[0].trim();
     var map = {
@@ -814,10 +693,6 @@
     };
     return map[first] || (code ? String(code) : "Something went wrong. Please try again.");
   }
-
-  // ---------------------------------------------------------------------
-  // Error / status display helpers
-  // ---------------------------------------------------------------------
 
   function showError(wrap, msg) {
     clearError(wrap);

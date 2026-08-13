@@ -11,7 +11,7 @@ import { useState, type FormEvent } from "react";
 import PasswordInput from "../_components/PasswordInput";
 import PasswordRequirements from "./_components/PasswordRequirements";
 import PasswordMatchHint from "./_components/PasswordMatchHint";
-import { isMinimumMet } from "./_lib/password-rules";
+import { isPolicyMet, PASSWORD_POLICY_MESSAGE } from "./_lib/password-rules";
 
 // Forced-reset posts to /api/forced-reset as a same-origin path. Production:
 // apps/web and dashboard-worker share splashcarwashes.info. Dev: apps/web's
@@ -33,16 +33,16 @@ export function ChangePasswordForm({ required, next }: ChangePasswordFormProps) 
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
-  const meetsMinimum = isMinimumMet(password);
+  const meetsPolicy = isPolicyMet(password);
   const matches = password === confirmPassword;
-  const submitDisabled = submitting || !meetsMinimum || !matches;
+  const submitDisabled = submitting || !meetsPolicy || !matches;
 
   const onSubmit = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     setError(null);
 
-    if (!meetsMinimum) {
-      setError("Password must be at least 8 characters");
+    if (!meetsPolicy) {
+      setError(PASSWORD_POLICY_MESSAGE);
       return;
     }
     if (!matches) {

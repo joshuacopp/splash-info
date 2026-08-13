@@ -14,6 +14,7 @@
 // — the form detects that path in the response and routes to apps/web's
 // /change-password page.
 
+import { getCloudflareContext } from "@opennextjs/cloudflare";
 import { LoginForm } from "./form";
 
 interface PageProps {
@@ -23,7 +24,32 @@ interface PageProps {
 export default async function LoginPage({ searchParams }: PageProps) {
   const params = await searchParams;
   const returnPath = sanitizeReturn(params.return);
-  return <LoginForm returnPath={returnPath} />;
+  const turnstileSiteKey = await readTurnstileSiteKey();
+  return <LoginForm returnPath={returnPath} turnstileSiteKey={turnstileSiteKey} />;
+}
+
+/**
+ * Public Turnstile site key, read at RUNTIME from the worker's env — the same
+ * "Variables and secrets" panel the sibling workers use. Set it as a plain
+ * Text var named TURNSTILE_SITE_KEY, mirroring fleet-inquiry-worker.
+ *
+ * Read via getCloudflareContext rather than process.env.NEXT_PUBLIC_* so the
+ * value comes from the deployed worker's bindings, not build-time inlining —
+ * consistent with how every other runtime value in apps/web is read, and it
+ * lets the key rotate without a rebuild.
+ *
+ * Fail-soft: when unset (local dev, or getCloudflareContext unavailable
+ * outside the worker runtime) the form renders no widget and login works
+ * unguarded — mirrors the dashboard-worker's posture when TURNSTILE_SECRET_KEY
+ * is unbound.
+ */
+async function readTurnstileSiteKey(): Promise<string | undefined> {
+  try {
+    const { env } = await getCloudflareContext({ async: true });
+    return (env as { TURNSTILE_SITE_KEY?: string }).TURNSTILE_SITE_KEY;
+  } catch {
+    return undefined;
+  }
 }
 
 /**

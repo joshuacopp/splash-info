@@ -129,7 +129,9 @@ import {
   adminCreateUser,
   adminGetUser,
   adminResetPassword,
-  authenticate
+  authenticate,
+  isValidPassword,
+  PASSWORD_POLICY_MESSAGE
 } from "@splash/auth";
 import {
   clearRole,
@@ -641,7 +643,7 @@ async function handleResetPassword(
   const userId = stringOrNull(body.user_id);
   const newPassword = stringOrNull(body.new_password);
   if (!userId || !newPassword) return jsonError(400, "user_id and new_password required");
-  if (newPassword.length < 8) return jsonError(400, "Password must be at least 8 characters");
+  if (!isValidPassword(newPassword)) return jsonError(400, PASSWORD_POLICY_MESSAGE);
 
   // adminResetPassword sets must_change_password = true FIRST, then sets the
   // password — see ordering rationale in @splash/auth/admin.ts. This is the
@@ -676,7 +678,7 @@ async function handleCreateUser(
     : [];
 
   if (!email || !password) return jsonError(400, "email and password required");
-  if (password.length < 8) return jsonError(400, "Password must be at least 8 characters");
+  if (!isValidPassword(password)) return jsonError(400, PASSWORD_POLICY_MESSAGE);
   if (role && !VALID_ROLES.has(role as UserRole)) {
     return jsonError(400, `Invalid role: ${role}`);
   }
