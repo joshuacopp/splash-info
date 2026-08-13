@@ -1,11 +1,10 @@
 // Auth gate for beekeeper-worker.
 //
 // Mirrors apps/signup-worker/src/handlers/admin-pricing.ts (adminGate +
-// userCanAccessLocation) but for the `schedule` tool, with one deliberate
-// twist: the gate passes on super_admin OR a `schedule` grant OR a `pricing`
-// grant. The operator decision (2026-07-10) is that anyone who can change
-// MaxPass pricing for a location can also edit that location's shifts, so a
-// separate grant isn't required for pricing admins — but `schedule` is ALSO an
+// userCanAccessLocation) but for the `schedule` tool - difference -
+// the gate passes on super_admin OR a `schedule` grant OR a `pricing`
+// grant. Anyone who can changepricing for a location can edit that location's shifts,
+// so aseparate grant isn't required for pricing admins — but `schedule` is ALSO an
 // independently grantable/revocable tool (wired through sysadmin's existing
 // grant/revoke + user_permissions location assignment).
 //
@@ -38,10 +37,6 @@ export type ScheduleGate =
  * fallback is the "MaxPass pricing admins get shift access to their locations"
  * rule — checkToolAccess("pricing") is true for anyone who can already change
  * that location's pricing.
- *
- * Returns the session + a service-key client on success, or a typed error
- * response. CSRF is the caller's responsibility (write handlers run
- * isOriginAllowed BEFORE calling this).
  */
 export async function scheduleGate(request: Request, env: Env): Promise<ScheduleGate> {
   const auth = await authenticate(request, env);

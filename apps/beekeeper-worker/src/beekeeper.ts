@@ -1,18 +1,17 @@
 // Beekeeper Shifts API client.
 //
-// Base: https://splashcarwashes.us.beekeeper.io/api/2  (the `.us.` DC segment
-// is part of the tenant address). Auth: every request carries
+// Base: https://splashcarwashes.us.beekeeper.io/api/2  
+// 
+// Auth: every request carries
 //
 //     Authorization: Token <bot_token>
 //
 // The scheme word is the literal `Token`, NOT `Bearer`. The token is a
 // Wrangler secret held only by the Worker (env.BEEKEEPER_TOKEN).
 //
-// Writes send `?notify=false` so real staff aren't push-notified — the caller
-// decides whether to override this once the flow is trusted in production.
+// Writes send `?notify=false` so staff aren't push-notified on all updates
 //
-// Only ~4 months of shift history is retained upstream; callers must bound
-// their read windows accordingly.
+
 
 import { resolveBeekeeperBaseUrl, type Env } from "./env.js";
 
@@ -20,10 +19,9 @@ import { resolveBeekeeperBaseUrl, type Env } from "./env.js";
  * Upstream shapes (real shape observed against the live tenant)
  * ============================================================ */
 
-/** A Beekeeper shift. Shifts reference `userId` (internal UUID) only — no name
+/** Shifts reference `userId` (internal UUID) only — no name
  *  is embedded; resolve names via the beekeeper_users cache. `userId` is absent
- *  on OPEN/UNASSIGNED shifts (a first-class Beekeeper concept), so it is
- *  optional here — never assume it's present. */
+ *  on OPEN/UNASSIGNED shifts  */
 export interface BeekeeperShift {
   id: string;
   userId?: string;
@@ -39,16 +37,14 @@ export interface BeekeeperShift {
   shiftManagerIds?: string[];
 }
 
-/** In practice the tenant only uses `color` (occasionally `description`). The
- *  docs imply location/type keys — the tenant doesn't populate them. */
+
 export interface BeekeeperShiftMetadata {
   color?: string;
   description?: string;
   [k: string]: unknown;
 }
 
-/** A Beekeeper schedule (the location/schedule picker). There is NO
- *  /locations route — schedules ARE the location list. */
+
 export interface BeekeeperSchedule {
   id: string;
   name: string;
@@ -58,8 +54,7 @@ export interface BeekeeperSchedule {
   locationIds?: string[];
 }
 
-/** A Beekeeper user. `tenantuserid` (lowercase) is the dashboard User-ID;
- *  everything in the tenant is keyed by the internal `id` UUID. */
+
 export interface BeekeeperUser {
   id: string;
   tenantuserid?: string;
@@ -70,14 +65,11 @@ export interface BeekeeperUser {
   org_unit_ids?: string[];
 }
 
-/** Body accepted by create/update. `id` is generated app-side (stable +
- *  meaningful). `tenantUserId` is intentionally omitted — the tenant keys
- *  everything by `userId`, and sending tenantUserId invites the
- *  tenantuserid/tenantUserId casing mismatch. */
+
 export interface ShiftWriteBody {
   id: string;
   /** Omitted entirely for an OPEN/UNASSIGNED shift (matches how the tenant
-   *  returns open shifts on read — with no userId field at all). */
+   *  returns open shifts on read — no userID field. */
   userId?: string;
   scheduleId: string;
   start: string;
@@ -89,8 +81,7 @@ export interface ShiftWriteBody {
   shiftManagerIds?: string[];
 }
 
-/** Thrown on any non-2xx upstream response. Carries the status so handlers can
- *  map it to a sensible client status (e.g. surface a 409 overlap cleanly). */
+
 export class BeekeeperError extends Error {
   constructor(
     message: string,
@@ -128,7 +119,7 @@ async function bkFetch<T>(
   const url = buildUrl(base, path, opts.query);
 
   const headers: Record<string, string> = {
-    // Literal `Token` scheme — NOT `Bearer`.
+
     Authorization: `Token ${env.BEEKEEPER_TOKEN}`,
     Accept: "application/json"
   };
@@ -177,14 +168,7 @@ export function getSchedule(
   );
 }
 
-/**
- * GET /shifts/schedules/{scheduleId}/shifts?after={ISO}&before={ISO}
- * The window params are `after`/`before` (confirmed against the live tenant +
- * docs, 2026-07-10). Plain UTC (…Z) is accepted — no TZ-offset conversion
- * needed. `start`/`end` are silently ignored, which is why an unfiltered call
- * returns the full ~4-month retention; passing after/before filters upstream.
- * Only ~4 months of history is retained regardless.
- */
+
 export function listShifts(
   env: Env,
   scheduleId: string,
@@ -199,11 +183,7 @@ export function listShifts(
   );
 }
 
-/**
- * GET /users?limit={n}&offset={n} — paginated. Tenant-wide (~80 sites), so
- * prefer the beekeeper_users Supabase cache for name resolution; this is the
- * sync path (and cache-miss fallback).
- */
+
 export function listUsers(
   env: Env,
   limit: number,

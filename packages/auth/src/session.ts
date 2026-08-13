@@ -30,18 +30,87 @@ export type AuthOutcome =
  * Does NOT short-circuit on must_change_password — that's the caller's
  * decision. Different workers route differently when forced reset is required.
  */
-export async function authenticate(request: Request, env: SupabaseEnv): Promise<AuthOutcome> {
+export async function authenticate(
+  request: Request,
+  env: SupabaseEnv & { MFA_ENFORCE?: string }
+): Promise<AuthOutcome> {
   const token = getAccessToken(request);
   if (!token) return { status: "unauthenticated" };
 
-  const user = await getAuthUser(env, token);
-  if (!user) return { status: "unauthenticated" };
+  // Single /auth/v1/user round-trip validates the token AND surfaces whether
+  // the user has a verified factor (the response carries a `factors` array).
+  // No second network call for the MFA gate below.
+  const validated = await getAuthUserWithFactors(env, token);
+  if (!validated) return { status: "unauthenticated" };
+  const { user, hasVerifiedFactor } = validated;
+
+  // ── MFA enforcement (layer 3) ───────────────────────────────────────────
+  // Flag-gated + factor-scoped. Only a user who has a VERIFIED factor is
+  // required to be at aal2; everyone else is untouched. Off by default: when
+  // MFA_ENFORCE is unset this block is skipped and behavior is byte-for-byte
+  // identical to pre-MFA. The aal read is a local JWT decode — the token was
+  // just proven authentic + unexpired by the /user call above, so reading a
+  // claim off it needs no signature check. An enrolled user whose session is
+  // still aal1 is treated as unauthenticated, so the caller's normal
+  // login-redirect fires and they re-authenticate through the MFA step.
+  if (isMfaEnforced(env) && hasVerifiedFactor && tokenAal(token) !== "aal2") {
+    return { status: "unauthenticated" };
+  }
 
   const sb = createServiceClient(env);
   const session = await getAuthContext(sb, user.id);
   if (!session) return { status: "unauthenticated" };
 
   return { status: "authenticated", session };
+}
+
+/** MFA enforcement is opt-in per worker via the MFA_ENFORCE env var. */
+function isMfaEnforced(env: { MFA_ENFORCE?: string }): boolean {
+  return env.MFA_ENFORCE === "true" || env.MFA_ENFORCE === "1";
+}
+
+/**
+ * Decode the `aal` claim from a Supabase access-token JWT WITHOUT verifying the
+ * signature. Safe here only because the caller has already validated the token
+ * via /auth/v1/user — this just reads a claim off a token GoTrue already
+ * vouched for. Returns "aal1" | "aal2" | null (null = malformed / claim absent).
+ */
+function tokenAal(token: string): string | null {
+  const [, payloadSegment] = token.split(".");
+  if (!payloadSegment) return null;
+  try {
+    const b64 = payloadSegment.replace(/-/g, "+").replace(/_/g, "/");
+    const padded = b64 + "=".repeat((4 - (b64.length % 4)) % 4);
+    const payload = JSON.parse(atob(padded)) as { aal?: unknown };
+    return typeof payload.aal === "string" ? payload.aal : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Validate an access token via /auth/v1/user and, in the same response, read
+ * whether the user has at least one VERIFIED factor. Mirrors getAuthUser but
+ * keeps the `factors` array that the typed AuthUser drops — used only by
+ * authenticate() so the MFA gate costs no extra round-trip.
+ */
+async function getAuthUserWithFactors(
+  env: SupabaseEnv,
+  accessToken: string
+): Promise<{ user: AuthUser; hasVerifiedFactor: boolean } | null> {
+  const r = await fetch(`${env.SUPABASE_URL}/auth/v1/user`, {
+    headers: {
+      apikey: env.SUPABASE_ANON_KEY,
+      Authorization: `Bearer ${accessToken}`
+    }
+  });
+  if (!r.ok) return null;
+  const data = (await r.json()) as AuthUser & {
+    factors?: Array<{ status?: string }>;
+  };
+  const hasVerifiedFactor =
+    Array.isArray(data.factors) && data.factors.some((f) => f.status === "verified");
+  return { user: data, hasVerifiedFactor };
 }
 
 /**

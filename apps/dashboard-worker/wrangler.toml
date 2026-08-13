@@ -18,6 +18,15 @@ compatibility_flags = ["nodejs_compat"]
 # obvious the workers.dev URL is the primary deploy target right now.
 workers_dev = true
 
+# MFA enforcement (layer 3) kill-switch. Read by @splash/auth authenticate():
+# when "true", a user with a VERIFIED factor whose session is still aal1 is
+# treated as unauthenticated (bounced to re-auth through the MFA step). Unset
+# elsewhere, so enforcement is live on THIS worker only — dashboard-worker is
+# the first rollout target. Flip to "false" (or delete) + redeploy to disable
+# instantly without a code revert. Non-enrolled users are unaffected regardless.
+[vars]
+MFA_ENFORCE = "true"
+
 # Staging routes (Brief 16) — bind dashboard-worker's SSO endpoints to
 # staging.splashcarwashes.info so apps/web (also bound to the staging
 # subdomain) can call them same-origin. Includes /api/me (added in
