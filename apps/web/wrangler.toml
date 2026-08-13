@@ -122,6 +122,17 @@ service = "splash-promo"
 binding = "BEEKEEPER_WORKER"
 service = "beekeeper-worker"
 
+# Public Turnstile site key — read at runtime by app/login/page.tsx via
+# getCloudflareContext().env and passed to the login form widget. Committed
+# here (not set in the CF dashboard) because Workers Builds re-provisions the
+# worker on every deploy and WIPES dashboard-set plain-text vars — a dashboard
+# TURNSTILE_SITE_KEY vanished on the next push. wrangler.toml [vars] are part
+# of the deploy config so they survive. Safe to commit: this is the PUBLIC
+# site key (same value the fleet-inquiry and forms workers commit); the secret
+# half (TURNSTILE_SECRET_KEY) lives only on dashboard-worker as a real secret.
+[vars]
+TURNSTILE_SITE_KEY = "0x4AAAAAADBV7fdfR67Jt-ab"
+
 # OpenNext static asset binding (CSS/JS/public/).
 [assets]
 directory = ".open-next/assets"

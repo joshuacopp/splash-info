@@ -17,6 +17,16 @@
 import { getCloudflareContext } from "@opennextjs/cloudflare";
 import { LoginForm } from "./form";
 
+// Force dynamic rendering so the TURNSTILE_SITE_KEY read below runs at REQUEST
+// time against the deployed worker's env — not at build time, where
+// getCloudflareContext has no bindings and the key would resolve undefined
+// (baking a widget-less page into the static output). Every other server
+// component in apps/web that reads runtime env via getCloudflareContext
+// declares this same flag; /login was the lone exception and it regressed the
+// Turnstile widget in production. `await searchParams` alone did not reliably
+// opt the route out of prerendering under OpenNext.
+export const dynamic = "force-dynamic";
+
 interface PageProps {
   searchParams: Promise<{ return?: string }>;
 }
