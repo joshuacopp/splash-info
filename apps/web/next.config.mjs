@@ -26,6 +26,7 @@ initOpenNextCloudflareForDev();
 const REWRITE_TARGETS = [
   // dashboard-worker: SSO + /api/me
   { source: "/api/login",        envVar: "NEXT_PUBLIC_DASHBOARD_WORKER_URL" },
+  { source: "/api/login/mfa",    envVar: "NEXT_PUBLIC_DASHBOARD_WORKER_URL" },
   { source: "/api/logout",       envVar: "NEXT_PUBLIC_DASHBOARD_WORKER_URL" },
   { source: "/api/forced-reset", envVar: "NEXT_PUBLIC_DASHBOARD_WORKER_URL" },
   { source: "/api/me",           envVar: "NEXT_PUBLIC_DASHBOARD_WORKER_URL" },

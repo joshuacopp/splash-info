@@ -57,6 +57,8 @@ import {
   enrollTotpFactor,
   getAccessToken,
   getCookie,
+  hasVerifiedFactor,
+  listFactors,
   PASSWORD_POLICY,
   PASSWORD_POLICY_MESSAGE,
   REFRESH_TOKEN_COOKIE,
@@ -90,6 +92,15 @@ export default {
       // with the other state-changing endpoints — Chunk 5 retrofit.
       if (!isOriginAllowed(request)) return jsonError(403, "bad origin");
       return handleLogin(request, env);
+    }
+
+    // Second step of an MFA-gated login. /api/login returns mfa_required for a
+    // user with a verified factor; the client collects a 6-digit code and posts
+    // it here, which exchanges the AAL1 session for an AAL2 one. State-changing
+    // POST behind isOriginAllowed, same contract as /api/login.
+    if (pathname === "/api/login/mfa" && method === "POST") {
+      if (!isOriginAllowed(request)) return jsonError(403, "bad origin");
+      return handleLoginMfa(request, env);
     }
 
     if (pathname === "/api/logout" && method === "POST") {
@@ -204,12 +215,39 @@ async function handleLogin(request: Request, env: Env): Promise<Response> {
     return jsonError(403, "no_permissions_assigned");
   }
 
+  const safeNext = sanitizeRedirect(redirect);
+
   const headers = new Headers();
   for (const c of buildAuthCookies(loginResult.access_token, loginResult.refresh_token)) {
     headers.append("Set-Cookie", c);
   }
 
-  const safeNext = sanitizeRedirect(redirect);
+  // ── MFA step-up gate (layer 2) ──────────────────────────────────────────
+  // If the user has a VERIFIED factor, don't finish login here. We still set
+  // the AAL1 cookies (byte-for-byte today's behavior — additive), but instead
+  // of 302-ing we return a 200 mfa_required signal. The client collects a
+  // 6-digit code and POSTs /api/login/mfa, which challenge+verifies it and
+  // swaps the cookies for an AAL2 pair. must_change_password is DEFERRED to
+  // that step so a change-forced + MFA-enrolled user completes the code first.
+  //
+  // Fail-open: if the factors lookup errors we fall through to the normal
+  // (pre-MFA) 302 login. A GoTrue hiccup must never lock a user out — the
+  // real enforcement (bounce an un-elevated session) lands in layer 3
+  // (authenticate() AAL2 assertion), not here.
+  let mfaRequired = false;
+  try {
+    mfaRequired = await hasVerifiedFactor(env, loginResult.access_token);
+  } catch {
+    mfaRequired = false;
+  }
+  if (mfaRequired) {
+    headers.set("Content-Type", "application/json");
+    headers.set("Cache-Control", "no-store");
+    return new Response(JSON.stringify({ mfa_required: true, next: safeNext }), {
+      status: 200,
+      headers
+    });
+  }
 
   if (requiresPasswordChange(session)) {
     // SECURITY: cookies ARE set here even though the gate is open. The
@@ -224,6 +262,76 @@ async function handleLogin(request: Request, env: Env): Promise<Response> {
 
   headers.set("Location", safeNext);
   return new Response("", { status: 302, headers });
+}
+
+/**
+ * POST /api/login/mfa — second step of an MFA-gated login.
+ *
+ * The caller already completed /api/login, which set the AAL1 cookies and
+ * returned mfa_required. This handler authenticates against that AAL1 cookie,
+ * finds the user's verified factor SERVER-SIDE (never trusting a client-supplied
+ * factor id), and challenge+verifies the supplied 6-digit code. On success it
+ * swaps the cookies for the AAL2 pair GoTrue returns and hands back the redirect
+ * target — re-checking must_change_password here so a change-forced user still
+ * lands on /change-password after clearing MFA. Mirrors handleMfaEnrollVerify.
+ *
+ * Fields (x-www-form-urlencoded): `code` (required), `next` (redirect target).
+ */
+async function handleLoginMfa(request: Request, env: Env): Promise<Response> {
+  const auth = await authenticate(request, env);
+  if (auth.status !== "authenticated") {
+    return jsonError(401, "unauthorized");
+  }
+  const accessToken = getAccessToken(request);
+  if (!accessToken) {
+    return jsonError(401, "unauthorized");
+  }
+
+  const form = await readForm(request);
+  const code = (form.get("code") ?? "").trim();
+  const next = (form.get("next") ?? "").trim();
+  if (!code) {
+    return jsonError(400, "code required");
+  }
+
+  // Resolve the factor to step up on from the SERVER's view of the user's
+  // factors — a client-supplied id would let a caller point verification at an
+  // arbitrary factor. Pick the first verified TOTP factor.
+  let factorId: string | null = null;
+  try {
+    const factors = await listFactors(env, accessToken);
+    factorId = factors.find((f) => f.status === "verified")?.id ?? null;
+  } catch {
+    return jsonError(500, "Could not load your authenticator. Please try again.");
+  }
+  if (!factorId) {
+    // No verified factor — step 1 gated on hasVerifiedFactor, so this only
+    // happens if the factor was removed mid-flow. Fail closed rather than loop.
+    return jsonError(400, "no_verified_factor");
+  }
+
+  let elevated;
+  try {
+    elevated = await challengeAndVerify(env, accessToken, factorId, code);
+  } catch {
+    // Bad or expired code — generic message, caller re-prompts.
+    return jsonError(400, "Invalid or expired code. Please try again.");
+  }
+
+  const headers = new Headers();
+  for (const c of buildAuthCookies(elevated.accessToken, elevated.refreshToken)) {
+    headers.append("Set-Cookie", c);
+  }
+  headers.set("Content-Type", "application/json");
+  headers.set("Cache-Control", "no-store");
+
+  // Deferred must_change_password check, evaluated on the session we loaded
+  // above. The client navigates to whatever we return.
+  const safeNext = sanitizeRedirect(next);
+  const redirect = requiresPasswordChange(auth.session)
+    ? `/change-password?required=true&next=${encodeURIComponent(safeNext)}`
+    : safeNext;
+  return new Response(JSON.stringify({ ok: true, redirect }), { status: 200, headers });
 }
 
 function handleLogout(): Response {

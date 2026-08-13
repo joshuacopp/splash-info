@@ -82,6 +82,12 @@ export function LoginForm({ returnPath, turnstileSiteKey }: LoginFormProps) {
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [turnstileToken, setTurnstileToken] = useState<string | null>(null);
+  // MFA step-up state. When the worker's /api/login returns mfa_required, we
+  // switch the form to a 6-digit code entry that posts /api/login/mfa. mfaNext
+  // is the server-sanitized redirect target to hand back on success.
+  const [mfaMode, setMfaMode] = useState(false);
+  const [mfaNext, setMfaNext] = useState<string>(returnPath);
+  const [code, setCode] = useState("");
   const widgetRef = useRef<HTMLDivElement | null>(null);
   const widgetIdRef = useRef<string | null>(null);
 
@@ -150,6 +156,22 @@ export function LoginForm({ returnPath, turnstileSiteKey }: LoginFormProps) {
       // by fetch). r.redirected → true; r.url ends with the worker's
       // Location header target. We detect must_change_password by URL
       // suffix rather than parsing Location, which is opaque cross-origin.
+      // MFA-gated login: the worker returns a 200 JSON { mfa_required, next }
+      // instead of a 302. A normal success is always a followed redirect
+      // (r.redirected), so a 200 that did NOT redirect is the MFA signal.
+      if (r.ok && !r.redirected) {
+        const data = (await r.json().catch(() => null)) as
+          | { mfa_required?: boolean; next?: string }
+          | null;
+        if (data?.mfa_required) {
+          setMfaNext(data.next ?? returnPath);
+          setMfaMode(true);
+          setCode("");
+          setSubmitting(false);
+          return;
+        }
+      }
+
       if (r.ok || r.redirected) {
         if (r.url.includes("/change-password")) {
           // Forced-reset path. The worker's redirect target carries
@@ -194,6 +216,103 @@ export function LoginForm({ returnPath, turnstileSiteKey }: LoginFormProps) {
       setSubmitting(false);
     }
   };
+
+  const onSubmitMfa = async (e: FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    setError(null);
+
+    const trimmed = code.trim();
+    if (!/^\d{6}$/.test(trimmed)) {
+      setError("Enter the 6-digit code from your authenticator app.");
+      return;
+    }
+
+    setSubmitting(true);
+    try {
+      const body = new URLSearchParams();
+      body.set("code", trimmed);
+      body.set("next", mfaNext);
+
+      const r = await fetch("/api/login/mfa", {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: body.toString(),
+        credentials: "include"
+      });
+
+      if (r.ok) {
+        const data = (await r.json().catch(() => null)) as { redirect?: string } | null;
+        window.location.href = data?.redirect ?? mfaNext;
+        return;
+      }
+
+      if (r.status === 401) {
+        // AAL1 session expired before the code was entered — restart login.
+        setError("Your session expired. Please sign in again.");
+        setMfaMode(false);
+        setPassword("");
+        setSubmitting(false);
+        resetTurnstile();
+        return;
+      }
+      if (r.status === 429) {
+        setError("Too many attempts. Please wait a few minutes and try again.");
+        setSubmitting(false);
+        return;
+      }
+      // 400 (bad/expired code) and anything else — re-prompt for the code.
+      setError("Invalid or expired code. Please try again.");
+      setCode("");
+      setSubmitting(false);
+    } catch {
+      setError("Something went wrong, try again");
+      setSubmitting(false);
+    }
+  };
+
+  if (mfaMode) {
+    return (
+      <section className="mx-auto my-16 max-w-md px-6 text-splash-navy">
+        <h1 className="mb-2 text-2xl font-bold">Two-Factor Authentication</h1>
+        <p className="mb-6 text-sm text-gray-dark">
+          Enter the 6-digit code from your authenticator app to finish signing in.
+        </p>
+        <form onSubmit={onSubmitMfa}>
+          <label className="mb-4 block">
+            <span className="mb-1 block text-sm font-semibold">Authentication code</span>
+            <input
+              type="text"
+              inputMode="numeric"
+              autoComplete="one-time-code"
+              pattern="\d{6}"
+              maxLength={6}
+              value={code}
+              onChange={(e) => setCode(e.target.value.replace(/\D/g, "").slice(0, 6))}
+              required
+              autoFocus
+              placeholder="123456"
+              className="block h-10 w-full rounded-splash-sm border-[1.5px] border-gray-light px-3 text-base tracking-[0.3em] outline-none focus:border-splash-blue focus:ring-2 focus:ring-sudsy-blue/30"
+            />
+          </label>
+          {error ? (
+            <p
+              role="alert"
+              className="mb-3 rounded-splash-sm border border-red-200 bg-red-50 px-3 py-2 text-sm font-medium text-splash-deny"
+            >
+              {error}
+            </p>
+          ) : null}
+          <button
+            type="submit"
+            disabled={submitting}
+            className="h-11 w-full rounded-splash-sm bg-splash-blue font-bold text-white shadow-splash-btn transition-colors hover:bg-splash-blue-dark disabled:cursor-wait disabled:opacity-70"
+          >
+            {submitting ? "Verifying…" : "Verify"}
+          </button>
+        </form>
+      </section>
+    );
+  }
 
   return (
     <section className="mx-auto my-16 max-w-md px-6 text-splash-navy">

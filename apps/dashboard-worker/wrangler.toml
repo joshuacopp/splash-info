@@ -31,6 +31,7 @@ workers_dev = true
 # its siblings so the Header's identity row works post-flip.
 routes = [
   { pattern = "staging.splashcarwashes.info/api/login",        zone_name = "splashcarwashes.info" },
+  { pattern = "staging.splashcarwashes.info/api/login/mfa",    zone_name = "splashcarwashes.info" },
   { pattern = "staging.splashcarwashes.info/api/logout",       zone_name = "splashcarwashes.info" },
   { pattern = "staging.splashcarwashes.info/api/forced-reset", zone_name = "splashcarwashes.info" },
   { pattern = "staging.splashcarwashes.info/api/me",           zone_name = "splashcarwashes.info" },
@@ -42,6 +43,7 @@ routes = [
   # repo now reconciled so a future deploy can't yank them). apps/web /* is
   # still bound LAST, as its own deliberate step.
   { pattern = "splashcarwashes.info/api/login",        zone_name = "splashcarwashes.info" },
+  { pattern = "splashcarwashes.info/api/login/mfa",    zone_name = "splashcarwashes.info" },  # MFA step-up (path more specific than apps/web /*)
   { pattern = "splashcarwashes.info/api/logout",       zone_name = "splashcarwashes.info" },
   { pattern = "splashcarwashes.info/api/forced-reset", zone_name = "splashcarwashes.info" },
   { pattern = "splashcarwashes.info/api/me",           zone_name = "splashcarwashes.info" },  # (gap fix — Header /api/me, READINESS §2.2)
