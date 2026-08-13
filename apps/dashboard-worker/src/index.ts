@@ -53,6 +53,9 @@ import {
   buildAuthCookies,
   buildLogoutCookies,
   buildSessionForUser,
+  challengeAndVerify,
+  enrollTotpFactor,
+  getAccessToken,
   PASSWORD_POLICY,
   PASSWORD_POLICY_MESSAGE,
   requiresPasswordChange,
@@ -60,7 +63,7 @@ import {
   userCompleteForcedReset
 } from "@splash/auth";
 import type { SupabaseEnv } from "@splash/db-supabase";
-import { isOriginAllowed, jsonError, readForm } from "@splash/http";
+import { isOriginAllowed, json, jsonError, readForm } from "@splash/http";
 import { verifyTurnstile } from "./turnstile";
 import { recordAndCheck, clearEmail, type RateLimitEnv } from "./rate-limit";
 
@@ -96,6 +99,21 @@ export default {
       // is the primary defense; isOriginAllowed is the second layer.
       if (!isOriginAllowed(request)) return jsonError(403, "bad origin");
       return handleForcedReset(request, env);
+    }
+    // ── MFA enrollment (additive; does NOT touch the login path) ────────────
+    // Both are state-changing POSTs behind authenticate() + isOriginAllowed,
+    // same contract as /api/forced-reset. They let an already-authenticated
+    // (AAL1) user enroll their own TOTP factor and confirm it. No enforcement
+    // is wired anywhere yet, so shipping these cannot affect any existing
+    // login or gated page — an un-enrolled user's flow is byte-for-byte
+    // unchanged.
+    if (pathname === "/api/mfa/enroll" && method === "POST") {
+      if (!isOriginAllowed(request)) return jsonError(403, "bad origin");
+      return handleMfaEnroll(request, env);
+    }
+    if (pathname === "/api/mfa/enroll/verify" && method === "POST") {
+      if (!isOriginAllowed(request)) return jsonError(403, "bad origin");
+      return handleMfaEnrollVerify(request, env);
     }
     if (pathname === "/api/me" && method === "GET") {
       // Read-only — no isOriginAllowed gate. Browsers don't send Origin on
@@ -141,6 +159,11 @@ async function handleLogin(request: Request, env: Env): Promise<Response> {
   // token once the secret IS bound (prod), so the widget can't be stripped.
   const ts = await verifyTurnstile(env.TURNSTILE_SECRET_KEY, turnstileToken, clientIp);
   if (!ts.ok) {
+    // Log the real siteverify error-code (invalid-input-response =
+    // sitekey/secret pair mismatch; invalid-input-secret = bad secret;
+    // timeout-or-duplicate = stale/reused token). The user only sees a
+    // generic message, but Workers Logs gets the actionable reason.
+    console.warn(`[dashboard] Turnstile verify failed: ${ts.reason}`);
     return jsonError(403, "Anti-abuse check failed. Please try again.");
   }
 
@@ -256,6 +279,82 @@ async function handleForcedReset(request: Request, env: Env): Promise<Response> 
 
   headers.set("Location", target);
   return new Response("", { status: 302, headers });
+}
+
+/**
+ * POST /api/mfa/enroll — start TOTP enrollment for the calling user.
+ *
+ * Creates an UNVERIFIED factor and returns the QR + secret to display once.
+ * Purely additive: an unverified factor protects nothing and is invisible to
+ * hasVerifiedFactor(), so this changes nothing about the caller's login or any
+ * gated page until they complete /api/mfa/enroll/verify.
+ */
+async function handleMfaEnroll(request: Request, env: Env): Promise<Response> {
+  const auth = await authenticate(request, env);
+  if (auth.status !== "authenticated") {
+    return jsonError(401, "unauthorized");
+  }
+  const accessToken = getAccessToken(request);
+  if (!accessToken) {
+    return jsonError(401, "unauthorized");
+  }
+
+  const form = await readForm(request);
+  const friendlyName = (form.get("friendly_name") ?? "").trim() || undefined;
+
+  try {
+    const result = await enrollTotpFactor(env, accessToken, friendlyName);
+    return json({
+      factorId: result.factorId,
+      qrCode: result.qrCode,
+      secret: result.secret,
+      uri: result.uri
+    });
+  } catch (err) {
+    return jsonError(500, err instanceof Error ? err.message : "MFA enrollment failed");
+  }
+}
+
+/**
+ * POST /api/mfa/enroll/verify — confirm the freshly-enrolled factor with a
+ * 6-digit code. On success GoTrue activates the factor AND returns a new AAL2
+ * token pair; we swap the caller's session cookies to that pair so the browser
+ * is immediately at aal2. Still additive: no gate anywhere reads aal yet, so an
+ * elevated cookie has no different effect than the prior aal1 one — it just
+ * primes the session for when layer-2 enforcement lands.
+ */
+async function handleMfaEnrollVerify(request: Request, env: Env): Promise<Response> {
+  const auth = await authenticate(request, env);
+  if (auth.status !== "authenticated") {
+    return jsonError(401, "unauthorized");
+  }
+  const accessToken = getAccessToken(request);
+  if (!accessToken) {
+    return jsonError(401, "unauthorized");
+  }
+
+  const form = await readForm(request);
+  const factorId = (form.get("factor_id") ?? "").trim();
+  const code = (form.get("code") ?? "").trim();
+
+  if (!factorId || !code) {
+    return jsonError(400, "factor_id and code required");
+  }
+
+  let elevated;
+  try {
+    elevated = await challengeAndVerify(env, accessToken, factorId, code);
+  } catch {
+    // Bad or expired code — generic message, caller re-prompts.
+    return jsonError(400, "Invalid or expired code. Please try again.");
+  }
+
+  const headers = new Headers();
+  for (const c of buildAuthCookies(elevated.accessToken, elevated.refreshToken)) {
+    headers.append("Set-Cookie", c);
+  }
+  headers.set("Content-Type", "application/json");
+  return new Response(JSON.stringify({ ok: true }), { status: 200, headers });
 }
 
 async function handleMe(request: Request, env: Env): Promise<Response> {
