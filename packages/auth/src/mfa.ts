@@ -67,6 +67,15 @@ async function gotrueError(r: Response, fallback: string): Promise<never> {
 }
 
 /**
+ * The label authenticator apps display for the account. Passed explicitly as
+ * the `issuer` so GoTrue doesn't derive it from the request origin — without
+ * this, the enroll host leaks into the otpauth:// label (e.g. dev produced
+ * "localhost:3000:3000:user@…"). With it, the app shows a clean
+ * "Splash Car Washes: user@…" in every environment.
+ */
+const MFA_ISSUER = "Splash Car Washes";
+
+/**
  * Enroll a new TOTP factor for the calling user. Returns the QR + secret to
  * display ONCE during enrollment. The factor is created UNVERIFIED; it does
  * not protect anything until a subsequent challenge+verify succeeds.
@@ -81,6 +90,7 @@ export async function enrollTotpFactor(
     headers: userHeaders(env, accessToken),
     body: JSON.stringify({
       factor_type: "totp",
+      issuer: MFA_ISSUER,
       ...(friendlyName ? { friendly_name: friendlyName } : {})
     })
   });
