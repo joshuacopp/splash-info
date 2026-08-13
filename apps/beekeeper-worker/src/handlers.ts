@@ -207,10 +207,7 @@ export async function handleListShifts(
     return mapBeekeeperError(err);
   }
 
-  // Defensive window clamp. The upstream after/before params now filter server-
-  // side (see listShifts), so this rarely trims anything — but it's kept as cheap
-  // belt-and-suspenders and to enforce a half-open [start, end) on the shift's
-  // start instant (matches the week-based grid, which keys rows by start day).
+
   const startMs = Date.parse(start);
   const endMs = Date.parse(end);
   const inWindow =
@@ -233,9 +230,8 @@ export async function handleListShifts(
  * ============================================================ */
 
 /** Payload field keys of the published unavailability form (form_id bound as
- *  UNAVAILABILITY_FORM_ID). Employee↔Beekeeper-user matching is deliberately
- *  NOT attempted — this is a read-only manager reference, so a display name off
- *  the form is enough even if it doesn't exactly match the Beekeeper roster. */
+ *  UNAVAILABILITY_FORM_ID). Employee to Beekeeper-user matching is 
+ *  NOT done — this is a read-only manager reference */
 const UNAVAILABILITY_FIELD_KEYS = {
   date: "date_dw6m18",
   start: "time_7b0057",
@@ -283,8 +279,7 @@ export async function handleListUnavailability(
   const end = url.searchParams.get("end");
   if (!start || !end) return jsonError(400, "start and end (YYYY-MM-DD) are required");
 
-  // location_code is the operator-set Splash mapping; the overlay keys off the
-  // same code the submission was stamped with at submit time.
+
   const code = schedule.location_code ?? locationCode;
 
   let rows;
@@ -320,16 +315,12 @@ export async function handleListUnavailability(
 
 interface ShiftWriteInput {
   userId: string;
-  /** Local ET calendar date of START, "YYYY-MM-DD". */
   date: string;
   startHour: number;
   startMinute: number;
   endHour: number;
   endMinute: number;
-  /** Optional override; auto-generated from the times when absent/blank. */
   title?: string;
-  /** Optional shift color (hex string). Persisted to metadata.color so it
-   *  round-trips to Beekeeper's own scheduler. */
   color?: string;
 }
 
@@ -358,8 +349,7 @@ function parseWriteInput(raw: unknown): ShiftWriteInput | null {
   return input;
 }
 
-/** Fetch the schedule's shifts across a window that safely covers the proposed
- *  instant (one day of slack each side) so overnight overlaps are caught. */
+
 async function existingForOverlap(
   env: Env,
   scheduleId: string,
@@ -414,16 +404,11 @@ async function buildAndValidate(
     ok: true,
     body: {
       id: shiftId,
-      // Omit userId entirely for an open/unassigned shift — matches the shape
-      // the tenant returns for open shifts on read (no userId field). Sending
-      // an empty string instead risks an upstream reject or a ghost user.
       ...(input.userId ? { userId: input.userId } : {}),
       scheduleId: schedule.schedule_id,
       start: times.start,
       end: times.end,
       title,
-      // Only set metadata when a color is present. Writes are a full replace,
-      // so an absent color intentionally clears any prior color.
       ...(input.color ? { metadata: { color: input.color } } : {})
     }
   };

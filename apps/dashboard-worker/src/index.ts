@@ -278,7 +278,10 @@ async function handleLogin(request: Request, env: Env): Promise<Response> {
  * Fields (x-www-form-urlencoded): `code` (required), `next` (redirect target).
  */
 async function handleLoginMfa(request: Request, env: Env): Promise<Response> {
-  const auth = await authenticate(request, env);
+  // enforceMfa: false — this IS the elevation step. It legitimately runs on an
+  // aal1 session and turns it into aal2, so it must not be blocked by the aal2
+  // gate (that would deadlock: you'd need aal2 to obtain aal2).
+  const auth = await authenticate(request, env, { enforceMfa: false });
   if (auth.status !== "authenticated") {
     return jsonError(401, "unauthorized");
   }

@@ -1,9 +1,5 @@
 // Supabase cache access for beekeeper-worker.
-//
-// Reads/writes the beekeeper_users + beekeeper_schedules tables (created by
-// 20260710_beekeeper_shift_worker.sql) via the shared service-role client.
-// Name resolution and the roster are served from here so the read path never
-// scans the tenant-wide /users endpoint live (the sync keeps the cache warm).
+
 
 import { createServiceClient, type SupabaseClient } from "@splash/db-supabase";
 import type { Env } from "./env.js";
@@ -166,7 +162,7 @@ export async function getRoster(
 
 /** One approved unavailability submission, raw payload straight from the form.
  *  Field keys are the published form's (see UNAVAILABILITY_FIELD_KEYS in
- *  handlers.ts). Kept as-is here; the handler maps to the client shape. */
+ *  handlers.ts).  */
 export interface UnavailabilityRow {
   id: string;
   payload: Record<string, unknown>;

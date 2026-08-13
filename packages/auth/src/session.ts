@@ -32,7 +32,8 @@ export type AuthOutcome =
  */
 export async function authenticate(
   request: Request,
-  env: SupabaseEnv & { MFA_ENFORCE?: string }
+  env: SupabaseEnv & { MFA_ENFORCE?: string },
+  opts?: { enforceMfa?: boolean }
 ): Promise<AuthOutcome> {
   const token = getAccessToken(request);
   if (!token) return { status: "unauthenticated" };
@@ -53,7 +54,13 @@ export async function authenticate(
   // claim off it needs no signature check. An enrolled user whose session is
   // still aal1 is treated as unauthenticated, so the caller's normal
   // login-redirect fires and they re-authenticate through the MFA step.
-  if (isMfaEnforced(env) && hasVerifiedFactor && tokenAal(token) !== "aal2") {
+  //
+  // opts.enforceMfa overrides the env flag. The MFA step-up endpoint
+  // (/api/login/mfa) passes `false`: its whole job is to elevate an aal1
+  // session to aal2, so it MUST accept the aal1 token — otherwise the gate
+  // deadlocks (you'd need aal2 to obtain aal2).
+  const enforce = opts?.enforceMfa ?? isMfaEnforced(env);
+  if (enforce && hasVerifiedFactor && tokenAal(token) !== "aal2") {
     return { status: "unauthenticated" };
   }
 
