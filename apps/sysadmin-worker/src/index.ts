@@ -9,7 +9,14 @@
 // Owned routes (Step 7 — production):
 //   POST  /sysadmin/api/grant-tool       — grant a tool to a user
 //   POST  /sysadmin/api/revoke-tool      — revoke a tool from a user
-//   POST  /sysadmin/api/set-role         — set / clear role on user_permissions
+//   POST  /sysadmin/api/set-role         — set / clear role on user_permissions.
+//                                          location_admin grants are ADDITIVE:
+//                                          adding a location keeps the ones the
+//                                          user already has. Only a role change
+//                                          (location_admin <-> super_admin)
+//                                          replaces the row set. Removal is a
+//                                          separate endpoint — see
+//                                          /sysadmin/api/remove-location.
 //   POST  /sysadmin/api/reset-password   — admin-triggered password reset
 //                                          (FLIPS must_change_password = true
 //                                          per Josh's password-set policy —
@@ -450,7 +457,11 @@ async function handleSetRole(
   const userObj = await adminGetUser(env, userId);
   if (!userObj.email) return jsonError(400, "User has no email on file");
 
-  const after = await setRole(sb, {
+  // setRole is additive for location_admin -> location_admin grants: it adds
+  // one location row and leaves the existing ones alone, replacing only on a
+  // role transition. It returns both snapshots so the audit log can record a
+  // real before-state instead of null.
+  const { before, after } = await setRole(sb, {
     userId,
     email: userObj.email,
     role: role as UserRole,
@@ -461,7 +472,7 @@ async function handleSetRole(
     action: role === "super_admin" ? "set_role_super_admin" : "set_role_location_admin",
     target_type: "user_permissions",
     target_id: userId,
-    before: null, // setRole captured-and-replaced; we don't pass before through the helper
+    before,
     after
   });
   return json({ ok: true, after });

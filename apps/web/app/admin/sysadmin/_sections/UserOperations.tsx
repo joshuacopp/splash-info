@@ -162,7 +162,7 @@ function SetRoleCard() {
   return (
     <OperationCard
       title="Set role"
-      description="Set or clear a user's role on user_permissions."
+      description="Set or clear a user's role on user_permissions. Location grants are additive — adding a location keeps the ones the user already has."
     >
       <ActionForm action={setRoleAction} className="space-y-4">
         <div>
@@ -200,6 +200,9 @@ function SetRoleCard() {
           <p className="mt-1 text-[0.6875rem] text-splash-navy/50">
             Ignored for super_admin and clear-role operations.
             Worker rejects location_admin role without a location_code.
+            Submitting adds this location to an existing location_admin&rsquo;s
+            list — it does not replace it. To take a location away, use the
+            &times; next to it in the permissions viewer.
           </p>
         </div>
 

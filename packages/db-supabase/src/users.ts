@@ -171,11 +171,37 @@ export async function revokeTool(
 }
 
 /**
- * Replace all user_permissions rows for a user with one row of the given role.
+ * Set a user's role on user_permissions.
  * Source: legacy/sysadmin.js:383 apiSetRole.
  *
  * Caller is responsible for resolving the user's email (we need it because
  * user_permissions.email is NOT NULL).
+ *
+ * ADDITIVE LOCATION GRANTS (bugfix)
+ * ---------------------------------
+ * user_permissions is one row per (user, location) for location_admins.
+ * This helper used to unconditionally delete every row for the user and
+ * insert a single new one — so granting a location_admin one more location
+ * silently revoked every location they already had. (Observed in prod:
+ * adding auburn to a location_admin who held seven other sites left them
+ * with auburn only.)
+ *
+ * Two paths now:
+ *
+ *   ADDITIVE — the user is already a location_admin and the requested role
+ *   is location_admin. Insert one row for the new location and leave the
+ *   existing rows untouched. Re-granting a location the user already holds
+ *   is a no-op, not a duplicate.
+ *
+ *   REPLACE — every other case: first-time grant, or a role transition
+ *   (location_admin <-> super_admin). Collapse to a single row, because a
+ *   super_admin row carries location_code = NULL and leaving stale
+ *   location_admin rows behind would misrepresent the user's scope.
+ *
+ * There is deliberately no "replace the location set" path here. Removal is
+ * a separate, explicit operation — the ✕ affordances in PermissionsViewer,
+ * backed by the delete-one-location endpoint. Making a grant destructive by
+ * default is what caused the incident above.
  *
  * SECURITY (Josh's policy, see @splash/auth/index.ts): the existing
  * must_change_password value is PRESERVED across the role change.
@@ -200,25 +226,64 @@ export async function setRole(
     /** Required for location_admin; ignored for super_admin. */
     locationCode?: string | null;
   }
-): Promise<UserPermissionRow[]> {
-  // Read existing must_change_password BEFORE the delete so we can
-  // preserve it on the new row.
+): Promise<{ before: UserPermissionRow[]; after: UserPermissionRow[] }> {
+  // Read the full current row set BEFORE mutating: it feeds the additive/
+  // replace decision, the preserved must_change_password flag, and the
+  // caller's audit-log before-snapshot.
   const beforeResp = await client
     .from("user_permissions")
-    .select("must_change_password")
+    .select("user_id,email,role,location_code,must_change_password,created_at")
     .eq("user_id", args.userId);
   if (beforeResp.error) throw beforeResp.error;
-  const beforeRows = (beforeResp.data ?? []) as Array<{ must_change_password: boolean | null }>;
-  const preservedMustChange = beforeRows.some((r) => r.must_change_password === true);
+  const before = (beforeResp.data ?? []) as unknown as UserPermissionRow[];
+  const preservedMustChange = before.some((r) => r.must_change_password === true);
 
-  // Wipe existing rows.
+  // Additive only when this is a pure location_admin -> location_admin
+  // grant. Mixed row sets (shouldn't happen, but the schema permits it)
+  // fall through to REPLACE so the state gets normalized.
+  const isAdditiveGrant =
+    args.role === "location_admin" &&
+    before.length > 0 &&
+    before.every((r) => r.role === "location_admin");
+
+  if (isAdditiveGrant) {
+    const code = args.locationCode ?? null;
+    if (!code) {
+      throw new Error("Set role failed: location_code is required for location_admin");
+    }
+    // Already granted — return unchanged rather than inserting a duplicate.
+    // Callers can compare before/after to see that nothing moved.
+    if (before.some((r) => r.location_code === code)) {
+      return { before, after: before };
+    }
+
+    const insertResp = await client.from("user_permissions").insert({
+      user_id: args.userId,
+      email: args.email,
+      role: args.role,
+      must_change_password: preservedMustChange,
+      location_code: code
+    } as Partial<UserPermissionRow>);
+    if (insertResp.error) {
+      throw new Error(`Add location failed: ${insertResp.error.message}`);
+    }
+
+    // Re-read so `after` is the user's complete scope, not just the new row.
+    const afterResp = await client
+      .from("user_permissions")
+      .select("user_id,email,role,location_code,must_change_password,created_at")
+      .eq("user_id", args.userId);
+    if (afterResp.error) throw afterResp.error;
+    return { before, after: (afterResp.data ?? []) as unknown as UserPermissionRow[] };
+  }
+
+  // REPLACE — first grant or a role transition. Wipe, then insert one row.
   const del = await client
     .from("user_permissions")
     .delete()
     .eq("user_id", args.userId);
   if (del.error) throw del.error;
 
-  // Insert new row with the preserved flag.
   const insertRow: Partial<UserPermissionRow> = {
     user_id: args.userId,
     email: args.email,
@@ -232,7 +297,7 @@ export async function setRole(
     .insert(insertRow)
     .select();
   if (error) throw new Error(`Set role failed: ${error.message}`);
-  return (data ?? []) as unknown as UserPermissionRow[];
+  return { before, after: (data ?? []) as unknown as UserPermissionRow[] };
 }
 
 /**
