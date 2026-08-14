@@ -189,9 +189,9 @@ export async function revokeTool(
  * Two paths now:
  *
  *   ADDITIVE — the user is already a location_admin and the requested role
- *   is location_admin. Insert one row for the new location and leave the
- *   existing rows untouched. Re-granting a location the user already holds
- *   is a no-op, not a duplicate.
+ *   is location_admin. Insert a row per newly-granted location and leave
+ *   the existing rows untouched. Locations the user already holds are
+ *   filtered out, so re-granting is a no-op rather than a duplicate row.
  *
  *   REPLACE — every other case: first-time grant, or a role transition
  *   (location_admin <-> super_admin). Collapse to a single row, because a
@@ -223,20 +223,31 @@ export async function setRole(
     userId: string;
     email: string;
     role: UserRole;
-    /** Required for location_admin; ignored for super_admin. */
-    locationCode?: string | null;
+    /** Required (non-empty) for location_admin; ignored for super_admin.
+     *  Mirrors setDcRole's `locationCodes` array shape — one row is written
+     *  per code, so several locations can be granted in one submit. */
+    locationCodes?: string[] | null;
   }
 ): Promise<{ before: UserPermissionRow[]; after: UserPermissionRow[] }> {
   // Read the full current row set BEFORE mutating: it feeds the additive/
   // replace decision, the preserved must_change_password flag, and the
   // caller's audit-log before-snapshot.
-  const beforeResp = await client
-    .from("user_permissions")
-    .select("user_id,email,role,location_code,must_change_password,created_at")
-    .eq("user_id", args.userId);
-  if (beforeResp.error) throw beforeResp.error;
-  const before = (beforeResp.data ?? []) as unknown as UserPermissionRow[];
+  const before = await readPermissionRows(client, args.userId);
   const preservedMustChange = before.some((r) => r.must_change_password === true);
+
+  // De-dupe within the request — the operator can't select the same site
+  // twice in the picker, but the endpoint is callable directly.
+  const requested = Array.from(
+    new Set(
+      (args.locationCodes ?? [])
+        .map((c) => (typeof c === "string" ? c.trim() : ""))
+        .filter((c) => c.length > 0)
+    )
+  );
+
+  if (args.role === "location_admin" && requested.length === 0) {
+    throw new Error("Set role failed: at least one location_code is required for location_admin");
+  }
 
   // Additive only when this is a pure location_admin -> location_admin
   // grant. Mixed row sets (shouldn't happen, but the schema permits it)
@@ -247,57 +258,85 @@ export async function setRole(
     before.every((r) => r.role === "location_admin");
 
   if (isAdditiveGrant) {
-    const code = args.locationCode ?? null;
-    if (!code) {
-      throw new Error("Set role failed: location_code is required for location_admin");
-    }
-    // Already granted — return unchanged rather than inserting a duplicate.
-    // Callers can compare before/after to see that nothing moved.
-    if (before.some((r) => r.location_code === code)) {
+    const held = new Set(
+      before
+        .map((r) => r.location_code)
+        .filter((c): c is string => typeof c === "string" && c.length > 0)
+    );
+    const toInsert = requested.filter((code) => !held.has(code));
+
+    // Every requested location is already granted — return unchanged rather
+    // than inserting duplicates. Callers compare before/after to see that
+    // nothing moved.
+    if (toInsert.length === 0) {
       return { before, after: before };
     }
 
-    const insertResp = await client.from("user_permissions").insert({
-      user_id: args.userId,
-      email: args.email,
-      role: args.role,
-      must_change_password: preservedMustChange,
-      location_code: code
-    } as Partial<UserPermissionRow>);
+    const insertResp = await client.from("user_permissions").insert(
+      toInsert.map((code) => ({
+        user_id: args.userId,
+        email: args.email,
+        role: args.role,
+        must_change_password: preservedMustChange,
+        location_code: code
+      })) as Partial<UserPermissionRow>[]
+    );
     if (insertResp.error) {
-      throw new Error(`Add location failed: ${insertResp.error.message}`);
+      throw new Error(`Add locations failed: ${insertResp.error.message}`);
     }
 
-    // Re-read so `after` is the user's complete scope, not just the new row.
-    const afterResp = await client
-      .from("user_permissions")
-      .select("user_id,email,role,location_code,must_change_password,created_at")
-      .eq("user_id", args.userId);
-    if (afterResp.error) throw afterResp.error;
-    return { before, after: (afterResp.data ?? []) as unknown as UserPermissionRow[] };
+    // Re-read so `after` is the user's complete scope, not just the new rows.
+    return { before, after: await readPermissionRows(client, args.userId) };
   }
 
-  // REPLACE — first grant or a role transition. Wipe, then insert one row.
+  // REPLACE — first grant or a role transition. Wipe, then write the full
+  // requested set: one row per location for location_admin, a single
+  // location_code = NULL row for super_admin.
   const del = await client
     .from("user_permissions")
     .delete()
     .eq("user_id", args.userId);
   if (del.error) throw del.error;
 
-  const insertRow: Partial<UserPermissionRow> = {
-    user_id: args.userId,
-    email: args.email,
-    role: args.role,
-    must_change_password: preservedMustChange,
-    location_code: args.role === "location_admin" ? (args.locationCode ?? null) : null
-  };
+  const insertRows: Partial<UserPermissionRow>[] =
+    args.role === "location_admin"
+      ? requested.map((code) => ({
+          user_id: args.userId,
+          email: args.email,
+          role: args.role,
+          must_change_password: preservedMustChange,
+          location_code: code
+        }))
+      : [
+          {
+            user_id: args.userId,
+            email: args.email,
+            role: args.role,
+            must_change_password: preservedMustChange,
+            location_code: null
+          }
+        ];
 
   const { data, error } = await client
     .from("user_permissions")
-    .insert(insertRow)
+    .insert(insertRows)
     .select();
   if (error) throw new Error(`Set role failed: ${error.message}`);
   return { before, after: (data ?? []) as unknown as UserPermissionRow[] };
+}
+
+/** Full user_permissions row set for one user. Shared by setRole's
+ *  before/after snapshots so both sides select identical columns. */
+async function readPermissionRows(
+  client: SupabaseClient,
+  userId: string
+): Promise<UserPermissionRow[]> {
+  const resp = await client
+    .from("user_permissions")
+    .select("user_id,email,role,location_code,must_change_password,created_at")
+    .eq("user_id", userId);
+  if (resp.error) throw resp.error;
+  return (resp.data ?? []) as unknown as UserPermissionRow[];
 }
 
 /**

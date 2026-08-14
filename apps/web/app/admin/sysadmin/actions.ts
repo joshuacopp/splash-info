@@ -224,8 +224,10 @@ interface SetRoleBody {
   user_id: string;
   /** null clears the role (worker treats missing/null as clear). */
   role: UserRole | null;
-  /** Only included for role === "location_admin". */
-  location_code?: string;
+  /** Only included for role === "location_admin". Array shape mirrors the
+   *  dc-role endpoint so several locations go in one submit. The worker
+   *  treats these as ADDITIVE for a user who is already a location_admin. */
+  location_codes?: string[];
 }
 
 export async function setRoleAction(
@@ -234,13 +236,22 @@ export async function setRoleAction(
 ): Promise<ActionResult> {
   const userId = fieldString(formData, "user_id");
   const roleRaw = fieldString(formData, "role");
-  const locationCode = fieldStringOrUndefined(formData, "location_code");
+  // LocationCodeMultiPicker emits one hidden input per selection.
+  const locationCodes = formData
+    .getAll("location_codes")
+    .map((v) => (typeof v === "string" ? v.trim() : ""))
+    .filter((v) => v.length > 0);
 
   const role: UserRole | null = roleRaw.length === 0 ? null : (roleRaw as UserRole);
 
   const body: SetRoleBody = { user_id: userId, role };
-  if (role === "location_admin" && locationCode !== undefined) {
-    body.location_code = locationCode;
+  if (role === "location_admin") {
+    // Worker rejects this too; catching it here saves a round trip and
+    // gives the operator a friendlier message than the 400.
+    if (locationCodes.length === 0) {
+      return { ok: false, error: "Pick at least one location for location_admin." };
+    }
+    body.location_codes = locationCodes;
   }
 
   const result = await sysadminPostJson("/sysadmin/api/set-role", body);
@@ -249,7 +260,14 @@ export async function setRoleAction(
   }
 
   revalidatePath(PAGE_PATH);
-  return { ok: true, message: "Role updated" };
+  if (role !== "location_admin") {
+    return { ok: true, message: "Role updated" };
+  }
+  const n = locationCodes.length;
+  return {
+    ok: true,
+    message: `Role updated — ${n} location${n === 1 ? "" : "s"} granted (existing locations kept)`
+  };
 }
 
 /* ============================================================

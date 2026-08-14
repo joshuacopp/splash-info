@@ -10,9 +10,14 @@
 //   POST  /sysadmin/api/grant-tool       — grant a tool to a user
 //   POST  /sysadmin/api/revoke-tool      — revoke a tool from a user
 //   POST  /sysadmin/api/set-role         — set / clear role on user_permissions.
-//                                          location_admin grants are ADDITIVE:
-//                                          adding a location keeps the ones the
-//                                          user already has. Only a role change
+//                                          Body: { user_id, role,
+//                                          location_codes? } — array shape
+//                                          mirrors the dc-role endpoint; the
+//                                          legacy `location_code` scalar is
+//                                          still accepted. location_admin
+//                                          grants are ADDITIVE: the codes you
+//                                          pass are added to what the user
+//                                          already has. Only a role change
 //                                          (location_admin <-> super_admin)
 //                                          replaces the row set. Removal is a
 //                                          separate endpoint — see
@@ -171,6 +176,10 @@ const VALID_PROMO_ROLES: ReadonlySet<PromoRole> = new Set([
 ]);
 
 const DC_ROLE_MAX_LOCATIONS = 50;
+// Same ceiling as DC_ROLE_MAX_LOCATIONS, for set-role's location_codes array.
+// Separate constant because the two endpoints write different tables and may
+// diverge; nothing about the limit is shared beyond the current value.
+const SET_ROLE_MAX_LOCATIONS = 50;
 const DC_ROLE_PATH_RE = /^\/sysadmin\/api\/users\/([^/]+)\/dc-role$/;
 // Brief 159 — second dynamic-path endpoint, sibling to DC_ROLE_PATH_RE.
 const PROMO_ROLE_PATH_RE = /^\/sysadmin\/api\/users\/([^/]+)\/promo-role$/;
@@ -425,16 +434,44 @@ async function handleSetRole(
 ): Promise<Response> {
   const userId = stringOrNull(body.user_id);
   const role = stringOrNull(body.role);
-  const locationCode = stringOrNull(body.location_code);
   if (!userId) return jsonError(400, "user_id required");
   if (role && !VALID_ROLES.has(role as UserRole)) {
     return jsonError(400, `Invalid role: ${role}`);
   }
+
+  // Locations arrive as `location_codes: string[]` (mirrors the dc-role
+  // endpoint). The pre-array `location_code: string` scalar is still
+  // accepted so any caller predating the multi-select keeps working.
+  const scalarCode = stringOrNull(body.location_code);
+  const rawCodes: unknown[] = Array.isArray(body.location_codes)
+    ? body.location_codes
+    : scalarCode !== null
+      ? [scalarCode]
+      : [];
+
+  const locationCodes: string[] = [];
+  if (rawCodes.length > SET_ROLE_MAX_LOCATIONS) {
+    return jsonError(
+      400,
+      `location_codes may contain at most ${SET_ROLE_MAX_LOCATIONS} entries`
+    );
+  }
+  for (const entry of rawCodes) {
+    if (typeof entry !== "string") {
+      return jsonError(400, "location_codes entries must be strings");
+    }
+    const trimmed = entry.trim();
+    if (!LOCATION_CODE_RE.test(trimmed)) {
+      return jsonError(400, `Invalid location_code: ${entry}`);
+    }
+    locationCodes.push(trimmed);
+  }
+
   // Brief 18 guard — flagged in Brief 7 outcome. Without this check
   // location_admin rows could be inserted with location_code = NULL,
   // producing a functionally-misconfigured permissions row.
-  if (role === "location_admin" && !locationCode) {
-    return jsonError(400, "location_code is required when role is location_admin");
+  if (role === "location_admin" && locationCodes.length === 0) {
+    return jsonError(400, "location_codes is required when role is location_admin");
   }
 
   const sb = createServiceClient(env);
@@ -458,14 +495,14 @@ async function handleSetRole(
   if (!userObj.email) return jsonError(400, "User has no email on file");
 
   // setRole is additive for location_admin -> location_admin grants: it adds
-  // one location row and leaves the existing ones alone, replacing only on a
-  // role transition. It returns both snapshots so the audit log can record a
-  // real before-state instead of null.
+  // a row per new location and leaves the existing ones alone, replacing only
+  // on a role transition. It returns both snapshots so the audit log can
+  // record a real before-state instead of null.
   const { before, after } = await setRole(sb, {
     userId,
     email: userObj.email,
     role: role as UserRole,
-    locationCode
+    locationCodes
   });
   await logSysadminAudit(sb, {
     actor,

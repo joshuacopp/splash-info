@@ -22,6 +22,7 @@ import {
 } from "../_components/OperationCard";
 import { CreateUserToolsAndDcRole } from "../_components/CreateUserToolsAndDcRole";
 import { LocationCodePicker } from "../_components/LocationCodePicker";
+import { LocationCodeMultiPicker } from "../_components/LocationCodeMultiPicker";
 import { PermissionsViewer } from "../_components/PermissionsViewer";
 import { SetDcRoleCard } from "../_components/SetDcRoleCard";
 import { SetPromoRoleCard } from "../_components/SetPromoRoleCard";
@@ -162,7 +163,7 @@ function SetRoleCard() {
   return (
     <OperationCard
       title="Set role"
-      description="Set or clear a user's role on user_permissions. Location grants are additive — adding a location keeps the ones the user already has."
+      description="Set or clear a user's role on user_permissions. Location grants are additive — the locations you pick are added to whatever the user already has."
     >
       <ActionForm action={setRoleAction} className="space-y-4">
         <div>
@@ -188,21 +189,21 @@ function SetRoleCard() {
 
         <div>
           <FieldLabel
-            htmlFor="set-role-location-code"
-            helper="Required for location_admin role — search by site #, name, or code"
+            htmlFor="set-role-location-codes"
+            helper="Required for location_admin — pick one or more; search by site #, name, or code"
           >
-            Location
+            Locations
           </FieldLabel>
-          <LocationCodePicker
-            name="location_code"
-            inputId="set-role-location-code"
+          <LocationCodeMultiPicker
+            name="location_codes"
+            inputId="set-role-location-codes"
           />
           <p className="mt-1 text-[0.6875rem] text-splash-navy/50">
             Ignored for super_admin and clear-role operations.
-            Worker rejects location_admin role without a location_code.
-            Submitting adds this location to an existing location_admin&rsquo;s
-            list — it does not replace it. To take a location away, use the
-            &times; next to it in the permissions viewer.
+            Worker rejects location_admin role without at least one location.
+            Submitting adds these to an existing location_admin&rsquo;s list —
+            it does not replace it. To take a location away, use the &times;
+            next to it in the permissions viewer.
           </p>
         </div>
 
