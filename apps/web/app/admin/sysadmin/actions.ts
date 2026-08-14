@@ -6,6 +6,8 @@
 //   - grantToolAction       → POST  /sysadmin/api/grant-tool
 //   - revokeToolAction      → POST  /sysadmin/api/revoke-tool
 //   - resetPasswordAction   → POST  /sysadmin/api/reset-password
+//   - resetMfaAction        → POST  /sysadmin/api/reset-mfa (lost-device
+//                             recovery — deletes all factors)
 //   - createLocationAction  → POST  /sysadmin/api/pricing-simple/create-location
 //                             (Brief 24)
 //   - updatePackageAction   → PATCH /sysadmin/api/pricing-simple/package
@@ -565,6 +567,50 @@ export async function resetPasswordAction(
 
   revalidatePath(PAGE_PATH);
   return { ok: true, message: "Password reset" };
+}
+
+/* ============================================================
+ * Reset MFA (lost-device recovery)
+ *
+ * Deletes ALL of a user's MFA factors so the enrollment countdown forces a
+ * fresh enroll on next login. super_admin-only — enforced by the sysadmin-
+ * worker's single gate; this action just forwards. Standalone (not bundled
+ * with password reset) per Josh's call.
+ * ============================================================ */
+
+interface ResetMfaBody {
+  user_id: string;
+}
+
+export async function resetMfaAction(
+  _prevState: ActionResult | null,
+  formData: FormData
+): Promise<ActionResult> {
+  const userId = fieldString(formData, "user_id");
+
+  const body: ResetMfaBody = { user_id: userId };
+
+  const result = await sysadminPostJson("/sysadmin/api/reset-mfa", body);
+  if (!result.ok) {
+    return { ok: false, error: result.error };
+  }
+
+  const deleted =
+    result.body &&
+    typeof result.body === "object" &&
+    "deleted" in result.body &&
+    typeof (result.body as { deleted?: unknown }).deleted === "number"
+      ? (result.body as { deleted: number }).deleted
+      : 0;
+
+  revalidatePath(PAGE_PATH);
+  return {
+    ok: true,
+    message:
+      deleted > 0
+        ? `MFA reset — ${deleted} factor${deleted === 1 ? "" : "s"} cleared. User must re-enroll on next login.`
+        : "No MFA factors were enrolled — nothing to reset."
+  };
 }
 
 /* ============================================================

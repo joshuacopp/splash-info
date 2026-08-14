@@ -210,3 +210,86 @@ export async function hasVerifiedFactor(
   const factors = await listFactors(env, accessToken);
   return factors.some((f) => f.status === "verified");
 }
+
+/* ============================================================
+ * Admin-side factor operations (service_role) — the RESET path.
+ *
+ * Everything ABOVE this line acts AS THE USER (Bearer = the user's own
+ * access token). The two helpers below act as the ADMIN: they read/delete
+ * ANOTHER user's factors via GoTrue's /auth/v1/admin surface using the
+ * service_role key. This is the "lost my phone" recovery path — a
+ * super_admin clears the stranded factor so the user can re-enroll on
+ * next login (the enrollment countdown then re-catches them: no verified
+ * factor ⇒ policy applies).
+ *
+ * Guard the CALLER (worker endpoint), not these functions — mirroring
+ * admin.ts, which trusts the worker's single super_admin gate rather than
+ * re-checking role here.
+ * ============================================================ */
+
+/** service_role headers for the GoTrue admin surface. Mirrors admin.ts. */
+function adminHeaders(env: SupabaseEnv): HeadersInit {
+  return {
+    apikey: env.SUPABASE_SERVICE_KEY,
+    Authorization: `Bearer ${env.SUPABASE_SERVICE_KEY}`,
+    "Content-Type": "application/json"
+  };
+}
+
+/**
+ * List another user's factors via the Admin API (service_role). Unlike
+ * listFactors (which reads /auth/v1/user for the CALLING user), this reads
+ * /auth/v1/admin/users/{id}/factors for an arbitrary target — the shape the
+ * sysadmin "Reset MFA" card needs to show enrolled/none status.
+ */
+export async function adminListFactors(
+  env: SupabaseEnv,
+  userId: string
+): Promise<MfaFactor[]> {
+  if (!userId) throw new Error("userId required");
+  const r = await fetch(`${env.SUPABASE_URL}/auth/v1/admin/users/${userId}/factors`, {
+    headers: adminHeaders(env)
+  });
+  if (!r.ok) return gotrueError(r, "adminListFactors failed");
+  // GoTrue has returned this as a bare array historically and as
+  // { factors: [...] } in newer builds — accept both.
+  const body = (await r.json()) as
+    | Array<Record<string, unknown>>
+    | { factors?: Array<Record<string, unknown>> };
+  const rows = Array.isArray(body) ? body : (body.factors ?? []);
+  return rows.map((f) => ({
+    id: String(f.id ?? ""),
+    status: f.status === "verified" ? "verified" : "unverified",
+    factorType: typeof f.factor_type === "string" ? f.factor_type : "totp",
+    friendlyName: typeof f.friendly_name === "string" ? f.friendly_name : null
+  }));
+}
+
+/**
+ * Reset (delete) ALL of a user's factors via the Admin API (service_role).
+ * The recovery path when a user loses their authenticator device. After this
+ * the user has no verified factor, so the enrollment policy forces a fresh
+ * enrollment on next login.
+ *
+ * Deletes every factor (verified AND unverified) so a half-finished enroll
+ * can't leave a stranded row. Returns the count deleted so the caller can
+ * report "reset N factor(s)" / distinguish a no-op. Idempotent: zero factors
+ * ⇒ returns 0 without error.
+ */
+export async function adminResetMfa(
+  env: SupabaseEnv,
+  userId: string
+): Promise<{ deleted: number }> {
+  if (!userId) throw new Error("userId required");
+  const factors = await adminListFactors(env, userId);
+  let deleted = 0;
+  for (const factor of factors) {
+    const r = await fetch(
+      `${env.SUPABASE_URL}/auth/v1/admin/users/${userId}/factors/${factor.id}`,
+      { method: "DELETE", headers: adminHeaders(env) }
+    );
+    if (!r.ok) return gotrueError(r, `factor delete failed (${factor.id})`);
+    deleted += 1;
+  }
+  return { deleted };
+}

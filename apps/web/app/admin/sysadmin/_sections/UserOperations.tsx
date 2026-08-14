@@ -1,9 +1,12 @@
-// Seven user-management cards. Brief 30 split this out from page.tsx as
+// Eight user-management cards. Brief 30 split this out from page.tsx as
 // part of the two-mode hub restructure (Manage Users / Manage Tables).
 //
 // Cards (in order): Create user, Set role, Set DC Role (Brief 61), Set
-// Promo Role (Brief 159), Grant tool, Revoke tool, Reset password. All
-// wrap their forms in <ActionForm> and POST to /sysadmin/api/* via the
+// Promo Role (Brief 159), Grant tool, Revoke tool, Reset password, Reset
+// MFA (lost-device recovery — a self-contained client card, not an
+// <ActionForm>, because it reads factor status + needs a destructive
+// confirm). All the others wrap their forms in <ActionForm> and POST to
+// /sysadmin/api/* via the
 // actions in ../actions.ts. Brief 18 / 19 patterns intact (UserPicker +
 // ActionForm).
 //
@@ -24,6 +27,7 @@ import { CreateUserToolsAndDcRole } from "../_components/CreateUserToolsAndDcRol
 import { LocationCodePicker } from "../_components/LocationCodePicker";
 import { LocationCodeMultiPicker } from "../_components/LocationCodeMultiPicker";
 import { PermissionsViewer } from "../_components/PermissionsViewer";
+import { ResetMfaCard } from "../_components/ResetMfaCard";
 import { SetDcRoleCard } from "../_components/SetDcRoleCard";
 import { SetPromoRoleCard } from "../_components/SetPromoRoleCard";
 import { UserPicker } from "../_components/UserPicker";
@@ -46,7 +50,23 @@ export function UserOperations() {
       <GrantToolCard />
       <RevokeToolCard />
       <ResetPasswordCard />
+      <ResetMfaSection />
     </>
+  );
+}
+
+/* ============================================================
+ * 6. Reset MFA (lost-device recovery)
+ * ============================================================ */
+
+function ResetMfaSection() {
+  return (
+    <OperationCard
+      title="Reset MFA"
+      description="Lost-device recovery — clears a user's authenticator factors so they re-enroll on next login. super_admin only."
+    >
+      <ResetMfaCard />
+    </OperationCard>
   );
 }
 

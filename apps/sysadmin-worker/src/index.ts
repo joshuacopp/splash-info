@@ -26,6 +26,12 @@
 //                                          (FLIPS must_change_password = true
 //                                          per Josh's password-set policy —
 //                                          see @splash/auth/index.ts)
+//   GET   /sysadmin/api/users/{id}/mfa-factors — factor status for the Reset
+//                                          MFA card (enrolled/none). Read-only.
+//   POST  /sysadmin/api/reset-mfa        — lost-device recovery: deletes ALL
+//                                          of a user's MFA factors so the
+//                                          enrollment countdown re-catches them
+//                                          on next login. super_admin only.
 //   POST  /sysadmin/api/create-user      — invite + initial permissions row
 //                                          (must_change_password defaults TRUE
 //                                          on the new user_permissions row —
@@ -140,6 +146,8 @@
 import {
   adminCreateUser,
   adminGetUser,
+  adminListFactors,
+  adminResetMfa,
   adminResetPassword,
   authenticate,
   isValidPassword,
@@ -187,12 +195,21 @@ const PROMO_ROLE_PATH_RE = /^\/sysadmin\/api\/users\/([^/]+)\/promo-role$/;
 // Backs apps/web's PermissionsViewer card (friendly read of auth_unified for
 // one user). Sibling to DC_ROLE_PATH_RE / PROMO_ROLE_PATH_RE but GET, not POST.
 const USER_PERMS_PATH_RE = /^\/sysadmin\/api\/users\/([^/]+)\/permissions$/;
+// MFA reset (lost-device recovery) — dynamic GET for factor status, backing
+// the sysadmin "Reset MFA" card's enrolled/none line. Sibling to
+// USER_PERMS_PATH_RE (GET, read-only). The destructive reset itself is a
+// static POST /sysadmin/api/reset-mfa (OWNED_POST_PATHS), mirroring
+// reset-password.
+const MFA_FACTORS_PATH_RE = /^\/sysadmin\/api\/users\/([^/]+)\/mfa-factors$/;
 
 const OWNED_POST_PATHS = new Set([
   "/sysadmin/api/grant-tool",
   "/sysadmin/api/revoke-tool",
   "/sysadmin/api/set-role",
   "/sysadmin/api/reset-password",
+  // Lost-device recovery — deletes all of a user's MFA factors. super_admin
+  // gate (top of fetch) covers it, same as every other path here.
+  "/sysadmin/api/reset-mfa",
   "/sysadmin/api/create-user",
   "/sysadmin/api/pricing-simple/create-location",
   // Permissions viewer inline action — delete one user_permissions location row.
@@ -231,13 +248,17 @@ export default {
     // Permissions viewer — dynamic GET /sysadmin/api/users/{userId}/permissions.
     const userPermsPathMatch = USER_PERMS_PATH_RE.exec(path);
     const isOwnedUserPermsGet = userPermsPathMatch !== null;
+    // MFA factor status — dynamic GET /sysadmin/api/users/{userId}/mfa-factors.
+    const mfaFactorsPathMatch = MFA_FACTORS_PATH_RE.exec(path);
+    const isOwnedMfaFactorsGet = mfaFactorsPathMatch !== null;
     if (
       !isOwnedPost &&
       !isOwnedPatch &&
       !isOwnedGet &&
       !isOwnedDcRolePost &&
       !isOwnedPromoRolePost &&
-      !isOwnedUserPermsGet
+      !isOwnedUserPermsGet &&
+      !isOwnedMfaFactorsGet
     ) {
       return new Response("Not found", { status: 404 });
     }
@@ -251,7 +272,7 @@ export default {
     if (isOwnedPatch && method !== "PATCH") {
       return jsonError(405, "PATCH required");
     }
-    if ((isOwnedGet || isOwnedUserPermsGet) && method !== "GET") {
+    if ((isOwnedGet || isOwnedUserPermsGet || isOwnedMfaFactorsGet) && method !== "GET") {
       return jsonError(405, "GET required");
     }
 
@@ -294,6 +315,13 @@ export default {
         return await handleGetUserPermissions(env, userId);
       }
 
+      // MFA factor status read — dynamic GET, no body. Same pre-parse slot as
+      // the permissions viewer above.
+      if (isOwnedMfaFactorsGet && mfaFactorsPathMatch) {
+        const userId = decodeURIComponent(mfaFactorsPathMatch[1] ?? "");
+        return await handleGetMfaFactors(env, userId);
+      }
+
       let body: Record<string, unknown>;
       try {
         body = (await request.json()) as Record<string, unknown>;
@@ -320,6 +348,8 @@ export default {
           return await handleSetRole(env, body, actor);
         case "/sysadmin/api/reset-password":
           return await handleResetPassword(env, body, actor);
+        case "/sysadmin/api/reset-mfa":
+          return await handleResetMfa(env, body, actor);
         case "/sysadmin/api/create-user":
           return await handleCreateUser(env, body, actor);
         case "/sysadmin/api/pricing-simple/create-location":
@@ -710,6 +740,52 @@ async function handleResetPassword(
     notes: "Password reset by super_admin (must_change_password set to true)"
   });
   return json({ ok: true });
+}
+
+/**
+ * Read a user's MFA factors (service_role). Backs the "Reset MFA" card's
+ * enrolled/none status line — no mutation, so no audit entry (a read, like
+ * handleGetUserPermissions). Returns the enrolled state plus the raw factor
+ * list so the UI can show how many will be cleared.
+ */
+async function handleGetMfaFactors(env: Env, userId: string): Promise<Response> {
+  if (!userId) return jsonError(400, "user_id required");
+  const factors = await adminListFactors(env, userId);
+  return json({
+    ok: true,
+    enrolled: factors.some((f) => f.status === "verified"),
+    count: factors.length,
+    factors
+  });
+}
+
+/**
+ * Lost-device recovery — delete ALL of a user's MFA factors (service_role).
+ * After this the user has no verified factor, so the enrollment countdown
+ * forces a fresh enroll on next login. super_admin gate is the single check
+ * at the top of fetch(); no per-handler role recheck (mirrors the others).
+ */
+async function handleResetMfa(
+  env: Env,
+  body: Record<string, unknown>,
+  actor: { id: string; email: string }
+): Promise<Response> {
+  const userId = stringOrNull(body.user_id);
+  if (!userId) return jsonError(400, "user_id required");
+
+  const { deleted } = await adminResetMfa(env, userId);
+
+  const sb = createServiceClient(env);
+  await logSysadminAudit(sb, {
+    actor,
+    action: "reset_mfa",
+    target_type: "auth.users",
+    target_id: userId,
+    before: null,
+    after: null,
+    notes: `MFA reset by super_admin (${deleted} factor(s) deleted)`
+  });
+  return json({ ok: true, deleted });
 }
 
 async function handleCreateUser(
@@ -2312,6 +2388,7 @@ const ALLOWED_AUDIT_ACTIONS: ReadonlySet<string> = new Set([
   "revoke_tool",
   "revoke_tool_noop",
   "reset_password",
+  "reset_mfa",
   "create_location",
   "update_package",
   "update_packages_bulk",
