@@ -46,7 +46,7 @@ export default async function RootLayout({ children }: { children: ReactNode }) 
             or other public pages. Refreshes the session on a timer + tab
             refocus so an open tab never hits the 1-hour token wall. */}
         {user ? <SessionKeepalive /> : null}
-        <Header user={user} />
+        <Header user={user} mfaEnrollment={session?.mfaEnrollment} />
         <main>{children}</main>
       </body>
     </html>

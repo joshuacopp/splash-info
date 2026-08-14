@@ -46,7 +46,22 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { ASSETS } from "@splash/storage-r2/assets";
+import type { MfaEnrollmentStatus } from "@splash/types/session";
 import { SignOutButton } from "./SignOutButton";
+
+const MONTHS = [
+  "January", "February", "March", "April", "May", "June",
+  "July", "August", "September", "October", "November", "December"
+];
+
+/** Format an ISO "YYYY-MM-DD" deadline as "August 28, 2026" without going
+ *  through `new Date()` — parsing a date-only string as UTC then formatting in
+ *  local time can slip a day. Split the parts and format directly. */
+function formatDeadline(iso: string): string {
+  const [y, m, d] = iso.split("-").map((n) => parseInt(n, 10));
+  const month = MONTHS[(m ?? 1) - 1] ?? "";
+  return `${month} ${d}, ${y}`;
+}
 
 // Match /admin, /admin/..., /sysadmin, /sysadmin/..., /workorders,
 // /workorders/..., /forms, /forms/... - the four admin-context path
@@ -72,14 +87,25 @@ export interface HeaderUser {
 
 export interface HeaderProps {
   user?: HeaderUser;
+  /** MFA enrollment countdown, forwarded from the root layout's session.
+   *  When present + `required`, a banner nudges the user to enroll. Undefined
+   *  when the policy is off or the user already has a verified factor. */
+  mfaEnrollment?: MfaEnrollmentStatus;
 }
 
-export function Header({ user }: HeaderProps = {}) {
+export function Header({ user, mfaEnrollment }: HeaderProps = {}) {
   const pathname = usePathname() ?? "";
   const isAdminContext = ADMIN_PATH_RE.test(pathname);
   const logoHref = isAdminContext ? "/admin/dashboard" : "/";
 
+  // Show the countdown for an authenticated user who still needs to enroll,
+  // everywhere except the enrollment page itself (no point nagging them while
+  // they're already there).
+  const showMfaBanner =
+    !!user && !!mfaEnrollment?.required && !pathname.startsWith("/mfa/enroll");
+
   return (
+    <>
     <header className="flex w-full items-center justify-between bg-splash-navy px-6 py-3 shadow-splash-btn">
       <Link
         href={logoHref}
@@ -121,5 +147,38 @@ export function Header({ user }: HeaderProps = {}) {
         </nav>
       ) : null}
     </header>
+    {showMfaBanner && mfaEnrollment ? (
+      <div
+        role="status"
+        className={`flex w-full flex-wrap items-center justify-center gap-x-3 gap-y-1 px-6 py-2 text-sm ${
+          mfaEnrollment.overdue
+            ? "bg-red-600 text-white"
+            : "bg-amber-100 text-amber-900"
+        }`}
+      >
+        <span className="font-medium">
+          {mfaEnrollment.overdue
+            ? "Two-factor authentication is now required to keep access."
+            : `Two-factor authentication must be enabled by ${formatDeadline(
+                mfaEnrollment.deadline
+              )}${
+                mfaEnrollment.daysRemaining >= 0
+                  ? ` — ${mfaEnrollment.daysRemaining} day${
+                      mfaEnrollment.daysRemaining === 1 ? "" : "s"
+                    } left.`
+                  : "."
+              }`}
+        </span>
+        <Link
+          href="/mfa/enroll?required=true"
+          className={`font-semibold underline underline-offset-2 ${
+            mfaEnrollment.overdue ? "text-white" : "text-amber-900"
+          }`}
+        >
+          Set it up now
+        </Link>
+      </div>
+    ) : null}
+    </>
   );
 }

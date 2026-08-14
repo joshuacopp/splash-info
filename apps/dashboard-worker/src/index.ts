@@ -64,6 +64,7 @@ import {
   REFRESH_TOKEN_COOKIE,
   refreshSession,
   requiresPasswordChange,
+  resolveMfaEnrollment,
   supabasePasswordLogin,
   userCompleteForcedReset
 } from "@splash/auth";
@@ -78,6 +79,11 @@ import { recordAndCheck, clearEmail, type RateLimitEnv } from "./rate-limit";
 type Env = SupabaseEnv &
   RateLimitEnv & {
     TURNSTILE_SECRET_KEY?: string;
+    /** MFA step-up kill-switch (see wrangler.toml + @splash/auth authenticate). */
+    MFA_ENFORCE?: string;
+    /** MFA enrollment-countdown kill-switch (see wrangler.toml +
+     *  @splash/auth resolveMfaEnrollment). */
+    MFA_ENROLL_ENFORCE?: string;
   };
 
 export default {
@@ -257,6 +263,24 @@ async function handleLogin(request: Request, env: Env): Promise<Response> {
     // change-password page hits another gate immediately. The contract
     // is enforced at every gate, not only at login.
     headers.set("Location", `/change-password?required=true&next=${encodeURIComponent(safeNext)}`);
+    return new Response("", { status: 302, headers });
+  }
+
+  // ── MFA enrollment gate (layer 3 — the enrollment countdown) ─────────────
+  // We're past the step-up return above, so this user has NO verified factor.
+  // If the org enrollment policy is active (MFA_ENROLL_ENFORCE) and they are
+  // past their deadline, route to forced enrollment instead of the dashboard.
+  // Every account created on/after the flip day is overdue on first login, so
+  // this is the "new users enroll right away" path; pre-existing users only
+  // hit it once their 14-day grace elapses. Within grace, enrollment is
+  // undefined-or-not-overdue and we fall through to a normal login — the
+  // countdown banner (rendered from session.mfaEnrollment) does the nudging.
+  // Same cookie contract as must_change_password: cookies are already set and
+  // every protected page re-checks session.mfaEnrollment.overdue via
+  // authenticate(), so jumping past this page just hits the gate again.
+  const enrollment = resolveMfaEnrollment(env, loginResult.user, false);
+  if (enrollment?.overdue) {
+    headers.set("Location", `/mfa/enroll?required=true&next=${encodeURIComponent(safeNext)}`);
     return new Response("", { status: 302, headers });
   }
 

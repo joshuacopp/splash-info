@@ -148,3 +148,4 @@ export * from "./tool-access.js";
 export * from "./admin.js";
 export * from "./password-policy.js";
 export * from "./mfa.js";
+export * from "./mfa-policy.js";

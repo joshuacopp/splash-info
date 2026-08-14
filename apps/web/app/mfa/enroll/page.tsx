@@ -14,11 +14,15 @@
 import { EnrollMfaForm } from "./form";
 
 interface PageProps {
-  searchParams: Promise<{ next?: string }>;
+  searchParams: Promise<{ next?: string; required?: string }>;
 }
 
 export default async function EnrollMfaPage({ searchParams }: PageProps) {
   const params = await searchParams;
   const next = params.next ?? "/admin/dashboard";
-  return <EnrollMfaForm next={next} />;
+  // `required=true` is set by the login handler and the /admin overdue guard
+  // when enrollment is mandatory. It switches the form to its mandatory framing
+  // (no "this is optional" language). Enforcement itself lives server-side.
+  const required = params.required === "true";
+  return <EnrollMfaForm next={next} required={required} />;
 }

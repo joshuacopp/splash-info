@@ -21,9 +21,44 @@ import { useState, type FormEvent } from "react";
 
 const CODE_LENGTH = 6;
 
+/** Authenticator apps we suggest, so users aren't left to "figure it out."
+ *  Any RFC-6238 TOTP app works; these are the common, free, cross-platform
+ *  ones. Links point at each app's official landing/store page. */
+const AUTHENTICATOR_APPS: ReadonlyArray<{ name: string; note: string; url: string }> = [
+  {
+    name: "Google Authenticator",
+    note: "iOS & Android",
+    url: "https://support.google.com/accounts/answer/1066447"
+  },
+  {
+    name: "Microsoft Authenticator",
+    note: "iOS & Android",
+    url: "https://www.microsoft.com/en-us/security/mobile-authenticator-app"
+  },
+  {
+    name: "Authy",
+    note: "iOS, Android & desktop",
+    url: "https://authy.com/download/"
+  },
+  {
+    name: "1Password",
+    note: "if you already use it as a password manager",
+    url: "https://support.1password.com/one-time-passwords/"
+  },
+  {
+    name: "Duo Mobile",
+    note: "iOS & Android",
+    url: "https://duo.com/product/multi-factor-authentication-mfa/duo-mobile-app"
+  }
+];
+
 export interface EnrollMfaFormProps {
   /** Where to land after the factor is verified. */
   next: string;
+  /** When true, render the mandatory framing (login/overdue guard sent them
+   *  here). Server-side is where the actual gate lives — this only changes copy
+   *  so an obligated user isn't told the step is optional. */
+  required?: boolean;
 }
 
 interface EnrollData {
@@ -35,7 +70,7 @@ interface EnrollData {
   uri: string;
 }
 
-export function EnrollMfaForm({ next }: EnrollMfaFormProps) {
+export function EnrollMfaForm({ next, required = false }: EnrollMfaFormProps) {
   const [enroll, setEnroll] = useState<EnrollData | null>(null);
   const [code, setCode] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -117,16 +152,47 @@ export function EnrollMfaForm({ next }: EnrollMfaFormProps) {
   return (
     <section className="mx-auto my-16 max-w-md px-6 text-splash-navy">
       <h1 className="mb-2 text-2xl font-bold">Set Up Two-Factor Authentication</h1>
-      <p className="mt-0 mb-4 text-sm text-gray-dark">
-        Add a second layer of protection with an authenticator app (Google
-        Authenticator, 1Password, Authy, etc.).
-      </p>
+
+      {required ? (
+        <p
+          role="alert"
+          className="mt-0 mb-4 rounded-splash-sm border border-amber-300 bg-amber-50 px-3 py-2 text-sm font-medium text-amber-900"
+        >
+          Your account requires two-factor authentication. Set it up now to
+          continue to your tools.
+        </p>
+      ) : (
+        <p className="mt-0 mb-4 text-sm text-gray-dark">
+          Add a second layer of protection with an authenticator app.
+        </p>
+      )}
 
       {!enroll ? (
         <>
+          <p className="mb-2 text-sm font-semibold">
+            Step 1 — install an authenticator app (if you don&apos;t have one)
+          </p>
+          <p className="mb-2 text-sm text-gray-dark">
+            Any of these free apps work. Pick one and install it on your phone:
+          </p>
+          <ul className="mb-4 space-y-1 text-sm">
+            {AUTHENTICATOR_APPS.map((app) => (
+              <li key={app.name} className="flex flex-wrap items-baseline gap-x-2">
+                <a
+                  href={app.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="font-semibold text-splash-blue underline underline-offset-2 hover:text-splash-blue-dark"
+                >
+                  {app.name}
+                </a>
+                <span className="text-xs text-gray-dark">{app.note}</span>
+              </li>
+            ))}
+          </ul>
           <p className="mb-4 text-sm text-gray-dark">
-            Click below to generate a QR code, then scan it with your
-            authenticator app.
+            <span className="font-semibold text-splash-navy">Step 2</span> —
+            click below to generate a QR code, then scan it with your app.
           </p>
           {error ? (
             <p

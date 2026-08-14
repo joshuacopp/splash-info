@@ -27,6 +27,15 @@ workers_dev = true
 [vars]
 MFA_ENFORCE = "true"
 
+# MFA ENROLLMENT countdown kill-switch (separate from MFA_ENFORCE above). Read
+# by @splash/auth resolveMfaEnrollment(): when "true", users WITHOUT a verified
+# factor get an enrollment deadline (see @splash/auth/mfa-policy — flip day
+# 2026-08-14, 14-day grace for pre-existing accounts; accounts created on/after
+# the flip day must enroll on first login). Drives the countdown banner + the
+# /admin overdue redirect. Flip to "false" (or delete) + redeploy to disable
+# instantly. Enrolled users are unaffected regardless.
+MFA_ENROLL_ENFORCE = "true"
+
 # Staging routes (Brief 16) — bind dashboard-worker's SSO endpoints to
 # staging.splashcarwashes.info so apps/web (also bound to the staging
 # subdomain) can call them same-origin. Includes /api/me (added in

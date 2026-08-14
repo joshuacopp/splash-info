@@ -9,6 +9,7 @@ import { createServiceClient, getAuthContext, type SupabaseEnv } from "@splash/d
 import type { AuthUser } from "@splash/types/auth";
 import type { Session } from "@splash/types/session";
 import { getAccessToken } from "./cookies.js";
+import { resolveMfaEnrollment } from "./mfa-policy.js";
 
 // Re-export Session for convenience — many consumers will only import from
 // @splash/auth and shouldn't have to know that Session lives in @splash/types.
@@ -32,7 +33,7 @@ export type AuthOutcome =
  */
 export async function authenticate(
   request: Request,
-  env: SupabaseEnv & { MFA_ENFORCE?: string },
+  env: SupabaseEnv & { MFA_ENFORCE?: string; MFA_ENROLL_ENFORCE?: string },
   opts?: { enforceMfa?: boolean }
 ): Promise<AuthOutcome> {
   const token = getAccessToken(request);
@@ -67,6 +68,18 @@ export async function authenticate(
   const sb = createServiceClient(env);
   const session = await getAuthContext(sb, user.id);
   if (!session) return { status: "unauthenticated" };
+
+  // ── MFA enrollment countdown (annotation only) ───────────────────────────
+  // Flag-gated (MFA_ENROLL_ENFORCE). Attaches the countdown status to the
+  // session for the banner/redirect at the call site. Deliberately does NOT
+  // short-circuit to "unauthenticated" when overdue: that would bounce the
+  // user to /login and they'd log straight back in, looping. The session stays
+  // authenticated so apps/web can read `session.mfaEnrollment.overdue` and
+  // route to /mfa/enroll?required=true (which itself must stay reachable).
+  // Returns undefined — and leaves the session untouched — when the flag is off
+  // or the user already has a verified factor.
+  const mfaEnrollment = resolveMfaEnrollment(env, user, hasVerifiedFactor);
+  if (mfaEnrollment) session.mfaEnrollment = mfaEnrollment;
 
   return { status: "authenticated", session };
 }
