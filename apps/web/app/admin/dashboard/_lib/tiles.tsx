@@ -75,6 +75,17 @@ function hasScheduleAccess(session: Session | null): boolean {
   return session.tools.includes("schedule") || session.tools.includes("pricing");
 }
 
+// Chemical Inventory (splash-inventory). Mirrors the worker's inventoryGate:
+// checkToolAccess(session, "inventory"), i.e. super_admin OR an explicit
+// `inventory` grant. Deliberately NARROWER than hasScheduleAccess — a `pricing`
+// grant does NOT imply inventory access. Per-location scope is enforced in the
+// worker; this only decides tile visibility.
+function hasInventoryAccess(session: Session | null): boolean {
+  if (!session) return false;
+  if (session.role === "super_admin") return true;
+  return session.tools.includes("inventory");
+}
+
 function anySession(_session: Session | null): boolean {
   // Page-level dcRole / email-on-locations gates apply at the destination.
   return true;
@@ -100,6 +111,14 @@ const userPlusIcon: ReactNode = (
     <circle cx="9" cy="7" r="4" />
     <line x1="19" y1="8" x2="19" y2="14" />
     <line x1="22" y1="11" x2="16" y2="11" />
+  </svg>
+);
+
+const beakerIcon: ReactNode = (
+  <svg {...SvgProps}>
+    <path d="M4.5 3h15" />
+    <path d="M6 3v16a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V3" />
+    <path d="M6 14h12" />
   </svg>
 );
 
@@ -322,6 +341,16 @@ export const TILES: ReadonlyArray<Tile> = [
     href: "/admin/approvals",
     icon: checkCircleIcon,
     visibleTo: anySession
+  },
+  {
+    id: "inventory",
+    group: "operations",
+    eyebrow: "Chemicals",
+    title: "Chemical Inventory",
+    description: "Log site visits and track chemical usage and cost per car.",
+    href: "/inventory/",
+    icon: beakerIcon,
+    visibleTo: hasInventoryAccess
   },
   {
     id: "performance",

@@ -44,15 +44,23 @@ export const USER_ROLES: readonly UserRole[] = ["super_admin", "location_admin"]
  * accepts a "pricing" grant, so anyone who can change MaxPass pricing for a
  * location can edit that location's shifts without a separate grant (operator
  * decision, 2026-07-10).
+ *
+ * "inventory" gates the chemical-inventory app (inventory-worker) at
+ * /inventory/*. For LOCATION admins the grant means view + submit site visits,
+ * scoped to their own site(s); super_admin sees every location and gets the
+ * full admin surface (products, package config, recipients). The inventory
+ * app's own editor/viewer tiers were collapsed into this single grant on
+ * integration — having the grant is enough to submit (2026-08-14).
  */
-export type ToolName = "pricing" | "claims" | "pertrack" | "form_submissions" | "schedule";
+export type ToolName = "pricing" | "claims" | "pertrack" | "form_submissions" | "schedule" | "inventory";
 
 export const VALID_TOOLS: readonly ToolName[] = [
   "pricing",
   "claims",
   "pertrack",
   "form_submissions",
-  "schedule"
+  "schedule",
+  "inventory"
 ] as const;
 
 /**

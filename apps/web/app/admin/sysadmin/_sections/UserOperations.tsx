@@ -269,6 +269,7 @@ function GrantToolCard() {
             <option value="pertrack">pertrack</option>
             <option value="form_submissions">form_submissions</option>
             <option value="schedule">schedule</option>
+            <option value="inventory">inventory</option>
           </select>
         </div>
 
@@ -314,6 +315,7 @@ function RevokeToolCard() {
             <option value="pertrack">pertrack</option>
             <option value="form_submissions">form_submissions</option>
             <option value="schedule">schedule</option>
+            <option value="inventory">inventory</option>
           </select>
         </div>
 
