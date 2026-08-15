@@ -1,0 +1,89 @@
+# Splash Chemical Inventory worker.
+#
+# Serves the ported inventory SPA (Vite build in ./dist) AND its JSON API from
+# a single worker, path-carved onto the apex host at
+# splashcarwashes.info/inventory/*.
+#
+# ROUTE LAYOUT
+#   Unlike beekeeper-worker (API-only, UI moved into apps/web), this worker owns
+#   BOTH the pages and the API under /inventory/*:
+#
+#     GET  splashcarwashes.info/inventory/                 SPA shell (index.html)
+#     GET  splashcarwashes.info/inventory/location/{code}  SPA client route
+#     GET  splashcarwashes.info/inventory/assets/*          hashed JS/CSS bundles
+#     GET  splashcarwashes.info/inventory/api/me            session + scope
+#     GET  splashcarwashes.info/inventory/api/data          all tables (scoped)
+#     POST splashcarwashes.info/inventory/api/visits        create a visit
+#     PUT  splashcarwashes.info/inventory/api/visits/{id}   edit a visit (admin)
+#     DEL  splashcarwashes.info/inventory/api/visits/{id}   delete a visit (admin)
+#     POST splashcarwashes.info/inventory/api/products      upsert product (admin)
+#     POST splashcarwashes.info/inventory/api/package-config per-location config
+#     POST splashcarwashes.info/inventory/api/recipients    email list (admin)
+#     POST splashcarwashes.info/inventory/api/report        send visit report
+#     POST splashcarwashes.info/inventory/api/flags/resolve
+#     POST splashcarwashes.info/inventory/api/flags/unresolve
+#
+#   The /inventory/* carve out-ranks apps/web's splashcarwashes.info/* catch-all
+#   on path specificity, so both the SPA pages and the API resolve here. Sharing
+#   the apex host is deliberate: the SSO sb-access-token cookie is host-only, so
+#   the API can only see the session on splashcarwashes.info. index.ts strips the
+#   /inventory prefix before both API routing and env.ASSETS.fetch().
+
+name = "splash-inventory"
+main = "worker/index.ts"
+compatibility_date = "2026-05-01"
+compatibility_flags = ["nodejs_compat"]
+
+workers_dev = true
+
+# Path-carve on the apex host so the worker shares the dashboard's host-only SSO
+# cookie. Staging is live; the production twin is staged commented per the
+# forms-worker / beekeeper cutover convention — uncomment on prod cutover.
+#
+# NOTE: this MUST stay above the first [table] header. In TOML, a bare key that
+# follows a table header belongs to that table — when `routes` sat below
+# [assets] it was parsed as assets.routes, wrangler warned "Unexpected fields
+# found in assets field: routes", and the worker deployed with NO routes at all.
+#
+# Both the bare path and the wildcard are listed: Cloudflare's `/inventory/*`
+# does NOT match a bare `/inventory`, which would otherwise fall through to
+# apps/web's `/*` catch-all and render the Next.js 404. index.ts already
+# normalizes the bare path to "/" (ROUTE_PREFIX check), it just needs the
+# request to reach this worker.
+routes = [
+  { pattern = "staging.splashcarwashes.info/inventory",   zone_name = "splashcarwashes.info" },
+  { pattern = "staging.splashcarwashes.info/inventory/*", zone_name = "splashcarwashes.info" }
+  # === PROD CUTOVER (uncomment on go-live) ===
+  # ,{ pattern = "splashcarwashes.info/inventory",   zone_name = "splashcarwashes.info" }
+  # ,{ pattern = "splashcarwashes.info/inventory/*", zone_name = "splashcarwashes.info" }
+]
+
+# Static Assets: serve the built Vite SPA from ./dist.
+#   run_worker_first = true — every request hits worker/index.ts first so the
+#     /inventory/api/* routes are handled before falling through to assets, and
+#     so the /inventory prefix is stripped before env.ASSETS.fetch().
+#   not_found_handling = "single-page-application" — unknown asset paths return
+#     index.html (200) so react-router client routes like /inventory/location/42
+#     load the shell instead of 404ing.
+[assets]
+directory = "./dist"
+binding = "ASSETS"
+run_worker_first = true
+not_found_handling = "single-page-application"
+
+# Bindings:
+# SUPABASE_URL          — string (below). Same Supabase project as every worker.
+# SUPABASE_ANON_KEY     — secret. Required by authenticate() (the /auth/v1/user
+#                         round-trip uses the anon key). `wrangler secret put`.
+# SUPABASE_SERVICE_KEY  — secret. Service-role client for the inventory schema
+#                         reads/writes. Same value as on the other workers.
+# INVENTORY_REPORT_WEBHOOK_URL — optional. When set, POST /inventory/api/report
+#                         forwards the visit-report payload here; when unset the
+#                         endpoint fails soft (returns { simulated: true }).
+[vars]
+SUPABASE_URL = "https://rewokyofschtvqgxrxwl.supabase.co"
+
+# Keeps Workers Logs sticky across deploys (Brief 63 convention).
+[observability.logs]
+enabled = true
+invocation_logs = true
