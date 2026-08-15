@@ -13,6 +13,7 @@
     "./auth": "./src/auth.ts",
     "./locations": "./src/locations.ts",
     "./performance": "./src/performance.ts",
+    "./greeter": "./src/greeter.ts",
     "./session": "./src/session.ts",
     "./email-validate": "./src/email-validate.ts",
     "./promo": "./src/promo.ts"

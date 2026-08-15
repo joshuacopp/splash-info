@@ -94,33 +94,35 @@ export type PricingAction = PricingMode | "flip";
  * Extension of PricingSimpleRow with the per-mode price columns the
  * client-side resolver function needs (apps/signup-worker/src/pricing/resolver.ts).
  *
- * COLUMN NAMES NOT VERIFIED AGAINST SCHEMA: legacy/signupworker.js NEVER
- * reads these columns directly — it consumes the pre-computed
- * `pricing_simple_resolved` view's `today` / `ongoing` instead. The names
- * below come from the Chunk 1 prompt and need to be confirmed against the
- * actual Supabase schema before any caller depends on this resolver in
- * production.
+ * legacy/signupworker.js never reads these columns directly — it consumes the
+ * pre-computed `pricing_simple_resolved` view's `today` / `ongoing` instead —
+ * so the names below originally came from the Chunk 1 prompt rather than the
+ * schema. `single` was the one that mattered and is now confirmed (Josh,
+ * 2026-08-15): see its field doc. `pkg$` is confirmed by use — the literal `$`
+ * is real, bracket notation required. `flash5` / `flash2` are still only
+ * corroborated by the admin pricing grid's "$5 Flash" / "$2 Flash" modes.
  *
- * Suspicious specifically:
- *   - `pkg$` — literal `$` in the column name. Bracket notation works in
- *     JS, but confirm it isn't a typo for `pkg_dollar`, `pkg_price`,
- *     `package_price`, or similar.
- *   - `single` — name suggests "same as today" baseline (single wash
- *     price?). Confirm semantics.
- *
- * If the schema disagrees, this interface gets the database's column names
- * and the resolver gets updated to read them. The resolver's defensive
- * fallback to `full` for unknown modes keeps the worker safe during the
- * gap.
+ * The resolver's defensive fallback to `full` for unknown modes keeps the
+ * worker safe if any of this is still wrong.
  */
 export interface PricingSimpleRowWithRawPrices extends PricingSimpleRow {
-  /** Full-price column. NAME UNVERIFIED — see interface doc. */
+  /** Full-price column — the unlimited monthly price. Literal `$` in the
+   *  column name is real; requires bracket notation. */
   "pkg$": number;
-  /** "Same as today" baseline price. NAME UNVERIFIED. */
+  /**
+   * The SINGLE-WASH price — and, when `pricing` is "same", also the first
+   * month's price. Confirmed by Josh 2026-08-15; the old note here guessed it
+   * might be a "same as today" monthly baseline, which it is not.
+   *
+   * Matters because a row's single-wash and monthly prices live side by side:
+   * one pricing_simple row per package carries both (e.g. Express = $10
+   * single / $20 unlimited), rather than separate single- and unlimited-
+   * package rows.
+   */
   single: number;
-  /** $5 Flash mode price column. NAME UNVERIFIED. */
+  /** $5 Flash mode price column. */
   flash5: number;
-  /** $2 Flash mode price column. NAME UNVERIFIED. */
+  /** $2 Flash mode price column. */
   flash2: number;
   // `special: number | null` already inherited from PricingSimpleRow.
 }

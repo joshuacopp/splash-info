@@ -28,6 +28,16 @@ interface LocationPickerProps {
   placeholder?: string;
   /** Hidden input is `required` when true (used in the new-submission form). */
   required?: boolean;
+  /**
+   * Notified whenever the selection changes (null on Clear).
+   *
+   * Optional because the hidden input is normally enough — the surrounding
+   * <form> serializes it on submit and nothing else needs to know. The greeter
+   * scorecard's day form is the exception: its people dropdown can only be
+   * populated after a location is chosen, so it needs the id as it happens
+   * rather than at submit time.
+   */
+  onSelect?: (selection: { id: number; label: string } | null) => void;
 }
 
 interface SelectedLocation {
@@ -48,7 +58,8 @@ export function LocationPicker({
   defaultValue,
   defaultLabel,
   placeholder,
-  required
+  required,
+  onSelect
 }: LocationPickerProps) {
   const listboxId = useId();
   const optionIdPrefix = useId();
@@ -156,6 +167,7 @@ export function LocationPicker({
     setResults([]);
     setOpen(false);
     setActiveIndex(-1);
+    onSelect?.({ id: row.id, label });
   }
 
   function clear() {
@@ -164,6 +176,7 @@ export function LocationPicker({
     setResults([]);
     setOpen(false);
     setActiveIndex(-1);
+    onSelect?.(null);
   }
 
   function onKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {

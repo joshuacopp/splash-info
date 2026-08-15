@@ -10,6 +10,7 @@ export * from "./claims.js";
 export * from "./auth.js";
 export * from "./locations.js";
 export * from "./performance.js";
+export * from "./greeter.js";
 export * from "./session.js";
 export * from "./email-validate.js";
 export * from "./promo.js";

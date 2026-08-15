@@ -10,16 +10,21 @@
 // single rename lets ~11 page files keep working unchanged.
 //
 // Location list: the SPA wants a `locations` table; we synthesize it from
-// pricing_simple (location_code -> id, location_pretty -> name). region/manager
-// are null for v1 (sidebar groups them under "Unassigned") pending org-chart
-// reconciliation.
+// pricing_simple (location_code -> id, location_pretty -> name, area_manager ->
+// manager, regional_manager -> region) UNIONED with the inventory.locations
+// overlay (see overlay.ts). Overlay rows inherit manager/region from their
+// parent_code, so an in-bay sits under the same area manager as its tunnel.
 //
 // Scope: super_admin sees everything; everyone else is filtered to
-// session.locations (their granted location_codes).
+// session.locations (their granted location_codes) — already expanded with
+// overlay children by inventoryGate, so nothing here needs to know about
+// parent_code.
 
 import type { SupabaseClient } from "@splash/db-supabase";
 import type { Session } from "@splash/types/session";
-import { userCanAccessLocation } from "./auth.js";
+// (userCanAccessLocation used to be imported here and never called — dropped
+// with the overlay change so the module graph is db -> overlay only.)
+import { loadOverlay } from "./overlay.js";
 
 const SCHEMA = "inventory";
 const inv = (sb: SupabaseClient) => sb.schema(SCHEMA);
@@ -48,28 +53,96 @@ function inScope(allowed: Set<string> | null, code: unknown): boolean {
 }
 
 // ---------------------------------------------------------------------------
-// Location list (synthesized from pricing_simple)
+// Location list (pricing_simple ∪ inventory.locations overlay)
+//
+// pricing_simple is one row PER PACKAGE, so it needs deduping on
+// location_code. The overlay is already one row per location. pricing_simple
+// wins on a collision — it is the platform's registry and the overlay is only
+// ever meant to carry codes it doesn't have (verify #3 in
+// supabase/inventory-locations-overlay.sql checks for exactly this).
 // ---------------------------------------------------------------------------
+// `active` is carried, not assumed: an overlay row for a sold or closed site
+// (buckley_4s) stays in the list so its history is still reachable, and the SPA
+// hides it from the sidebar and the company rollups off this flag.
+// pricing_simple has no equivalent column, so its rows are always active.
+//
+// manager/region drive the sidebar: Layout.jsx groups by `manager` and prints
+// `region` as the group's subtitle, falling back to a single "Unassigned"
+// group when both are null. They come from pricing_simple's denormalized
+// area_manager / regional_manager, which trg_sync_pricing_simple keeps in step
+// with public.locations. regional_manager is a person, not a territory —
+// public.locations.rm_group is the actual region label, but pricing_simple
+// doesn't carry it and joining back on `site` is unsafe (site_number is not
+// unique; 19/40/68 each have two rows). Swap it in if rm_group ever lands here.
+interface LocationMeta {
+  name: string;
+  manager: string | null;
+  region: string | null;
+}
+
+function locationRow(id: string, meta: LocationMeta, active: boolean): Record<string, unknown> {
+  return { id, name: meta.name, active, manager: meta.manager, region: meta.region };
+}
+
+function str(row: Record<string, unknown>, key: string): string | null {
+  const v = row[key];
+  return typeof v === "string" && v.trim() ? v.trim() : null;
+}
+
 async function getLocations(sb: SupabaseClient, allowed: Set<string> | null) {
-  const { data, error } = await sb
-    .from("pricing_simple")
-    .select("location_code,location_pretty");
-  if (error) throw new Error(`Failed loading locations: ${error.message}`);
-  const seen = new Set<string>();
+  const [pricing, overlay] = await Promise.all([
+    sb
+      .from("pricing_simple")
+      .select("location_code,location_pretty,area_manager,regional_manager"),
+    loadOverlay(sb)
+  ]);
+  if (pricing.error) throw new Error(`Failed loading locations: ${pricing.error.message}`);
+
+  // First pass builds meta for EVERY pricing code, in scope or not: an overlay
+  // child inherits its parent's manager/region, and the parent can be out of
+  // scope when somebody is granted an overlay code directly rather than
+  // through parent_code.
+  const meta = new Map<string, LocationMeta>();
+  const order: string[] = [];
+  for (const raw of pricing.data || []) {
+    const row = raw as Record<string, unknown>;
+    const code = str(row, "location_code");
+    if (!code || meta.has(code)) continue;
+    meta.set(code, {
+      name: str(row, "location_pretty") || code,
+      manager: str(row, "area_manager"),
+      region: str(row, "regional_manager")
+    });
+    order.push(code);
+  }
+
   const out: Array<Record<string, unknown>> = [];
-  for (const row of data || []) {
-    const code = (row as Record<string, unknown>).location_code as string | null;
-    if (!code || seen.has(code)) continue;
+  const seen = new Set<string>();
+
+  for (const code of order) {
     if (!inScope(allowed, code)) continue;
     seen.add(code);
-    out.push({
-      id: code,
-      name: (row as Record<string, unknown>).location_pretty || code,
-      active: true,
-      manager: null,
-      region: null
-    });
+    out.push(locationRow(code, meta.get(code)!, true));
   }
+
+  for (const row of overlay) {
+    if (seen.has(row.code)) continue;
+    if (!inScope(allowed, row.code)) continue;
+    seen.add(row.code);
+    const parent = row.parent_code ? meta.get(row.parent_code.trim().toLowerCase()) : undefined;
+    out.push(
+      locationRow(
+        row.code,
+        {
+          name: row.name || row.code,
+          manager: parent?.manager ?? null,
+          region: parent?.region ?? null
+        },
+        row.active !== false
+      )
+    );
+  }
+
   return out;
 }
 

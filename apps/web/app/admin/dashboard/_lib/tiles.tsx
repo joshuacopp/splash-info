@@ -362,6 +362,20 @@ export const TILES: ReadonlyArray<Tile> = [
     icon: barChartIcon,
     visibleTo: hasPerformanceAccess
   },
+  {
+    // Same `pertrack` grant as Performance Tracking — a separate tile because
+    // it's a different job (one greeter's whole day of sales numbers, not a
+    // manager's site visit), not a different permission.
+    id: "greeters",
+    group: "operations",
+    eyebrow: "Insights",
+    title: "Greeter Scorecard",
+    description:
+      "Daily sign-ups, wash sales, and D.O.B. by greeter and by location.",
+    href: "/admin/greeters",
+    icon: barChartIcon,
+    visibleTo: hasPerformanceAccess
+  },
   // Brief 158a — Promotions feature. Visible to any user with a promo_role
   // (super_admin / it / marketing / ops); page-level gate re-checks at the
   // destination. IT Queue is the work-queue surface for super_admin / it

@@ -16,6 +16,9 @@
 //   GET  /api/submissions   — list with date / location / greeter / gm /
 //                             agm / regional_manager / area_manager /
 //                             rm_group / fivestar filters.
+//   /api/greeter/*          — greeter scorecard (roster, daily rows, rollup,
+//                             site-wide days, goals). Owned by ./greeter.ts;
+//                             see that file's header for the route list.
 //
 // AUTH GATE POSITION:
 //   /api/login    — no gate (this IS the auth flow).
@@ -51,6 +54,7 @@ import {
 } from "@splash/db-supabase";
 import { isOriginAllowed, json as jsonResponse } from "@splash/http";
 import type { PerformanceTrackingInsert } from "@splash/types/performance";
+import { handleGreeterRoute, isGreeterRoute } from "./greeter.js";
 
 type Env = SupabaseEnv;
 
@@ -93,7 +97,8 @@ export default {
       // (or super_admin). Single gate call, then dispatch.
       if (
         (pathname === "/api/locations" && method === "GET") ||
-        (pathname === "/api/submissions" && (method === "GET" || method === "POST"))
+        (pathname === "/api/submissions" && (method === "GET" || method === "POST")) ||
+        isGreeterRoute(pathname, method)
       ) {
         // Two-step gate: authenticate, then check tool access.
         const auth = await authenticate(request, env);
@@ -114,6 +119,18 @@ export default {
         if (pathname === "/api/submissions" && method === "GET") {
           return apiListSubmissions(url, env);
         }
+
+        // Greeter scorecard — same grant, separate module. Returns null only if
+        // isGreeterRoute and the dispatcher ever disagree; falls through to 404.
+        const greeter = await handleGreeterRoute(
+          pathname,
+          method,
+          request,
+          url,
+          env,
+          session
+        );
+        if (greeter) return greeter;
       }
 
       return jsonResponse({ error: "not found" }, 404);
