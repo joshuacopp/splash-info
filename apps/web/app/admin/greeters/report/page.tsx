@@ -44,6 +44,13 @@ import type {
 import { performanceGetJson } from "../../performance/_lib/worker-fetch";
 import { LocationPicker } from "../../performance/_components/LocationPicker";
 import {
+  EMPTY_ROSTERS,
+  fetchManagerRosters,
+  ManagerFilters,
+  type ManagerOption,
+  type ManagerRosters
+} from "../_components/ManagerFilters";
+import {
   DAY_MS,
   dayLabel,
   dobCell,
@@ -165,6 +172,15 @@ export default async function GreeterReportPage({ searchParams }: PageProps) {
     : undefined;
   const greeter = firstParam(sp.greeter).trim();
 
+  // Manager filters. Emails, not names — see ManagerFilters. Unlike `greeter`,
+  // these narrow EVERYTHING on the page: the worker folds them into the caller's
+  // location scope, so the KPI strip, both trend charts, the site ranking, the
+  // missing-days count and the greeter tables all come back already restricted
+  // to that manager's sites. A page where the cards say "the company" and the
+  // table says "one region" is worse than no filter at all.
+  const rd = firstParam(sp.rd).trim();
+  const rm = firstParam(sp.rm).trim();
+
   // Drill-through selections.
   const siteRaw = firstParam(sp.site).trim();
   const selectedSite = /^\d+$/.test(siteRaw) ? Number.parseInt(siteRaw, 10) : null;
@@ -176,6 +192,8 @@ export default async function GreeterReportPage({ searchParams }: PageProps) {
   base.set("date_to", dateTo);
   if (locationIdNum !== undefined) base.set("location_id", String(locationIdNum));
   if (greeter) base.set("greeter", greeter);
+  if (rd) base.set("rd", rd);
+  if (rm) base.set("rm", rm);
 
   /** Current URL with some params changed; "" removes a param. */
   const link = (patch: Record<string, string>) => {
@@ -193,39 +211,48 @@ export default async function GreeterReportPage({ searchParams }: PageProps) {
   const locQs = locationIdNum === undefined ? "" : `&location_id=${locationIdNum}`;
   const priorQs = `date_from=${prior.date_from}&date_to=${prior.date_to}`;
 
+  // Appended to EVERY read below, including the prior window and the greeter
+  // drill-through. A delta computed against an unfiltered prior period would
+  // compare a region against the company and call the difference a trend.
+  const mgrQs = `${rd ? `&rd=${encodeURIComponent(rd)}` : ""}${
+    rm ? `&rm=${encodeURIComponent(rm)}` : ""
+  }`;
+
   let siteRows: LocationPeriodRow[] | null = null;
   let priorRows: LocationPeriodRow[] | null = null;
   let greeterRows: GreeterPeriodReportRow[] | null = null;
   let missingRows: MissingDayRow[] | null = null;
   let personDays: GreeterDayRow[] | null = null;
+  let rosters: ManagerRosters = EMPTY_ROSTERS;
   let fetchError: string | null = null;
 
   try {
-    // Parallel: five independent reads. The last one is skipped entirely unless
-    // a greeter is actually drilled into.
-    [siteRows, priorRows, greeterRows, missingRows, personDays] =
+    // Parallel: five independent reads plus the two dropdown rosters. The
+    // person days are skipped entirely unless a greeter is drilled into.
+    [siteRows, priorRows, greeterRows, missingRows, personDays, rosters] =
       await Promise.all([
         performanceGetJson<LocationPeriodRow[]>(
-          `/pertrack/api/greeter/location-rows?${windowQs}${locQs}`
+          `/pertrack/api/greeter/location-rows?${windowQs}${locQs}${mgrQs}`
         ),
         performanceGetJson<LocationPeriodRow[]>(
-          `/pertrack/api/greeter/location-rows?${priorQs}${locQs}`
+          `/pertrack/api/greeter/location-rows?${priorQs}${locQs}${mgrQs}`
         ),
         performanceGetJson<GreeterPeriodReportRow[]>(
-          `/pertrack/api/greeter/period-report?${windowQs}${locQs}${
+          `/pertrack/api/greeter/period-report?${windowQs}${locQs}${mgrQs}${
             greeter ? `&greeter=${encodeURIComponent(greeter)}` : ""
           }`
         ),
         performanceGetJson<MissingDayRow[]>(
-          `/pertrack/api/greeter/missing-days?${windowQs}${locQs}`
+          `/pertrack/api/greeter/missing-days?${windowQs}${locQs}${mgrQs}`
         ),
         selectedPerson
           ? performanceGetJson<GreeterDayRow[]>(
-              `/pertrack/api/greeter/days?${windowQs}&beekeeper_user_id=${encodeURIComponent(
+              `/pertrack/api/greeter/days?${windowQs}${mgrQs}&beekeeper_user_id=${encodeURIComponent(
                 selectedPerson
               )}`
             )
-          : Promise.resolve(null)
+          : Promise.resolve(null),
+        fetchManagerRosters()
       ]);
   } catch (err) {
     fetchError =
@@ -235,7 +262,7 @@ export default async function GreeterReportPage({ searchParams }: PageProps) {
   if (siteRows === null && !fetchError) {
     return (
       <section className="mx-auto w-full max-w-[1200px] px-5 py-9">
-        <ReportBanner />
+        <ReportBanner mgrQs={mgrQs} />
         <div className="rounded-splash-lg border border-gray-light bg-white p-6 shadow-splash-card">
           <p className="mb-4 text-splash-deny">
             You don&rsquo;t have access to the greeter scorecard. Contact your
@@ -255,7 +282,7 @@ export default async function GreeterReportPage({ searchParams }: PageProps) {
   if (fetchError) {
     return (
       <section className="mx-auto w-full max-w-[1200px] px-5 py-9">
-        <ReportBanner />
+        <ReportBanner mgrQs={mgrQs} />
         <div className="rounded-splash-lg border border-gray-light bg-white p-6 shadow-splash-card">
           <h2 className="mb-2 text-lg font-bold text-splash-deny">
             Could not load the report
@@ -314,9 +341,27 @@ export default async function GreeterReportPage({ searchParams }: PageProps) {
       : `ID ${locationIdNum}`;
   }
 
+  // Named in the blurb so the window and the manager are stated in the same
+  // breath. Falls back to the email when the roster couldn't be loaded — the
+  // filter is still in force, so saying nothing would be a lie.
+  //
+  // Case-insensitive match, same as the worker: the email arrives from the
+  // query string and a pasted link can carry any casing. An exact match would
+  // filter correctly and then print the raw address instead of the name.
+  const managerName = (options: ManagerOption[], email: string) => {
+    const target = email.toLowerCase();
+    return options.find((o) => o.email.toLowerCase() === target)?.name ?? email;
+  };
+  const managerNote = [
+    rd ? `Regional Director ${managerName(rosters.rd, rd)}` : null,
+    rm ? `Regional Manager ${managerName(rosters.rm, rm)}` : null
+  ]
+    .filter((s): s is string => s !== null)
+    .join(" and ");
+
   return (
     <section className="mx-auto w-full max-w-[1200px] px-5 py-9">
-      <ReportBanner />
+      <ReportBanner mgrQs={mgrQs} />
 
       {/* Presets */}
       <div className="mb-4 flex flex-wrap gap-2">
@@ -333,6 +378,11 @@ export default async function GreeterReportPage({ searchParams }: PageProps) {
             qs.set("location_id", String(locationIdNum));
           }
           if (greeter) qs.set("greeter", greeter);
+          // The manager filter survives a preset change, unlike the
+          // drill-through selections. It's a statement about who you're
+          // responsible for, not about the window you're looking at.
+          if (rd) qs.set("rd", rd);
+          if (rm) qs.set("rm", rm);
           return (
             <Link
               key={k}
@@ -354,6 +404,15 @@ export default async function GreeterReportPage({ searchParams }: PageProps) {
         <span className="font-semibold text-splash-navy">
           Showing {dateFrom} to {dateTo} ({spanDays} days).
         </span>
+        {managerNote ? (
+          <span className="font-semibold text-splash-navy">
+            {" "}
+            Sites under {managerNote} only
+            {sites.length === 0
+              ? " — no site under this filter reported anything in the window."
+              : "."}
+          </span>
+        ) : null}
       </p>
 
       {/* Filter bar. Overrides the preset's window without losing its threshold. */}
@@ -363,7 +422,7 @@ export default async function GreeterReportPage({ searchParams }: PageProps) {
         className="mb-6 rounded-splash-lg border border-gray-light bg-white p-5 shadow-splash-card"
       >
         <input type="hidden" name="view" value={view} />
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
           <label className="flex flex-col gap-1">
             <span className={LABEL_CLS}>Date from</span>
             <input
@@ -404,6 +463,16 @@ export default async function GreeterReportPage({ searchParams }: PageProps) {
               Filters the greeter tables only. Site figures stay whole.
             </span>
           </label>
+          <ManagerFilters
+            rosters={rosters}
+            rd={rd}
+            rm={rm}
+            note={
+              <span className="text-[11px] text-splash-navy/60">
+                Narrows the whole page — cards, charts and both tables.
+              </span>
+            }
+          />
         </div>
         <div className="mt-4 flex items-center gap-3">
           <button type="submit" className={BTN_CLS}>
@@ -1291,7 +1360,15 @@ function EmptyNote({ children }: { children: ReactNode }) {
   return <p className="px-5 py-6 text-sm text-splash-navy/70">{children}</p>;
 }
 
-function ReportBanner() {
+/**
+ * Carries rd/rm back to the scorecard and nothing else — the mirror of
+ * PageBanner over there, for the same reason. The window and the drill-through
+ * selections belong to this view; who you're responsible for follows you.
+ */
+function ReportBanner({ mgrQs }: { mgrQs: string }) {
+  const backHref = mgrQs
+    ? `/admin/greeters?${mgrQs.replace(/^&/, "")}`
+    : "/admin/greeters";
   return (
     <div className="mb-6 flex flex-wrap items-end justify-between gap-3">
       <div>
@@ -1301,7 +1378,7 @@ function ReportBanner() {
         <h1 className="text-2xl font-bold text-splash-navy">Greeter Report</h1>
       </div>
       <Link
-        href="/admin/greeters"
+        href={backHref}
         className="text-sm font-semibold text-splash-blue hover:text-splash-blue-dark"
       >
         ← Back to the scorecard

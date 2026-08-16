@@ -6,6 +6,7 @@
 //
 // Owned routes (post-prefix-strip, all gated by index.ts before dispatch):
 //   GET  /api/greeter/roster         ?location_id=   -> Beekeeper people picker
+//   GET  /api/greeter/contact-roster ?role=          -> RD/RM filter dropdowns
 //   GET  /api/greeter/days           filters         -> per-greeter day rows
 //   POST /api/greeter/days                           -> submit/correct a day
 //   GET  /api/greeter/rollup         filters         -> per-greeter aggregate
@@ -28,6 +29,23 @@
 //   the resulting location_code is checked against the caller's scope. The
 //   client never supplies site_number or location_code — trusting either would
 //   let a location admin stamp another site's rows.
+//
+// MANAGER FILTER (?rd= / ?rm=, emails). Every LIST read accepts them — the
+// eight endpoints below the guard in handleGreeterRoute. They are not a second
+// scope: they are INTERSECTED with the caller's scope, so a filter can only
+// ever narrow what somebody already sees. That direction matters, because the
+// codes come from pricing_simple and the client picks the manager — treating
+// them as a scope in their own right would let a location admin name a manager
+// and read that manager's other sites.
+//
+// THREE ENDPOINTS SIT OUTSIDE THE NARROWING and it is not an oversight:
+//   - the three writes. A greeter filling in yesterday's numbers with a manager
+//     selected in the filter bar must not get a 403 because the row's site fell
+//     outside the current view. Writes authorise by location_id against the
+//     session scope alone.
+//   - /roster and /contact-roster, which answer "who can I pick", not "what am
+//     I looking at". Narrowing the dropdown by its own current selection would
+//     make the filter impossible to change once set.
 
 import type { Session } from "@splash/auth";
 import {
@@ -41,11 +59,13 @@ import {
   listGreeterPeriodReport,
   listGreeterRollup,
   listGreeterScanRates,
+  listContactRoster,
   listLocationDays,
   listLocationPeriodRows,
   resolveGreeterLocationKey,
   submitGreeterDay,
   submitLocationDay,
+  type ContactRosterEntry,
   type GreeterDayFilters,
   type SupabaseEnv
 } from "@splash/db-supabase";
@@ -62,6 +82,7 @@ type Env = SupabaseEnv;
 export function isGreeterRoute(pathname: string, method: string): boolean {
   switch (pathname) {
     case "/api/greeter/roster":
+    case "/api/greeter/contact-roster":
     case "/api/greeter/rollup":
     case "/api/greeter/scan-rates":
     case "/api/greeter/missing-days":
@@ -92,41 +113,52 @@ export async function handleGreeterRoute(
 ): Promise<Response | null> {
   const scope = locationScopeFor(session);
 
+  // Writes and the two location-keyed lookups authorise against the session
+  // scope only — see the MANAGER FILTER note at the top of this file.
   if (pathname === "/api/greeter/roster" && method === "GET") {
     return apiRoster(url, env, scope);
   }
-  if (pathname === "/api/greeter/days" && method === "GET") {
-    return apiListGreeterDays(url, env, scope);
+  if (pathname === "/api/greeter/contact-roster" && method === "GET") {
+    return apiContactRoster(url, env, scope);
   }
   if (pathname === "/api/greeter/days" && method === "POST") {
     return apiSubmitGreeterDay(request, env, session, scope);
   }
-  if (pathname === "/api/greeter/rollup" && method === "GET") {
-    return apiRollup(url, env, scope);
-  }
-  if (pathname === "/api/greeter/scan-rates" && method === "GET") {
-    return apiScanRates(url, env, scope);
-  }
-  if (pathname === "/api/greeter/missing-days" && method === "GET") {
-    return apiMissingDays(url, env, scope);
-  }
-  if (pathname === "/api/greeter/period-report" && method === "GET") {
-    return apiPeriodReport(url, env, scope);
-  }
-  if (pathname === "/api/greeter/location-rows" && method === "GET") {
-    return apiLocationRows(url, env, scope);
-  }
-  if (pathname === "/api/greeter/location-days" && method === "GET") {
-    return apiListLocationDays(url, env, scope);
-  }
   if (pathname === "/api/greeter/location-days" && method === "POST") {
     return apiSubmitLocationDay(request, env, session, scope);
   }
-  if (pathname === "/api/greeter/goals" && method === "GET") {
-    return apiListGoals(url, env, scope);
-  }
   if (pathname === "/api/greeter/goals" && method === "POST") {
     return apiCreateGoal(request, env, session, scope);
+  }
+
+  if (!isGreeterRoute(pathname, method)) return null;
+
+  // Everything below is a read, and every read narrows by ?rd=/?rm=.
+  const readScope = await narrowScopeByManagers(env, url, scope);
+
+  if (pathname === "/api/greeter/days" && method === "GET") {
+    return apiListGreeterDays(url, env, readScope);
+  }
+  if (pathname === "/api/greeter/rollup" && method === "GET") {
+    return apiRollup(url, env, readScope);
+  }
+  if (pathname === "/api/greeter/scan-rates" && method === "GET") {
+    return apiScanRates(url, env, readScope);
+  }
+  if (pathname === "/api/greeter/missing-days" && method === "GET") {
+    return apiMissingDays(url, env, readScope);
+  }
+  if (pathname === "/api/greeter/period-report" && method === "GET") {
+    return apiPeriodReport(url, env, readScope);
+  }
+  if (pathname === "/api/greeter/location-rows" && method === "GET") {
+    return apiLocationRows(url, env, readScope);
+  }
+  if (pathname === "/api/greeter/location-days" && method === "GET") {
+    return apiListLocationDays(url, env, readScope);
+  }
+  if (pathname === "/api/greeter/goals" && method === "GET") {
+    return apiListGoals(url, env, readScope);
   }
   return null;
 }
@@ -142,7 +174,22 @@ export async function handleGreeterRoute(
  * deliberate difference: a location admin holding "pertrack" but assigned no
  * locations gets an EMPTY array (sees nothing) rather than a 403. Forms treats
  * that as forbidden; here the page still needs to render its filter bar and
- * empty state, and applyScope() already fails closed on an empty array.
+ * empty state, and scopeCodes() in @splash/db-supabase/greeter already fails
+ * closed on an empty array by substituting a sentinel code.
+ *
+ * LOWERCASES, which the codes stamped onto greeter_daily.location_code are not
+ * — see the note on resolveRosterCodes. inScope() folds both sides so it is
+ * unaffected, but anything that passes this array on to SQL as
+ * p_location_codes is comparing against exact-cased stored values.
+ *
+ * That leaves the two read paths disagreeing for a location admin: an
+ * unfiltered read sends these lowercased codes, while a manager-filtered one
+ * sends the roster's original casing, so picking a manager could return MORE
+ * rows than picking none. Both are correct only while every
+ * pricing_simple.location_code is already lowercase, which is the case today.
+ * The fix is to stop lowercasing here rather than to start lowercasing there —
+ * the stored casing is the truth — but that changes scoping for every greeter
+ * read, so it wants its own change and its own verification, not a drive-by.
  */
 function locationScopeFor(session: Session): string[] | undefined {
   if (
@@ -159,6 +206,152 @@ function locationScopeFor(session: Session): string[] | undefined {
 function inScope(scope: string[] | undefined, locationCode: string): boolean {
   if (scope === undefined) return true;
   return scope.includes(locationCode.toLowerCase());
+}
+
+/* ------------------------------------------------------------
+ * Manager (RD/RM) narrowing
+ * ------------------------------------------------------------ */
+
+/**
+ * `?role=` -> the roster role, defaulting to Regional Director.
+ *
+ * LABEL DIVERGENCE, and it is not a typo: the database column `area_manager`
+ * holds the *Regional Director's* name and `regional_manager` holds the
+ * Regional Manager's. listContactRoster() takes the UI-facing role name and
+ * does that mapping, so this worker never touches the raw columns.
+ */
+function rosterRoleFrom(v: string | null): "regional_director" | "regional_manager" {
+  return v === "regional_manager" ? "regional_manager" : "regional_director";
+}
+
+/**
+ * The full roster for a role, memoised in the isolate for a minute.
+ *
+ * listContactRoster() is an uncached REST read of up to a thousand
+ * pricing_simple rows. One page paint is five or six separate worker requests,
+ * each of which narrows by the same manager, so without this the filter costs a
+ * full table scan per fetch.
+ *
+ * Cached ACROSS requests on purpose, and safe to do so because this is the
+ * whole roster — not one caller's slice. Every consumer scopes it afterwards
+ * (apiContactRoster filters it; narrowScopeByManagers intersects it), so a
+ * shared entry can't leak one user's view to another. Manager assignments
+ * change on the order of months; a minute of staleness is invisible.
+ */
+const ROSTER_TTL_MS = 60_000;
+const rosterCache = new Map<string, { at: number; rows: ContactRosterEntry[] }>();
+
+async function cachedContactRoster(
+  env: Env,
+  role: "regional_director" | "regional_manager"
+): Promise<ContactRosterEntry[]> {
+  const now = Date.now();
+  const hit = rosterCache.get(role);
+  if (hit && now - hit.at < ROSTER_TTL_MS) return hit.rows;
+  const rows = await listContactRoster(env, role);
+  rosterCache.set(role, { at: now, rows });
+  return rows;
+}
+
+/**
+ * The location_codes one named manager covers, as lowercased key -> code as
+ * stored.
+ *
+ * BOTH HALVES MATTER. The key is lowercased because locationScopeFor()
+ * lowercases the session's locations, so that is the only casing the two sides
+ * can be compared in. The value keeps pricing_simple's original casing because
+ * that is what resolveGreeterLocationKey() stamps onto greeter_daily.
+ * location_code, and the SQL compares `location_code = ANY(p_location_codes)`
+ * with no folding at either end. Lowercasing the value would silently drop
+ * every site whose code is not already lowercase.
+ */
+async function resolveRosterCodes(
+  env: Env,
+  role: "regional_director" | "regional_manager",
+  email: string
+): Promise<Map<string, string>> {
+  const roster = await cachedContactRoster(env, role);
+  const target = email.trim().toLowerCase();
+  const entry = roster.find((e) => e.email.toLowerCase() === target);
+  const out = new Map<string, string>();
+  for (const raw of entry?.location_codes ?? []) {
+    const code = raw.trim();
+    if (code) out.set(code.toLowerCase(), code);
+  }
+  return out;
+}
+
+/**
+ * Fold the ?rd= / ?rm= filters into the caller's scope.
+ *
+ * Returns the same shape locationScopeFor() does: `undefined` = no restriction,
+ * an array = exactly these codes, and an EMPTY array = nothing, which
+ * scopeCodes() in @splash/db-supabase turns into a sentinel that matches no
+ * row. The empty array is a real, expected answer here — "that manager covers
+ * no site you can see" must render an empty report, not the whole company.
+ *
+ * INTERSECTION, never replacement. Starting from the session scope and only
+ * ever shrinking is what makes it safe to accept these emails from the query
+ * string at all; see the MANAGER FILTER note at the top of this file.
+ *
+ * Both filters together mean BOTH — the site must be covered by the named RD
+ * *and* the named RM. That matches damage-worker and is the only reading that
+ * keeps the two dropdowns independent.
+ *
+ * Fail-soft is inherited: listContactRoster() returns [] rather than throwing,
+ * which lands here as "no codes" and therefore an empty report. That is the
+ * correct direction to fail — a roster outage must not widen anybody's view.
+ */
+async function narrowScopeByManagers(
+  env: Env,
+  url: URL,
+  scope: string[] | undefined
+): Promise<string[] | undefined> {
+  const rd = trimOrNull(url.searchParams.get("rd"));
+  const rm = trimOrNull(url.searchParams.get("rm"));
+  if (!rd && !rm) return scope;
+
+  // Lowercased key -> the code to actually emit. null models "unrestricted so
+  // far", which an empty map cannot. The session scope arrives already
+  // lowercased, so on that side key and value are the same string.
+  let working: Map<string, string> | null =
+    scope === undefined ? null : new Map(scope.map((c) => [c, c]));
+  if (working && working.size === 0) return [];
+
+  for (const [role, email] of [
+    ["regional_director", rd],
+    ["regional_manager", rm]
+  ] as const) {
+    if (!email) continue;
+    const codes = await resolveRosterCodes(env, role, email);
+    if (codes.size === 0) return [];
+    working = working ? intersectCodes(working, codes) : codes;
+    if (working.size === 0) return [];
+  }
+
+  return working === null ? undefined : [...working.values()];
+}
+
+/**
+ * Keys from both sides, VALUES FROM THE ROSTER.
+ *
+ * Taking the right-hand value is the point of this function existing rather
+ * than a Set intersection: the roster carries pricing_simple's casing, which is
+ * what greeter_daily.location_code holds, while the session scope has been
+ * lowercased. Emitting the left-hand value would hand the SQL a code that
+ * matches nothing for any site whose code is not lowercase. The key set is the
+ * intersection either way, so this cannot widen anyone's view.
+ */
+function intersectCodes(
+  a: Map<string, string>,
+  b: Map<string, string>
+): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const key of a.keys()) {
+    const code = b.get(key);
+    if (code !== undefined) out.set(key, code);
+  }
+  return out;
 }
 
 /**
@@ -230,6 +423,44 @@ async function apiRoster(
 
   const roster = await getGreeterRoster(sb, key.location_code);
   return jsonResponse({ ...roster, site_number: key.site_number });
+}
+
+/**
+ * The Regional Director / Regional Manager lists that populate the two filter
+ * dropdowns. `?role=regional_director|regional_manager`.
+ *
+ * Filtered to the caller's own scope, and each entry's location_codes is
+ * filtered too — not just the entry. A location admin must see their own
+ * manager in the dropdown, but must not learn from the payload which other
+ * sites that manager covers.
+ *
+ * A manager whose sites are all outside the caller's scope is dropped
+ * entirely: offering a name that can only ever produce an empty report reads
+ * as a bug.
+ *
+ * Never 500s. listContactRoster() is fail-soft by design so the dropdown
+ * degrades to "(any)" instead of taking the page down with it.
+ */
+async function apiContactRoster(
+  url: URL,
+  env: Env,
+  scope: string[] | undefined
+): Promise<Response> {
+  const role = rosterRoleFrom(url.searchParams.get("role"));
+  const roster = await cachedContactRoster(env, role);
+  if (scope === undefined) return jsonResponse(roster);
+  if (scope.length === 0) return jsonResponse([]);
+
+  const allowed = new Set(scope);
+  const filtered: ContactRosterEntry[] = [];
+  for (const entry of roster) {
+    const codes = entry.location_codes.filter((c) =>
+      allowed.has(c.trim().toLowerCase())
+    );
+    if (codes.length === 0) continue;
+    filtered.push({ email: entry.email, name: entry.name, location_codes: codes });
+  }
+  return jsonResponse(filtered);
 }
 
 /* ============================================================

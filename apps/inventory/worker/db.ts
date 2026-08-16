@@ -71,32 +71,55 @@ function inScope(allowed: Set<string> | null, code: unknown): boolean {
 // `region` as the group's subtitle, falling back to a single "Unassigned"
 // group when both are null.
 //
-// `manager` is the area manager. `region` is the regional manager's NAME, not
-// public.locations.rm_group: rm_group is an integer 1-9 with no lookup table
-// anywhere, so "Region 7" tells a reader nothing. The number is appended in
-// parentheses when both are known, so the subtitle still ties back to the
-// territory the performance tracker filters on. rm_group alone is used only
-// when no RM name is on the row.
+// `manager` is the area manager. `region` is the regional manager's NAME —
+// rm_group is an integer 1-9 with no lookup table anywhere, so "Region 7" tells
+// a reader nothing. The number rides along in a SEPARATE `region_group` field
+// and is never baked into `region`, because `region` is a grouping key in the
+// sidebar: a site missing its registry row has no rm_group, and if the number
+// were part of the string that site would split off into its own "Earl Budlong"
+// group next to "Earl Budlong (8)". Display detail, not identity.
 //
 // rm_group only exists on public.locations, so this reads the registry as well
-// as pricing_simple and joins them on site number (pricing_simple.site is that
-// number as text, denormalized by trg_sync_pricing_simple). site_number is not
-// unique — 19/40/68 each carry two rows, Express vs Handwash — but the pair
-// share an org chart, so first-wins is fine for a label. Anything that doesn't
-// join falls back to pricing_simple's own denormalized manager columns.
+// as pricing_simple and joins them on site number. pricing_simple.site is that
+// number as ZERO-PADDED text ("019"), denormalized by trg_sync_pricing_simple,
+// against an integer site_number — see siteKey() below, which is the whole
+// reason that helper exists. site_number is not unique — 19/40/68 each carry
+// two rows, Express vs Handwash — but the pair share an org chart, so
+// first-wins is fine for a label. Anything that doesn't join falls back to
+// pricing_simple's own denormalized manager columns.
 interface LocationMeta {
   name: string;
   manager: string | null;
   region: string | null;
+  region_group: string | null;
 }
 
 function locationRow(id: string, meta: LocationMeta, active: boolean): Record<string, unknown> {
-  return { id, name: meta.name, active, manager: meta.manager, region: meta.region };
+  return {
+    id,
+    name: meta.name,
+    active,
+    manager: meta.manager,
+    region: meta.region,
+    region_group: meta.region_group
+  };
 }
 
 function str(row: Record<string, unknown>, key: string): string | null {
   const v = row[key];
   return typeof v === "string" && v.trim() ? v.trim() : null;
+}
+
+// Site-number join key. public.locations.site_number is an INTEGER but
+// pricing_simple.site is TEXT and ZERO-PADDED ("019", "083"), so a naive
+// String(site_number) === site comparison misses every site under 100 — 32
+// codes, most of the CT/Westchester portfolio. Normalise both sides through
+// parseInt so "019", "19" and 19 all key the same.
+function siteKey(v: unknown): string | null {
+  if (typeof v === "number") return Number.isFinite(v) ? String(Math.trunc(v)) : null;
+  if (typeof v !== "string") return null;
+  const n = Number.parseInt(v.trim(), 10);
+  return Number.isFinite(n) ? String(n) : null;
 }
 
 // rm_group is an INTEGER column in Postgres (packages/types types it
@@ -108,12 +131,11 @@ function rmGroup(row: Record<string, unknown>): string | null {
   return str(row, "rm_group");
 }
 
-/** "Cathy Nolan (7)" — name first, group number only as a suffix. */
+/** Name if there is one, else "Region 7" so the row still lands somewhere. */
 function regionLabel(row: Record<string, unknown>): string | null {
   const name = str(row, "regional_manager");
-  const group = rmGroup(row);
-  if (name && group) return `${name} (${group})`;
   if (name) return name;
+  const group = rmGroup(row);
   return group ? `Region ${group}` : null;
 }
 
@@ -131,18 +153,21 @@ async function getLocations(sb: SupabaseClient, allowed: Set<string> | null) {
   // carries it as text. Fail-soft like the overlay: if this read fails the
   // sidebar loses its region subtitles, which is not worth a 500 when the
   // fallback below still produces a usable grouping.
-  const bySite = new Map<string, { manager: string | null; region: string | null }>();
+  const bySite = new Map<
+    string,
+    { manager: string | null; region: string | null; region_group: string | null }
+  >();
   if (registry.error) {
     console.error("[inventory.locations] registry read failed", registry.error.message);
   } else {
     for (const raw of registry.data || []) {
       const row = raw as Record<string, unknown>;
-      const site = row.site_number;
-      const key = typeof site === "number" ? String(site) : str(row, "site_number");
+      const key = siteKey(row.site_number);
       if (!key || bySite.has(key)) continue;
       bySite.set(key, {
         manager: str(row, "area_manager"),
-        region: regionLabel(row)
+        region: regionLabel(row),
+        region_group: rmGroup(row)
       });
     }
   }
@@ -157,12 +182,13 @@ async function getLocations(sb: SupabaseClient, allowed: Set<string> | null) {
     const row = raw as Record<string, unknown>;
     const code = str(row, "location_code");
     if (!code || meta.has(code)) continue;
-    const site = str(row, "site");
+    const site = siteKey(row.site);
     const reg = site ? bySite.get(site) : undefined;
     meta.set(code, {
       name: str(row, "location_pretty") || code,
       manager: reg?.manager || str(row, "area_manager"),
-      region: reg?.region || str(row, "regional_manager")
+      region: reg?.region || str(row, "regional_manager"),
+      region_group: reg?.region_group ?? null
     });
     order.push(code);
   }
@@ -187,7 +213,8 @@ async function getLocations(sb: SupabaseClient, allowed: Set<string> | null) {
         {
           name: row.name || row.code,
           manager: parent?.manager ?? null,
-          region: parent?.region ?? null
+          region: parent?.region ?? null,
+          region_group: parent?.region_group ?? null
         },
         row.active !== false
       )

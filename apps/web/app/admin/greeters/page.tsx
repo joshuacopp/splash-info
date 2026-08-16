@@ -11,10 +11,12 @@
 //
 // Sections (top -> bottom):
 //   1. Action-error / success banners.
-//   2. Filter bar — date range, location, greeter-name substring.
+//   2. Filter bar — date range, location, greeter-name substring, Regional
+//      Director, Regional Manager.
 //   3. "Add data" button row — opens each submission form in a modal.
-//   4. Insight panels (last 7 days, ignoring the filter bar on purpose):
-//      "No submissions" then "Underreported".
+//   4. Insight panels (last 7 days, ignoring the date/location/greeter filters
+//      on purpose but honouring the manager filter): "No submissions" then
+//      "Underreported".
 //   5. Summary table (per-greeter rollup for the filtered range).
 //   6. Daily rows table.
 //   7. Site-wide day rows table, including Scanned %.
@@ -45,6 +47,12 @@ import type { ReactNode } from "react";
 import Link from "next/link";
 import { performanceGetJson } from "../performance/_lib/worker-fetch";
 import { LocationPicker } from "../performance/_components/LocationPicker";
+import {
+  EMPTY_ROSTERS,
+  fetchManagerRosters,
+  ManagerFilters,
+  type ManagerRosters
+} from "./_components/ManagerFilters";
 import {
   DAY_MS,
   dobCell,
@@ -233,6 +241,11 @@ export default async function GreetersPage({ searchParams }: PageProps) {
       ? Number.parseInt(locationIdRaw, 10)
       : undefined;
   const greeter = firstParam(sp.greeter).trim();
+  // Manager emails, not names — see ManagerFilters for why. These narrow every
+  // read on the page, including the two insight panels below, which no other
+  // filter here does.
+  const rd = firstParam(sp.rd).trim();
+  const rm = firstParam(sp.rm).trim();
 
   const actionError = firstParam(sp.action_error).trim() || null;
   const successKey = firstParam(sp.success).trim();
@@ -243,6 +256,8 @@ export default async function GreetersPage({ searchParams }: PageProps) {
   if (dateTo) qs.set("date_to", dateTo);
   if (locationIdNum !== undefined) qs.set("location_id", String(locationIdNum));
   if (greeter) qs.set("greeter", greeter);
+  if (rd) qs.set("rd", rd);
+  if (rm) qs.set("rm", rm);
   const suffix = qs.toString() ? `?${qs.toString()}` : "";
 
   // Trailing seven days for the two insight panels, ENDING YESTERDAY.
@@ -258,10 +273,19 @@ export default async function GreetersPage({ searchParams }: PageProps) {
   const nowMs = Date.now();
   const watchTo = localDay(nowMs - DAY_MS);
   const watchFrom = localDay(nowMs - 7 * DAY_MS);
-  // Deliberately unscoped by the page's filters — this is a standing watchlist
-  // of every site the caller can see, not a view of the current query. Worker-
-  // side location scoping still applies, so a location admin sees only theirs.
-  const watchSuffix = `?date_from=${watchFrom}&date_to=${watchTo}`;
+  // Deliberately unscoped by the page's DATE/SITE/GREETER filters — this is a
+  // standing watchlist of every site the caller can see, not a view of the
+  // current query. Worker-side location scoping still applies, so a location
+  // admin sees only theirs.
+  //
+  // THE MANAGER FILTER IS THE ONE EXCEPTION and rides along. It answers "whose
+  // sites am I responsible for", not "what am I looking at right now" — a
+  // Regional Director who has narrowed the page to their region does not want
+  // the watchlist naming other people's sites they cannot act on.
+  const mgrQs = `${rd ? `&rd=${encodeURIComponent(rd)}` : ""}${
+    rm ? `&rm=${encodeURIComponent(rm)}` : ""
+  }`;
+  const watchSuffix = `?date_from=${watchFrom}&date_to=${watchTo}${mgrQs}`;
 
   let days: DayRow[] | null = null;
   let rollup: RollupRow[] | null = null;
@@ -269,12 +293,17 @@ export default async function GreetersPage({ searchParams }: PageProps) {
   let scanRates: ScanRateRow[] | null = null;
   let watchRates: ScanRateRow[] | null = null;
   let missingDays: MissingDayRow[] | null = null;
+  // Initialised rather than left null because fetchManagerRosters() never
+  // throws or resolves null — a roster outage arrives here as EMPTY_ROSTERS, so
+  // the dropdowns render empty and disabled instead of taking the page down or
+  // needing a null check at every use.
+  let rosters: ManagerRosters = EMPTY_ROSTERS;
   let fetchError: string | null = null;
 
   try {
-    // Parallel: six independent reads. Sequential awaits would multiply the
+    // Parallel: seven independent reads. Sequential awaits would multiply the
     // page's time-to-first-byte for no benefit.
-    [days, rollup, locationDays, scanRates, watchRates, missingDays] =
+    [days, rollup, locationDays, scanRates, watchRates, missingDays, rosters] =
       await Promise.all([
         performanceGetJson<DayRow[]>(`/pertrack/api/greeter/days${suffix}`),
         performanceGetJson<RollupRow[]>(`/pertrack/api/greeter/rollup${suffix}`),
@@ -293,7 +322,8 @@ export default async function GreetersPage({ searchParams }: PageProps) {
         ),
         performanceGetJson<MissingDayRow[]>(
           `/pertrack/api/greeter/missing-days${watchSuffix}`
-        )
+        ),
+        fetchManagerRosters()
       ]);
   } catch (err) {
     fetchError =
@@ -305,7 +335,7 @@ export default async function GreetersPage({ searchParams }: PageProps) {
   if (days === null && !fetchError) {
     return (
       <section className="mx-auto w-full max-w-[1200px] px-5 py-9">
-        <PageBanner />
+        <PageBanner mgrQs={mgrQs} />
         <div className="rounded-splash-lg border border-gray-light bg-white p-6 shadow-splash-card">
           <p className="mb-4 text-splash-deny">
             You don&rsquo;t have access to the greeter scorecard. Contact your
@@ -325,7 +355,7 @@ export default async function GreetersPage({ searchParams }: PageProps) {
   if (fetchError) {
     return (
       <section className="mx-auto w-full max-w-[1200px] px-5 py-9">
-        <PageBanner />
+        <PageBanner mgrQs={mgrQs} />
         <div className="rounded-splash-lg border border-gray-light bg-white p-6 shadow-splash-card">
           <h2 className="mb-2 text-lg font-bold text-splash-deny">
             Could not load the scorecard
@@ -374,7 +404,7 @@ export default async function GreetersPage({ searchParams }: PageProps) {
     <section className="mx-auto w-full max-w-[1200px] px-5 py-9">
       <ActionAlert message={actionError} />
       {successMessage ? <SuccessBanner message={successMessage} /> : null}
-      <PageBanner />
+      <PageBanner mgrQs={mgrQs} />
 
       {/* Filter bar */}
       <form
@@ -382,7 +412,7 @@ export default async function GreetersPage({ searchParams }: PageProps) {
         action="/admin/greeters"
         className="mb-5 rounded-splash-lg border border-gray-light bg-white p-5 shadow-splash-card"
       >
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
           <label className="flex flex-col gap-1">
             <span className={LABEL_CLS}>Date from</span>
             <input
@@ -423,6 +453,8 @@ export default async function GreetersPage({ searchParams }: PageProps) {
               className={INPUT_CLS}
             />
           </label>
+
+          <ManagerFilters rosters={rosters} rd={rd} rm={rm} />
         </div>
 
         <div className="mt-4 flex items-center gap-3">
@@ -1336,8 +1368,17 @@ function SuccessBanner({ message }: { message: string }) {
  * the banner rather than buried beside a table — this page is the row-level
  * record and /admin/greeters/report is the graded, charted view of the same
  * rows. Both pages link to each other so neither is a dead end.
+ *
+ * CARRIES rd/rm ACROSS, and only those. The date range, site and greeter are
+ * this page's query; the report has its own presets and would fight them. The
+ * manager filter is not a query — it says whose sites you are responsible for,
+ * and a Regional Director who narrowed to their region should not land on a
+ * company-wide report because they clicked a link.
  */
-function PageBanner() {
+function PageBanner({ mgrQs }: { mgrQs: string }) {
+  const reportHref = mgrQs
+    ? `/admin/greeters/report?${mgrQs.replace(/^&/, "")}`
+    : "/admin/greeters/report";
   return (
     <div className="mb-6 flex flex-wrap items-end justify-between gap-3">
       <div>
@@ -1347,7 +1388,7 @@ function PageBanner() {
         <h1 className="text-2xl font-bold text-splash-navy">Greeter Scorecard</h1>
       </div>
       <Link
-        href="/admin/greeters/report"
+        href={reportHref}
         className="text-sm font-semibold text-splash-blue hover:text-splash-blue-dark"
       >
         Report &amp; charts →
