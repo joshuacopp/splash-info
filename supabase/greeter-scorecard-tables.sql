@@ -450,3 +450,227 @@ $$;
 -- a SECURITY INVOKER read that RLS on greeter_daily would have to catch.
 REVOKE ALL ON FUNCTION greeter_rollup(date, date, integer, integer, text, text, text[]) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION greeter_rollup(date, date, integer, integer, text, text, text[]) TO service_role;
+
+-- ===========================================================================
+-- 6. greeter_scan_rates() — how much of each site day got attributed
+-- ===========================================================================
+--
+-- The two wash_sales columns count the same cars from two directions:
+-- location_daily.wash_sales is every a-la-carte car the site sold (the truth),
+-- greeter_daily.wash_sales is the subset a greeter scanned their card for
+-- (attribution). Their ratio is a DATA-QUALITY metric — a site at 60% didn't
+-- sell less, it failed to scan 40% of what it sold, and every per-greeter
+-- number derived from that day is understated by the gap.
+--
+-- Not a generated column on location_daily: the numerator lives in another
+-- table and moves every time a greeter submits or corrects a day, so a stored
+-- value would be stale as soon as a late row landed.
+--
+-- Kept in lockstep with supabase/greeter-scan-rates-02.sql. Change both.
+CREATE OR REPLACE FUNCTION greeter_scan_rates(
+  p_date_from      date    DEFAULT NULL,
+  p_date_to        date    DEFAULT NULL,
+  p_location_id    integer DEFAULT NULL,
+  p_site_number    integer DEFAULT NULL,
+  p_location_codes text[]  DEFAULT NULL
+)
+RETURNS TABLE (
+  business_date      date,
+  location_id        integer,
+  site_number        integer,
+  location_code      text,
+  site_wash_sales    integer,
+  scanned_wash_sales bigint,
+  greeters_logged    bigint,
+  scanned_pct        numeric,
+  ever_submitted     boolean
+)
+LANGUAGE sql
+STABLE
+AS $$
+  WITH site AS (
+    -- Driving from location_daily (not a join of both tables) is what makes a
+    -- site day with ZERO greeter rows still appear — that row is the point.
+    SELECT
+      l.business_date,
+      l.location_id,
+      l.site_number,
+      l.location_code,
+      l.wash_sales
+    FROM location_daily l
+    WHERE (p_date_from      IS NULL OR l.business_date >= p_date_from)
+      AND (p_date_to        IS NULL OR l.business_date <= p_date_to)
+      AND (p_location_id    IS NULL OR l.location_id   =  p_location_id)
+      AND (p_site_number    IS NULL OR l.site_number   =  p_site_number)
+      AND (p_location_codes IS NULL OR l.location_code = ANY(p_location_codes))
+  ),
+  scanned AS (
+    -- No greeter-name filter here, unlike greeter_rollup(). The denominator is
+    -- the whole site's day, so the numerator must be every greeter at that
+    -- site; filtering it by name would make sites look underreported whenever
+    -- someone typed in the filter bar.
+    SELECT
+      g.business_date,
+      g.location_id,
+      SUM(COALESCE(g.wash_sales, 0))::bigint AS scanned,
+      COUNT(*)::bigint                       AS greeters
+    FROM greeter_daily g
+    JOIN site s
+      ON s.business_date = g.business_date
+     AND s.location_id   = g.location_id
+    GROUP BY g.business_date, g.location_id
+  ),
+  ever AS (
+    -- Lets the UI tell "onboarded and slipping" (0%, flag it) apart from
+    -- "never started" (blank, don't nag).
+    SELECT DISTINCT g.location_id FROM greeter_daily g
+  )
+  SELECT
+    s.business_date,
+    s.location_id,
+    s.site_number,
+    s.location_code,
+    s.wash_sales,
+    COALESCE(sc.scanned, 0)::bigint,
+    COALESCE(sc.greeters, 0)::bigint,
+    -- NULL, not 0, when the site sold no ALC cars: no denominator, no rate.
+    CASE
+      WHEN COALESCE(s.wash_sales, 0) > 0
+      THEN ROUND(COALESCE(sc.scanned, 0)::numeric * 100 / s.wash_sales, 1)
+    END,
+    (e.location_id IS NOT NULL)
+  FROM site s
+  LEFT JOIN scanned sc
+    ON sc.business_date = s.business_date
+   AND sc.location_id   = s.location_id
+  LEFT JOIN ever e
+    ON e.location_id = s.location_id
+  ORDER BY s.business_date DESC, s.location_code;
+$$;
+
+REVOKE ALL ON FUNCTION greeter_scan_rates(date, date, integer, integer, text[]) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION greeter_scan_rates(date, date, integer, integer, text[]) TO service_role;
+
+-- `scanned` groups greeter_daily by (business_date, location_id), which is not
+-- the leading pair of greeter_daily_unique_day (that leads with location_id).
+CREATE INDEX IF NOT EXISTS greeter_daily_date_location_idx
+  ON greeter_daily (business_date, location_id);
+
+-- ===========================================================================
+-- 7. greeter_missing_days() — days a location reported nothing
+-- ===========================================================================
+--
+-- The counterpart to section 6, and separate from it on purpose.
+--
+-- greeter_scan_rates() is driven from location_daily, so a day a site skipped
+-- entirely produces NO ROW there — it is invisible, not 0%. That is correct for
+-- a scan rate (there is nothing to take a percentage of) but it means the most
+-- common failure, "nobody entered anything", never surfaces. This function is
+-- what makes those days visible.
+--
+-- Keeping them apart also keeps the two numbers honest: folding no-shows into
+-- the scan rate as zeroes would drag down sites that are scanning fine and
+-- would attribute a reporting failure to the greeters' scanning habits.
+--
+-- A full day is TWO submissions — the site's own numbers and at least one
+-- greeter's day — and either can be absent independently, so both flags are
+-- returned rather than one "missing" boolean.
+--
+-- The universe is locations that have EVER submitted either kind of row, not
+-- every row in `locations`: a site never onboarded to the scorecard would
+-- otherwise fill this permanently with rows nobody can act on. A location is
+-- also only reported from its FIRST submission onward, so a site onboarded
+-- midweek isn't accused of missing the days before it existed here. Known
+-- limit — a closed or seasonal site still shows every day as missing; there is
+-- no "expected to report" flag to filter on yet.
+--
+-- Both dates are REQUIRED (no defaults): the query is an
+-- (onboarded locations x days) grid, so an unbounded call would materialise
+-- every day since the first submission.
+--
+-- Kept in lockstep with supabase/greeter-missing-days-03.sql. Change both.
+CREATE OR REPLACE FUNCTION greeter_missing_days(
+  p_date_from      date,
+  p_date_to        date,
+  p_location_id    integer DEFAULT NULL,
+  p_site_number    integer DEFAULT NULL,
+  p_location_codes text[]  DEFAULT NULL
+)
+RETURNS TABLE (
+  business_date   date,
+  location_id     integer,
+  site_number     integer,
+  location_code   text,
+  has_site_row    boolean,
+  greeters_logged bigint
+)
+LANGUAGE sql
+STABLE
+AS $$
+  WITH submitted AS (
+    -- Both tables, so a location that only ever logged one kind of row still
+    -- counts as onboarded.
+    --
+    -- SCOPED HERE, BEFORE THE COLLAPSE. location_code has been observed to
+    -- diverge between tables for the same site; collapsing first and filtering
+    -- on whichever spelling won would intermittently drop a location admin's
+    -- own site out of their panel.
+    SELECT l.location_id, l.site_number, l.location_code, l.business_date
+      FROM location_daily l
+     WHERE (p_location_id    IS NULL OR l.location_id   =  p_location_id)
+       AND (p_site_number    IS NULL OR l.site_number   =  p_site_number)
+       AND (p_location_codes IS NULL OR l.location_code = ANY(p_location_codes))
+    UNION ALL
+    SELECT g.location_id, g.site_number, g.location_code, g.business_date
+      FROM greeter_daily g
+     WHERE (p_location_id    IS NULL OR g.location_id   =  p_location_id)
+       AND (p_site_number    IS NULL OR g.site_number   =  p_site_number)
+       AND (p_location_codes IS NULL OR g.location_code = ANY(p_location_codes))
+  ),
+  scoped AS (
+    -- One identity row per location, plus the day it first appeared. Identity
+    -- is the most recent submission's spelling; location_code breaks the tie so
+    -- the pick is deterministic rather than planner-dependent.
+    SELECT DISTINCT ON (s.location_id)
+           s.location_id,
+           s.site_number,
+           s.location_code,
+           MIN(s.business_date) OVER (PARTITION BY s.location_id) AS first_seen
+      FROM submitted s
+     ORDER BY s.location_id, s.business_date DESC, s.location_code
+  ),
+  days AS (
+    SELECT d::date AS business_date
+      FROM generate_series(p_date_from, p_date_to, interval '1 day') AS d
+  ),
+  greeter_counts AS (
+    SELECT g.location_id, g.business_date, COUNT(*)::bigint AS greeters
+      FROM greeter_daily g
+     WHERE g.business_date BETWEEN p_date_from AND p_date_to
+     GROUP BY g.location_id, g.business_date
+  )
+  SELECT
+    d.business_date,
+    s.location_id,
+    s.site_number,
+    s.location_code,
+    (l.id IS NOT NULL),
+    COALESCE(gc.greeters, 0)::bigint
+  FROM scoped s
+  CROSS JOIN days d
+  LEFT JOIN location_daily l
+    ON l.location_id   = s.location_id
+   AND l.business_date = d.business_date
+  LEFT JOIN greeter_counts gc
+    ON gc.location_id   = s.location_id
+   AND gc.business_date = d.business_date
+  -- Only the gaps. A complete day is section 6's business, not this one's.
+  WHERE (l.id IS NULL OR COALESCE(gc.greeters, 0) = 0)
+    -- Never report a day before the location's first submission: a site
+    -- onboarded on Wednesday didn't miss Monday.
+    AND d.business_date >= s.first_seen
+  ORDER BY d.business_date DESC, s.location_code;
+$$;
+
+REVOKE ALL ON FUNCTION greeter_missing_days(date, date, integer, integer, text[]) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION greeter_missing_days(date, date, integer, integer, text[]) TO service_role;

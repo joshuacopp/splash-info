@@ -253,3 +253,69 @@ export interface GreeterRollupRow extends GreeterDerivedMetrics {
   capture_goal_pct: number | null;
   dob_goal: number | null;
 }
+
+/* ============================================================
+ * Scan rates (greeter_scan_rates() function)
+ * ============================================================ */
+
+/**
+ * One site day, with the share of it that greeters actually attributed to
+ * themselves.
+ *
+ * `site_wash_sales` is every a-la-carte car the location sold;
+ * `scanned_wash_sales` is the sum of what its greeters scanned for. The ratio
+ * is a DATA-QUALITY signal, not a sales one — a low number means cars went
+ * unattributed, so every per-greeter figure for that day is understated.
+ *
+ * Two nullables that mean different things and must not be collapsed:
+ *   scanned_pct === null      The site sold no ALC cars that day. No
+ *                             denominator, so no rate — not the same as
+ *                             having scanned nothing.
+ *   ever_submitted === false  The location has never logged a single greeter
+ *                             day: not onboarded, rather than slipping. Render
+ *                             blank instead of flagging it at 0%.
+ *
+ * Field list must stay in sync with greeter_scan_rates()'s RETURNS TABLE.
+ */
+export interface GreeterScanRateRow {
+  business_date: string;
+  location_id: number;
+  site_number: number;
+  location_code: string;
+  site_wash_sales: number | null;
+  scanned_wash_sales: number;
+  greeters_logged: number;
+  scanned_pct: number | null;
+  ever_submitted: boolean;
+}
+
+/* ============================================================
+ * Missing days (greeter_missing_days() function)
+ * ============================================================ */
+
+/**
+ * One location-day inside a requested window where a submission is MISSING.
+ * Only gaps are returned — a complete day produces no row.
+ *
+ * Kept apart from the scan rate on purpose: "nobody reported" and "reported but
+ * scanned badly" are different failures with different owners, and a day with
+ * no submission has no scan rate to speak of. greeter_scan_rates() is driven
+ * from location_daily, so a skipped day is invisible there rather than 0%.
+ *
+ * A full day is two submissions, and either can be absent independently:
+ *   has_site_row === false      no location_daily row (usually the manager's).
+ *   greeters_logged === 0       no greeter_daily rows (the crew's).
+ *
+ * The universe is locations that have EVER submitted either kind of row, so a
+ * site never onboarded to the scorecard is silent here by design.
+ *
+ * Field list must stay in sync with greeter_missing_days()'s RETURNS TABLE.
+ */
+export interface GreeterMissingDayRow {
+  business_date: string;
+  location_id: number;
+  site_number: number;
+  location_code: string;
+  has_site_row: boolean;
+  greeters_logged: number;
+}

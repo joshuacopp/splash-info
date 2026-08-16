@@ -9,6 +9,8 @@
 //   GET  /api/greeter/days           filters         -> per-greeter day rows
 //   POST /api/greeter/days                           -> submit/correct a day
 //   GET  /api/greeter/rollup         filters         -> per-greeter aggregate
+//   GET  /api/greeter/scan-rates     filters         -> per site-day scan rate
+//   GET  /api/greeter/missing-days   dates required  -> location-days not logged
 //   GET  /api/greeter/location-days  filters         -> site-wide day rows
 //   POST /api/greeter/location-days                  -> submit/correct a day
 //   GET  /api/greeter/goals          ?site_number=   -> goal windows
@@ -17,8 +19,8 @@
 // SCOPING RULE, applied identically to reads and writes:
 //   Full admin tier (super_admin / dcRole admin|super_admin) -> undefined scope,
 //   no filter. Everyone else -> their session.locations, lowercased. An empty
-//   array reaches applyScope() in @splash/db-supabase, which substitutes a
-//   sentinel so a scoping bug shows nothing rather than everything.
+//   array reaches scopeCodes() in @splash/db-supabase/greeter, which substitutes
+//   a sentinel so a scoping bug shows nothing rather than everything.
 //
 //   Writes go further: the location is resolved server-side from location_id and
 //   the resulting location_code is checked against the caller's scope. The
@@ -33,7 +35,9 @@ import {
   insertGreeterGoal,
   listGreeterDays,
   listGreeterGoals,
+  listGreeterMissingDays,
   listGreeterRollup,
+  listGreeterScanRates,
   listLocationDays,
   resolveGreeterLocationKey,
   submitGreeterDay,
@@ -55,6 +59,8 @@ export function isGreeterRoute(pathname: string, method: string): boolean {
   switch (pathname) {
     case "/api/greeter/roster":
     case "/api/greeter/rollup":
+    case "/api/greeter/scan-rates":
+    case "/api/greeter/missing-days":
       return method === "GET";
     case "/api/greeter/days":
     case "/api/greeter/location-days":
@@ -91,6 +97,12 @@ export async function handleGreeterRoute(
   }
   if (pathname === "/api/greeter/rollup" && method === "GET") {
     return apiRollup(url, env, scope);
+  }
+  if (pathname === "/api/greeter/scan-rates" && method === "GET") {
+    return apiScanRates(url, env, scope);
+  }
+  if (pathname === "/api/greeter/missing-days" && method === "GET") {
+    return apiMissingDays(url, env, scope);
   }
   if (pathname === "/api/greeter/location-days" && method === "GET") {
     return apiListLocationDays(url, env, scope);
@@ -244,6 +256,66 @@ async function apiRollup(
 ): Promise<Response> {
   const sb = createServiceClient(env);
   const rows = await listGreeterRollup(sb, filtersFromQuery(url, scope));
+  return jsonResponse(rows);
+}
+
+/**
+ * Per site-day scan rate. Uses the same filter parse as the other reads, but
+ * listGreeterScanRates() ignores the greeter/beekeeper_user_id members on
+ * purpose — see the note there. Passing them would shrink the numerator while
+ * the denominator stayed the whole site's day, making every site look
+ * underreported the moment somebody typed a name in the filter bar.
+ */
+async function apiScanRates(
+  url: URL,
+  env: Env,
+  scope: string[] | undefined
+): Promise<Response> {
+  const sb = createServiceClient(env);
+  const rows = await listGreeterScanRates(sb, filtersFromQuery(url, scope));
+  return jsonResponse(rows);
+}
+
+/**
+ * Location-days with a submission missing.
+ *
+ * Both dates are REQUIRED here, unlike every other read on this module. The
+ * function builds an (onboarded locations x days) grid, so an open-ended window
+ * would materialise every day since the first submission ever made. A 400 with
+ * an explanation beats a query that quietly takes a minute.
+ */
+async function apiMissingDays(
+  url: URL,
+  env: Env,
+  scope: string[] | undefined
+): Promise<Response> {
+  const sp = url.searchParams;
+  const dateFrom = isoDateOrNull(sp.get("date_from"));
+  const dateTo = isoDateOrNull(sp.get("date_to"));
+  if (!dateFrom || !dateTo) {
+    return jsonResponse(
+      {
+        error: "date_from and date_to are required",
+        reason:
+          "This report walks every day in the window for every location, so it needs a bounded range."
+      },
+      400
+    );
+  }
+  if (dateTo < dateFrom) {
+    return jsonResponse({ error: "date_to is before date_from" }, 400);
+  }
+
+  const sb = createServiceClient(env);
+  const rows = await listGreeterMissingDays(
+    sb,
+    { date_from: dateFrom, date_to: dateTo },
+    {
+      location_id: toIntOrNull(sp.get("location_id")),
+      site_number: toIntOrNull(sp.get("site_number")),
+      location_scope: scope ?? null
+    }
+  );
   return jsonResponse(rows);
 }
 

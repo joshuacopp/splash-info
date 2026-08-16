@@ -13,9 +13,18 @@
 //   1. Action-error / success banners.
 //   2. Filter bar — date range, location, greeter-name substring.
 //   3. "Add data" button row — opens each submission form in a modal.
-//   4. Summary table (per-greeter rollup for the filtered range).
-//   5. Daily rows table.
-//   6. Site-wide day rows table.
+//   4. Insight panels (last 7 days, ignoring the filter bar on purpose):
+//      "No submissions" then "Underreported".
+//   5. Summary table (per-greeter rollup for the filtered range).
+//   6. Daily rows table.
+//   7. Site-wide day rows table, including Scanned %.
+//
+// THE TWO INSIGHTS ARE SEPARATE ON PURPOSE. "Nobody reported" and "reported but
+// only scanned 60% of the cars" are different failures with different owners,
+// and a day nobody reported has no scan rate to grade at all — greeter_scan_
+// rates() is driven from location_daily, so a skipped day is absent there
+// rather than 0%. Folding no-shows into the percentage would both hide the
+// sites that are genuinely scanning badly and misattribute the cause.
 //
 // The three submission forms used to be stacked cards below the tables, which
 // made the page a long scroll of forms nobody was using at that moment. They're
@@ -38,6 +47,7 @@ import { performanceGetJson } from "../performance/_lib/worker-fetch";
 import { LocationPicker } from "../performance/_components/LocationPicker";
 import { GreeterDayForm } from "./_components/GreeterDayForm";
 import { LocationMetricFields } from "./_components/MetricFields";
+import { SavingButton } from "./_components/SavingButton";
 import { SubmitPanels } from "./_components/SubmitPanels";
 import {
   createGoalAction,
@@ -120,6 +130,45 @@ interface RollupRow extends GoalSnapshot {
   dob: number | null;
 }
 
+/**
+ * One site-day from greeter_scan_rates(): how much of the location's own
+ * a-la-carte volume its greeters actually scanned for.
+ *
+ * The two nullables mean different things and must not be collapsed:
+ *   scanned_pct === null      the site sold no ALC cars that day — no
+ *                             denominator, so no rate. Not "scanned nothing".
+ *   ever_submitted === false  the location has never logged a greeter day at
+ *                             all: not onboarded, rather than slipping.
+ */
+interface ScanRateRow {
+  business_date: string;
+  location_id: number;
+  site_number: number;
+  location_code: string;
+  site_wash_sales: number | null;
+  scanned_wash_sales: number;
+  greeters_logged: number;
+  scanned_pct: number | null;
+  ever_submitted: boolean;
+}
+
+/**
+ * One location-day inside the watch window where a submission is MISSING.
+ * Only gaps come back — a complete day produces no row.
+ *
+ * A full day is two separate submissions, and either can be absent on its own:
+ *   has_site_row === false   nobody logged the site's own numbers.
+ *   greeters_logged === 0    no greeter logged their day.
+ */
+interface MissingDayRow {
+  business_date: string;
+  location_id: number;
+  site_number: number;
+  location_code: string;
+  has_site_row: boolean;
+  greeters_logged: number;
+}
+
 interface PageProps {
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }
@@ -199,6 +248,31 @@ function goalSuffix(value: number | null | undefined): ReactNode {
   );
 }
 
+/**
+ * Every Splash site is US Eastern. Hard-coded rather than read from the
+ * request, because a business_date has to mean the same day to a manager in the
+ * office and to the worker that stores it — deriving it from whoever happens to
+ * be looking would make the same day render differently for a DC admin on a
+ * laptop set to UTC.
+ */
+const SITE_TIMEZONE = "America/New_York";
+
+/**
+ * Epoch millis -> "YYYY-MM-DD" in site local time.
+ *
+ * en-CA is the locale trick: its short date format IS ISO order, so this needs
+ * no reassembly. Do NOT replace with toISOString().slice(0,10) — that's UTC and
+ * rolls the date over at 8pm Eastern.
+ */
+function localDay(ms: number): string {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: SITE_TIMEZONE,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit"
+  }).format(new Date(ms));
+}
+
 const SUCCESS_COPY: Record<string, string> = {
   day: "Greeter day saved.",
   location: "Site-wide day saved.",
@@ -227,21 +301,57 @@ export default async function GreetersPage({ searchParams }: PageProps) {
   if (greeter) qs.set("greeter", greeter);
   const suffix = qs.toString() ? `?${qs.toString()}` : "";
 
+  // Trailing seven days for the two insight panels, ENDING YESTERDAY.
+  //
+  // Today is excluded on purpose: a day is logged after it's over, so a
+  // partially-entered (or not-yet-entered) today would put every site on the
+  // list every morning.
+  //
+  // Computed in SITE LOCAL TIME, not UTC. toISOString() would roll the date
+  // over at 8pm Eastern, so from every evening onward "yesterday" would
+  // silently mean today — flagging numbers nobody has had a chance to enter,
+  // which is exactly what excluding today is meant to prevent.
+  const DAY_MS = 86_400_000;
+  const nowMs = Date.now();
+  const watchTo = localDay(nowMs - DAY_MS);
+  const watchFrom = localDay(nowMs - 7 * DAY_MS);
+  // Deliberately unscoped by the page's filters — this is a standing watchlist
+  // of every site the caller can see, not a view of the current query. Worker-
+  // side location scoping still applies, so a location admin sees only theirs.
+  const watchSuffix = `?date_from=${watchFrom}&date_to=${watchTo}`;
+
   let days: DayRow[] | null = null;
   let rollup: RollupRow[] | null = null;
   let locationDays: LocationDayRow[] | null = null;
+  let scanRates: ScanRateRow[] | null = null;
+  let watchRates: ScanRateRow[] | null = null;
+  let missingDays: MissingDayRow[] | null = null;
   let fetchError: string | null = null;
 
   try {
-    // Parallel: three independent reads over the same filter set. Sequential
-    // awaits would triple the page's time-to-first-byte for no benefit.
-    [days, rollup, locationDays] = await Promise.all([
-      performanceGetJson<DayRow[]>(`/pertrack/api/greeter/days${suffix}`),
-      performanceGetJson<RollupRow[]>(`/pertrack/api/greeter/rollup${suffix}`),
-      performanceGetJson<LocationDayRow[]>(
-        `/pertrack/api/greeter/location-days${suffix}`
-      )
-    ]);
+    // Parallel: six independent reads. Sequential awaits would multiply the
+    // page's time-to-first-byte for no benefit.
+    [days, rollup, locationDays, scanRates, watchRates, missingDays] =
+      await Promise.all([
+        performanceGetJson<DayRow[]>(`/pertrack/api/greeter/days${suffix}`),
+        performanceGetJson<RollupRow[]>(`/pertrack/api/greeter/rollup${suffix}`),
+        performanceGetJson<LocationDayRow[]>(
+          `/pertrack/api/greeter/location-days${suffix}`
+        ),
+        // Same filter set as the site-wide table so the two line up row for
+        // row. The greeter-name filter rides along in the suffix but the
+        // endpoint ignores it — filtering the numerator would understate
+        // every site.
+        performanceGetJson<ScanRateRow[]>(
+          `/pertrack/api/greeter/scan-rates${suffix}`
+        ),
+        performanceGetJson<ScanRateRow[]>(
+          `/pertrack/api/greeter/scan-rates${watchSuffix}`
+        ),
+        performanceGetJson<MissingDayRow[]>(
+          `/pertrack/api/greeter/missing-days${watchSuffix}`
+        )
+      ]);
   } catch (err) {
     fetchError =
       err instanceof Error ? err.message : "Unknown error loading the scorecard.";
@@ -290,6 +400,17 @@ export default async function GreetersPage({ searchParams }: PageProps) {
   const rollupList = rollup ?? [];
   const locationDayList = locationDays ?? [];
 
+  // Keyed by site-day so the site-wide table can look its scan rate up in O(1)
+  // rather than scanning the array per row. location_id, not location_code:
+  // the code has been observed to diverge between tables for the same site.
+  const scanByDay = new Map<string, ScanRateRow>();
+  for (const r of scanRates ?? []) {
+    scanByDay.set(`${r.business_date}|${r.location_id}`, r);
+  }
+
+  const underreported = summarizeUnderreported(watchRates ?? []);
+  const missing = summarizeMissing(missingDays ?? []);
+
   // Label for the filter's LocationPicker on round-trip. Derived from a row in
   // the result set; falls back to the raw id when the filter excludes every row.
   let filterLocationLabel: string | undefined;
@@ -302,9 +423,9 @@ export default async function GreetersPage({ searchParams }: PageProps) {
       : `ID ${locationIdNum}`;
   }
 
-  // Today in YYYY-MM-DD, which is what the date inputs and the worker both
-  // want. toISOString() is UTC — acceptable for a default the user can change.
-  const today = new Date().toISOString().slice(0, 10);
+  // Today in YYYY-MM-DD, for the forms' default date. Local, not UTC — a
+  // greeter filling this in at 9pm should get today, not tomorrow.
+  const today = localDay(Date.now());
 
   return (
     <section className="mx-auto w-full max-w-[1200px] px-5 py-9">
@@ -427,12 +548,7 @@ export default async function GreetersPage({ searchParams }: PageProps) {
                 </div>
                 <LocationMetricFields />
                 <div className="mt-1">
-                  <button
-                    type="submit"
-                    className={SUBMIT_BTN_CLS}
-                  >
-                    Save site-wide day
-                  </button>
+                  <SavingButton>Save site-wide day</SavingButton>
                 </div>
               </form>
             )
@@ -531,14 +647,27 @@ export default async function GreetersPage({ searchParams }: PageProps) {
                   </label>
                 </div>
                 <div className="mt-1">
-                  <button type="submit" className={SUBMIT_BTN_CLS}>
-                    Save goal
-                  </button>
+                  <SavingButton>Save goal</SavingButton>
                 </div>
               </form>
             )
           }
         ]}
+      />
+
+      {/* Two insights, deliberately not one. "Didn't report" and "reported but
+          scanned badly" are different failures with different owners, and a day
+          nobody reported has no scan rate to grade in the first place. */}
+      <MissingSubmissionsPanel
+        rows={missing}
+        dateFrom={watchFrom}
+        dateTo={watchTo}
+      />
+
+      <UnderreportedPanel
+        rows={underreported}
+        dateFrom={watchFrom}
+        dateTo={watchTo}
       />
 
       <CaptureLegend />
@@ -703,7 +832,7 @@ export default async function GreetersPage({ searchParams }: PageProps) {
       {/* Site-wide rows */}
       <Card
         title="Site-wide days"
-        subtitle="Full-day location totals, logged separately from the individual greeters."
+        subtitle="Full-day location totals, logged separately from the individual greeters. Scanned % is the share of that day's wash sales the site's greeters claimed — a data-quality signal, not a sales one."
       >
         {locationDayList.length === 0 ? (
           <EmptyNote>No site-wide days match these filters.</EmptyNote>
@@ -715,6 +844,7 @@ export default async function GreetersPage({ searchParams }: PageProps) {
                 <th className="px-4 py-3">Site</th>
                 <th className="px-4 py-3">Total cars</th>
                 <th className="px-4 py-3">Wash sales</th>
+                <th className="px-4 py-3">Scanned %</th>
                 <th className="px-4 py-3">Rewashes</th>
                 <th className="px-4 py-3">Package $</th>
                 <th className="px-4 py-3">Extras $</th>
@@ -743,6 +873,11 @@ export default async function GreetersPage({ searchParams }: PageProps) {
                   </td>
                   <td className="px-4 py-3 text-splash-navy/80">
                     {num(r.wash_sales)}
+                  </td>
+                  <td className="px-4 py-3">
+                    <ScanCell
+                      row={scanByDay.get(`${r.business_date}|${r.location_id}`)}
+                    />
                   </td>
                   <td className="px-4 py-3 text-splash-navy/80">
                     {num(r.rewashes)}
@@ -799,8 +934,8 @@ const LABEL_CLS =
 const INPUT_CLS =
   "rounded-splash-sm border border-gray-light bg-white px-3 py-2 text-sm text-splash-navy placeholder:text-splash-navy/40 focus:border-splash-blue focus:outline-none";
 const HINT_CLS = "text-[11px] text-splash-navy/60";
-const SUBMIT_BTN_CLS =
-  "inline-flex items-center gap-1.5 rounded-splash-sm bg-splash-blue px-5 py-2.5 text-sm font-bold text-white shadow-splash-btn transition-colors hover:bg-splash-blue-dark";
+// Submit buttons are <SavingButton>, which owns its own classes — it needs the
+// disabled variants too, and those only make sense next to the pending state.
 const THEAD_CLS =
   "bg-splash-navy/5 text-left text-xs font-semibold uppercase tracking-wider text-splash-navy/70";
 const TBODY_CLS = "divide-y divide-gray-light text-splash-navy";
@@ -913,6 +1048,393 @@ function CaptureLegend() {
         More than {CAPTURE_NEAR_MISS_POINTS} points under
       </span>
       <span>Graded against the goal in force on each row&rsquo;s date.</span>
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------
+ * Scan rate (attribution / data quality)
+ * ------------------------------------------------------------ */
+
+/**
+ * At or above this, a site is considered to be attributing its cars properly.
+ * This is the line the underreported watchlist uses, and it's the operators'
+ * number — don't move it without asking.
+ */
+const SCAN_TARGET_PCT = 90;
+
+/**
+ * Width of the amber band below the target, in percentage points. Purely
+ * presentational: nothing is flagged on this number, it just stops an 88% and
+ * a 40% from looking equally alarming in the table.
+ */
+const SCAN_NEAR_MISS_POINTS = 10;
+
+function scanTier(value: number): CaptureTier {
+  if (value >= SCAN_TARGET_PCT) return "hit";
+  if (value >= SCAN_TARGET_PCT - SCAN_NEAR_MISS_POINTS) return "near";
+  return "miss";
+}
+
+/**
+ * The scanned share for one site-day.
+ *
+ * Three separate blank states, which look identical to a reader but must not be
+ * conflated in code:
+ *   no row      the scan-rate query and the site-wide list disagreed (row
+ *               limits differ). Rare; render blank rather than a wrong 0%.
+ *   pct null    the site sold no a-la-carte cars, so there was nothing to
+ *               scan. No denominator, no rate.
+ *   never       the location has never logged a greeter day. Not onboarded, so
+ *               flagging it at 0% would just be noise.
+ */
+function ScanCell({ row }: { row: ScanRateRow | undefined }) {
+  if (!row) return <span className="text-splash-navy/40">—</span>;
+
+  if (!row.ever_submitted) {
+    return (
+      <span
+        className="text-splash-navy/40"
+        title="This location has never logged a greeter day — no greeters onboarded to the scorecard yet."
+      >
+        —
+      </span>
+    );
+  }
+  if (row.scanned_pct === null) {
+    return (
+      <span
+        className="text-splash-navy/40"
+        title="No a-la-carte cars sold that day, so there was nothing to scan."
+      >
+        —
+      </span>
+    );
+  }
+
+  const tier = scanTier(row.scanned_pct);
+  const greeters = `${row.greeters_logged} greeter${row.greeters_logged === 1 ? "" : "s"} logged`;
+  return (
+    <span
+      className={`inline-flex items-center whitespace-nowrap rounded-full px-2 py-0.5 text-xs font-bold ${CAPTURE_TIER_CLASSES[tier]}`}
+      title={`${row.scanned_wash_sales.toLocaleString()} of ${(row.site_wash_sales ?? 0).toLocaleString()} wash sales scanned · ${greeters}`}
+    >
+      {pct(row.scanned_pct)}
+    </span>
+  );
+}
+
+interface UnderreportedRow {
+  location_id: number;
+  site_number: number;
+  location_code: string;
+  site_wash_sales: number;
+  scanned_wash_sales: number;
+  days: number;
+  scanned_pct: number;
+}
+
+/**
+ * Collapse a window of site-days into one row per location, keeping only those
+ * under the target.
+ *
+ * Weighted, not averaged: summed numerator over summed denominator. Averaging
+ * the daily percentages would let a single 4-car Tuesday at 0% drag a site's
+ * week down as hard as a 400-car Saturday.
+ *
+ * THREE kinds of day are dropped, all for the same reason — they are a
+ * different question, and mixing them in would bury the sites that are actually
+ * scanning badly:
+ *
+ *   greeters_logged === 0   Nobody logged a greeter day. That is a missing
+ *                           submission, not a scanning failure, and it belongs
+ *                           to the "No submissions" panel above.
+ *   !ever_submitted         The location has never logged a greeter day at all
+ *                           — not onboarded rather than slipping.
+ *   site_wash_sales <= 0    No a-a-la-carte cars sold, so neither side of the
+ *                           ratio has anything to contribute.
+ */
+function summarizeUnderreported(rows: ScanRateRow[]): UnderreportedRow[] {
+  const byLocation = new Map<number, UnderreportedRow>();
+
+  for (const r of rows) {
+    if (!r.ever_submitted) continue;
+    if (r.greeters_logged === 0) continue;
+    const site = r.site_wash_sales ?? 0;
+    if (site <= 0) continue;
+
+    const existing = byLocation.get(r.location_id);
+    if (existing) {
+      existing.site_wash_sales += site;
+      existing.scanned_wash_sales += r.scanned_wash_sales;
+      existing.days += 1;
+    } else {
+      byLocation.set(r.location_id, {
+        location_id: r.location_id,
+        site_number: r.site_number,
+        location_code: r.location_code,
+        site_wash_sales: site,
+        scanned_wash_sales: r.scanned_wash_sales,
+        days: 1,
+        scanned_pct: 0
+      });
+    }
+  }
+
+  const out: UnderreportedRow[] = [];
+  for (const row of byLocation.values()) {
+    row.scanned_pct =
+      Math.round((row.scanned_wash_sales * 1000) / row.site_wash_sales) / 10;
+    if (row.scanned_pct < SCAN_TARGET_PCT) out.push(row);
+  }
+  // Worst first — the point of the panel is what to chase today.
+  return out.sort((a, b) => a.scanned_pct - b.scanned_pct);
+}
+
+/**
+ * Standing watchlist of sites whose greeters aren't scanning most of what the
+ * site sold. Ignores the page's filters on purpose: it answers "who needs a
+ * nudge right now", which shouldn't change because someone narrowed the table
+ * below it to one location.
+ */
+function UnderreportedPanel({
+  rows,
+  dateFrom,
+  dateTo
+}: {
+  rows: UnderreportedRow[];
+  dateFrom: string;
+  dateTo: string;
+}) {
+  const range = `${dateFrom} to ${dateTo}`;
+
+  if (rows.length === 0) {
+    return (
+      <div className="mb-5 rounded-splash-lg border border-splash-success/40 bg-splash-success/10 px-5 py-4">
+        <h2 className="text-sm font-bold text-splash-success">
+          No underreported locations
+        </h2>
+        <p className="mt-1 text-xs text-splash-navy/70">
+          Every location that logged greeter days scanned at least{" "}
+          {SCAN_TARGET_PCT}% of its wash sales over {range}. Days with no
+          submission at all are counted in the panel above, not here.
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="mb-5 overflow-hidden rounded-splash-lg border border-splash-deny/40 bg-splash-deny/5 shadow-splash-card">
+      <div className="border-b border-splash-deny/20 px-5 py-4">
+        <h2 className="text-sm font-bold text-splash-deny">
+          Underreported · {rows.length} location{rows.length === 1 ? "" : "s"}{" "}
+          under {SCAN_TARGET_PCT}%
+        </h2>
+        <p className="mt-1 text-xs text-splash-navy/70">
+          Last 7 days ({range}). Share of each site&rsquo;s wash sales that a
+          greeter scanned for, counting only days somebody actually logged. A low
+          number means cars went unattributed, so every per-greeter figure for
+          those days is understated. Days with no submission are a different
+          problem and are listed separately above.
+        </p>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="min-w-full divide-y divide-gray-light text-sm">
+          <thead className={THEAD_CLS}>
+            <tr>
+              <th className="px-4 py-2.5">Site</th>
+              <th className="px-4 py-2.5">Scanned %</th>
+              <th className="px-4 py-2.5">Scanned</th>
+              <th className="px-4 py-2.5">Site wash sales</th>
+              <th className="px-4 py-2.5">Days</th>
+            </tr>
+          </thead>
+          <tbody className={TBODY_CLS}>
+            {rows.map((r) => (
+              <tr key={r.location_id}>
+                <td className="px-4 py-2.5 text-splash-navy/80">
+                  <div className="font-semibold">{r.location_code}</div>
+                  <div className="font-mono text-xs text-splash-navy/60">
+                    {r.site_number}
+                  </div>
+                </td>
+                <td className="px-4 py-2.5">
+                  <span
+                    className={`inline-flex items-center whitespace-nowrap rounded-full px-2 py-0.5 text-xs font-bold ${CAPTURE_TIER_CLASSES[scanTier(r.scanned_pct)]}`}
+                  >
+                    {pct(r.scanned_pct)}
+                  </span>
+                </td>
+                <td className="px-4 py-2.5 text-splash-navy/80">
+                  {num(r.scanned_wash_sales)}
+                </td>
+                <td className="px-4 py-2.5 text-splash-navy/80">
+                  {num(r.site_wash_sales)}
+                </td>
+                <td className="px-4 py-2.5 text-splash-navy/80">{r.days}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------
+ * Missing submissions
+ * ------------------------------------------------------------ */
+
+interface MissingSummaryRow {
+  location_id: number;
+  site_number: number;
+  location_code: string;
+  /** Days with neither half logged. The site simply didn't report. */
+  nothing: string[];
+  /** Days with greeter rows but no site-wide row. */
+  noSiteRow: string[];
+  /** Days with a site-wide row but nobody's greeter day. */
+  noGreeters: string[];
+}
+
+/** Total days with any gap — what the list is sorted and headlined by. */
+function missingTotal(r: MissingSummaryRow): number {
+  return r.nothing.length + r.noSiteRow.length + r.noGreeters.length;
+}
+
+/**
+ * Collapse the gap rows into one line per location, keeping the three kinds of
+ * gap apart because they land on different people: the site-wide numbers are
+ * usually the manager's to enter, the greeter days are the crew's. A site
+ * missing only greeter rows is a different conversation from one that reported
+ * nothing at all.
+ *
+ * Dates are kept, not just counted — "three days missing" isn't actionable
+ * without knowing which three.
+ */
+function summarizeMissing(rows: MissingDayRow[]): MissingSummaryRow[] {
+  const byLocation = new Map<number, MissingSummaryRow>();
+
+  for (const r of rows) {
+    let entry = byLocation.get(r.location_id);
+    if (!entry) {
+      entry = {
+        location_id: r.location_id,
+        site_number: r.site_number,
+        location_code: r.location_code,
+        nothing: [],
+        noSiteRow: [],
+        noGreeters: []
+      };
+      byLocation.set(r.location_id, entry);
+    }
+    const greeterless = r.greeters_logged === 0;
+    if (!r.has_site_row && greeterless) entry.nothing.push(r.business_date);
+    else if (!r.has_site_row) entry.noSiteRow.push(r.business_date);
+    else entry.noGreeters.push(r.business_date);
+  }
+
+  // Most gaps first — the point of the panel is who to chase.
+  return [...byLocation.values()].sort(
+    (a, b) => missingTotal(b) - missingTotal(a)
+  );
+}
+
+/** "08-11, 08-12" — the year is redundant inside a seven-day window. */
+function dayLabels(dates: string[]): string {
+  return [...dates]
+    .sort()
+    .map((d) => d.slice(5))
+    .join(", ");
+}
+
+/**
+ * Locations that didn't submit at all on one or more days in the window.
+ *
+ * Split out of the underreported panel: a day with no submission has no scan
+ * rate — greeter_scan_rates() is driven from location_daily, so a skipped day
+ * is absent there rather than 0%, and folding no-shows into a percentage would
+ * hide the sites that are genuinely scanning badly.
+ *
+ * The universe is locations that have submitted before. A site never onboarded
+ * to the scorecard is silent here on purpose — that's an onboarding task, not a
+ * missed day.
+ */
+function MissingSubmissionsPanel({
+  rows,
+  dateFrom,
+  dateTo
+}: {
+  rows: MissingSummaryRow[];
+  dateFrom: string;
+  dateTo: string;
+}) {
+  const range = `${dateFrom} to ${dateTo}`;
+
+  if (rows.length === 0) {
+    return (
+      <div className="mb-5 rounded-splash-lg border border-splash-success/40 bg-splash-success/10 px-5 py-4">
+        <h2 className="text-sm font-bold text-splash-success">
+          No missing submissions
+        </h2>
+        <p className="mt-1 text-xs text-splash-navy/70">
+          Every location that uses the scorecard logged both its site-wide
+          numbers and at least one greeter day, every day over {range}.
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="mb-5 overflow-hidden rounded-splash-lg border border-yellow-300 bg-yellow-50 shadow-splash-card">
+      <div className="border-b border-yellow-200 px-5 py-4">
+        <h2 className="text-sm font-bold text-yellow-900">
+          No submissions · {rows.length} location{rows.length === 1 ? "" : "s"}
+        </h2>
+        <p className="mt-1 text-xs text-splash-navy/70">
+          Last 7 days ({range}). Days where the site-wide numbers, the greeter
+          days, or both were never entered. Locations that have never used the
+          scorecard aren&rsquo;t listed — that&rsquo;s an onboarding task, not a
+          missed day.
+        </p>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="min-w-full divide-y divide-gray-light text-sm">
+          <thead className={THEAD_CLS}>
+            <tr>
+              <th className="px-4 py-2.5">Site</th>
+              <th className="px-4 py-2.5">Days missing</th>
+              <th className="px-4 py-2.5">Nothing logged</th>
+              <th className="px-4 py-2.5">No site-wide row</th>
+              <th className="px-4 py-2.5">No greeter days</th>
+            </tr>
+          </thead>
+          <tbody className={TBODY_CLS}>
+            {rows.map((r) => (
+              <tr key={r.location_id}>
+                <td className="px-4 py-2.5 text-splash-navy/80">
+                  <div className="font-semibold">{r.location_code}</div>
+                  <div className="font-mono text-xs text-splash-navy/60">
+                    {r.site_number}
+                  </div>
+                </td>
+                <td className="px-4 py-2.5 font-bold text-splash-navy">
+                  {missingTotal(r)}
+                </td>
+                <td className="px-4 py-2.5 font-mono text-xs text-splash-navy/70">
+                  {r.nothing.length ? dayLabels(r.nothing) : "—"}
+                </td>
+                <td className="px-4 py-2.5 font-mono text-xs text-splash-navy/70">
+                  {r.noSiteRow.length ? dayLabels(r.noSiteRow) : "—"}
+                </td>
+                <td className="px-4 py-2.5 font-mono text-xs text-splash-navy/70">
+                  {r.noGreeters.length ? dayLabels(r.noGreeters) : "—"}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }

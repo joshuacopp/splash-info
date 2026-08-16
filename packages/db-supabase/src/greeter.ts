@@ -15,9 +15,11 @@ import type {
   GreeterGoalInsert,
   GreeterGoalRow,
   GreeterLocationKey,
+  GreeterMissingDayRow,
   GreeterRollupRow,
   GreeterRoster,
   GreeterRosterMember,
+  GreeterScanRateRow,
   LocationDailyInsert,
   LocationDailyRow,
   LocationGoalSnapshot
@@ -489,6 +491,73 @@ export async function listGreeterRollup(
   });
   if (error) throw error;
   return (data ?? []) as unknown as GreeterRollupRow[];
+}
+
+/**
+ * Per site-day scan rates: what share of a location's a-la-carte cars its
+ * greeters actually scanned for.
+ *
+ * A function again, for the same reason as the rollup — and additionally
+ * because the numerator lives in a different table from the denominator, so it
+ * can't be a generated column: a stored value would go stale the moment a late
+ * greeter row landed.
+ *
+ * `filters.greeter` and `filters.beekeeper_user_id` are deliberately NOT passed
+ * through, and greeter_scan_rates() doesn't accept them. The denominator is the
+ * whole site's day, so the numerator has to be every greeter at that site —
+ * filtering it by name would make a site look underreported whenever somebody
+ * typed a name in the filter bar.
+ *
+ * No `limit`: one row per site-day in range, and the caller's date window is
+ * what bounds it.
+ */
+export async function listGreeterScanRates(
+  client: SupabaseClient,
+  filters: GreeterDayFilters = {}
+): Promise<GreeterScanRateRow[]> {
+  const { data, error } = await client.rpc("greeter_scan_rates", {
+    p_date_from: filters.date_from ?? null,
+    p_date_to: filters.date_to ?? null,
+    p_location_id: filters.location_id ?? null,
+    p_site_number: filters.site_number ?? null,
+    // Same fail-closed rule as the rollup: an empty scope must show nothing.
+    p_location_codes: scopeCodes(filters.location_scope)
+  });
+  if (error) throw error;
+  return (data ?? []) as unknown as GreeterScanRateRow[];
+}
+
+/**
+ * Location-days inside a window with a submission missing — either the site's
+ * own numbers or its greeters', reported independently.
+ *
+ * A deliberately separate question from the scan rate: a day nobody reported
+ * has no scan rate at all (greeter_scan_rates() is driven from location_daily,
+ * so a skipped day produces no row there), and "didn't report" and "reported
+ * but scanned badly" have different owners and different fixes.
+ *
+ * BOTH DATES ARE REQUIRED. The underlying function builds an
+ * (onboarded locations x days) grid, so an unbounded window would try to
+ * materialise every day since the first submission. Callers that don't have a
+ * window should not call this.
+ *
+ * `greeter` / `beekeeper_user_id` are not passed through — a named greeter's
+ * absence is not the same as nobody logging the day.
+ */
+export async function listGreeterMissingDays(
+  client: SupabaseClient,
+  window: { date_from: string; date_to: string },
+  filters: Omit<GreeterDayFilters, "date_from" | "date_to"> = {}
+): Promise<GreeterMissingDayRow[]> {
+  const { data, error } = await client.rpc("greeter_missing_days", {
+    p_date_from: window.date_from,
+    p_date_to: window.date_to,
+    p_location_id: filters.location_id ?? null,
+    p_site_number: filters.site_number ?? null,
+    p_location_codes: scopeCodes(filters.location_scope)
+  });
+  if (error) throw error;
+  return (data ?? []) as unknown as GreeterMissingDayRow[];
 }
 
 /** Shared predicate builder for greeter_daily and its rollup view. */

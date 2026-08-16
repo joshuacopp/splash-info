@@ -23,6 +23,7 @@
 import { useEffect, useRef, useState } from "react";
 import { LocationPicker } from "../../performance/_components/LocationPicker";
 import { GreeterMetricFields } from "./MetricFields";
+import { SavingButton } from "./SavingButton";
 import { ShiftTimePicker } from "./ShiftTimePicker";
 
 interface RosterMember {
@@ -224,12 +225,7 @@ export function GreeterDayForm({
       </div>
 
       <div className="mt-1">
-        <button
-          type="submit"
-          className="inline-flex items-center gap-1.5 rounded-splash-sm bg-splash-blue px-5 py-2.5 text-sm font-bold text-white shadow-splash-btn transition-colors hover:bg-splash-blue-dark"
-        >
-          Save day
-        </button>
+        <SavingButton>Save day</SavingButton>
       </div>
     </form>
   );
