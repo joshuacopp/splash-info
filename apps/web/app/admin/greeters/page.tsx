@@ -12,15 +12,22 @@
 // Sections (top -> bottom):
 //   1. Action-error / success banners.
 //   2. Filter bar — date range, location, greeter-name substring.
-//   3. Summary table (per-greeter rollup for the filtered range).
-//   4. Daily rows table.
-//   5. Site-wide day rows table.
-//   6. Three write cards: greeter day, site-wide day, goal window.
+//   3. "Add data" button row — opens each submission form in a modal.
+//   4. Summary table (per-greeter rollup for the filtered range).
+//   5. Daily rows table.
+//   6. Site-wide day rows table.
 //
-// DERIVED COLUMNS: capture % and D.O.B. arrive computed from Postgres and are
-// rendered as-is. Do not recompute them here — the rollup's versions come from
-// summed numerators and denominators, so a client-side recompute over the
-// displayed columns would disagree with the summary for any multi-day range.
+// The three submission forms used to be stacked cards below the tables, which
+// made the page a long scroll of forms nobody was using at that moment. They're
+// now behind buttons (SubmitPanels), sitting above the tables where they're
+// reachable without scrolling. The forms themselves are unchanged and still
+// server-rendered — see the note in SubmitPanels.tsx.
+//
+// DERIVED COLUMNS: capture %, D.O.B., hours worked and wash sales per hour all
+// arrive computed from Postgres and are rendered as-is. Do not recompute them
+// here — the rollup's versions come from summed numerators and denominators, so
+// a client-side recompute over the displayed columns would disagree with the
+// summary for any multi-day range.
 //
 // Auth posture: performanceGetJson collapses 401/403 to null -> no-access card,
 // same as the performance page. A location admin's rows are scoped worker-side.
@@ -30,14 +37,21 @@ import Link from "next/link";
 import { performanceGetJson } from "../performance/_lib/worker-fetch";
 import { LocationPicker } from "../performance/_components/LocationPicker";
 import { GreeterDayForm } from "./_components/GreeterDayForm";
-import { MetricFields } from "./_components/MetricFields";
+import { LocationMetricFields } from "./_components/MetricFields";
+import { SubmitPanels } from "./_components/SubmitPanels";
 import {
   createGoalAction,
   submitGreeterDayAction,
   submitLocationDayAction
 } from "./actions";
 
-interface DayRow {
+/** Shape of the two `*_goal` snapshot columns, on every row of both tables. */
+interface GoalSnapshot {
+  capture_goal_pct: number | null;
+  dob_goal: number | null;
+}
+
+interface DayRow extends GoalSnapshot {
   id: string;
   business_date: string;
   location_id: number;
@@ -45,13 +59,16 @@ interface DayRow {
   location_code: string;
   beekeeper_user_id?: string;
   greeter_name?: string;
-  total_cars: number | null;
   wash_sales: number | null;
+  rewashes: number | null;
   package_dollars: number | null;
   extras_dollars: number | null;
   sign_ups: number | null;
-  sign_up_goal: number | null;
-  extras_goal: number | null;
+  /** 24-hour "HH:MM:SS" from Postgres `time`, or null when no shift was logged. */
+  shift_start: string | null;
+  shift_end: string | null;
+  hours_worked: number | null;
+  wash_sales_per_hour: number | null;
   capture_pct: number | null;
   dob: number | null;
   comments: string | null;
@@ -59,7 +76,32 @@ interface DayRow {
   updated_by_email: string | null;
 }
 
-interface RollupRow {
+/** Site-wide day. Deliberately NOT the same shape as DayRow — see MetricFields. */
+interface LocationDayRow extends GoalSnapshot {
+  id: string;
+  business_date: string;
+  location_id: number;
+  site_number: number;
+  location_code: string;
+  total_cars: number | null;
+  wash_sales: number | null;
+  rewashes: number | null;
+  package_dollars: number | null;
+  extras_dollars: number | null;
+  sign_ups: number | null;
+  cancellations: number | null;
+  /** Active members as of that day — a level. Never sum this across rows. */
+  total_members: number | null;
+  net_members: number | null;
+  member_goal_month_end: number | null;
+  capture_pct: number | null;
+  dob: number | null;
+  comments: string | null;
+  created_by_email: string | null;
+  updated_by_email: string | null;
+}
+
+interface RollupRow extends GoalSnapshot {
   beekeeper_user_id: string;
   greeter_name: string;
   site_number: number;
@@ -67,13 +109,13 @@ interface RollupRow {
   first_date: string;
   last_date: string;
   days_logged: number;
-  total_cars: number | null;
   wash_sales: number | null;
+  rewashes: number | null;
   package_dollars: number | null;
   extras_dollars: number | null;
   sign_ups: number | null;
-  sign_up_goal: number | null;
-  extras_goal: number | null;
+  hours_worked: number | null;
+  wash_sales_per_hour: number | null;
   capture_pct: number | null;
   dob: number | null;
 }
@@ -111,6 +153,44 @@ function dobCell(value: number | null | undefined): string {
   return `$${value.toFixed(2)}`;
 }
 
+function hours(value: number | null | undefined): string {
+  if (value === null || value === undefined) return "—";
+  return value.toFixed(2);
+}
+
+/** "HH:MM:SS" (Postgres `time`) -> "8:00 AM". Anything unparseable renders raw. */
+function clockLabel(value: string): string {
+  const m = /^(\d{1,2}):(\d{2})/.exec(value);
+  if (!m) return value;
+  const h24 = Number(m[1]);
+  const meridiem = h24 < 12 ? "AM" : "PM";
+  const h12 = h24 % 12 === 0 ? 12 : h24 % 12;
+  return `${h12}:${m[2]} ${meridiem}`;
+}
+
+/**
+ * The shift window as one cell. Both-or-neither is enforced at three layers
+ * below this, so a half-filled pair shouldn't reach here — but render whichever
+ * end exists rather than swallowing it, so a bad row is visible instead of
+ * silently blank.
+ */
+function shiftCell(start: string | null, end: string | null): string {
+  if (!start && !end) return "—";
+  if (start && end) return `${clockLabel(start)} – ${clockLabel(end)}`;
+  return clockLabel((start ?? end) as string);
+}
+
+/** Goal shown beside the value it grades, e.g. "42.0% / 30". */
+function goalSuffix(value: number | null | undefined): ReactNode {
+  if (value === null || value === undefined) return null;
+  return (
+    <span className="text-xs font-normal text-splash-navy/50">
+      {" "}
+      / {value}
+    </span>
+  );
+}
+
 const SUCCESS_COPY: Record<string, string> = {
   day: "Greeter day saved.",
   location: "Site-wide day saved.",
@@ -141,7 +221,7 @@ export default async function GreetersPage({ searchParams }: PageProps) {
 
   let days: DayRow[] | null = null;
   let rollup: RollupRow[] | null = null;
-  let locationDays: DayRow[] | null = null;
+  let locationDays: LocationDayRow[] | null = null;
   let fetchError: string | null = null;
 
   try {
@@ -150,7 +230,9 @@ export default async function GreetersPage({ searchParams }: PageProps) {
     [days, rollup, locationDays] = await Promise.all([
       performanceGetJson<DayRow[]>(`/pertrack/api/greeter/days${suffix}`),
       performanceGetJson<RollupRow[]>(`/pertrack/api/greeter/rollup${suffix}`),
-      performanceGetJson<DayRow[]>(`/pertrack/api/greeter/location-days${suffix}`)
+      performanceGetJson<LocationDayRow[]>(
+        `/pertrack/api/greeter/location-days${suffix}`
+      )
     ]);
   } catch (err) {
     fetchError =
@@ -287,6 +369,170 @@ export default async function GreetersPage({ searchParams }: PageProps) {
         </div>
       </form>
 
+      {/* Submissions. Buttons, not stacked cards — see the note up top. The
+          forms are built here (server components) and handed down as props. */}
+      <SubmitPanels
+        panels={[
+          {
+            key: "greeter-day",
+            label: "Log a greeter's day",
+            title: "Log a greeter's day",
+            description:
+              "One row per greeter per day. Submitting the same greeter and date again updates that row rather than adding a second one. D.O.B. and capture % are calculated for you.",
+            form: (
+              <GreeterDayForm
+                action={submitGreeterDayAction}
+                defaultDate={today}
+              />
+            )
+          },
+          {
+            key: "location-day",
+            label: "Log site-wide numbers",
+            title: "Log site-wide numbers",
+            description:
+              "The whole location's day, not attributed to anyone. Total cars, cancellations and the member count live here only — they belong to the site, not to a person.",
+            form: (
+              <form
+                action={submitLocationDayAction}
+                className="flex flex-col gap-4"
+              >
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  <label className="flex flex-col gap-1">
+                    <span className={LABEL_CLS}>Date *</span>
+                    <input
+                      type="date"
+                      name="business_date"
+                      required
+                      defaultValue={today}
+                      className={INPUT_CLS}
+                    />
+                  </label>
+                  <div className="flex flex-col gap-1">
+                    <span className={LABEL_CLS}>Location *</span>
+                    <LocationPicker
+                      name="location_id"
+                      required
+                      placeholder="Search by site number, name, or code…"
+                    />
+                  </div>
+                </div>
+                <LocationMetricFields />
+                <div className="mt-1">
+                  <button
+                    type="submit"
+                    className={SUBMIT_BTN_CLS}
+                  >
+                    Save site-wide day
+                  </button>
+                </div>
+              </form>
+            )
+          },
+          {
+            key: "goal",
+            label: "Set goals for a site",
+            title: "Set goals for a site",
+            description:
+              "Goals apply to a location for a date range and are copied onto each day as it's logged — changing them later won't re-grade days already submitted. Leave the end date blank for an open-ended goal. Ranges for one site can't overlap.",
+            form: (
+              <form action={createGoalAction} className="flex flex-col gap-4">
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                  <div className="flex flex-col gap-1">
+                    <span className={LABEL_CLS}>Location *</span>
+                    <LocationPicker
+                      name="location_id"
+                      required
+                      placeholder="Search by site number, name, or code…"
+                    />
+                  </div>
+                  <label className="flex flex-col gap-1">
+                    <span className={LABEL_CLS}>Effective from *</span>
+                    <input
+                      type="date"
+                      name="effective_from"
+                      required
+                      className={INPUT_CLS}
+                    />
+                  </label>
+                  <label className="flex flex-col gap-1">
+                    <span className={LABEL_CLS}>Effective to</span>
+                    <input
+                      type="date"
+                      name="effective_to"
+                      className={INPUT_CLS}
+                    />
+                  </label>
+                  <label className="flex flex-col gap-1">
+                    <span className={LABEL_CLS}>Capture % goal *</span>
+                    {/* A percentage, not a count: 30 means 30%. The worker
+                        rejects anything outside 0–100. */}
+                    <input
+                      type="number"
+                      name="capture_goal_pct"
+                      min="0"
+                      max="100"
+                      step="0.01"
+                      required
+                      placeholder="30"
+                      className={INPUT_CLS}
+                    />
+                    <span className={HINT_CLS}>
+                      Sign ups as a share of wash sales. Enter 30 for 30%.
+                    </span>
+                  </label>
+                  <label className="flex flex-col gap-1">
+                    <span className={LABEL_CLS}>D.O.B. goal ($) *</span>
+                    <input
+                      type="number"
+                      name="dob_goal"
+                      min="0"
+                      step="0.01"
+                      required
+                      placeholder="0.00"
+                      className={INPUT_CLS}
+                    />
+                    <span className={HINT_CLS}>
+                      Dollars per car: package $ plus extras $ over wash sales.
+                    </span>
+                  </label>
+                  <label className="flex flex-col gap-1">
+                    <span className={LABEL_CLS}>Member goal (month end)</span>
+                    <input
+                      type="number"
+                      name="member_goal_month_end"
+                      min="0"
+                      step="1"
+                      placeholder="Optional"
+                      className={INPUT_CLS}
+                    />
+                    <span className={HINT_CLS}>
+                      Total active members to reach — a level, not the month&rsquo;s
+                      adds.
+                    </span>
+                  </label>
+                  <label className="flex flex-col gap-1">
+                    <span className={LABEL_CLS}>Note</span>
+                    <input
+                      type="text"
+                      name="note"
+                      maxLength={500}
+                      placeholder="Optional"
+                      className={INPUT_CLS}
+                    />
+                  </label>
+                </div>
+                <div className="mt-1">
+                  <button type="submit" className={SUBMIT_BTN_CLS}>
+                    Save goal
+                  </button>
+                </div>
+              </form>
+            )
+          }
+        ]}
+      />
+
       {/* Summary */}
       <Card
         title="By greeter"
@@ -301,8 +547,10 @@ export default async function GreetersPage({ searchParams }: PageProps) {
                 <th className="px-4 py-3">Greeter</th>
                 <th className="px-4 py-3">Site</th>
                 <th className="px-4 py-3">Days</th>
-                <th className="px-4 py-3">Total cars</th>
+                <th className="px-4 py-3">Hours</th>
                 <th className="px-4 py-3">Wash sales</th>
+                <th className="px-4 py-3">WS / hr</th>
+                <th className="px-4 py-3">Rewashes</th>
                 <th className="px-4 py-3">Package $</th>
                 <th className="px-4 py-3">Extras $</th>
                 <th className="px-4 py-3">D.O.B.</th>
@@ -323,11 +571,19 @@ export default async function GreetersPage({ searchParams }: PageProps) {
                   <td className="px-4 py-3 text-splash-navy/80">
                     {r.days_logged}
                   </td>
+                  {/* Only days with a shift window logged contribute here, so
+                      this can be blank while Days is not. */}
                   <td className="px-4 py-3 text-splash-navy/80">
-                    {num(r.total_cars)}
+                    {hours(r.hours_worked)}
                   </td>
                   <td className="px-4 py-3 text-splash-navy/80">
                     {num(r.wash_sales)}
+                  </td>
+                  <td className="px-4 py-3 text-splash-navy/80">
+                    {hours(r.wash_sales_per_hour)}
+                  </td>
+                  <td className="px-4 py-3 text-splash-navy/80">
+                    {num(r.rewashes)}
                   </td>
                   <td className="px-4 py-3 text-splash-navy/80">
                     {money(r.package_dollars)}
@@ -335,18 +591,16 @@ export default async function GreetersPage({ searchParams }: PageProps) {
                   <td className="px-4 py-3 text-splash-navy/80">
                     {money(r.extras_dollars)}
                   </td>
-                  <td className="px-4 py-3 font-semibold">{dobCell(r.dob)}</td>
+                  <td className="px-4 py-3 font-semibold">
+                    {dobCell(r.dob)}
+                    {goalSuffix(r.dob_goal)}
+                  </td>
                   <td className="px-4 py-3 text-splash-navy/80">
                     {num(r.sign_ups)}
-                    {r.sign_up_goal !== null ? (
-                      <span className="text-xs text-splash-navy/50">
-                        {" "}
-                        / {r.sign_up_goal}
-                      </span>
-                    ) : null}
                   </td>
                   <td className="px-4 py-3 font-semibold">
                     {pct(r.capture_pct)}
+                    {goalSuffix(r.capture_goal_pct)}
                   </td>
                 </tr>
               ))}
@@ -366,8 +620,11 @@ export default async function GreetersPage({ searchParams }: PageProps) {
                 <th className="px-4 py-3">Date</th>
                 <th className="px-4 py-3">Greeter</th>
                 <th className="px-4 py-3">Site</th>
-                <th className="px-4 py-3">Total cars</th>
+                <th className="px-4 py-3">Shift</th>
+                <th className="px-4 py-3">Hours</th>
                 <th className="px-4 py-3">Wash sales</th>
+                <th className="px-4 py-3">WS / hr</th>
+                <th className="px-4 py-3">Rewashes</th>
                 <th className="px-4 py-3">Package $</th>
                 <th className="px-4 py-3">Extras $</th>
                 <th className="px-4 py-3">D.O.B.</th>
@@ -390,11 +647,20 @@ export default async function GreetersPage({ searchParams }: PageProps) {
                       {r.site_number}
                     </div>
                   </td>
+                  <td className="whitespace-nowrap px-4 py-3 text-xs text-splash-navy/80">
+                    {shiftCell(r.shift_start, r.shift_end)}
+                  </td>
                   <td className="px-4 py-3 text-splash-navy/80">
-                    {num(r.total_cars)}
+                    {hours(r.hours_worked)}
                   </td>
                   <td className="px-4 py-3 text-splash-navy/80">
                     {num(r.wash_sales)}
+                  </td>
+                  <td className="px-4 py-3 text-splash-navy/80">
+                    {hours(r.wash_sales_per_hour)}
+                  </td>
+                  <td className="px-4 py-3 text-splash-navy/80">
+                    {num(r.rewashes)}
                   </td>
                   <td className="px-4 py-3 text-splash-navy/80">
                     {money(r.package_dollars)}
@@ -402,18 +668,16 @@ export default async function GreetersPage({ searchParams }: PageProps) {
                   <td className="px-4 py-3 text-splash-navy/80">
                     {money(r.extras_dollars)}
                   </td>
-                  <td className="px-4 py-3 font-semibold">{dobCell(r.dob)}</td>
+                  <td className="px-4 py-3 font-semibold">
+                    {dobCell(r.dob)}
+                    {goalSuffix(r.dob_goal)}
+                  </td>
                   <td className="px-4 py-3 text-splash-navy/80">
                     {num(r.sign_ups)}
-                    {r.sign_up_goal !== null ? (
-                      <span className="text-xs text-splash-navy/50">
-                        {" "}
-                        / {r.sign_up_goal}
-                      </span>
-                    ) : null}
                   </td>
                   <td className="px-4 py-3 font-semibold">
                     {pct(r.capture_pct)}
+                    {goalSuffix(r.capture_goal_pct)}
                   </td>
                 </tr>
               ))}
@@ -437,10 +701,14 @@ export default async function GreetersPage({ searchParams }: PageProps) {
                 <th className="px-4 py-3">Site</th>
                 <th className="px-4 py-3">Total cars</th>
                 <th className="px-4 py-3">Wash sales</th>
+                <th className="px-4 py-3">Rewashes</th>
                 <th className="px-4 py-3">Package $</th>
                 <th className="px-4 py-3">Extras $</th>
                 <th className="px-4 py-3">D.O.B.</th>
                 <th className="px-4 py-3">Sign ups</th>
+                <th className="px-4 py-3">Cancels</th>
+                <th className="px-4 py-3">Net</th>
+                <th className="px-4 py-3">Members</th>
                 <th className="px-4 py-3">Capture %</th>
               </tr>
             </thead>
@@ -463,17 +731,37 @@ export default async function GreetersPage({ searchParams }: PageProps) {
                     {num(r.wash_sales)}
                   </td>
                   <td className="px-4 py-3 text-splash-navy/80">
+                    {num(r.rewashes)}
+                  </td>
+                  <td className="px-4 py-3 text-splash-navy/80">
                     {money(r.package_dollars)}
                   </td>
                   <td className="px-4 py-3 text-splash-navy/80">
                     {money(r.extras_dollars)}
                   </td>
-                  <td className="px-4 py-3 font-semibold">{dobCell(r.dob)}</td>
+                  <td className="px-4 py-3 font-semibold">
+                    {dobCell(r.dob)}
+                    {goalSuffix(r.dob_goal)}
+                  </td>
                   <td className="px-4 py-3 text-splash-navy/80">
                     {num(r.sign_ups)}
                   </td>
+                  <td className="px-4 py-3 text-splash-navy/80">
+                    {num(r.cancellations)}
+                  </td>
+                  {/* sign ups minus cancellations, computed in Postgres. */}
+                  <td className="px-4 py-3 text-splash-navy/80">
+                    {num(r.net_members)}
+                  </td>
+                  {/* A level, not a daily amount — the member roll as of this
+                      day, graded against the month-end goal. */}
+                  <td className="px-4 py-3 font-semibold">
+                    {num(r.total_members)}
+                    {goalSuffix(r.member_goal_month_end)}
+                  </td>
                   <td className="px-4 py-3 font-semibold">
                     {pct(r.capture_pct)}
+                    {goalSuffix(r.capture_goal_pct)}
                   </td>
                 </tr>
               ))}
@@ -482,138 +770,6 @@ export default async function GreetersPage({ searchParams }: PageProps) {
         )}
       </Card>
 
-      {/* Write cards */}
-      <div className="mb-6 rounded-splash-lg border border-gray-light bg-white p-6 shadow-splash-card">
-        <h2 className="mb-1 text-lg font-bold text-splash-navy">
-          Log a greeter&rsquo;s day
-        </h2>
-        <p className="mb-4 text-xs text-splash-navy/60">
-          One row per greeter per day. Submitting the same greeter and date
-          again updates that row rather than adding a second one. D.O.B. and
-          capture % are calculated for you.
-        </p>
-        <GreeterDayForm action={submitGreeterDayAction} defaultDate={today} />
-      </div>
-
-      <div className="mb-6 rounded-splash-lg border border-gray-light bg-white p-6 shadow-splash-card">
-        <h2 className="mb-1 text-lg font-bold text-splash-navy">
-          Log site-wide numbers
-        </h2>
-        <p className="mb-4 text-xs text-splash-navy/60">
-          The whole location&rsquo;s day, not attributed to anyone. Same
-          metrics; one row per site per day.
-        </p>
-        <form action={submitLocationDayAction} className="flex flex-col gap-4">
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-            <label className="flex flex-col gap-1">
-              <span className={LABEL_CLS}>Date *</span>
-              <input
-                type="date"
-                name="business_date"
-                required
-                defaultValue={today}
-                className={INPUT_CLS}
-              />
-            </label>
-            <div className="flex flex-col gap-1">
-              <span className={LABEL_CLS}>Location *</span>
-              <LocationPicker
-                name="location_id"
-                required
-                placeholder="Search by site number, name, or code…"
-              />
-            </div>
-          </div>
-          <MetricFields />
-          <div className="mt-1">
-            <button
-              type="submit"
-              className="inline-flex items-center gap-1.5 rounded-splash-sm bg-splash-blue px-5 py-2.5 text-sm font-bold text-white shadow-splash-btn transition-colors hover:bg-splash-blue-dark"
-            >
-              Save site-wide day
-            </button>
-          </div>
-        </form>
-      </div>
-
-      <div className="rounded-splash-lg border border-gray-light bg-white p-6 shadow-splash-card">
-        <h2 className="mb-1 text-lg font-bold text-splash-navy">
-          Set goals for a site
-        </h2>
-        <p className="mb-4 text-xs text-splash-navy/60">
-          Goals apply to a location for a date range and are copied onto each
-          day as it&rsquo;s logged — changing them later won&rsquo;t re-grade
-          days already submitted. Leave the end date blank for an open-ended
-          goal. Ranges for one site can&rsquo;t overlap.
-        </p>
-        <form action={createGoalAction} className="flex flex-col gap-4">
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-            <div className="flex flex-col gap-1">
-              <span className={LABEL_CLS}>Location *</span>
-              <LocationPicker
-                name="location_id"
-                required
-                placeholder="Search by site number, name, or code…"
-              />
-            </div>
-            <label className="flex flex-col gap-1">
-              <span className={LABEL_CLS}>Effective from *</span>
-              <input
-                type="date"
-                name="effective_from"
-                required
-                className={INPUT_CLS}
-              />
-            </label>
-            <label className="flex flex-col gap-1">
-              <span className={LABEL_CLS}>Effective to</span>
-              <input type="date" name="effective_to" className={INPUT_CLS} />
-            </label>
-            <label className="flex flex-col gap-1">
-              <span className={LABEL_CLS}>Sign up goal *</span>
-              <input
-                type="number"
-                name="sign_up_goal"
-                min="0"
-                step="1"
-                required
-                placeholder="0"
-                className={INPUT_CLS}
-              />
-            </label>
-            <label className="flex flex-col gap-1">
-              <span className={LABEL_CLS}>Extras goal ($) *</span>
-              <input
-                type="number"
-                name="extras_goal"
-                min="0"
-                step="0.01"
-                required
-                placeholder="0.00"
-                className={INPUT_CLS}
-              />
-            </label>
-            <label className="flex flex-col gap-1">
-              <span className={LABEL_CLS}>Note</span>
-              <input
-                type="text"
-                name="note"
-                maxLength={500}
-                placeholder="Optional"
-                className={INPUT_CLS}
-              />
-            </label>
-          </div>
-          <div className="mt-1">
-            <button
-              type="submit"
-              className="inline-flex items-center gap-1.5 rounded-splash-sm bg-splash-blue px-5 py-2.5 text-sm font-bold text-white shadow-splash-btn transition-colors hover:bg-splash-blue-dark"
-            >
-              Save goal
-            </button>
-          </div>
-        </form>
-      </div>
     </section>
   );
 }
@@ -626,6 +782,9 @@ const LABEL_CLS =
   "text-xs font-semibold uppercase tracking-wider text-splash-navy/70";
 const INPUT_CLS =
   "rounded-splash-sm border border-gray-light bg-white px-3 py-2 text-sm text-splash-navy placeholder:text-splash-navy/40 focus:border-splash-blue focus:outline-none";
+const HINT_CLS = "text-[11px] text-splash-navy/60";
+const SUBMIT_BTN_CLS =
+  "inline-flex items-center gap-1.5 rounded-splash-sm bg-splash-blue px-5 py-2.5 text-sm font-bold text-white shadow-splash-btn transition-colors hover:bg-splash-blue-dark";
 const THEAD_CLS =
   "bg-splash-navy/5 text-left text-xs font-semibold uppercase tracking-wider text-splash-navy/70";
 const TBODY_CLS = "divide-y divide-gray-light text-splash-navy";

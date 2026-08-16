@@ -8,17 +8,36 @@
 -- and apps/web briefs that touch `greeter_daily`, `location_daily`, or
 -- `greeter_goals`.
 --
+-- IF THIS SCHEMA IS ALREADY LIVE, DO NOT RUN THIS FILE. greeter-scorecard-
+-- alter-01.sql migrates an existing database to the same shape this file now
+-- creates. Exactly one of the two, never both.
+--
 -- METRIC VOCABULARY (confirmed with Josh 2026-08-15) — read this before
 -- touching any of the arithmetic:
 --
 --   total_cars       Every car through the tunnel, unlimited members included.
+--                    SITE-LEVEL ONLY (location_daily). Deliberately absent from
+--                    greeter_daily: every greeter on a shift would type the same
+--                    number and summing across greeters would multiply the
+--                    site's day by the size of the crew.
 --   wash_sales       "ALC" / a-la-carte on the source report: NON-unlimited,
 --                    saleable cars. This is the denominator for BOTH derived
 --                    metrics. Named `wash_sales` (not `alc`) because that is
 --                    how the column reads on the report the numbers come from.
+--   rewashes         Re-runs, on both tables. Authoritative figure is the
+--                    site's; the greeter copy is optional and informational.
+--   cancellations    Memberships cancelled that day. Site-level only.
+--   total_members    Active members as of that day. A LEVEL, not a delta — it
+--                    is never summed across days, only read at the latest date
+--                    in a window. Site-level only.
+--   net_members      Generated: sign_ups - cancellations. The day's delta.
 --   package_dollars  Wash package revenue.
 --   extras_dollars   Wash extras revenue.
 --   sign_ups         Unlimited memberships sold.
+--   shift_start /    The greeter's shift window as a bare `time`. Both or
+--   shift_end        neither; end < start means an overnight shift.
+--   hours_worked     Generated from the shift window.
+--   wash_sales_per_hour  Generated: wash_sales over the shift duration.
 --   dob              "Dollars over base" = (package $ + extras $) / wash_sales.
 --   capture_pct      sign_ups / wash_sales, as a PERCENTAGE (0-100).
 --
@@ -78,20 +97,36 @@
 -- window contains the business_date", with effective_to NULL meaning open-
 -- ended. The exclusion constraint below makes overlapping windows for one
 -- location impossible, so the lookup can never be ambiguous.
+--
+-- Both rate goals are expressed in the SAME UNITS as the actuals they grade:
+-- capture_goal_pct against capture_pct, dob_goal against dob. A raw sign-up
+-- count goal (what this used to be) wasn't comparable between a 40-car Tuesday
+-- and a 400-car Saturday; capture % already normalizes for opportunity.
 CREATE TABLE IF NOT EXISTS greeter_goals (
   id                uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   site_number       integer NOT NULL,
   location_code     text NOT NULL,
   effective_from    date NOT NULL,
   effective_to      date,                                   -- NULL = open-ended (current goal)
-  sign_up_goal      integer     NOT NULL CHECK (sign_up_goal >= 0),
-  extras_goal       numeric(12,2) NOT NULL CHECK (extras_goal >= 0),
+  capture_goal_pct  numeric(6,2)  NOT NULL,
+  dob_goal          numeric(12,2) NOT NULL,
+  -- Total ACTIVE members the site should have reached by month end. A level,
+  -- not net adds and not gross sign-ups, so it is graded against the most
+  -- recent location_daily.total_members in the window, never against a sum.
+  -- Nullable: not every site sets a membership target.
+  member_goal_month_end integer,
   note              text,                                   -- e.g. "summer promo push"
   created_at        timestamptz NOT NULL DEFAULT now(),
   created_by        uuid NOT NULL,                          -- auth.users.id
   updated_at        timestamptz NOT NULL DEFAULT now(),
   CONSTRAINT greeter_goals_window_valid
-    CHECK (effective_to IS NULL OR effective_to >= effective_from)
+    CHECK (effective_to IS NULL OR effective_to >= effective_from),
+  CONSTRAINT greeter_goals_capture_goal_pct_range
+    CHECK (capture_goal_pct >= 0 AND capture_goal_pct <= 100),
+  CONSTRAINT greeter_goals_dob_goal_nonneg
+    CHECK (dob_goal >= 0),
+  CONSTRAINT greeter_goals_member_goal_nonneg
+    CHECK (member_goal_month_end IS NULL OR member_goal_month_end >= 0)
 );
 CREATE INDEX IF NOT EXISTS idx_greeter_goals_site        ON greeter_goals (site_number, effective_from DESC);
 CREATE INDEX IF NOT EXISTS idx_greeter_goals_code        ON greeter_goals (location_code);
@@ -133,17 +168,21 @@ CREATE TABLE IF NOT EXISTS greeter_daily (
   beekeeper_user_id   text NOT NULL,
   greeter_name        text NOT NULL,
 
-  -- Typed-in metrics.
-  total_cars          integer,
+  -- Typed-in metrics. No total_cars here on purpose — see the header note.
   wash_sales          integer       CHECK (wash_sales IS NULL OR wash_sales >= 0),
+  rewashes            integer       CHECK (rewashes IS NULL OR rewashes >= 0),
   package_dollars     numeric(12,2),
   extras_dollars      numeric(12,2),
   sign_ups            integer       CHECK (sign_ups IS NULL OR sign_ups >= 0),
 
+  -- Shift window, bare `time` (no date, no zone). End before start = overnight.
+  shift_start         time,
+  shift_end           time,
+
   -- Goal snapshot, copied from greeter_goals at submit time. NULL when no
   -- goal window covered business_date.
-  sign_up_goal        integer,
-  extras_goal         numeric(12,2),
+  capture_goal_pct    numeric(6,2),
+  dob_goal            numeric(12,2),
 
   -- Derived. See the header note on why these are generated, not computed.
   capture_pct         numeric(6,2) GENERATED ALWAYS AS (
@@ -159,6 +198,37 @@ CREATE TABLE IF NOT EXISTS greeter_daily (
                         END
                       ) STORED,
 
+  -- 86400s is added back when the shift ends before it starts, which caps one
+  -- row at a single day — correct for a per-day grain.
+  hours_worked        numeric(6,2) GENERATED ALWAYS AS (
+                        CASE WHEN shift_start IS NOT NULL AND shift_end IS NOT NULL THEN
+                          ROUND(
+                            (
+                              EXTRACT(EPOCH FROM shift_end) - EXTRACT(EPOCH FROM shift_start)
+                              + CASE WHEN shift_end < shift_start THEN 86400 ELSE 0 END
+                            )::numeric / 3600, 2)
+                        END
+                      ) STORED,
+
+  -- The duration expression is repeated rather than referencing hours_worked
+  -- because Postgres forbids a generated column from referencing another
+  -- generated column. Change the rule in BOTH places or they will disagree.
+  -- NULL (not 0) when there is no shift: unrecorded throughput is unknown.
+  wash_sales_per_hour numeric(10,2) GENERATED ALWAYS AS (
+                        CASE WHEN shift_start IS NOT NULL AND shift_end IS NOT NULL
+                              AND (
+                                EXTRACT(EPOCH FROM shift_end) - EXTRACT(EPOCH FROM shift_start)
+                                + CASE WHEN shift_end < shift_start THEN 86400 ELSE 0 END
+                              ) > 0
+                        THEN ROUND(
+                               COALESCE(wash_sales, 0)::numeric * 3600
+                               / (
+                                   EXTRACT(EPOCH FROM shift_end) - EXTRACT(EPOCH FROM shift_start)
+                                   + CASE WHEN shift_end < shift_start THEN 86400 ELSE 0 END
+                                 )::numeric, 2)
+                        END
+                      ) STORED,
+
   comments            text,
   created_at          timestamptz NOT NULL DEFAULT now(),
   created_by          uuid NOT NULL,                        -- auth.users.id
@@ -168,7 +238,13 @@ CREATE TABLE IF NOT EXISTS greeter_daily (
   updated_by_email    text,
 
   CONSTRAINT greeter_daily_unique_day
-    UNIQUE (location_id, beekeeper_user_id, business_date)
+    UNIQUE (location_id, beekeeper_user_id, business_date),
+
+  -- Both-or-neither. A half-filled window yields a NULL hours_worked that is
+  -- indistinguishable from "no shift recorded", and the form can't tell them
+  -- apart after the fact.
+  CONSTRAINT greeter_daily_shift_pair
+    CHECK ((shift_start IS NULL) = (shift_end IS NULL))
 );
 CREATE INDEX IF NOT EXISTS idx_greeter_daily_date        ON greeter_daily (business_date DESC);
 CREATE INDEX IF NOT EXISTS idx_greeter_daily_scope       ON greeter_daily (location_code);
@@ -182,12 +258,16 @@ CREATE INDEX IF NOT EXISTS idx_greeter_daily_name_trgm
 -- ===========================================================================
 -- 3. location_daily — the same metrics for the whole site, whole day.
 -- ===========================================================================
--- Deliberately the same metric set as greeter_daily so summed greeter rows can
+-- Carries the same shared metrics as greeter_daily so summed greeter rows can
 -- be compared against the site's actual totals and the gap (numbers nobody
 -- logged) is visible. Kept in a separate table rather than a nullable
 -- beekeeper_user_id on greeter_daily so the per-greeter unique key stays
 -- honest and so a site total can never be mistaken for a person's row in a
 -- GROUP BY.
+--
+-- The metric sets are NOT identical: total_cars, cancellations and
+-- total_members are site facts a greeter can't own, and the shift window is a
+-- person fact a site can't have.
 CREATE TABLE IF NOT EXISTS location_daily (
   id                  uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   business_date       date NOT NULL,
@@ -198,12 +278,23 @@ CREATE TABLE IF NOT EXISTS location_daily (
 
   total_cars          integer,
   wash_sales          integer       CHECK (wash_sales IS NULL OR wash_sales >= 0),
+  rewashes            integer       CHECK (rewashes IS NULL OR rewashes >= 0),
   package_dollars     numeric(12,2),
   extras_dollars      numeric(12,2),
   sign_ups            integer       CHECK (sign_ups IS NULL OR sign_ups >= 0),
+  cancellations       integer       CHECK (cancellations IS NULL OR cancellations >= 0),
+  -- A LEVEL, not a delta. Never SUM this across days; read it at the latest
+  -- business_date in the window.
+  total_members       integer       CHECK (total_members IS NULL OR total_members >= 0),
 
-  sign_up_goal        integer,
-  extras_goal         numeric(12,2),
+  capture_goal_pct      numeric(6,2),
+  dob_goal              numeric(12,2),
+  member_goal_month_end integer,
+
+  -- The day's membership delta. Generated so it can't drift from its inputs.
+  net_members         integer GENERATED ALWAYS AS (
+                        COALESCE(sign_ups, 0) - COALESCE(cancellations, 0)
+                      ) STORED,
 
   capture_pct         numeric(6,2) GENERATED ALWAYS AS (
                         CASE WHEN COALESCE(wash_sales, 0) > 0
@@ -270,10 +361,16 @@ CREATE TRIGGER trg_greeter_goals_updated_at
 -- silently get an all-time rollup. Filters here are applied to the base rows,
 -- then aggregated.
 --
--- WEIGHTING: capture_pct and dob are recomputed from the SUMmed numerator and
--- denominator, never averaged from the per-day columns. AVG(capture_pct) would
--- weight a 3-car day the same as a 300-car day and flatter slow days. If you
--- add another derived metric here, derive it the same way.
+-- WEIGHTING: capture_pct, dob and wash_sales_per_hour are recomputed from the
+-- SUMmed numerator and denominator, never averaged from the per-day columns.
+-- AVG(capture_pct) would weight a 3-car day the same as a 300-car day and
+-- flatter slow days; AVG(wash_sales_per_hour) would weight a 2-hour shift the
+-- same as a 10-hour one. If you add another derived metric, derive it the same
+-- way.
+--
+-- The two goal columns are the exception and ARE averaged: they are a
+-- percentage and a dollars-per-car rate, so summing either across days
+-- produces a number that grows with the length of the range and means nothing.
 --
 -- Every parameter is NULL-defaulted and NULL means "no filter", so callers
 -- pass only what they're narrowing on. p_location_codes carries the
@@ -288,48 +385,54 @@ CREATE OR REPLACE FUNCTION greeter_rollup(
   p_location_codes    text[]  DEFAULT NULL
 )
 RETURNS TABLE (
-  beekeeper_user_id text,
-  greeter_name      text,
-  site_number       integer,
-  location_code     text,
-  first_date        date,
-  last_date         date,
-  days_logged       bigint,
-  total_cars        bigint,
-  wash_sales        bigint,
-  package_dollars   numeric,
-  extras_dollars    numeric,
-  sign_ups          bigint,
-  sign_up_goal      bigint,
-  extras_goal       numeric,
-  capture_pct       numeric,
-  dob               numeric
+  beekeeper_user_id   text,
+  greeter_name        text,
+  site_number         integer,
+  location_code       text,
+  first_date          date,
+  last_date           date,
+  days_logged         bigint,
+  wash_sales          bigint,
+  rewashes            bigint,
+  package_dollars     numeric,
+  extras_dollars      numeric,
+  sign_ups            bigint,
+  hours_worked        numeric,
+  wash_sales_per_hour numeric,
+  capture_goal_pct    numeric,
+  dob_goal            numeric,
+  capture_pct         numeric,
+  dob                 numeric
 )
 LANGUAGE sql
 STABLE
 AS $$
   SELECT
     g.beekeeper_user_id,
-    MAX(g.greeter_name)        AS greeter_name,
+    MAX(g.greeter_name)          AS greeter_name,
     g.site_number,
     g.location_code,
-    MIN(g.business_date)       AS first_date,
-    MAX(g.business_date)       AS last_date,
-    COUNT(*)                   AS days_logged,
-    SUM(g.total_cars)          AS total_cars,
-    SUM(g.wash_sales)          AS wash_sales,
-    SUM(g.package_dollars)     AS package_dollars,
-    SUM(g.extras_dollars)      AS extras_dollars,
-    SUM(g.sign_ups)            AS sign_ups,
-    SUM(g.sign_up_goal)        AS sign_up_goal,
-    SUM(g.extras_goal)         AS extras_goal,
+    MIN(g.business_date)         AS first_date,
+    MAX(g.business_date)         AS last_date,
+    COUNT(*)                     AS days_logged,
+    SUM(g.wash_sales)            AS wash_sales,
+    SUM(g.rewashes)              AS rewashes,
+    SUM(g.package_dollars)       AS package_dollars,
+    SUM(g.extras_dollars)        AS extras_dollars,
+    SUM(g.sign_ups)              AS sign_ups,
+    SUM(g.hours_worked)          AS hours_worked,
+    CASE WHEN SUM(g.hours_worked) > 0
+      THEN ROUND(SUM(COALESCE(g.wash_sales, 0))::numeric / SUM(g.hours_worked), 2)
+    END                          AS wash_sales_per_hour,
+    ROUND(AVG(g.capture_goal_pct), 2) AS capture_goal_pct,
+    ROUND(AVG(g.dob_goal), 2)         AS dob_goal,
     CASE WHEN SUM(g.wash_sales) > 0
       THEN ROUND(SUM(COALESCE(g.sign_ups, 0))::numeric * 100 / SUM(g.wash_sales), 2)
-    END                        AS capture_pct,
+    END                          AS capture_pct,
     CASE WHEN SUM(g.wash_sales) > 0
       THEN ROUND((SUM(COALESCE(g.package_dollars, 0)) + SUM(COALESCE(g.extras_dollars, 0)))
                  / SUM(g.wash_sales), 2)
-    END                        AS dob
+    END                          AS dob
   FROM greeter_daily g
   WHERE (p_date_from         IS NULL OR g.business_date     >= p_date_from)
     AND (p_date_to           IS NULL OR g.business_date     <= p_date_to)

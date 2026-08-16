@@ -299,25 +299,46 @@ async function apiSubmitGreeterDay(
     return jsonResponse({ error: "greeter_name is required" }, 400);
   }
 
+  // Both-or-neither, enforced here as well as by greeter_daily_shift_pair, so
+  // the caller gets a readable 400 instead of a raw constraint violation.
+  const shiftStart = timeOrNull(body.shift_start);
+  const shiftEnd = timeOrNull(body.shift_end);
+  if ((shiftStart === null) !== (shiftEnd === null)) {
+    return jsonResponse(
+      {
+        error: "incomplete shift",
+        reason:
+          "Give both a shift start and a shift end, or neither. A half-filled window can't produce hours worked."
+      },
+      400
+    );
+  }
+
   const resolved = await resolveWritableLocation(env, locationId, scope);
   if (!resolved.ok) return resolved.response;
 
   const sb = createServiceClient(env);
   // Snapshot the goal that was in force on the business date — not today's.
   // Backfilling last month must grade against last month's target.
-  const goal = await getGoalSnapshot(sb, resolved.key.site_number, businessDate);
+  // member_goal_month_end is dropped: it's a site membership target, and a
+  // single greeter's day is not the thing it grades. greeter_daily has no such
+  // column, and PostgREST would reject the insert if it were spread in.
+  const { member_goal_month_end: _memberGoal, ...greeterGoal } =
+    await getGoalSnapshot(sb, resolved.key.site_number, businessDate);
 
   const row: GreeterDailyInsert = {
     business_date: businessDate,
     ...resolved.key,
     beekeeper_user_id: beekeeperUserId,
     greeter_name: greeterName,
-    total_cars: toIntOrNull(body.total_cars),
     wash_sales: toIntOrNull(body.wash_sales),
+    rewashes: toIntOrNull(body.rewashes),
     package_dollars: toNumOrNull(body.package_dollars),
     extras_dollars: toNumOrNull(body.extras_dollars),
     sign_ups: toIntOrNull(body.sign_ups),
-    ...goal,
+    shift_start: shiftStart,
+    shift_end: shiftEnd,
+    ...greeterGoal,
     comments: trimOrNull(body.comments),
     created_by: session.userId,
     created_by_email: session.email
@@ -358,9 +379,12 @@ async function apiSubmitLocationDay(
     ...resolved.key,
     total_cars: toIntOrNull(body.total_cars),
     wash_sales: toIntOrNull(body.wash_sales),
+    rewashes: toIntOrNull(body.rewashes),
     package_dollars: toNumOrNull(body.package_dollars),
     extras_dollars: toNumOrNull(body.extras_dollars),
     sign_ups: toIntOrNull(body.sign_ups),
+    cancellations: toIntOrNull(body.cancellations),
+    total_members: toIntOrNull(body.total_members),
     ...goal,
     comments: trimOrNull(body.comments),
     created_by: session.userId,
@@ -403,10 +427,29 @@ async function apiCreateGoal(
   if (locationId == null) {
     return jsonResponse({ error: "location_id is required" }, 400);
   }
-  const signUpGoal = toIntOrNull(body.sign_up_goal);
-  const extrasGoal = toNumOrNull(body.extras_goal);
-  if (signUpGoal == null || extrasGoal == null) {
-    return jsonResponse({ error: "sign_up_goal and extras_goal are required" }, 400);
+  const captureGoalPct = toNumOrNull(body.capture_goal_pct);
+  const dobGoal = toNumOrNull(body.dob_goal);
+  if (captureGoalPct == null || dobGoal == null) {
+    return jsonResponse(
+      { error: "capture_goal_pct and dob_goal are required" },
+      400
+    );
+  }
+  // Checked here as well as by greeter_goals_capture_goal_pct_range, because
+  // "30" meaning 30% and "0.30" meaning 30% is the single easiest mistake to
+  // make with this field and the DB message wouldn't say which way to go.
+  if (captureGoalPct < 0 || captureGoalPct > 100) {
+    return jsonResponse(
+      {
+        error: "capture_goal_pct out of range",
+        reason: "Capture goal is a percentage from 0 to 100 (30 means 30%)."
+      },
+      400
+    );
+  }
+  const memberGoal = toIntOrNull(body.member_goal_month_end);
+  if (memberGoal != null && memberGoal < 0) {
+    return jsonResponse({ error: "member_goal_month_end must be >= 0" }, 400);
   }
 
   const resolved = await resolveWritableLocation(env, locationId, scope);
@@ -419,8 +462,9 @@ async function apiCreateGoal(
       location_code: resolved.key.location_code,
       effective_from: effectiveFrom,
       effective_to: effectiveTo,
-      sign_up_goal: signUpGoal,
-      extras_goal: extrasGoal,
+      capture_goal_pct: captureGoalPct,
+      dob_goal: dobGoal,
+      member_goal_month_end: memberGoal,
       note: trimOrNull(body.note),
       created_by: session.userId
     });
@@ -481,4 +525,25 @@ function isoDateOrNull(v: unknown): string | null {
   const t = trimOrNull(v);
   if (!t || !/^\d{4}-\d{2}-\d{2}$/.test(t)) return null;
   return t;
+}
+
+/**
+ * Accept 24-hour HH:MM or HH:MM:SS for a Postgres `time` column.
+ *
+ * The form sends 24-hour text; the hour/minute/AM-PM pickers convert before
+ * submitting, so nothing 12-hour reaches here. Anything unparseable becomes
+ * null rather than throwing — but note the shift pair check upstream treats
+ * "one side null" as a 400, so a malformed time is reported rather than
+ * silently dropped.
+ */
+function timeOrNull(v: unknown): string | null {
+  const t = trimOrNull(v);
+  if (!t) return null;
+  const m = /^(\d{1,2}):(\d{2})(?::(\d{2}))?$/.exec(t);
+  if (!m) return null;
+  const hh = Number(m[1]);
+  const mm = Number(m[2]);
+  const ss = m[3] ? Number(m[3]) : 0;
+  if (hh > 23 || mm > 59 || ss > 59) return null;
+  return `${String(hh).padStart(2, "0")}:${String(mm).padStart(2, "0")}:${String(ss).padStart(2, "0")}`;
 }

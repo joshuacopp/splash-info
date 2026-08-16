@@ -22,7 +22,8 @@
 
 import { useEffect, useRef, useState } from "react";
 import { LocationPicker } from "../../performance/_components/LocationPicker";
-import { MetricFields } from "./MetricFields";
+import { GreeterMetricFields } from "./MetricFields";
+import { ShiftTimePicker } from "./ShiftTimePicker";
 
 interface RosterMember {
   id: string;
@@ -203,7 +204,24 @@ export function GreeterDayForm({
         ) : null}
       </div>
 
-      <MetricFields />
+      <GreeterMetricFields />
+
+      {/* Optional. Filling both unlocks hours worked and wash sales per hour;
+          leaving both blank just means those two read as unknown, not zero.
+          The worker rejects one-without-the-other with a readable message. */}
+      <div className="flex flex-col gap-2 rounded-splash-sm border border-gray-light bg-splash-navy/[0.02] p-3">
+        <span className="text-xs font-semibold uppercase tracking-wider text-splash-navy/70">
+          Shift (optional)
+        </span>
+        <div className="flex flex-wrap gap-5">
+          <ShiftTimePicker name="shift_start" label="Start" />
+          <ShiftTimePicker name="shift_end" label="End" />
+        </div>
+        <span className="text-[11px] text-splash-navy/60">
+          Fill both or neither. An end time earlier than the start is read as an
+          overnight shift.
+        </span>
+      </div>
 
       <div className="mt-1">
         <button

@@ -1,99 +1,136 @@
-// The five typed-in scorecard numbers, shared by the greeter-day and
-// location-day forms so the two can't drift apart.
+// The typed-in scorecard numbers for the two day forms.
+//
+// Deliberately TWO components sharing a private field set rather than one
+// shared component: the greeter's day and the site's day no longer collect the
+// same metrics, and a single component with `variant` props would have to
+// re-derive which fields apply on every render and would drift the first time
+// one side gained a field.
+//
+// What differs, and why:
+//   total_cars       Site only. Every greeter on shift would type the same
+//                    tunnel count, and summing across a crew would multiply the
+//                    site's day by the size of the crew.
+//   cancellations    Site only. Nobody cancels at a specific greeter's window.
+//   total_members    Site only, and a LEVEL rather than a daily amount — the
+//                    active member count as of that day. Never summed.
+//   rewashes         Both, but the site's figure is the authoritative one; the
+//                    greeter's copy is optional context.
 //
 // No "use client" on purpose: this is presentational markup with no hooks or
 // handlers, so it renders as a server component inside the location-day form
 // and gets pulled into the client bundle by GreeterDayForm. Keep it that way —
 // adding state here would force the location-day form client-side too.
 //
-// D.O.B. and Capture % are deliberately absent: Postgres computes them
-// (GENERATED ALWAYS ... STORED), matching the greyed formula cells in the
-// spreadsheet this replaces. Typing them in would let the stored value
-// disagree with its own inputs.
+// D.O.B. and Capture % are deliberately absent from both: Postgres computes
+// them (GENERATED ALWAYS ... STORED), matching the greyed formula cells in the
+// spreadsheet this replaces. Typing them in would let the stored value disagree
+// with its own inputs. Hours worked and wash sales per hour are the same deal —
+// they come from the shift window, not from a box.
 
 const labelCls =
   "text-xs font-semibold uppercase tracking-wider text-splash-navy/70";
 const inputCls =
   "w-full rounded-splash-sm border border-gray-light bg-white px-3 py-2 text-sm text-splash-navy placeholder:text-splash-navy/40 focus:border-splash-blue focus:outline-none";
 const hintCls = "text-[11px] text-splash-navy/60";
+const gridCls = "grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3";
 
-export function MetricFields() {
+function NumberField({
+  name,
+  label,
+  hint,
+  money = false
+}: {
+  name: string;
+  label: string;
+  hint?: string;
+  money?: boolean;
+}) {
   return (
-    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-      <label className="flex flex-col gap-1">
-        <span className={labelCls}>Total cars</span>
-        <input
-          type="number"
-          name="total_cars"
-          min="0"
-          step="1"
-          placeholder="0"
-          className={inputCls}
-        />
-        <span className={hintCls}>Every car through the tunnel.</span>
-      </label>
+    <label className="flex flex-col gap-1">
+      <span className={labelCls}>{label}</span>
+      <input
+        type="number"
+        name={name}
+        min="0"
+        step={money ? "0.01" : "1"}
+        placeholder={money ? "0.00" : "0"}
+        className={inputCls}
+      />
+      {hint ? <span className={hintCls}>{hint}</span> : null}
+    </label>
+  );
+}
 
-      <label className="flex flex-col gap-1">
-        <span className={labelCls}>Wash sales (ALC)</span>
-        <input
-          type="number"
-          name="wash_sales"
-          min="0"
-          step="1"
-          placeholder="0"
-          className={inputCls}
-        />
-        <span className={hintCls}>
-          A-la-carte, non-unlimited cars. Drives D.O.B. and capture %.
-        </span>
-      </label>
+function CommentsField() {
+  return (
+    <label className="flex flex-col gap-1">
+      <span className={labelCls}>Comments</span>
+      <input
+        type="text"
+        name="comments"
+        maxLength={2000}
+        placeholder="Optional"
+        className={inputCls}
+      />
+    </label>
+  );
+}
 
-      <label className="flex flex-col gap-1">
-        <span className={labelCls}>Sign ups</span>
-        <input
-          type="number"
-          name="sign_ups"
-          min="0"
-          step="1"
-          placeholder="0"
-          className={inputCls}
-        />
-      </label>
+/** What one greeter reports for their own day. No tunnel volume, no member roll. */
+export function GreeterMetricFields() {
+  return (
+    <div className={gridCls}>
+      <NumberField
+        name="wash_sales"
+        label="Wash sales (ALC)"
+        hint="A-la-carte, non-unlimited cars. Drives D.O.B. and capture %."
+      />
+      <NumberField
+        name="sign_ups"
+        label="Sign ups"
+        hint="Unlimited memberships sold."
+      />
+      <NumberField name="package_dollars" label="Package $" money />
+      <NumberField name="extras_dollars" label="Extras $" money />
+      <NumberField
+        name="rewashes"
+        label="Rewashes"
+        hint="Optional. The site's total is the number that counts."
+      />
+      <CommentsField />
+    </div>
+  );
+}
 
-      <label className="flex flex-col gap-1">
-        <span className={labelCls}>Package $</span>
-        <input
-          type="number"
-          name="package_dollars"
-          min="0"
-          step="0.01"
-          placeholder="0.00"
-          className={inputCls}
-        />
-      </label>
-
-      <label className="flex flex-col gap-1">
-        <span className={labelCls}>Extras $</span>
-        <input
-          type="number"
-          name="extras_dollars"
-          min="0"
-          step="0.01"
-          placeholder="0.00"
-          className={inputCls}
-        />
-      </label>
-
-      <label className="flex flex-col gap-1">
-        <span className={labelCls}>Comments</span>
-        <input
-          type="text"
-          name="comments"
-          maxLength={2000}
-          placeholder="Optional"
-          className={inputCls}
-        />
-      </label>
+/** The whole location's day, not attributed to anyone. */
+export function LocationMetricFields() {
+  return (
+    <div className={gridCls}>
+      <NumberField
+        name="total_cars"
+        label="Total cars"
+        hint="Every car through the tunnel, members included."
+      />
+      <NumberField
+        name="wash_sales"
+        label="Wash sales (ALC)"
+        hint="A-la-carte, non-unlimited cars. Drives D.O.B. and capture %."
+      />
+      <NumberField name="rewashes" label="Rewashes" />
+      <NumberField name="package_dollars" label="Package $" money />
+      <NumberField name="extras_dollars" label="Extras $" money />
+      <NumberField name="sign_ups" label="Sign ups" />
+      <NumberField
+        name="cancellations"
+        label="Cancellations"
+        hint="Memberships cancelled today."
+      />
+      <NumberField
+        name="total_members"
+        label="Total members"
+        hint="Active members as of today — a running total, not today's adds."
+      />
+      <CommentsField />
     </div>
   );
 }

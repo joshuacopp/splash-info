@@ -27,11 +27,18 @@ function strOrNull(formData: FormData, name: string): string | null {
   return s ? s : null;
 }
 
-/** The five typed-in metrics, identical for both day forms. */
-function metricFields(formData: FormData): Record<string, unknown> {
+/**
+ * The metrics both day forms collect.
+ *
+ * The two forms diverge beyond this — the site's day adds total_cars,
+ * cancellations and total_members (facts a single greeter can't own), and the
+ * greeter's day adds a shift window (a fact a site doesn't have) — so each
+ * action spreads this and then names its own extras.
+ */
+function sharedMetricFields(formData: FormData): Record<string, unknown> {
   return {
-    total_cars: strOrNull(formData, "total_cars"),
     wash_sales: strOrNull(formData, "wash_sales"),
+    rewashes: strOrNull(formData, "rewashes"),
     package_dollars: strOrNull(formData, "package_dollars"),
     extras_dollars: strOrNull(formData, "extras_dollars"),
     sign_ups: strOrNull(formData, "sign_ups"),
@@ -73,12 +80,22 @@ export async function submitGreeterDayAction(formData: FormData): Promise<void> 
 
   const pickedId = strField(formData, "beekeeper_user_id");
 
+  // Caught here so the user gets the message without a round trip; the worker
+  // and a DB check constraint both re-enforce it.
+  const shiftStart = strOrNull(formData, "shift_start");
+  const shiftEnd = strOrNull(formData, "shift_end");
+  if ((shiftStart === null) !== (shiftEnd === null)) {
+    fail("Enter both a shift start and a shift end, or leave both blank.");
+  }
+
   const result = await performancePostJson("/pertrack/api/greeter/days", {
     business_date: businessDate,
     location_id: locationId,
     beekeeper_user_id: pickedId || manualGreeterId(greeterName),
     greeter_name: greeterName,
-    ...metricFields(formData)
+    shift_start: shiftStart,
+    shift_end: shiftEnd,
+    ...sharedMetricFields(formData)
   });
 
   if (!result.ok) fail(result.error);
@@ -97,7 +114,10 @@ export async function submitLocationDayAction(formData: FormData): Promise<void>
   const result = await performancePostJson("/pertrack/api/greeter/location-days", {
     business_date: businessDate,
     location_id: locationId,
-    ...metricFields(formData)
+    total_cars: strOrNull(formData, "total_cars"),
+    cancellations: strOrNull(formData, "cancellations"),
+    total_members: strOrNull(formData, "total_members"),
+    ...sharedMetricFields(formData)
   });
 
   if (!result.ok) fail(result.error);
@@ -121,18 +141,20 @@ export async function createGoalAction(formData: FormData): Promise<void> {
   const effectiveFrom = strField(formData, "effective_from");
   if (!effectiveFrom) fail("A goal needs a start date.");
 
-  const signUpGoal = strField(formData, "sign_up_goal");
-  const extrasGoal = strField(formData, "extras_goal");
-  if (!signUpGoal || !extrasGoal) {
-    fail("Enter both a sign-up goal and an extras goal.");
+  const captureGoal = strField(formData, "capture_goal_pct");
+  const dobGoal = strField(formData, "dob_goal");
+  if (!captureGoal || !dobGoal) {
+    fail("Enter both a capture % goal and a D.O.B. goal.");
   }
 
   const result = await performancePostJson("/pertrack/api/greeter/goals", {
     location_id: locationId,
     effective_from: effectiveFrom,
     effective_to: strOrNull(formData, "effective_to"),
-    sign_up_goal: signUpGoal,
-    extras_goal: extrasGoal,
+    capture_goal_pct: captureGoal,
+    dob_goal: dobGoal,
+    // Optional: not every site sets a membership target.
+    member_goal_month_end: strOrNull(formData, "member_goal_month_end"),
     note: strOrNull(formData, "note")
   });
 

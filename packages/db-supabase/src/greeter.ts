@@ -3,8 +3,10 @@
 //
 // Read that header before touching arithmetic here. Short version: `wash_sales`
 // (a-la-carte, non-unlimited cars) is the denominator for both derived metrics,
-// NOT `total_cars`. `capture_pct` and `dob` are Postgres GENERATED columns —
-// this module never writes them, and PostgREST will reject an insert that does.
+// NOT `total_cars` (which is site-level only and absent from greeter_daily).
+// `capture_pct`, `dob`, `hours_worked`, `wash_sales_per_hour` and `net_members`
+// are Postgres GENERATED columns — this module never writes them, and PostgREST
+// will reject an insert that names one.
 
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type {
@@ -12,13 +14,13 @@ import type {
   GreeterDailyRow,
   GreeterGoalInsert,
   GreeterGoalRow,
-  GreeterGoalSnapshot,
   GreeterLocationKey,
   GreeterRollupRow,
   GreeterRoster,
   GreeterRosterMember,
   LocationDailyInsert,
-  LocationDailyRow
+  LocationDailyRow,
+  LocationGoalSnapshot
 } from "@splash/types/greeter";
 
 /* ============================================================
@@ -195,15 +197,19 @@ export async function getGreeterRoster(
  * matching window per site, so `limit(1)` is exact rather than arbitrary.
  * Callers snapshot the result onto the submission row — see the schema header
  * for why goals are frozen per-submission rather than joined at read time.
+ *
+ * Returns the LOCATION-shaped snapshot (the superset). The greeter path takes
+ * only capture_goal_pct/dob_goal from it and drops member_goal_month_end, which
+ * is a site-level membership target a single greeter can't be graded on.
  */
 export async function getGoalSnapshot(
   client: SupabaseClient,
   siteNumber: number,
   businessDate: string
-): Promise<GreeterGoalSnapshot> {
+): Promise<LocationGoalSnapshot> {
   const { data, error } = await client
     .from("greeter_goals")
-    .select("sign_up_goal,extras_goal")
+    .select("capture_goal_pct,dob_goal,member_goal_month_end")
     .eq("site_number", siteNumber)
     .lte("effective_from", businessDate)
     .or(`effective_to.gte.${businessDate},effective_to.is.null`)
@@ -211,11 +217,16 @@ export async function getGoalSnapshot(
   if (error) throw error;
 
   const row = (data ?? [])[0] as
-    | { sign_up_goal: number | null; extras_goal: number | null }
+    | {
+        capture_goal_pct: number | null;
+        dob_goal: number | null;
+        member_goal_month_end: number | null;
+      }
     | undefined;
   return {
-    sign_up_goal: row?.sign_up_goal ?? null,
-    extras_goal: row?.extras_goal ?? null
+    capture_goal_pct: row?.capture_goal_pct ?? null,
+    dob_goal: row?.dob_goal ?? null,
+    member_goal_month_end: row?.member_goal_month_end ?? null
   };
 }
 
@@ -386,11 +397,14 @@ export interface GreeterDayFilters {
   limit?: number;
 }
 
+// No total_cars: it's site-level only. hours_worked / wash_sales_per_hour are
+// generated from the shift window and read-only.
 const DAY_COLS =
   "id,business_date,location_id,site_number,location_code," +
   "beekeeper_user_id,greeter_name," +
-  "total_cars,wash_sales,package_dollars,extras_dollars,sign_ups," +
-  "sign_up_goal,extras_goal,capture_pct,dob," +
+  "wash_sales,rewashes,package_dollars,extras_dollars,sign_ups," +
+  "shift_start,shift_end,hours_worked,wash_sales_per_hour," +
+  "capture_goal_pct,dob_goal,capture_pct,dob," +
   "comments,created_at,created_by_email,updated_at,updated_by_email";
 
 export async function listGreeterDays(
@@ -413,8 +427,9 @@ export async function listGreeterDays(
 
 const LOCATION_DAY_COLS =
   "id,business_date,location_id,site_number,location_code," +
-  "total_cars,wash_sales,package_dollars,extras_dollars,sign_ups," +
-  "sign_up_goal,extras_goal,capture_pct,dob," +
+  "total_cars,wash_sales,rewashes,package_dollars,extras_dollars," +
+  "sign_ups,cancellations,total_members,net_members," +
+  "capture_goal_pct,dob_goal,member_goal_month_end,capture_pct,dob," +
   "comments,created_at,created_by_email,updated_at,updated_by_email";
 
 export async function listLocationDays(
