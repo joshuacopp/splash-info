@@ -10,10 +10,11 @@
 // single rename lets ~11 page files keep working unchanged.
 //
 // Location list: the SPA wants a `locations` table; we synthesize it from
-// pricing_simple (location_code -> id, location_pretty -> name, area_manager ->
-// manager, regional_manager -> region) UNIONED with the inventory.locations
-// overlay (see overlay.ts). Overlay rows inherit manager/region from their
-// parent_code, so an in-bay sits under the same area manager as its tunnel.
+// pricing_simple (location_code -> id, location_pretty -> name) UNIONED with
+// the inventory.locations overlay (see overlay.ts), with manager/region read
+// off public.locations by site number. Overlay rows inherit manager/region
+// from their parent_code, so an in-bay sits under the same area manager as its
+// tunnel.
 //
 // Scope: super_admin sees everything; everyone else is filtered to
 // session.locations (their granted location_codes) — already expanded with
@@ -68,12 +69,21 @@ function inScope(allowed: Set<string> | null, code: unknown): boolean {
 //
 // manager/region drive the sidebar: Layout.jsx groups by `manager` and prints
 // `region` as the group's subtitle, falling back to a single "Unassigned"
-// group when both are null. They come from pricing_simple's denormalized
-// area_manager / regional_manager, which trg_sync_pricing_simple keeps in step
-// with public.locations. regional_manager is a person, not a territory —
-// public.locations.rm_group is the actual region label, but pricing_simple
-// doesn't carry it and joining back on `site` is unsafe (site_number is not
-// unique; 19/40/68 each have two rows). Swap it in if rm_group ever lands here.
+// group when both are null.
+//
+// `manager` is the area manager. `region` is the regional manager's NAME, not
+// public.locations.rm_group: rm_group is an integer 1-9 with no lookup table
+// anywhere, so "Region 7" tells a reader nothing. The number is appended in
+// parentheses when both are known, so the subtitle still ties back to the
+// territory the performance tracker filters on. rm_group alone is used only
+// when no RM name is on the row.
+//
+// rm_group only exists on public.locations, so this reads the registry as well
+// as pricing_simple and joins them on site number (pricing_simple.site is that
+// number as text, denormalized by trg_sync_pricing_simple). site_number is not
+// unique — 19/40/68 each carry two rows, Express vs Handwash — but the pair
+// share an org chart, so first-wins is fine for a label. Anything that doesn't
+// join falls back to pricing_simple's own denormalized manager columns.
 interface LocationMeta {
   name: string;
   manager: string | null;
@@ -89,14 +99,53 @@ function str(row: Record<string, unknown>, key: string): string | null {
   return typeof v === "string" && v.trim() ? v.trim() : null;
 }
 
+// rm_group is an INTEGER column in Postgres (packages/types types it
+// `string | null`, which is wrong — see locations.ts:25), so str() would drop
+// it. Read it defensively either way in case the column is ever widened.
+function rmGroup(row: Record<string, unknown>): string | null {
+  const v = row.rm_group;
+  if (typeof v === "number" && Number.isFinite(v)) return String(v);
+  return str(row, "rm_group");
+}
+
+/** "Cathy Nolan (7)" — name first, group number only as a suffix. */
+function regionLabel(row: Record<string, unknown>): string | null {
+  const name = str(row, "regional_manager");
+  const group = rmGroup(row);
+  if (name && group) return `${name} (${group})`;
+  if (name) return name;
+  return group ? `Region ${group}` : null;
+}
+
 async function getLocations(sb: SupabaseClient, allowed: Set<string> | null) {
-  const [pricing, overlay] = await Promise.all([
+  const [pricing, registry, overlay] = await Promise.all([
     sb
       .from("pricing_simple")
-      .select("location_code,location_pretty,area_manager,regional_manager"),
+      .select("location_code,location_pretty,site,area_manager,regional_manager"),
+    sb.from("locations").select("site_number,area_manager,regional_manager,rm_group"),
     loadOverlay(sb)
   ]);
   if (pricing.error) throw new Error(`Failed loading locations: ${pricing.error.message}`);
+
+  // Registry lookup by site number, keyed as a string because pricing_simple
+  // carries it as text. Fail-soft like the overlay: if this read fails the
+  // sidebar loses its region subtitles, which is not worth a 500 when the
+  // fallback below still produces a usable grouping.
+  const bySite = new Map<string, { manager: string | null; region: string | null }>();
+  if (registry.error) {
+    console.error("[inventory.locations] registry read failed", registry.error.message);
+  } else {
+    for (const raw of registry.data || []) {
+      const row = raw as Record<string, unknown>;
+      const site = row.site_number;
+      const key = typeof site === "number" ? String(site) : str(row, "site_number");
+      if (!key || bySite.has(key)) continue;
+      bySite.set(key, {
+        manager: str(row, "area_manager"),
+        region: regionLabel(row)
+      });
+    }
+  }
 
   // First pass builds meta for EVERY pricing code, in scope or not: an overlay
   // child inherits its parent's manager/region, and the parent can be out of
@@ -108,10 +157,12 @@ async function getLocations(sb: SupabaseClient, allowed: Set<string> | null) {
     const row = raw as Record<string, unknown>;
     const code = str(row, "location_code");
     if (!code || meta.has(code)) continue;
+    const site = str(row, "site");
+    const reg = site ? bySite.get(site) : undefined;
     meta.set(code, {
       name: str(row, "location_pretty") || code,
-      manager: str(row, "area_manager"),
-      region: str(row, "regional_manager")
+      manager: reg?.manager || str(row, "area_manager"),
+      region: reg?.region || str(row, "regional_manager")
     });
     order.push(code);
   }

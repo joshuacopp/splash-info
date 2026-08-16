@@ -11,6 +11,8 @@
 //   GET  /api/greeter/rollup         filters         -> per-greeter aggregate
 //   GET  /api/greeter/scan-rates     filters         -> per site-day scan rate
 //   GET  /api/greeter/missing-days   dates required  -> location-days not logged
+//   GET  /api/greeter/period-report  dates required  -> per-greeter period grades
+//   GET  /api/greeter/location-rows  dates required  -> site day rows + scanned
 //   GET  /api/greeter/location-days  filters         -> site-wide day rows
 //   POST /api/greeter/location-days                  -> submit/correct a day
 //   GET  /api/greeter/goals          ?site_number=   -> goal windows
@@ -36,9 +38,11 @@ import {
   listGreeterDays,
   listGreeterGoals,
   listGreeterMissingDays,
+  listGreeterPeriodReport,
   listGreeterRollup,
   listGreeterScanRates,
   listLocationDays,
+  listLocationPeriodRows,
   resolveGreeterLocationKey,
   submitGreeterDay,
   submitLocationDay,
@@ -61,6 +65,8 @@ export function isGreeterRoute(pathname: string, method: string): boolean {
     case "/api/greeter/rollup":
     case "/api/greeter/scan-rates":
     case "/api/greeter/missing-days":
+    case "/api/greeter/period-report":
+    case "/api/greeter/location-rows":
       return method === "GET";
     case "/api/greeter/days":
     case "/api/greeter/location-days":
@@ -103,6 +109,12 @@ export async function handleGreeterRoute(
   }
   if (pathname === "/api/greeter/missing-days" && method === "GET") {
     return apiMissingDays(url, env, scope);
+  }
+  if (pathname === "/api/greeter/period-report" && method === "GET") {
+    return apiPeriodReport(url, env, scope);
+  }
+  if (pathname === "/api/greeter/location-rows" && method === "GET") {
+    return apiLocationRows(url, env, scope);
   }
   if (pathname === "/api/greeter/location-days" && method === "GET") {
     return apiListLocationDays(url, env, scope);
@@ -308,6 +320,113 @@ async function apiMissingDays(
 
   const sb = createServiceClient(env);
   const rows = await listGreeterMissingDays(
+    sb,
+    { date_from: dateFrom, date_to: dateTo },
+    {
+      location_id: toIntOrNull(sp.get("location_id")),
+      site_number: toIntOrNull(sp.get("site_number")),
+      location_scope: scope ?? null
+    }
+  );
+  return jsonResponse(rows);
+}
+
+/**
+ * Per-greeter grades for one window: days over/under goal, weighted capture and
+ * DOB, totals.
+ *
+ * Dates are REQUIRED, like missing-days but for a different reason: every number
+ * here is "for the period", and a period with no start is not a period. An
+ * open-ended window would silently grade a greeter's whole career against the
+ * preset the button claims to apply.
+ *
+ * Deliberately does NO threshold filtering. The "underperformers" and "top
+ * performers" presets are the SAME query as "previous 7 days" with a different
+ * window and a filter on pct_days_under / pct_days_over applied by the page.
+ * Pushing the thresholds into SQL would mean a new function every time somebody
+ * wants a different cut, and would make the row counts impossible to reconcile
+ * between views.
+ *
+ * low_sample rows (fewer than 5 gradeable days) come back like any other row and
+ * MUST be rendered — the page sorts them last with a note. Dropping them hides
+ * exactly the greeters whose numbers nobody is watching.
+ */
+async function apiPeriodReport(
+  url: URL,
+  env: Env,
+  scope: string[] | undefined
+): Promise<Response> {
+  const sp = url.searchParams;
+  const dateFrom = isoDateOrNull(sp.get("date_from"));
+  const dateTo = isoDateOrNull(sp.get("date_to"));
+  if (!dateFrom || !dateTo) {
+    return jsonResponse(
+      {
+        error: "date_from and date_to are required",
+        reason:
+          "Every figure in this report is scored over a window, so the window has to be bounded."
+      },
+      400
+    );
+  }
+  if (dateTo < dateFrom) {
+    return jsonResponse({ error: "date_to is before date_from" }, 400);
+  }
+
+  const sb = createServiceClient(env);
+  const rows = await listGreeterPeriodReport(
+    sb,
+    { date_from: dateFrom, date_to: dateTo },
+    {
+      location_id: toIntOrNull(sp.get("location_id")),
+      site_number: toIntOrNull(sp.get("site_number")),
+      beekeeper_user_id: sp.get("beekeeper_user_id"),
+      greeter: sp.get("greeter"),
+      location_scope: scope ?? null
+    }
+  );
+  return jsonResponse(rows);
+}
+
+/**
+ * Raw site-day rows for the window, each carrying the greeter-scanned wash sales
+ * for that site-day alongside the site's own total.
+ *
+ * Returns days, not totals, on purpose: the morning-call table and the trend
+ * chart are two groupings of this one payload, so they cannot disagree. Summing
+ * happens in the page.
+ *
+ * Note total_members is a LEVEL — the page reads the latest day's value and must
+ * never add the column up. net_members is the summable one.
+ *
+ * Takes no greeter/beekeeper_user_id filter, matching listLocationPeriodRows():
+ * these are site figures, and narrowing them by a greeter name would produce a
+ * site total that isn't the site's.
+ */
+async function apiLocationRows(
+  url: URL,
+  env: Env,
+  scope: string[] | undefined
+): Promise<Response> {
+  const sp = url.searchParams;
+  const dateFrom = isoDateOrNull(sp.get("date_from"));
+  const dateTo = isoDateOrNull(sp.get("date_to"));
+  if (!dateFrom || !dateTo) {
+    return jsonResponse(
+      {
+        error: "date_from and date_to are required",
+        reason:
+          "This returns one row per site per day, so an unbounded window would return every day on record."
+      },
+      400
+    );
+  }
+  if (dateTo < dateFrom) {
+    return jsonResponse({ error: "date_to is before date_from" }, 400);
+  }
+
+  const sb = createServiceClient(env);
+  const rows = await listLocationPeriodRows(
     sb,
     { date_from: dateFrom, date_to: dateTo },
     {

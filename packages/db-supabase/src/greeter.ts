@@ -16,13 +16,15 @@ import type {
   GreeterGoalRow,
   GreeterLocationKey,
   GreeterMissingDayRow,
+  GreeterPeriodReportRow,
   GreeterRollupRow,
   GreeterRoster,
   GreeterRosterMember,
   GreeterScanRateRow,
   LocationDailyInsert,
   LocationDailyRow,
-  LocationGoalSnapshot
+  LocationGoalSnapshot,
+  LocationPeriodRow
 } from "@splash/types/greeter";
 
 /* ============================================================
@@ -558,6 +560,87 @@ export async function listGreeterMissingDays(
   });
   if (error) throw error;
   return (data ?? []) as unknown as GreeterMissingDayRow[];
+}
+
+/**
+ * Per-greeter aggregation for a window, WITH each greeter's days counted for
+ * and against their capture goal.
+ *
+ * Distinct from listGreeterRollup() only in those day counts, and that is the
+ * whole point: they are tallied at the day grain inside the function, before
+ * aggregation, so no amount of post-processing on a rollup row could produce
+ * them.
+ *
+ * Window is REQUIRED. Every caller is a report view with a stated period, and
+ * an unbounded call would aggregate all of history behind a heading that claims
+ * to be about the last 7 days.
+ *
+ * Returns EVERY greeter in the window — no threshold filtering here. The
+ * "underperformers" and "top performers" views are thresholds applied by the
+ * page over these rows, so a new preset needs no migration and no new endpoint.
+ * Rows with `low_sample` are included and must be sorted to the bottom of those
+ * lists, not dropped.
+ *
+ * The `greeter` needle is sanitised the same way listGreeterRollup() does it,
+ * for the same reason.
+ */
+export async function listGreeterPeriodReport(
+  client: SupabaseClient,
+  window: { date_from: string; date_to: string },
+  filters: Omit<GreeterDayFilters, "date_from" | "date_to"> = {}
+): Promise<GreeterPeriodReportRow[]> {
+  const needle = filters.greeter?.replace(/[(),*]/g, "").trim();
+  const { data, error } = await client.rpc("greeter_period_report", {
+    p_date_from: window.date_from,
+    p_date_to: window.date_to,
+    p_location_id: filters.location_id ?? null,
+    p_site_number: filters.site_number ?? null,
+    p_beekeeper_user_id: filters.beekeeper_user_id ?? null,
+    p_greeter: needle ? needle : null,
+    p_location_codes: scopeCodes(filters.location_scope)
+  });
+  if (error) throw error;
+  return (data ?? []) as unknown as GreeterPeriodReportRow[];
+}
+
+/**
+ * Raw site days for a window, each enriched with how much of it greeters
+ * attributed to themselves.
+ *
+ * NOT AGGREGATED, on purpose. The caller groups these by site for the
+ * morning-call table and by date for the trend chart. One fetch, two groupings,
+ * and the two can never disagree — which is exactly what would eventually
+ * happen with a separate totals endpoint and a separate trend endpoint.
+ *
+ * When you group these: sum the raw numerators and denominators and divide at
+ * the end. Averaging the per-day `capture_pct` / `dob` columns weights a 3-car
+ * day the same as a 300-car one.
+ *
+ * DO NOT SUM `total_members`. It is a level — active members as of that day —
+ * so a week's worth sums to roughly seven times reality. Read it at the latest
+ * `business_date` in the set; use `net_members` for the period's change.
+ *
+ * Window is REQUIRED: this returns day rows, so an unbounded call returns every
+ * site day ever recorded.
+ *
+ * `greeter` / `beekeeper_user_id` are deliberately not passed through. These
+ * are site facts, and filtering the attribution numerator by one person's name
+ * would make sites look underreported whenever someone typed in the filter bar.
+ */
+export async function listLocationPeriodRows(
+  client: SupabaseClient,
+  window: { date_from: string; date_to: string },
+  filters: Omit<GreeterDayFilters, "date_from" | "date_to"> = {}
+): Promise<LocationPeriodRow[]> {
+  const { data, error } = await client.rpc("location_period_rows", {
+    p_date_from: window.date_from,
+    p_date_to: window.date_to,
+    p_location_id: filters.location_id ?? null,
+    p_site_number: filters.site_number ?? null,
+    p_location_codes: scopeCodes(filters.location_scope)
+  });
+  if (error) throw error;
+  return (data ?? []) as unknown as LocationPeriodRow[];
 }
 
 /** Shared predicate builder for greeter_daily and its rollup view. */

@@ -319,3 +319,116 @@ export interface GreeterMissingDayRow {
   has_site_row: boolean;
   greeters_logged: number;
 }
+
+/* ============================================================
+ * Period report (greeter_period_report() function)
+ * ============================================================ */
+
+/**
+ * One greeter at one site, aggregated over a date window, with their days
+ * counted against the capture goal.
+ *
+ * WHY THIS EXISTS ALONGSIDE GreeterRollupRow: the day counts. `days_over_goal`
+ * is tallied at the day grain before aggregation, which a rollup that has
+ * already grouped cannot reconstruct — "18 of her 24 days beat goal" is not
+ * derivable from a 24-day average capture %. Everything else here overlaps
+ * with the rollup on purpose so one query can drive a whole report view.
+ *
+ * THE THREE DAY BUCKETS are mutually exclusive and sum to `days_logged`:
+ *   days_over_goal    capture_pct >= capture_goal_pct (a tie is a hit)
+ *   days_under_goal   capture_pct <  capture_goal_pct
+ *   ungraded_days     no capture_pct (no wash sales, so no opportunity) or no
+ *                     capture_goal_pct (no goal covered the day). Surfaced
+ *                     rather than dropped so the reader can see the real
+ *                     denominator instead of trusting a percentage computed off
+ *                     a subset they can't see.
+ *
+ * `pct_days_over` / `pct_days_under` are shares of `gradeable_days`, NOT of
+ * `days_logged`. Both are null when nothing was gradeable — which is not the
+ * same as 0 and must render differently.
+ *
+ * `low_sample` is true under 5 gradeable days. Two days, both missed, reads as
+ * "100% under goal" and would otherwise top the underperformer list; these rows
+ * sort to the BOTTOM of the performer lists with a note rather than being
+ * hidden. The threshold lives in SQL so every view agrees on it.
+ *
+ * `capture_pct` and `dob` are weighted (summed numerator over summed
+ * denominator), never averages of the daily columns. The two goal fields ARE
+ * averages, because they are already rates.
+ *
+ * Field list must stay in sync with greeter_period_report()'s RETURNS TABLE.
+ */
+export interface GreeterPeriodReportRow {
+  beekeeper_user_id: string;
+  greeter_name: string;
+  location_id: number;
+  site_number: number;
+  location_code: string;
+  first_date: string;
+  last_date: string;
+  days_logged: number;
+  gradeable_days: number;
+  ungraded_days: number;
+  days_over_goal: number;
+  days_under_goal: number;
+  pct_days_over: number | null;
+  pct_days_under: number | null;
+  low_sample: boolean;
+  wash_sales: number | null;
+  sign_ups: number | null;
+  package_dollars: number | null;
+  extras_dollars: number | null;
+  hours_worked: number | null;
+  wash_sales_per_hour: number | null;
+  capture_goal_pct: number | null;
+  dob_goal: number | null;
+  capture_pct: number | null;
+  dob: number | null;
+}
+
+/* ============================================================
+ * Site day rows (location_period_rows() function)
+ * ============================================================ */
+
+/**
+ * One site's one day, raw, plus how much of it greeters attributed.
+ *
+ * DELIBERATELY NOT AGGREGATED. The morning-call table groups these by site and
+ * the trend chart groups them by date — two different groupings of the same
+ * facts. Fetching the days once and grouping twice means the table and the
+ * chart cannot disagree, which two separate aggregate endpoints could not
+ * guarantee. Callers group by summing raw numerators and denominators, which
+ * preserves the weighting rule.
+ *
+ * `total_members` IS A LEVEL, NOT A DELTA. Summing it across a window gives
+ * roughly (days x members) and is always wrong. Read it at the latest
+ * business_date present. Use `net_members` (sign_ups - cancellations) for the
+ * period's actual change.
+ *
+ * Only submitted days appear — a day the site skipped produces no row, so
+ * "reported 5 of 7" comes from counting rows against the window. Which specific
+ * days are missing is GreeterMissingDayRow's job.
+ *
+ * Field list must stay in sync with location_period_rows()'s RETURNS TABLE.
+ */
+export interface LocationPeriodRow {
+  business_date: string;
+  location_id: number;
+  site_number: number;
+  location_code: string;
+  total_cars: number | null;
+  wash_sales: number | null;
+  rewashes: number | null;
+  package_dollars: number | null;
+  extras_dollars: number | null;
+  sign_ups: number | null;
+  cancellations: number | null;
+  total_members: number | null;
+  net_members: number | null;
+  capture_pct: number | null;
+  dob: number | null;
+  capture_goal_pct: number | null;
+  dob_goal: number | null;
+  scanned_wash_sales: number;
+  greeters_logged: number;
+}

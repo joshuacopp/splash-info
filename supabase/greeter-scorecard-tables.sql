@@ -674,3 +674,283 @@ $$;
 
 REVOKE ALL ON FUNCTION greeter_missing_days(date, date, integer, integer, text[]) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION greeter_missing_days(date, date, integer, integer, text[]) TO service_role;
+
+-- ===========================================================================
+-- 8. greeter_period_report() — per greeter per site, over a window
+-- ===========================================================================
+--
+-- Powers the three greeter views on /admin/greeters/report (previous 7 days,
+-- underperformers, top performers). They differ only in window length and in a
+-- threshold on columns this already returns, so they are UI filters over one
+-- query rather than three near-identical functions.
+--
+-- WHY NOT JUST EXTEND greeter_rollup(): the point of this function is
+-- days_over_goal / days_under_goal, which are counted at the DAY grain before
+-- aggregation. "18 of her 24 days beat goal" is not derivable from a 24-day
+-- average, so it cannot be bolted onto a function that has already grouped.
+--
+-- WHAT "OVER GOAL" MEANS:
+--   over    capture_pct >= capture_goal_pct  (hitting it exactly is hitting it)
+--   under   capture_pct <  capture_goal_pct
+--   neither capture_pct IS NULL (no wash sales, so no opportunity and no rate)
+--           OR capture_goal_pct IS NULL (no goal window covered the day)
+-- The "neither" bucket is returned as ungraded_days rather than dropped, so the
+-- page can say "5 of 12 days couldn't be graded" instead of quietly reporting
+-- percentages off a denominator the reader can't see. The percentages are over
+-- GRADEABLE days: dividing by days_logged would let a greeter improve their
+-- standing by logging days with no wash sales.
+--
+-- low_sample (fewer than 5 gradeable days) exists because two days, both under
+-- goal, is "100% under goal" and would otherwise open the underperformer list.
+-- The page sorts these to the BOTTOM of both lists with a note rather than
+-- hiding them. Computed here, not in the page, so one definition of "few
+-- reported numbers" serves every view.
+--
+-- Weighting follows section 5: summed numerator over summed denominator for
+-- capture_pct/dob, AVG for the goal columns.
+--
+-- Kept in lockstep with supabase/greeter-report-04.sql. Change both.
+CREATE OR REPLACE FUNCTION greeter_period_report(
+  p_date_from         date,
+  p_date_to           date,
+  p_location_id       integer DEFAULT NULL,
+  p_site_number       integer DEFAULT NULL,
+  p_beekeeper_user_id text    DEFAULT NULL,
+  p_greeter           text    DEFAULT NULL,
+  p_location_codes    text[]  DEFAULT NULL
+)
+RETURNS TABLE (
+  beekeeper_user_id   text,
+  greeter_name        text,
+  location_id         integer,
+  site_number         integer,
+  location_code       text,
+  first_date          date,
+  last_date           date,
+  days_logged         bigint,
+  gradeable_days      bigint,
+  ungraded_days       bigint,
+  days_over_goal      bigint,
+  days_under_goal     bigint,
+  pct_days_over       numeric,
+  pct_days_under      numeric,
+  low_sample          boolean,
+  wash_sales          bigint,
+  sign_ups            bigint,
+  package_dollars     numeric,
+  extras_dollars      numeric,
+  hours_worked        numeric,
+  wash_sales_per_hour numeric,
+  capture_goal_pct    numeric,
+  dob_goal            numeric,
+  capture_pct         numeric,
+  dob                 numeric
+)
+LANGUAGE sql
+STABLE
+AS $$
+  WITH graded AS (
+    -- Day grain. over + under + ungraded always equals days_logged — a property
+    -- worth preserving if you add a fourth bucket.
+    SELECT
+      g.beekeeper_user_id,
+      g.greeter_name,
+      g.location_id,
+      g.site_number,
+      g.location_code,
+      g.business_date,
+      g.wash_sales,
+      g.sign_ups,
+      g.package_dollars,
+      g.extras_dollars,
+      g.hours_worked,
+      g.capture_goal_pct,
+      g.dob_goal,
+      (g.capture_pct IS NOT NULL AND g.capture_goal_pct IS NOT NULL) AS gradeable,
+      CASE WHEN g.capture_pct IS NOT NULL AND g.capture_goal_pct IS NOT NULL
+                AND g.capture_pct >= g.capture_goal_pct
+           THEN 1 ELSE 0 END AS is_over,
+      CASE WHEN g.capture_pct IS NOT NULL AND g.capture_goal_pct IS NOT NULL
+                AND g.capture_pct <  g.capture_goal_pct
+           THEN 1 ELSE 0 END AS is_under
+    FROM greeter_daily g
+    WHERE g.business_date >= p_date_from
+      AND g.business_date <= p_date_to
+      AND (p_location_id       IS NULL OR g.location_id       = p_location_id)
+      AND (p_site_number       IS NULL OR g.site_number       = p_site_number)
+      AND (p_beekeeper_user_id IS NULL OR g.beekeeper_user_id = p_beekeeper_user_id)
+      AND (p_greeter           IS NULL OR g.greeter_name ILIKE '%' || p_greeter || '%')
+      AND (p_location_codes    IS NULL OR g.location_code = ANY (p_location_codes))
+  )
+  SELECT
+    r.beekeeper_user_id,
+    MAX(r.greeter_name)                                   AS greeter_name,
+    r.location_id,
+    r.site_number,
+    r.location_code,
+    MIN(r.business_date)                                  AS first_date,
+    MAX(r.business_date)                                  AS last_date,
+    COUNT(*)::bigint                                      AS days_logged,
+    COUNT(*) FILTER (WHERE r.gradeable)::bigint           AS gradeable_days,
+    COUNT(*) FILTER (WHERE NOT r.gradeable)::bigint       AS ungraded_days,
+    SUM(r.is_over)::bigint                                AS days_over_goal,
+    SUM(r.is_under)::bigint                               AS days_under_goal,
+    -- NULL, not 0, when nothing was gradeable: "0% of days beat goal" and "we
+    -- couldn't grade any of these days" are different statements.
+    CASE WHEN COUNT(*) FILTER (WHERE r.gradeable) > 0
+      THEN ROUND(SUM(r.is_over)::numeric  * 100 / COUNT(*) FILTER (WHERE r.gradeable), 1)
+    END                                                   AS pct_days_over,
+    CASE WHEN COUNT(*) FILTER (WHERE r.gradeable) > 0
+      THEN ROUND(SUM(r.is_under)::numeric * 100 / COUNT(*) FILTER (WHERE r.gradeable), 1)
+    END                                                   AS pct_days_under,
+    (COUNT(*) FILTER (WHERE r.gradeable) < 5)             AS low_sample,
+    SUM(r.wash_sales)::bigint                             AS wash_sales,
+    SUM(r.sign_ups)::bigint                               AS sign_ups,
+    SUM(r.package_dollars)                                AS package_dollars,
+    SUM(r.extras_dollars)                                 AS extras_dollars,
+    SUM(r.hours_worked)                                   AS hours_worked,
+    CASE WHEN SUM(r.hours_worked) > 0
+      THEN ROUND(SUM(COALESCE(r.wash_sales, 0))::numeric / SUM(r.hours_worked), 2)
+    END                                                   AS wash_sales_per_hour,
+    ROUND(AVG(r.capture_goal_pct), 2)                     AS capture_goal_pct,
+    ROUND(AVG(r.dob_goal), 2)                             AS dob_goal,
+    CASE WHEN SUM(r.wash_sales) > 0
+      THEN ROUND(SUM(COALESCE(r.sign_ups, 0))::numeric * 100 / SUM(r.wash_sales), 2)
+    END                                                   AS capture_pct,
+    CASE WHEN SUM(r.wash_sales) > 0
+      THEN ROUND((SUM(COALESCE(r.package_dollars, 0)) + SUM(COALESCE(r.extras_dollars, 0)))
+                 / SUM(r.wash_sales), 2)
+    END                                                   AS dob
+  FROM graded r
+  GROUP BY r.beekeeper_user_id, r.location_id, r.site_number, r.location_code
+  -- Aggregate expressions, not the output aliases: RETURNS TABLE column names
+  -- are in scope inside a SQL-language function body, so a bare alias here is
+  -- at best ambiguous.
+  ORDER BY SUM(r.is_over)::numeric
+             / NULLIF(COUNT(*) FILTER (WHERE r.gradeable), 0) DESC NULLS LAST,
+           MAX(r.greeter_name);
+$$;
+
+REVOKE ALL ON FUNCTION greeter_period_report(date, date, integer, integer, text, text, text[]) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION greeter_period_report(date, date, integer, integer, text, text, text[]) TO service_role;
+
+-- ===========================================================================
+-- 9. location_period_rows() — per site per DAY, raw, plus attribution
+-- ===========================================================================
+--
+-- Returns days, not totals, on purpose. The morning-call table wants per-site
+-- totals and the trend chart wants per-day totals — two groupings of the same
+-- facts. Returning the days once and grouping twice in the page guarantees the
+-- table and the chart can never disagree, which two aggregate functions could
+-- not. The page's grouping sums raw numerators and denominators, so the
+-- weighting rule from section 5 is preserved.
+--
+-- Driven from location_daily, so a day the site didn't report produces no row.
+-- Correct here: this reports what WAS submitted, and the reader is told "5 of 7
+-- days reported" by counting rows against the window. WHICH days are missing is
+-- section 7's job and is not duplicated.
+--
+-- total_members is passed through UNSUMMED. It is a LEVEL — active members as
+-- of that day — and summing it across a week gives roughly seven times the
+-- truth. A caller wanting "members now" reads it at the latest business_date.
+--
+-- Kept in lockstep with supabase/greeter-report-04.sql. Change both.
+CREATE OR REPLACE FUNCTION location_period_rows(
+  p_date_from      date,
+  p_date_to        date,
+  p_location_id    integer DEFAULT NULL,
+  p_site_number    integer DEFAULT NULL,
+  p_location_codes text[]  DEFAULT NULL
+)
+RETURNS TABLE (
+  business_date      date,
+  location_id        integer,
+  site_number        integer,
+  location_code      text,
+  total_cars         integer,
+  wash_sales         integer,
+  rewashes           integer,
+  package_dollars    numeric,
+  extras_dollars     numeric,
+  sign_ups           integer,
+  cancellations      integer,
+  total_members      integer,
+  net_members        integer,
+  capture_pct        numeric,
+  dob                numeric,
+  capture_goal_pct   numeric,
+  dob_goal           numeric,
+  scanned_wash_sales bigint,
+  greeters_logged    bigint
+)
+LANGUAGE sql
+STABLE
+AS $$
+  WITH site AS (
+    SELECT
+      l.business_date,
+      l.location_id,
+      l.site_number,
+      l.location_code,
+      l.total_cars,
+      l.wash_sales,
+      l.rewashes,
+      l.package_dollars,
+      l.extras_dollars,
+      l.sign_ups,
+      l.cancellations,
+      l.total_members,
+      l.net_members,
+      l.capture_pct,
+      l.dob,
+      l.capture_goal_pct,
+      l.dob_goal
+    FROM location_daily l
+    WHERE l.business_date >= p_date_from
+      AND l.business_date <= p_date_to
+      AND (p_location_id    IS NULL OR l.location_id   =  p_location_id)
+      AND (p_site_number    IS NULL OR l.site_number   =  p_site_number)
+      AND (p_location_codes IS NULL OR l.location_code = ANY (p_location_codes))
+  ),
+  scanned AS (
+    -- Every greeter at the site, no name filter — same reasoning as section 6.
+    SELECT
+      g.business_date,
+      g.location_id,
+      SUM(COALESCE(g.wash_sales, 0))::bigint AS scanned,
+      COUNT(*)::bigint                       AS greeters
+    FROM greeter_daily g
+    JOIN site s
+      ON s.business_date = g.business_date
+     AND s.location_id   = g.location_id
+    GROUP BY g.business_date, g.location_id
+  )
+  SELECT
+    s.business_date,
+    s.location_id,
+    s.site_number,
+    s.location_code,
+    s.total_cars,
+    s.wash_sales,
+    s.rewashes,
+    s.package_dollars,
+    s.extras_dollars,
+    s.sign_ups,
+    s.cancellations,
+    s.total_members,
+    s.net_members,
+    s.capture_pct,
+    s.dob,
+    s.capture_goal_pct,
+    s.dob_goal,
+    COALESCE(sc.scanned, 0)::bigint,
+    COALESCE(sc.greeters, 0)::bigint
+  FROM site s
+  LEFT JOIN scanned sc
+    ON sc.business_date = s.business_date
+   AND sc.location_id   = s.location_id
+  ORDER BY s.business_date DESC, s.location_code;
+$$;
+
+REVOKE ALL ON FUNCTION location_period_rows(date, date, integer, integer, text[]) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION location_period_rows(date, date, integer, integer, text[]) TO service_role;

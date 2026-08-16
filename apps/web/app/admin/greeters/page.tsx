@@ -45,6 +45,24 @@ import type { ReactNode } from "react";
 import Link from "next/link";
 import { performanceGetJson } from "../performance/_lib/worker-fetch";
 import { LocationPicker } from "../performance/_components/LocationPicker";
+import {
+  DAY_MS,
+  dobCell,
+  firstParam,
+  goalSuffix,
+  hours,
+  localDay,
+  money,
+  num,
+  pct
+} from "./_lib/format";
+import {
+  CAPTURE_TIER_CLASSES,
+  CaptureCell,
+  CaptureLegend,
+  SCAN_TARGET_PCT,
+  scanTier
+} from "./_lib/grading";
 import { GreeterDayForm } from "./_components/GreeterDayForm";
 import { LocationMetricFields } from "./_components/MetricFields";
 import { SavingButton } from "./_components/SavingButton";
@@ -173,39 +191,9 @@ interface PageProps {
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }
 
-function firstParam(value: string | string[] | undefined): string {
-  if (Array.isArray(value)) return value[0] ?? "";
-  return value ?? "";
-}
-
-function num(value: number | null | undefined): string {
-  if (value === null || value === undefined) return "—";
-  return value.toLocaleString();
-}
-
-function money(value: number | null | undefined): string {
-  if (value === null || value === undefined) return "—";
-  return `$${value.toLocaleString(undefined, {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2
-  })}`;
-}
-
-/** Null means "no wash sales that day" — unknown, not zero. Say so with a dash. */
-function pct(value: number | null | undefined): string {
-  if (value === null || value === undefined) return "—";
-  return `${value.toFixed(1)}%`;
-}
-
-function dobCell(value: number | null | undefined): string {
-  if (value === null || value === undefined) return "—";
-  return `$${value.toFixed(2)}`;
-}
-
-function hours(value: number | null | undefined): string {
-  if (value === null || value === undefined) return "—";
-  return value.toFixed(2);
-}
+// num / money / pct / dobCell / hours / goalNum / goalSuffix / localDay /
+// firstParam now live in ./_lib/format — shared with the report view so a null
+// renders the same way on both.
 
 /** "HH:MM:SS" (Postgres `time`) -> "8:00 AM". Anything unparseable renders raw. */
 function clockLabel(value: string): string {
@@ -227,50 +215,6 @@ function shiftCell(start: string | null, end: string | null): string {
   if (!start && !end) return "—";
   if (start && end) return `${clockLabel(start)} – ${clockLabel(end)}`;
   return clockLabel((start ?? end) as string);
-}
-
-/**
- * Goals come back AVGed from the rollup, so a flat 30 can arrive as
- * 30.000000000000001. Trim to two places and drop trailing zeros.
- */
-function goalNum(value: number): string {
-  return Number(value.toFixed(2)).toString();
-}
-
-/** Goal shown beside the value it grades, e.g. "$4.20 / 5". */
-function goalSuffix(value: number | null | undefined): ReactNode {
-  if (value === null || value === undefined) return null;
-  return (
-    <span className="text-xs font-normal text-splash-navy/50">
-      {" "}
-      / {goalNum(value)}
-    </span>
-  );
-}
-
-/**
- * Every Splash site is US Eastern. Hard-coded rather than read from the
- * request, because a business_date has to mean the same day to a manager in the
- * office and to the worker that stores it — deriving it from whoever happens to
- * be looking would make the same day render differently for a DC admin on a
- * laptop set to UTC.
- */
-const SITE_TIMEZONE = "America/New_York";
-
-/**
- * Epoch millis -> "YYYY-MM-DD" in site local time.
- *
- * en-CA is the locale trick: its short date format IS ISO order, so this needs
- * no reassembly. Do NOT replace with toISOString().slice(0,10) — that's UTC and
- * rolls the date over at 8pm Eastern.
- */
-function localDay(ms: number): string {
-  return new Intl.DateTimeFormat("en-CA", {
-    timeZone: SITE_TIMEZONE,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit"
-  }).format(new Date(ms));
 }
 
 const SUCCESS_COPY: Record<string, string> = {
@@ -311,7 +255,6 @@ export default async function GreetersPage({ searchParams }: PageProps) {
   // over at 8pm Eastern, so from every evening onward "yesterday" would
   // silently mean today — flagging numbers nobody has had a chance to enter,
   // which is exactly what excluding today is meant to prevent.
-  const DAY_MS = 86_400_000;
   const nowMs = Date.now();
   const watchTo = localDay(nowMs - DAY_MS);
   const watchFrom = localDay(nowMs - 7 * DAY_MS);
@@ -963,118 +906,13 @@ function Card({
 }
 
 /* ------------------------------------------------------------
- * Capture % against goal
- * ------------------------------------------------------------ */
-
-/**
- * How far under goal still counts as "close", in PERCENTAGE POINTS.
- *
- * Both numbers are already percentages, so this is a straight subtraction:
- * a 30% goal makes 27.0%–29.9% yellow, not 29.1% (which is what a relative
- * 3%-of-goal reading would give). Points is what the operators mean when they
- * say "three points off".
- */
-const CAPTURE_NEAR_MISS_POINTS = 3;
-
-type CaptureTier = "hit" | "near" | "miss";
-
-/**
- * Same class vocabulary as AgePill in /admin/damage, so the two lists read the
- * same way. Kept as full literal strings — Tailwind scans source text, so a
- * built-up `bg-${x}-100` would get purged from the bundle.
- */
-const CAPTURE_TIER_CLASSES: Record<CaptureTier, string> = {
-  hit: "bg-splash-success/15 text-splash-success",
-  near: "bg-yellow-100 text-yellow-900",
-  miss: "bg-splash-deny/15 text-splash-deny"
-};
-
-function captureTier(value: number, goal: number): CaptureTier {
-  if (value >= goal) return "hit";
-  if (value >= goal - CAPTURE_NEAR_MISS_POINTS) return "near";
-  return "miss";
-}
-
-/**
- * Capture % graded against the goal snapshotted on that row.
- *
- * Ungraded when either side is null — a day with no wash sales has no capture
- * rate to judge, and a site with no goal window covering that date was never
- * given a target. Both render plain rather than green, since "no goal" is not
- * the same as "met the goal".
- */
-function CaptureCell({
-  value,
-  goal
-}: {
-  value: number | null;
-  goal: number | null;
-}) {
-  if (value === null || goal === null) {
-    return (
-      <span className="font-semibold text-splash-navy">
-        {pct(value)}
-        {goalSuffix(goal)}
-      </span>
-    );
-  }
-  const tier = captureTier(value, goal);
-  return (
-    <span
-      className={`inline-flex items-center whitespace-nowrap rounded-full px-2 py-0.5 text-xs font-bold ${CAPTURE_TIER_CLASSES[tier]}`}
-      title={
-        tier === "hit"
-          ? `At or above the ${goalNum(goal)}% goal.`
-          : `${(goal - value).toFixed(1)} points under the ${goalNum(goal)}% goal.`
-      }
-    >
-      {pct(value)}
-      <span className="ml-1 font-normal opacity-70">/ {goalNum(goal)}</span>
-    </span>
-  );
-}
-
-function CaptureLegend() {
-  return (
-    <div className="mb-4 flex flex-wrap items-center gap-2 text-[11px] text-splash-navy/60">
-      <span className="font-semibold uppercase tracking-wider">Capture %</span>
-      <span className={`rounded-full px-2 py-0.5 font-bold ${CAPTURE_TIER_CLASSES.hit}`}>
-        At or above goal
-      </span>
-      <span className={`rounded-full px-2 py-0.5 font-bold ${CAPTURE_TIER_CLASSES.near}`}>
-        Within {CAPTURE_NEAR_MISS_POINTS} points
-      </span>
-      <span className={`rounded-full px-2 py-0.5 font-bold ${CAPTURE_TIER_CLASSES.miss}`}>
-        More than {CAPTURE_NEAR_MISS_POINTS} points under
-      </span>
-      <span>Graded against the goal in force on each row&rsquo;s date.</span>
-    </div>
-  );
-}
-
-/* ------------------------------------------------------------
  * Scan rate (attribution / data quality)
+ *
+ * The thresholds and the CaptureCell/CaptureLegend pieces moved to
+ * ./_lib/grading when the report view was added. They're shared rather than
+ * copied because the same site showing amber here and red there would destroy
+ * trust in both pages.
  * ------------------------------------------------------------ */
-
-/**
- * At or above this, a site is considered to be attributing its cars properly.
- * This is the line the underreported watchlist uses, and it's the operators'
- * number — don't move it without asking.
- */
-const SCAN_TARGET_PCT = 90;
-
-/**
- * Width of the amber band below the target, in percentage points. Purely
- * presentational: nothing is flagged on this number, it just stops an 88% and
- * a 40% from looking equally alarming in the table.
- */
-const SCAN_NEAR_MISS_POINTS = 10;
-
-function scanTier(value: number): CaptureTier {
-  if (value >= SCAN_TARGET_PCT) return "hit";
-  if (value >= SCAN_TARGET_PCT - SCAN_NEAR_MISS_POINTS) return "near";
-  return "miss";
-}
 
 /**
  * The scanned share for one site-day.
@@ -1493,13 +1331,27 @@ function SuccessBanner({ message }: { message: string }) {
   );
 }
 
+/**
+ * The report link is the only navigation between the two pages, so it lives in
+ * the banner rather than buried beside a table — this page is the row-level
+ * record and /admin/greeters/report is the graded, charted view of the same
+ * rows. Both pages link to each other so neither is a dead end.
+ */
 function PageBanner() {
   return (
-    <div className="mb-6">
-      <p className="mb-1 text-xs font-semibold uppercase tracking-[0.18em] text-sudsy-blue">
-        Internal Tools
-      </p>
-      <h1 className="text-2xl font-bold text-splash-navy">Greeter Scorecard</h1>
+    <div className="mb-6 flex flex-wrap items-end justify-between gap-3">
+      <div>
+        <p className="mb-1 text-xs font-semibold uppercase tracking-[0.18em] text-sudsy-blue">
+          Internal Tools
+        </p>
+        <h1 className="text-2xl font-bold text-splash-navy">Greeter Scorecard</h1>
+      </div>
+      <Link
+        href="/admin/greeters/report"
+        className="text-sm font-semibold text-splash-blue hover:text-splash-blue-dark"
+      >
+        Report &amp; charts →
+      </Link>
     </div>
   );
 }
