@@ -180,13 +180,21 @@ function shiftCell(start: string | null, end: string | null): string {
   return clockLabel((start ?? end) as string);
 }
 
-/** Goal shown beside the value it grades, e.g. "42.0% / 30". */
+/**
+ * Goals come back AVGed from the rollup, so a flat 30 can arrive as
+ * 30.000000000000001. Trim to two places and drop trailing zeros.
+ */
+function goalNum(value: number): string {
+  return Number(value.toFixed(2)).toString();
+}
+
+/** Goal shown beside the value it grades, e.g. "$4.20 / 5". */
 function goalSuffix(value: number | null | undefined): ReactNode {
   if (value === null || value === undefined) return null;
   return (
     <span className="text-xs font-normal text-splash-navy/50">
       {" "}
-      / {value}
+      / {goalNum(value)}
     </span>
   );
 }
@@ -533,6 +541,8 @@ export default async function GreetersPage({ searchParams }: PageProps) {
         ]}
       />
 
+      <CaptureLegend />
+
       {/* Summary */}
       <Card
         title="By greeter"
@@ -598,9 +608,11 @@ export default async function GreetersPage({ searchParams }: PageProps) {
                   <td className="px-4 py-3 text-splash-navy/80">
                     {num(r.sign_ups)}
                   </td>
-                  <td className="px-4 py-3 font-semibold">
-                    {pct(r.capture_pct)}
-                    {goalSuffix(r.capture_goal_pct)}
+                  <td className="px-4 py-3">
+                    <CaptureCell
+                      value={r.capture_pct}
+                      goal={r.capture_goal_pct}
+                    />
                   </td>
                 </tr>
               ))}
@@ -675,9 +687,11 @@ export default async function GreetersPage({ searchParams }: PageProps) {
                   <td className="px-4 py-3 text-splash-navy/80">
                     {num(r.sign_ups)}
                   </td>
-                  <td className="px-4 py-3 font-semibold">
-                    {pct(r.capture_pct)}
-                    {goalSuffix(r.capture_goal_pct)}
+                  <td className="px-4 py-3">
+                    <CaptureCell
+                      value={r.capture_pct}
+                      goal={r.capture_goal_pct}
+                    />
                   </td>
                 </tr>
               ))}
@@ -759,9 +773,11 @@ export default async function GreetersPage({ searchParams }: PageProps) {
                     {num(r.total_members)}
                     {goalSuffix(r.member_goal_month_end)}
                   </td>
-                  <td className="px-4 py-3 font-semibold">
-                    {pct(r.capture_pct)}
-                    {goalSuffix(r.capture_goal_pct)}
+                  <td className="px-4 py-3">
+                    <CaptureCell
+                      value={r.capture_pct}
+                      goal={r.capture_goal_pct}
+                    />
                   </td>
                 </tr>
               ))}
@@ -807,6 +823,96 @@ function Card({
         ) : null}
       </div>
       {children}
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------
+ * Capture % against goal
+ * ------------------------------------------------------------ */
+
+/**
+ * How far under goal still counts as "close", in PERCENTAGE POINTS.
+ *
+ * Both numbers are already percentages, so this is a straight subtraction:
+ * a 30% goal makes 27.0%–29.9% yellow, not 29.1% (which is what a relative
+ * 3%-of-goal reading would give). Points is what the operators mean when they
+ * say "three points off".
+ */
+const CAPTURE_NEAR_MISS_POINTS = 3;
+
+type CaptureTier = "hit" | "near" | "miss";
+
+/**
+ * Same class vocabulary as AgePill in /admin/damage, so the two lists read the
+ * same way. Kept as full literal strings — Tailwind scans source text, so a
+ * built-up `bg-${x}-100` would get purged from the bundle.
+ */
+const CAPTURE_TIER_CLASSES: Record<CaptureTier, string> = {
+  hit: "bg-splash-success/15 text-splash-success",
+  near: "bg-yellow-100 text-yellow-900",
+  miss: "bg-splash-deny/15 text-splash-deny"
+};
+
+function captureTier(value: number, goal: number): CaptureTier {
+  if (value >= goal) return "hit";
+  if (value >= goal - CAPTURE_NEAR_MISS_POINTS) return "near";
+  return "miss";
+}
+
+/**
+ * Capture % graded against the goal snapshotted on that row.
+ *
+ * Ungraded when either side is null — a day with no wash sales has no capture
+ * rate to judge, and a site with no goal window covering that date was never
+ * given a target. Both render plain rather than green, since "no goal" is not
+ * the same as "met the goal".
+ */
+function CaptureCell({
+  value,
+  goal
+}: {
+  value: number | null;
+  goal: number | null;
+}) {
+  if (value === null || goal === null) {
+    return (
+      <span className="font-semibold text-splash-navy">
+        {pct(value)}
+        {goalSuffix(goal)}
+      </span>
+    );
+  }
+  const tier = captureTier(value, goal);
+  return (
+    <span
+      className={`inline-flex items-center whitespace-nowrap rounded-full px-2 py-0.5 text-xs font-bold ${CAPTURE_TIER_CLASSES[tier]}`}
+      title={
+        tier === "hit"
+          ? `At or above the ${goalNum(goal)}% goal.`
+          : `${(goal - value).toFixed(1)} points under the ${goalNum(goal)}% goal.`
+      }
+    >
+      {pct(value)}
+      <span className="ml-1 font-normal opacity-70">/ {goalNum(goal)}</span>
+    </span>
+  );
+}
+
+function CaptureLegend() {
+  return (
+    <div className="mb-4 flex flex-wrap items-center gap-2 text-[11px] text-splash-navy/60">
+      <span className="font-semibold uppercase tracking-wider">Capture %</span>
+      <span className={`rounded-full px-2 py-0.5 font-bold ${CAPTURE_TIER_CLASSES.hit}`}>
+        At or above goal
+      </span>
+      <span className={`rounded-full px-2 py-0.5 font-bold ${CAPTURE_TIER_CLASSES.near}`}>
+        Within {CAPTURE_NEAR_MISS_POINTS} points
+      </span>
+      <span className={`rounded-full px-2 py-0.5 font-bold ${CAPTURE_TIER_CLASSES.miss}`}>
+        More than {CAPTURE_NEAR_MISS_POINTS} points under
+      </span>
+      <span>Graded against the goal in force on each row&rsquo;s date.</span>
     </div>
   );
 }
