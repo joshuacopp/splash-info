@@ -75,6 +75,7 @@ const ADMIN_KNOWN_SUBPATHS = new Set<string>([
   "email-queue",
   "fleet",
   "forms",
+  "greeters",
   "jotform",
   "my-requests",
   "performance",
