@@ -441,8 +441,14 @@ async function fetchSubmissionPage(
  * Keyed on BOTH the padded and unpadded forms: pricing_simple.site holds
  * '019' while other systems carry 19, and a raw match silently misses every
  * site under 100.
+ *
+ * Exported for seed-paper-claims.ts, which needs the identical resolution
+ * (pricing_simple + the second-profit-centre overlay, padded and unpadded).
+ * Duplicating it there would be a second place for the overlay to be
+ * forgotten, and a paper claim that lands on the wrong location_code is
+ * invisible to the admin who owns it.
  */
-async function fetchSiteMap(
+export async function fetchSiteMap(
   env: SupabaseEnv & { SUPABASE_SERVICE_KEY?: string }
 ): Promise<Map<string, { code: string; pretty: string }>> {
   const url = new URL("/rest/v1/pricing_simple", env.SUPABASE_URL);

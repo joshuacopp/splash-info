@@ -179,6 +179,7 @@ import {
   runClaimUploadsCleanup
 } from "./uploads.js";
 import { handleJotformSeed } from "./seed-jotform.js";
+import { handlePaperClaimSeed } from "./seed-paper-claims.js";
 import { expandGrantedCodes, loadOverlay } from "./overlay.js";
 
 interface Env extends SupabaseEnv {
@@ -451,6 +452,20 @@ async function dispatchManageApi(
     method === "POST"
   ) {
     return handleJotformSeed(request, env, session.dcRole ?? null);
+  }
+
+  // POST /manage/api/seed/paper-claims — the 21 workbook-only 2026 claims
+  // that never had a JotForm submission behind them. Same super_admin gate,
+  // same reasoning, same already-bound /manage/api/* prefix (no new
+  // wrangler.toml route needed). `?dry_run=1` builds every row and PDF
+  // without writing.
+  if (
+    subParts.length === 2 &&
+    subParts[0] === "seed" &&
+    subParts[1] === "paper-claims" &&
+    method === "POST"
+  ) {
+    return handlePaperClaimSeed(request, env, session.dcRole ?? null);
   }
 
   // Brief 172 — GET /manage/api/claims.csv — CSV export of the same
