@@ -721,19 +721,37 @@ async function handleBackfill(request, env, formId) {
     }
   }
 
+  // JotForm Enterprise pages can overlap at the boundary (see the pagination
+  // notes on fetchFormSubmissions). A duplicate `id` inside ONE upsert payload
+  // makes Postgres raise "ON CONFLICT DO UPDATE command cannot affect row a
+  // second time", which rejects the entire page — so collapse by id first,
+  // keeping the last occurrence. Cross-page overlap is already safe via
+  // on_conflict=id.
+  const byId = new Map();
+  for (const row of normalized) byId.set(row.id, row);
+  const deduped = [...byId.values()];
+
   let inserted = 0;
-  if (normalized.length > 0) {
+  if (deduped.length > 0) {
     try {
-      inserted = await upsertSubmissions(env, normalized);
+      inserted = await upsertSubmissions(env, deduped);
     } catch (err) {
       console.error("[jotform.backfill] upsert failed:", err);
-      return jsonError(500, "supabase upsert failed");
+      // Surface the upstream detail — this route is super_admin-gated, and a
+      // generic 500 left the real Postgres error visible only in worker logs.
+      return jsonError(
+        500,
+        `supabase upsert failed: ${err?.message ?? "unknown error"}`
+      );
     }
   }
 
   return jsonOk({
     ok: true,
     inserted,
+    fetched: page.rows.length,
+    normalize_skipped: page.rows.length - normalized.length,
+    duplicate_ids_collapsed: normalized.length - deduped.length,
     offset,
     next_offset: page.nextOffset,
     last_id: page.lastId,
