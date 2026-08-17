@@ -19,7 +19,7 @@
 #     POST splashcarwashes.info/inventory/api/products      upsert product (admin)
 #     POST splashcarwashes.info/inventory/api/package-config per-location config
 #     POST splashcarwashes.info/inventory/api/recipients    email list (admin)
-#     POST splashcarwashes.info/inventory/api/report        send visit report
+#     POST splashcarwashes.info/inventory/api/report        queue visit report
 #     POST splashcarwashes.info/inventory/api/flags/resolve
 #     POST splashcarwashes.info/inventory/api/flags/unresolve
 #
@@ -76,10 +76,15 @@ not_found_handling = "single-page-application"
 # SUPABASE_ANON_KEY     — secret. Required by authenticate() (the /auth/v1/user
 #                         round-trip uses the anon key). `wrangler secret put`.
 # SUPABASE_SERVICE_KEY  — secret. Service-role client for the inventory schema
-#                         reads/writes. Same value as on the other workers.
-# INVENTORY_REPORT_WEBHOOK_URL — optional. When set, POST /inventory/api/report
-#                         forwards the visit-report payload here; when unset the
-#                         endpoint fails soft (returns { simulated: true }).
+#                         reads/writes, AND the credential used to enqueue onto
+#                         public.outbound_emails. Same value as on the other
+#                         workers.
+#
+# No email binding: POST /inventory/api/report writes a row per recipient into
+# the shared `outbound_emails` queue and Power Automate delivers it, exactly as
+# forms-worker and promo-worker do. Nothing to configure — if the service key
+# works, mail works. (This replaced an INVENTORY_REPORT_WEBHOOK_URL var that was
+# never set, which is why the report step used to no-op as "simulated".)
 [vars]
 SUPABASE_URL = "https://rewokyofschtvqgxrxwl.supabase.co"
 

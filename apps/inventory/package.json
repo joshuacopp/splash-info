@@ -16,6 +16,7 @@
   "dependencies": {
     "@splash/auth": "workspace:*",
     "@splash/db-supabase": "workspace:*",
+    "@splash/email-shell": "workspace:*",
     "@splash/http": "workspace:*",
     "@splash/storage-r2": "workspace:*",
     "@splash/types": "workspace:*",

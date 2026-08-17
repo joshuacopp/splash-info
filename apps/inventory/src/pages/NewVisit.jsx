@@ -269,12 +269,17 @@ export default function NewVisit() {
     return { reservoir, floor, ending, usage, cost, mlPerCar, negative }
   }
 
+  // onHand is the dollar value still sitting at the site after this count —
+  // ending gallons at the same effective price the usage is costed at, so the
+  // two numbers in the report email are directly comparable.
   const totals = productRows.reduce(
     (acc, r) => {
-      acc.cost += computeRow(r).cost
+      const cr = computeRow(r)
+      acc.cost += cr.cost
+      acc.onHand += cr.ending * GAL_TO_ML * r.pricePerMl * (1 - r.discount)
       return acc
     },
-    { cost: 0 }
+    { cost: 0, onHand: 0 }
   )
 
   async function onSubmit(e) {
@@ -327,8 +332,12 @@ export default function NewVisit() {
       clearDraft(dKey)
       await refresh()
 
-      // Email the report (real in Supabase mode, simulated in demo) — new
-      // visits only; editing a past visit doesn't re-notify.
+      // Queue the report email — new visits only; editing a past visit doesn't
+      // re-notify. The worker resolves recipients, renders the body and writes
+      // one row per recipient onto the shared outbound_emails queue, so nothing
+      // here decides who gets mail or where the link points. visitId is passed
+      // so the worker can build the "View Full Visit" URL from its own origin
+      // and use the visit id as the queue's dedup key.
       try {
         const flags = []
         for (const r of productRows) {
@@ -336,33 +345,54 @@ export default function NewVisit() {
           if (r.targetMlPerCar && cr.mlPerCar != null && cr.mlPerCar > r.targetMlPerCar * 1.15) {
             flags.push(`${r.name}: ${cr.mlPerCar.toFixed(1)} ml/car vs target ${r.targetMlPerCar}`)
           }
-          if (cr.mismatch) flags.push(`${r.name}: reservoir+floor ≠ ending`)
+          // Usage came out negative — more product on hand than the starting
+          // count plus deliveries can explain. Worth surfacing in the email.
+          if (cr.negative) flags.push(`${r.name}: negative usage (${cr.usage.toFixed(1)} gal)`)
         }
+        // Blank stays blank. Number('') is 0, and 0 gpg is a real reading, so
+        // an untested site must send null rather than a fabricated zero.
+        const hardnessVal = hardness.trim() === '' ? null : num(hardness)
+        const tdsVal = tds.trim() === '' ? null : num(tds)
+
         const result = await sendVisitReport({
+          visitId,
           locationId,
           locationName: location.name,
           visitDate,
           submitter: submitter.trim() || null,
           totalWashCount: totalWashes,
-          blendedCpc: totalWashes > 0 ? totals.cost / totalWashes : null,
-          blendedTargetCpc: null,
           chemicalCost: totals.cost,
-          onHandValue: null,
+          blendedCpc: totalWashes > 0 ? totals.cost / totalWashes : null,
+          onHandValue: totals.onHand,
+          waterHardnessGpg: hardnessVal,
+          tdsPpm: tdsVal,
           flags,
           notes: notes.trim() || null,
-          appUrl: window.location.origin,
-          visitPath: `/location/${locationId}/visit/${visitId}`,
         })
-        if (result?.simulated) {
+
+        // queued vs duplicates: the queue dedups on (worker, kind, visit id,
+        // recipient), so a double-tapped Submit reports 0 queued rather than
+        // mailing everyone twice. Say so instead of claiming a fresh send.
+        const queued = result?.queued || 0
+        const duplicates = result?.duplicates || 0
+        if (queued) {
+          setToast({
+            tone: 'success',
+            title: 'Report queued',
+            message: `Sending to ${queued} recipient${queued === 1 ? '' : 's'}.`,
+          })
+        } else if (duplicates) {
           setToast({
             tone: 'info',
-            title: 'Report email (demo)',
-            message: result.sent
-              ? `Would email ${result.sent} recipient(s): ${result.recipients.join(', ')}`
-              : 'No active recipients configured — add them under Admin.',
+            title: 'Report already sent',
+            message: 'This visit was already emailed — no duplicates were queued.',
           })
-        } else if (result?.sent) {
-          setToast({ tone: 'success', title: 'Report emailed', message: `Sent to ${result.sent} recipient(s).` })
+        } else {
+          setToast({
+            tone: 'info',
+            title: 'Visit saved — no email sent',
+            message: 'No active recipients are configured for this location. Add them under Admin.',
+          })
         }
       } catch (mailErr) {
         setToast({ tone: 'error', title: 'Visit saved, but email failed', message: String(mailErr.message || mailErr) })

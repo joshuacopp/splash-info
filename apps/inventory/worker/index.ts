@@ -31,6 +31,7 @@ import {
   updateVisit,
   upsertProduct
 } from "./db.js";
+import type { VisitReportPayload } from "./report-email.js";
 import type { Env } from "./env.js";
 
 const ROUTE_PREFIX = "/inventory";
@@ -139,10 +140,24 @@ export default {
         return json(await saveRecipients(sb, Array.isArray(list) ? list : []));
       }
 
-      // POST /api/report — forward to webhook or fail soft.
+      // POST /api/report — render the visit report and enqueue it onto the
+      // shared outbound_emails queue (Power Automate delivers).
+      //
+      // Scoped like every other write. This endpoint sends mail from a splash
+      // address carrying a location's cost figures, so it needs the same check
+      // POST /api/visits has — without it any holder of the `inventory` grant
+      // could name someone else's site and mail that site's managers.
+      //
+      // The origin is taken from the request, not the body, so the "View Full
+      // Visit" link lands on the host the operator is actually using.
       if (sub === "report" && segments.length === 2) {
         if (method !== "POST") return jsonError(405, "method not allowed");
-        return json(await sendVisitReport(env.INVENTORY_REPORT_WEBHOOK_URL, await readJson(request)));
+        const body = await readJson<VisitReportPayload>(request);
+        const code = String(body.locationId || "");
+        if (!code || !userCanAccessLocation(session, code)) {
+          return jsonError(403, "forbidden for that location");
+        }
+        return json(await sendVisitReport(sb, env, url.origin, body));
       }
 
       // /api/flags/resolve | /api/flags/unresolve

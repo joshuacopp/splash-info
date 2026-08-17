@@ -14,12 +14,13 @@ import type { SupabaseEnv } from "@splash/db-supabase";
 export interface Env extends SupabaseEnv {
   /** Cloudflare Static Assets binding — serves the built Vite SPA (./dist). */
   ASSETS: Fetcher;
-
-  /**
-   * Optional visit-report webhook. When set, POST /inventory/api/report
-   * forwards the report payload here (e.g. a Supabase Edge Function or an
-   * email relay). When unset the endpoint fails soft and returns
-   * { simulated: true } so the submit flow keeps working before it's wired.
-   */
-  INVENTORY_REPORT_WEBHOOK_URL?: string;
 }
+
+// No email binding is declared here on purpose. POST /inventory/api/report
+// enqueues onto the shared `outbound_emails` table via SUPABASE_SERVICE_KEY
+// (already inherited from SupabaseEnv) and Power Automate drains the queue —
+// the same path forms-worker and promo-worker use. There is no provider key,
+// no webhook URL, and nothing extra to set before the first send works.
+//
+// This replaced an INVENTORY_REPORT_WEBHOOK_URL var that was never populated,
+// which is why the report step returned { simulated: true } in production.

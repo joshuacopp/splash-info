@@ -22,10 +22,12 @@
 // parent_code.
 
 import type { SupabaseClient } from "@splash/db-supabase";
+import { enqueueOutboundEmail } from "@splash/db-supabase";
 import type { Session } from "@splash/types/session";
 // (userCanAccessLocation used to be imported here and never called — dropped
 // with the overlay change so the module graph is db -> overlay only.)
 import { loadOverlay } from "./overlay.js";
+import { renderVisitReport, type VisitReportPayload } from "./report-email.js";
 
 const SCHEMA = "inventory";
 const inv = (sb: SupabaseClient) => sb.schema(SCHEMA);
@@ -644,25 +646,130 @@ export async function saveRecipients(sb: SupabaseClient, list: Array<Record<stri
 }
 
 // ---------------------------------------------------------------------------
-// Visit report — forward to optional webhook, else fail soft (simulated).
+// Visit report
+//
+// Enqueues onto the shared `outbound_emails` queue that Power Automate drains,
+// the same path forms-worker and promo-worker use. Inventory does not talk to
+// an email provider itself: one PA flow already owns delivery, retries, and the
+// admin email-queue view at /admin/email-queue, and standing up a second sender
+// would mean a second set of DNS/SPF surprises for no new capability.
+//
+// One queue row per recipient, which is what the dedup index on
+// (source_worker, source_kind, source_id, recipient) expects. `source_id` is
+// the site_visits UUID, so a double-tapped Submit or a retried request
+// re-enqueues nothing — and once PA has stamped sent_at, it never re-sends.
 // ---------------------------------------------------------------------------
+
+/**
+ * Active recipients who should receive the report for `locationCode`.
+ *
+ * Two ways to qualify: `all_locations = true` (the default, and how most
+ * recipients are configured), or an explicit row in
+ * notification_recipient_locations for this site.
+ *
+ * Deliberately NOT filtered by the sender's own scope. A recipient list is an
+ * admin-configured distribution list, not a permission — the area manager who
+ * should hear about every site in their region is entitled to that email
+ * whether or not the tech who filed the visit can see the rest of the region.
+ */
+async function resolveReportRecipients(
+  sb: SupabaseClient,
+  locationCode: string
+): Promise<Array<{ email: string; name: string | null }>> {
+  const code = locationCode.trim().toLowerCase();
+
+  const [people, links] = await Promise.all([
+    inv(sb).from("notification_recipients").select("id,email,name,active,all_locations"),
+    inv(sb).from("notification_recipient_locations").select("recipient_id,location_code")
+  ]);
+  if (people.error) throw new Error(`Failed loading recipients: ${people.error.message}`);
+  // A failed link read is NOT fatal, but it must not silently widen the send:
+  // treating the scoped recipients as unscoped would mail every site's report
+  // to someone who asked for one. Skip them and mail the all_locations people.
+  if (links.error) {
+    console.error("[inventory.report] recipient locations read failed", links.error.message);
+  }
+
+  const scoped = new Set<string>();
+  for (const raw of (links.data || []) as Array<Record<string, unknown>>) {
+    if (String(raw.location_code || "").trim().toLowerCase() === code) {
+      scoped.add(String(raw.recipient_id || ""));
+    }
+  }
+
+  const out: Array<{ email: string; name: string | null }> = [];
+  const seen = new Set<string>();
+  for (const raw of (people.data || []) as Array<Record<string, unknown>>) {
+    if (raw.active === false) continue;
+    const email = String(raw.email || "").trim().toLowerCase();
+    if (!email || seen.has(email)) continue;
+    const qualifies = raw.all_locations !== false || scoped.has(String(raw.id || ""));
+    if (!qualifies) continue;
+    seen.add(email);
+    out.push({ email, name: raw.name ? String(raw.name) : null });
+  }
+  return out;
+}
+
 export async function sendVisitReport(
-  webhookUrl: string | undefined,
-  payload: Record<string, unknown>
+  sb: SupabaseClient,
+  env: { SUPABASE_URL: string; SUPABASE_SERVICE_KEY: string },
+  origin: string,
+  payload: VisitReportPayload
 ) {
-  if (!webhookUrl) {
-    return { simulated: true, sent: 0, recipients: [] as string[] };
+  const locationCode = String(payload.locationId || "").trim();
+  if (!locationCode) throw new Error("report: locationId is required");
+
+  const recipients = await resolveReportRecipients(sb, locationCode);
+  if (!recipients.length) {
+    // Not an error. Plenty of sites have no recipient configured yet, and the
+    // visit itself is already saved — the caller surfaces this as a note.
+    return { queued: 0, duplicates: 0, recipients: [] as string[] };
   }
-  const resp = await fetch(webhookUrl, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(payload)
-  });
-  if (!resp.ok) {
-    const text = await resp.text().catch(() => "");
-    throw new Error(`Report webhook failed (${resp.status}): ${text.slice(0, 200)}`);
+
+  // Built here, from the worker's own origin, so staging links stay on staging
+  // and nothing in the request body can choose where the email points.
+  const visitUrl = payload.visitId
+    ? `${origin}/inventory/location/${encodeURIComponent(locationCode)}/visit/${encodeURIComponent(
+        payload.visitId
+      )}`
+    : null;
+
+  const { subject, bodyHtml, bodyText } = renderVisitReport(payload, visitUrl);
+
+  // `source_id` falls back to location+date when visitId is missing so the
+  // dedup key is still stable rather than degrading to "send every time".
+  const sourceId = payload.visitId
+    ? String(payload.visitId)
+    : `${locationCode}:${String(payload.visitDate || "unknown")}`;
+
+  let queued = 0;
+  let duplicates = 0;
+  const delivered: string[] = [];
+
+  // Sequential, not Promise.all. This is at most a handful of rows, and one
+  // failing recipient must not abort the others — a rejected Promise.all would
+  // lose the successes it already had.
+  for (const r of recipients) {
+    try {
+      const result = await enqueueOutboundEmail(env, {
+        source_worker: "inventory",
+        source_kind: "visit-report",
+        source_id: sourceId,
+        recipient: r.email,
+        subject,
+        body_html: bodyHtml,
+        body_text: bodyText
+      });
+      if (result.was_duplicate) duplicates++;
+      else queued++;
+      delivered.push(r.email);
+    } catch (err) {
+      console.error(`[inventory.report] enqueue failed for ${r.email}`, err);
+    }
   }
-  return resp.json().catch(() => ({ ok: true }));
+
+  return { queued, duplicates, recipients: delivered };
 }
 
 // ---------------------------------------------------------------------------

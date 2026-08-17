@@ -62,7 +62,16 @@ export async function saveRecipients(list) {
 }
 
 // ---------------------------------------------------------------------------
-// Visit report email — forwarded to a webhook server-side, else simulated.
+// Visit report email.
+//
+// The worker resolves the recipient list, renders the body and writes one row
+// per recipient onto the shared `outbound_emails` queue (Power Automate
+// delivers). Send only the visit's facts — recipients, the link origin and the
+// dedup key are all decided server-side.
+//
+// Returns { queued, duplicates, recipients[] }. `duplicates` is non-zero when
+// this visit was already queued for that address, which is how a double-tapped
+// Submit is absorbed instead of mailing everybody twice.
 // ---------------------------------------------------------------------------
 export async function sendVisitReport(payload) {
   return apiPost('/report', payload)
