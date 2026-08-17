@@ -25,12 +25,31 @@ interface LocationCodeMultiPickerProps {
   placeholder?: string;
   /** Disabled state — used when the chosen role bypasses scoping. */
   disabled?: boolean;
+  /**
+   * Show the "add a whole region" row above the typeahead. Off by default
+   * so the DC-role card keeps its existing, narrower affordance; the
+   * user_permissions cards opt in, because that is where somebody gets
+   * scoped to thirty sites at once.
+   */
+  enableRegionAdd?: boolean;
 }
 
 interface LocationCodeSearchRow {
   location_code: string;
   location_pretty: string | null;
   site: string | null;
+}
+
+interface RegionRosterEntry {
+  role: "area_manager" | "regional_manager";
+  name: string;
+  roleLabel: string;
+  count: number;
+}
+
+/** Round-trip key for the <select>; the API needs role and name separately. */
+function regionKey(r: RegionRosterEntry): string {
+  return `${r.role}|${r.name}`;
 }
 
 function chipLabel(row: LocationCodeSearchRow): string {
@@ -44,10 +63,12 @@ export function LocationCodeMultiPicker({
   inputId,
   defaultValues,
   placeholder,
-  disabled
+  disabled,
+  enableRegionAdd
 }: LocationCodeMultiPickerProps) {
   const listboxId = useId();
   const optionIdPrefix = useId();
+  const regionSelectId = useId();
 
   const [selected, setSelected] = useState<LocationCodeSearchRow[]>(() =>
     (defaultValues ?? []).map((code) => ({
@@ -61,6 +82,11 @@ export function LocationCodeMultiPicker({
   const [open, setOpen] = useState(false);
   const [activeIndex, setActiveIndex] = useState(-1);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+
+  const [roster, setRoster] = useState<RegionRosterEntry[]>([]);
+  const [regionChoice, setRegionChoice] = useState("");
+  const [regionBusy, setRegionBusy] = useState(false);
+  const [regionNote, setRegionNote] = useState<string | null>(null);
 
   const debounceRef = useRef<number | null>(null);
   const fetchSeqRef = useRef(0);
@@ -201,6 +227,80 @@ export function LocationCodeMultiPicker({
     setSelected((prev) => prev.filter((p) => p.location_code !== code));
   }
 
+  // Region roster — one fetch on mount, only when the affordance is on.
+  // Fail-soft: no roster means the <select> stays hidden and the operator
+  // falls back to the typeahead rather than seeing a broken control.
+  useEffect(() => {
+    if (!enableRegionAdd) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const resp = await fetch("/sysadmin/api/pricing-simple/regions", {
+          method: "GET",
+          credentials: "include",
+          cache: "no-store"
+        });
+        if (!resp.ok || cancelled) return;
+        const rows = (await resp.json()) as RegionRosterEntry[];
+        if (!cancelled && Array.isArray(rows)) setRoster(rows);
+      } catch {
+        // Fail-soft.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [enableRegionAdd]);
+
+  // Adds every location in a region to the existing selection. Additive by
+  // construction — it merges, and each chip keeps its own ✕ — so the
+  // operator can pull one site back out rather than restarting.
+  async function addRegion() {
+    const [role, ...rest] = regionChoice.split("|");
+    const name = rest.join("|");
+    if (!role || !name) return;
+
+    setRegionBusy(true);
+    setRegionNote(null);
+    try {
+      const url =
+        `/sysadmin/api/pricing-simple/regions` +
+        `?role=${encodeURIComponent(role)}&name=${encodeURIComponent(name)}`;
+      const resp = await fetch(url, {
+        method: "GET",
+        credentials: "include",
+        cache: "no-store"
+      });
+      if (!resp.ok) {
+        setRegionNote(`Could not load that region (${resp.status}).`);
+        return;
+      }
+      const rows = (await resp.json()) as LocationCodeSearchRow[];
+      // Diffed against `selected` here rather than inside the updater on
+      // purpose: StrictMode invokes a functional updater twice, so a counter
+      // assigned in there reads 0 on the second pass and the note lies.
+      const have = new Set(selected.map((p) => p.location_code));
+      const fresh = rows.filter((r) => !have.has(r.location_code));
+      setSelected((prev) => {
+        const seen = new Set(prev.map((p) => p.location_code));
+        return [...prev, ...fresh.filter((r) => !seen.has(r.location_code))];
+      });
+      // Report both numbers: "30 sites, 4 already selected" is the difference
+      // between a working button and one the operator thinks did nothing.
+      const dupes = rows.length - fresh.length;
+      setRegionNote(
+        fresh.length === 0
+          ? `All ${rows.length} already selected.`
+          : `Added ${fresh.length} location${fresh.length === 1 ? "" : "s"}` +
+            (dupes > 0 ? ` — ${dupes} already selected.` : ".")
+      );
+    } catch (err) {
+      setRegionNote(err instanceof Error ? err.message : "Region add failed.");
+    } finally {
+      setRegionBusy(false);
+    }
+  }
+
   function onKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
     if (e.key === "ArrowDown") {
       if (results.length === 0) return;
@@ -251,6 +351,44 @@ export function LocationCodeMultiPicker({
           value={row.location_code}
         />
       ))}
+
+      {enableRegionAdd && roster.length > 0 && !disabled ? (
+        <div className="mb-2 flex flex-wrap items-center gap-2">
+          <label
+            htmlFor={regionSelectId}
+            className="text-xs font-semibold text-splash-navy/70"
+          >
+            Add a whole region
+          </label>
+          <select
+            id={regionSelectId}
+            value={regionChoice}
+            onChange={(e) => {
+              setRegionChoice(e.target.value);
+              setRegionNote(null);
+            }}
+            className="rounded-splash-sm border border-gray-light bg-white px-2 py-1.5 text-sm text-splash-navy focus:border-splash-blue focus:outline-none focus:ring-1 focus:ring-splash-blue"
+          >
+            <option value="">Select a manager…</option>
+            {roster.map((r) => (
+              <option key={regionKey(r)} value={regionKey(r)}>
+                {r.roleLabel}: {r.name} ({r.count})
+              </option>
+            ))}
+          </select>
+          <button
+            type="button"
+            onClick={addRegion}
+            disabled={regionChoice.length === 0 || regionBusy}
+            className="rounded-splash-sm bg-splash-blue px-3 py-1.5 text-xs font-semibold text-white disabled:cursor-not-allowed disabled:bg-gray-light disabled:text-splash-navy/40"
+          >
+            {regionBusy ? "Adding…" : "Add all"}
+          </button>
+          {regionNote ? (
+            <span className="text-xs text-splash-navy/60">{regionNote}</span>
+          ) : null}
+        </div>
+      ) : null}
 
       {selected.length > 0 ? (
         <div className="mb-2 flex flex-wrap gap-1.5">

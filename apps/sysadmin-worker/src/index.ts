@@ -82,6 +82,11 @@
 //                                          across location_code,
 //                                          location_pretty, site. Returns up
 //                                          to 50 rows. Empty q -> [].
+//   GET   /sysadmin/api/pricing-simple/regions[?role=&name=]
+//                                        — Grant-by-region. No params returns
+//                                          the RD/RM roster with site counts;
+//                                          role+name returns that region's
+//                                          locations in typeahead row shape.
 //   GET   /sysadmin/api/pricing-simple/locations?q=...
 //                                        — Brief 39. Distinct (location_code,
 //                                          location_pretty, site) tuples for
@@ -226,6 +231,7 @@ const OWNED_GET_PATHS = new Set([
   "/sysadmin/api/users",
   "/sysadmin/api/pricing-simple/search",
   "/sysadmin/api/pricing-simple/locations",
+  "/sysadmin/api/pricing-simple/regions",
   "/sysadmin/api/locations/search",
   "/sysadmin/api/audit-log"
 ]);
@@ -299,6 +305,9 @@ export default {
         }
         if (path === "/sysadmin/api/pricing-simple/locations") {
           return await handleSearchPricingSimpleLocations(env, url);
+        }
+        if (path === "/sysadmin/api/pricing-simple/regions") {
+          return await handleRegions(env, url);
         }
         if (path === "/sysadmin/api/locations/search") {
           return await handleSearchLocations(env, url);
@@ -1555,6 +1564,123 @@ async function handleSearchPricingSimpleLocations(
   }
 
   return json(deduped);
+}
+
+/* ============================================================
+ * GET /sysadmin/api/pricing-simple/regions
+ * GET /sysadmin/api/pricing-simple/regions?role=<col>&name=<manager>
+ *
+ * Grant-by-region support for the location multi-picker. Onboarding a
+ * user scoped to a whole region meant picking thirty locations out of a
+ * typeahead one at a time, which is slow and — worse — silently wrong
+ * when the operator miscounts.
+ *
+ * With no params: the roster, as [{ role, name, count }], so the picker
+ * can render a dropdown. With role + name: the LocationCodeSearchRow[]
+ * for that region, in the exact shape the typeahead already consumes, so
+ * the client merges them into its selection with no new row type.
+ *
+ * NOTE THE COLUMN LABELS. `area_manager` holds the Regional DIRECTOR's
+ * name and `regional_manager` holds the Regional Manager's. That
+ * divergence is pre-existing and documented in performance-worker's
+ * greeter.ts; this endpoint maps to UI-facing labels rather than
+ * propagating the confusion, and `role` is the raw column name so the
+ * round-trip stays unambiguous.
+ *
+ * One unfiltered read of pricing_simple (it is ~1k rows) deduped in the
+ * worker, because PostgREST has no DISTINCT projection and grouping by
+ * two manager columns server-side would need a view.
+ *
+ * Auth gate is super_admin (single gate at the top of fetch()).
+ * ============================================================ */
+
+type RegionRole = "area_manager" | "regional_manager";
+
+const REGION_ROLES: Record<RegionRole, string> = {
+  area_manager: "Regional Director",
+  regional_manager: "Regional Manager"
+};
+
+interface RegionRosterEntry {
+  role: RegionRole;
+  /** Raw manager name as stored — this is what ?name= must echo back. */
+  name: string;
+  /** UI-facing role label; see the column-divergence note above. */
+  roleLabel: string;
+  count: number;
+}
+
+interface RegionSourceRow extends LocationCodeSearchRow {
+  area_manager: string | null;
+  regional_manager: string | null;
+}
+
+function isRegionRole(v: string): v is RegionRole {
+  return v === "area_manager" || v === "regional_manager";
+}
+
+async function handleRegions(env: Env, url: URL): Promise<Response> {
+  const restUrl =
+    `${env.SUPABASE_URL}/rest/v1/pricing_simple` +
+    `?select=location_code,location_pretty,site,area_manager,regional_manager` +
+    `&order=site.asc` +
+    `&limit=5000`;
+
+  const resp = await fetch(restUrl, {
+    headers: {
+      apikey: env.SUPABASE_SERVICE_KEY,
+      Authorization: `Bearer ${env.SUPABASE_SERVICE_KEY}`
+    }
+  });
+  if (!resp.ok) {
+    const errText = await resp.text().catch(() => "");
+    return jsonError(500, `Region lookup failed: ${resp.status} ${errText}`);
+  }
+  const rawRows = (await resp.json().catch(() => [])) as RegionSourceRow[];
+
+  // pricing_simple is one row per (location, package), so dedupe to one
+  // row per location before anything is counted or returned.
+  const byCode = new Map<string, RegionSourceRow>();
+  for (const row of rawRows) {
+    if (!row || typeof row.location_code !== "string") continue;
+    if (!byCode.has(row.location_code)) byCode.set(row.location_code, row);
+  }
+  const locations = [...byCode.values()];
+
+  const roleParam = (url.searchParams.get("role") ?? "").trim();
+  const nameParam = (url.searchParams.get("name") ?? "").trim();
+
+  // Roster mode.
+  if (roleParam.length === 0 || nameParam.length === 0) {
+    const counts = new Map<string, RegionRosterEntry>();
+    for (const row of locations) {
+      for (const role of ["area_manager", "regional_manager"] as RegionRole[]) {
+        const name = (row[role] ?? "").trim();
+        if (name.length === 0) continue;
+        const key = `${role}|${name.toLowerCase()}`;
+        const existing = counts.get(key);
+        if (existing) existing.count += 1;
+        else counts.set(key, { role, name, roleLabel: REGION_ROLES[role], count: 1 });
+      }
+    }
+    const roster = [...counts.values()].sort(
+      (a, b) => a.roleLabel.localeCompare(b.roleLabel) || a.name.localeCompare(b.name)
+    );
+    return json(roster);
+  }
+
+  // Member mode.
+  if (!isRegionRole(roleParam)) return jsonError(400, "role must be area_manager or regional_manager");
+  const needle = nameParam.toLowerCase();
+  const members = locations
+    .filter((row) => (row[roleParam] ?? "").trim().toLowerCase() === needle)
+    .map((row) => ({
+      location_code: row.location_code,
+      location_pretty: row.location_pretty ?? null,
+      site: row.site ?? null
+    }));
+
+  return json(members);
 }
 
 /* ============================================================

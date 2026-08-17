@@ -156,11 +156,14 @@ function CreateUserCard() {
           <LocationCodeMultiPicker
             name="location_codes"
             inputId="create-location-codes"
+            enableRegionAdd
           />
           <p className="mt-1 text-[0.6875rem] text-splash-navy/50">
             Ignored for super_admin and no-role. One user_permissions row is
             written per location, so a multi-site manager can be onboarded in
-            a single step.
+            a single step. &ldquo;Add a whole region&rdquo; expands to that
+            manager&rsquo;s sites as individual chips — review and trim them
+            before submitting.
           </p>
         </div>
 
@@ -218,6 +221,7 @@ function SetRoleCard() {
           <LocationCodeMultiPicker
             name="location_codes"
             inputId="set-role-location-codes"
+            enableRegionAdd
           />
           <p className="mt-1 text-[0.6875rem] text-splash-navy/50">
             Ignored for super_admin and clear-role operations.
