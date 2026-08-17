@@ -574,7 +574,7 @@ async function apiMissingDays(
  * wants a different cut, and would make the row counts impossible to reconcile
  * between views.
  *
- * low_sample rows (fewer than 5 gradeable days) come back like any other row and
+ * low_sample rows (two or fewer gradeable days) come back like any other row and
  * MUST be rendered — the page sorts them last with a note. Dropping them hides
  * exactly the greeters whose numbers nobody is watching.
  */

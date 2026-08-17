@@ -718,11 +718,14 @@ GRANT EXECUTE ON FUNCTION greeter_missing_days(date, date, integer, integer, tex
 -- GRADEABLE days: dividing by days_logged would let a greeter improve their
 -- standing by logging days with no wash sales.
 --
--- low_sample (fewer than 5 gradeable days) exists because two days, both under
+-- low_sample (fewer than 3 gradeable days) exists because two days, both under
 -- goal, is "100% under goal" and would otherwise open the underperformer list.
 -- The page sorts these to the BOTTOM of both lists with a note rather than
 -- hiding them. Computed here, not in the page, so one definition of "few
 -- reported numbers" serves every view.
+--
+-- Three is the floor, not five: four days in a seven-day window is an ordinary
+-- part-time schedule, and flagging it made the tag noise rather than signal.
 --
 -- Weighting follows section 5: summed numerator over summed denominator for
 -- capture_pct/dob, AVG for the goal columns.
@@ -823,7 +826,8 @@ AS $$
     CASE WHEN COUNT(*) FILTER (WHERE r.gradeable) > 0
       THEN ROUND(SUM(r.is_under)::numeric * 100 / COUNT(*) FILTER (WHERE r.gradeable), 1)
     END                                                   AS pct_days_under,
-    (COUNT(*) FILTER (WHERE r.gradeable) < 5)             AS low_sample,
+    -- Keep in lockstep with greeter-reactivations-07.sql. See the note above.
+    (COUNT(*) FILTER (WHERE r.gradeable) < 3)             AS low_sample,
     SUM(r.wash_sales)::bigint                             AS wash_sales,
     SUM(r.sign_ups)::bigint                               AS sign_ups,
     SUM(r.reactivations)::bigint                          AS reactivations,

@@ -8,6 +8,9 @@
 -- — it drops and recreates both functions in full. This file is kept for the
 -- history of why they are shaped the way they are.
 --
+-- Also stale here: low_sample below is `< 5`. The live threshold is `< 3` (two
+-- or fewer graded days). Read 07, not this, for the current definition.
+--
 -- Run in the Supabase SQL editor. Safe to re-run (CREATE OR REPLACE only).
 -- Independent of 01, 02 and 03 — adds no columns and changes no existing object.
 --

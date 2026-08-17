@@ -23,7 +23,7 @@
 // page. That's deliberate — it means the row counts across views reconcile, and
 // a fifth button costs no migration.
 //
-// LOW-SAMPLE GREETERS ARE NEVER DROPPED. A greeter with fewer than five graded
+// LOW-SAMPLE GREETERS ARE NEVER DROPPED. A greeter with two or fewer graded
 // days carries `low_sample` from Postgres, sorts to the BOTTOM of every list,
 // and is labelled. Excluding them would hide exactly the people whose numbers
 // nobody is watching; letting them top a list on a two-day sample would be

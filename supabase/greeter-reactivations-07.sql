@@ -289,7 +289,12 @@ AS $$
     CASE WHEN COUNT(*) FILTER (WHERE r.gradeable) > 0
       THEN ROUND(SUM(r.is_under)::numeric * 100 / COUNT(*) FILTER (WHERE r.gradeable), 1)
     END                                                   AS pct_days_under,
-    (COUNT(*) FILTER (WHERE r.gradeable) < 5)             AS low_sample,
+    -- Two or fewer graded days is a low sample. Three is enough to rate someone.
+    -- This was 5, which over-flagged: a greeter working four days in a seven-day
+    -- window is a normal part-time schedule, not a thin sample, and tagging them
+    -- "few days" made the flag noise instead of signal.
+    -- AUTHORITATIVE. presets.ts's LOW_SAMPLE_DAYS is copy only and follows this.
+    (COUNT(*) FILTER (WHERE r.gradeable) < 3)             AS low_sample,
     SUM(r.wash_sales)::bigint                             AS wash_sales,
     SUM(r.sign_ups)::bigint                               AS sign_ups,
     SUM(r.reactivations)::bigint                          AS reactivations,

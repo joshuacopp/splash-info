@@ -30,9 +30,13 @@ export const UNDER_PCT_UNDER = 50;
  * Copy only. The `low_sample` flag is computed in Postgres by
  * greeter_period_report(); the page reads the column and never recomputes it,
  * so this constant exists purely so the explanatory text can't drift from the
- * SQL. If the threshold moves, it moves in greeter-report-04.sql first.
+ * SQL. If the threshold moves, it moves in greeter-reactivations-07.sql first
+ * (and in the inlined copy in greeter-scorecard-tables.sql), then here.
+ *
+ * 3 means "two or fewer graded days is a thin sample" — Josh's call. It was 5,
+ * which flagged an ordinary four-day part-time week as too little to judge.
  */
-export const LOW_SAMPLE_DAYS = 5;
+export const LOW_SAMPLE_DAYS = 3;
 
 export const PRESETS: Record<ViewKey, Preset> = {
   recent: {
