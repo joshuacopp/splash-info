@@ -44,24 +44,37 @@ export default function MasterDashboard() {
     })
   }, [s.rows, q, region, sort])
 
-  // chart: top 16 by latest wash count with CPC data. Sites with only a
-  // handful of washes (brand-new locations still ramping up) get excluded —
-  // their real cost-per-car is $0.00 or near it, which renders as an empty
-  // bar indistinguishable from missing data; they're still fully visible in
-  // the table below with plain numbers, where that's not ambiguous.
+  // Chart: top 16 by cars YTD, drawn from the same filtered `rows` the table
+  // renders — so the manager chips and the search box drive both, and the
+  // chart reads as a drill-down of the table rather than an unrelated view.
+  //
+  // Ranked on ytdCars deliberately. This used to rank on the LATEST visit's
+  // totalWashCount, which is traffic x days-since-the-previous-visit, so a
+  // site visited every three weeks outranked a busier site visited weekly and
+  // the chart order contradicted the table it sits above. "Busiest" now means
+  // the same thing in both places.
+  //
+  // The bars themselves are still the latest visit's actual vs target CPC —
+  // there is no YTD target to plot, since blendedTargetCpc is only defined
+  // per-visit. Same pairing the table uses (Cars YTD alongside CPC last visit).
+  //
+  // Sites with only a handful of washes on that latest visit (brand-new
+  // locations still ramping up) stay excluded: their cost-per-car is at or
+  // near $0.00, which renders as an empty bar indistinguishable from missing
+  // data. They remain fully visible in the table as plain numbers.
   const MIN_WASHES_FOR_CHART = 20
   const chartData = useMemo(
     () =>
-      s.rows
+      rows
         .filter((r) => r.computed && r.computed.blendedCpc != null && r.computed.totalWashCount >= MIN_WASHES_FOR_CHART)
-        .sort((a, b) => b.computed.totalWashCount - a.computed.totalWashCount)
+        .sort((a, b) => b.ytdCars - a.ytdCars)
         .slice(0, 16)
         .map((r) => ({
           name: r.location.name,
           actual: r.computed.blendedCpc,
           target: r.computed.blendedTargetCpc,
         })),
-    [s.rows]
+    [rows]
   )
 
   const cpcTone =
@@ -98,14 +111,26 @@ export default function MasterDashboard() {
       </div>
 
       <div className="card p-5">
-        <SectionTitle>Actual vs. target CPC — busiest locations</SectionTitle>
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <SectionTitle>Actual vs. target CPC — busiest locations</SectionTitle>
+          {/* The chips that drive this live in the table header below, so name
+              the active filter here or the chart looks like it ignored it. */}
+          {(region !== 'All' || q) && (
+            <span className="text-xs font-medium text-slate-500">
+              {region !== 'All' ? region : 'All managers'}
+              {q ? ` · “${q}”` : ''}
+            </span>
+          )}
+        </div>
         {chartData.length ? (
           <CpcByLocationChart key={chartData.map((d) => d.name).join('|')} data={chartData} />
         ) : (
           <p className="p-8 text-center text-sm text-slate-500">
-            {s.rows.some((r) => r.computed)
-              ? `Not enough visit history yet — sites need at least ${MIN_WASHES_FOR_CHART} washes recorded to chart.`
-              : 'No visit data yet.'}
+            {!rows.length
+              ? 'No locations match the current filter.'
+              : rows.some((r) => r.computed)
+                ? `Not enough visit history yet — sites need at least ${MIN_WASHES_FOR_CHART} washes recorded to chart.`
+                : 'No visit data yet.'}
           </p>
         )}
       </div>
