@@ -25,7 +25,7 @@ export default function NewVisit() {
 
   const editingVisit = isEdit ? computeVisit(dataset, idx, editVisitId) : null
 
-  const { productRows, packages, lastVisit } = useMemo(() => {
+  const { productRows, packages, washPackages, addonPackages, lastVisit } = useMemo(() => {
     const lps = (dataset.location_products || []).filter((lp) => lp.location_id === locationId)
     const lastVisit = isEdit ? null : latestVisitForLocation(idx, locationId)
     const lastEnding = {}
@@ -36,12 +36,37 @@ export default function NewVisit() {
       for (const e of source.entries) {
         lastEnding[e.productId] = isEdit ? e.startingQtyGal : e.endingQtyGal
         lastMlPerCar[e.productId] = e.actualMlPerCar
-        lastEquipment[e.productId] = {
-          meteringType: e.meteringType,
-          tipColor: e.tipColor,
-          versadialNumber: e.versadialNumber,
-          injectorColor: e.injectorColor,
-          injectorGpm: e.injectorGpm,
+      }
+    }
+
+    // Equipment carries forward from the most recent visit that actually
+    // RECORDED it, per product — not simply from the previous visit. Metering
+    // and injector config describes the physical hardware, so it persists
+    // until somebody changes it; reading only the last visit means one tech
+    // leaving the section blank erases the setting for everyone after them.
+    // Walking back also lets the imported history (which has no equipment
+    // columns at all — they are new in this schema) fill in from the first
+    // real visit that records them, rather than staying blank forever.
+    // visitsByLocation is sorted newest-first, and a key is only written when
+    // still unset, so the most recent recorded value always wins.
+    const equipSource = isEdit ? [editVisitId] : (idx.visitsByLocation[locationId] || []).map((v) => v.id)
+    const EQUIP_KEYS = ['meteringType', 'tipColor', 'versadialNumber', 'injectorColor', 'injectorGpm']
+    // A versadial site never has a tip colour and vice versa, so "complete"
+    // means the metering pair plus the injector pair, not all five keys.
+    const isComplete = (eq) =>
+      eq &&
+      ((eq.meteringType === 'tip' && eq.tipColor != null) ||
+        (eq.meteringType === 'versadial' && eq.versadialNumber != null)) &&
+      eq.injectorColor != null &&
+      eq.injectorGpm != null
+    for (const vid of equipSource) {
+      if (lps.every((lp) => isComplete(lastEquipment[lp.product_id]))) break
+      const c = computeVisit(dataset, idx, vid)
+      if (!c) continue
+      for (const e of c.entries) {
+        const into = (lastEquipment[e.productId] ||= {})
+        for (const k of EQUIP_KEYS) {
+          if (into[k] == null && e[k] != null && e[k] !== '') into[k] = e[k]
         }
       }
     }
@@ -61,11 +86,18 @@ export default function NewVisit() {
         }
       })
       .sort((a, b) => a.name.localeCompare(b.name))
-    const packages = (dataset.packages || [])
-      .filter((p) => p.location_id === locationId)
-      .sort((a, b) => a.name.localeCompare(b.name))
-    return { productRows, packages, lastVisit }
-  }, [dataset, idx, locationId, isEdit, editingVisit])
+    // Washes first, add-ons last — not one alphabetical run. Add-ons are à la
+    // carte (Hot Wax, Cer. Ala, Tire Shine…) and calc.js excludes them from
+    // total_wash_count and from every CPC denominator, so they are a different
+    // kind of number that happens to share a unit. Interleaving them
+    // alphabetically invites entering a wash figure in an add-on box.
+    const mine = (dataset.packages || []).filter((p) => p.location_id === locationId)
+    const byName = (a, b) => a.name.localeCompare(b.name)
+    const washPackages = mine.filter((p) => p.package_type !== 'addon').sort(byName)
+    const addonPackages = mine.filter((p) => p.package_type === 'addon').sort(byName)
+    const packages = [...washPackages, ...addonPackages]
+    return { productRows, packages, washPackages, addonPackages, lastVisit }
+  }, [dataset, idx, locationId, isEdit, editVisitId, editingVisit])
 
   const [visitDate, setVisitDate] = useState(() => (isEdit ? editingVisit?.visit.visit_date : todayIso()))
   const [submitter, setSubmitter] = useState(() => (isEdit ? editingVisit?.visit.submitter || '' : ''))
@@ -119,7 +151,11 @@ export default function NewVisit() {
     setRows((prev) => ({ ...prev, [pid]: { ...prev[pid], ...patch } }))
   }
 
-  const totalWashes = packages.reduce((s, p) => s + num(washes[p.id]), 0)
+  // Washes only — add-ons are excluded, matching calc.js totalWashCount. This
+  // number is also the ml/car denominator below, so counting add-ons here
+  // would make the live preview disagree with the visit once it is saved.
+  const totalWashes = washPackages.reduce((s, p) => s + num(washes[p.id]), 0)
+  const totalAddons = addonPackages.reduce((s, p) => s + num(washes[p.id]), 0)
 
   // Ending is ALWAYS reservoir + floor — never hand-typed. This makes
   // reconciliation mismatches impossible at entry time.
@@ -489,23 +525,50 @@ export default function NewVisit() {
         <div className="flex items-center justify-between border-b border-slate-100 px-5 py-4">
           <SectionTitle>Wash counts</SectionTitle>
           <div className="text-xs font-medium text-slate-500">
-            Total: <span className="font-extrabold text-slate-900">{totalWashes.toLocaleString()}</span>
+            Washes: <span className="font-extrabold text-slate-900">{totalWashes.toLocaleString()}</span>
+            {!!addonPackages.length && (
+              <>
+                <span className="px-2 text-slate-300">·</span>
+                Add-ons: <span className="font-extrabold text-slate-900">{totalAddons.toLocaleString()}</span>
+              </>
+            )}
           </div>
         </div>
-        <div className="grid grid-cols-1 gap-3 p-5 sm:grid-cols-2 lg:grid-cols-4">
-          {packages.map((p) => (
-            <div key={p.id} className="flex items-center justify-between gap-3 rounded-xl border border-slate-200 px-3 py-2.5">
-              <span className="truncate text-sm font-semibold text-slate-700">{p.name}</span>
-              <NumInput
+        {!packages.length && <p className="p-5 text-sm text-slate-400">No packages configured.</p>}
+        {!!washPackages.length && (
+          <div className="grid grid-cols-1 gap-3 p-5 sm:grid-cols-2 lg:grid-cols-4">
+            {washPackages.map((p) => (
+              <PackageCount
+                key={p.id}
+                pkg={p}
                 value={washes[p.id]}
                 onChange={(v) => setWashes((prev) => ({ ...prev, [p.id]: v }))}
-                width="w-24"
-                min={0}
               />
+            ))}
+          </div>
+        )}
+        {!!addonPackages.length && (
+          <div className="border-t border-slate-100 bg-slate-50/60">
+            <div className="flex items-center gap-2 px-5 pt-4">
+              <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-bold uppercase tracking-wide text-amber-700">
+                Add-ons
+              </span>
+              <span className="text-xs text-slate-500">
+                À la carte — not counted as washes and excluded from CPC.
+              </span>
             </div>
-          ))}
-          {!packages.length && <p className="text-sm text-slate-400">No packages configured.</p>}
-        </div>
+            <div className="grid grid-cols-1 gap-3 p-5 sm:grid-cols-2 lg:grid-cols-4">
+              {addonPackages.map((p) => (
+                <PackageCount
+                  key={p.id}
+                  pkg={p}
+                  value={washes[p.id]}
+                  onChange={(v) => setWashes((prev) => ({ ...prev, [p.id]: v }))}
+                />
+              ))}
+            </div>
+          </div>
+        )}
       </div>
 
       <div className="flex justify-end gap-2">
@@ -519,6 +582,15 @@ export default function NewVisit() {
 
       <Toast toast={toast} onDismiss={() => setToast(null)} />
     </form>
+  )
+}
+
+function PackageCount({ pkg, value, onChange }) {
+  return (
+    <div className="flex items-center justify-between gap-3 rounded-xl border border-slate-200 bg-white px-3 py-2.5">
+      <span className="truncate text-sm font-semibold text-slate-700">{pkg.name}</span>
+      <NumInput value={value} onChange={onChange} width="w-24" min={0} />
+    </div>
   )
 }
 
