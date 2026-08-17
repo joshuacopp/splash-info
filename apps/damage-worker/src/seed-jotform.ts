@@ -46,6 +46,9 @@ export const DAMAGE_FORM_ID = "250653826954971";
 const MAX_LIMIT = 200;
 const DEFAULT_LIMIT = 50;
 
+/** How many fully built rows a dry run echoes back for inspection. */
+const MAX_SAMPLES = 5;
+
 /* ============================================================
  * JotForm field resolution
  * ============================================================ */
@@ -488,6 +491,10 @@ export async function handleJotformSeed(
   }
 
   const outcomes: RowOutcome[] = [];
+  // Dry-run only: the fully built rows, so the operator can eyeball the field
+  // mapping before writing ~1,100 claims. Capped because a 200-row page of
+  // full ClaimInsert objects is unreadable in a console.
+  const samples: ClaimInsert[] = [];
   let inserted = 0;
   let alreadySeeded = 0;
   let skipped = 0;
@@ -621,6 +628,7 @@ export async function handleJotformSeed(
     // the location migration spreadsheets.
 
     if (dryRun) {
+      if (samples.length < MAX_SAMPLES) samples.push(insert);
       outcomes.push({
         id: row.id,
         unique_id: uniqueId,
@@ -669,6 +677,7 @@ export async function handleJotformSeed(
     // Only the non-clean rows are enumerated — a 200-row page of "inserted"
     // outcomes is noise the operator has to scroll past to find the one that
     // failed.
-    problems: outcomes.filter((o) => o.outcome === "skipped")
+    problems: outcomes.filter((o) => o.outcome === "skipped"),
+    ...(dryRun ? { samples } : {})
   });
 }
