@@ -296,10 +296,48 @@ export async function loadInventoryData(sb: SupabaseClient, session: Session) {
   };
 }
 
+// PostgREST caps every response at `db-max-rows` (1000 on Supabase) and does
+// NOT report the truncation — it just returns fewer rows with a 200. A bare
+// .select("*") was therefore correct only while the tables were small. After
+// the 2026-08-17 history import (22,715 inventory_entries, 8,317 wash_counts,
+// 3,172 package_products, 1,628 site_visits) it silently returned the first
+// 1,000 of each, so every location past the first handful rendered its visits
+// with wash count 0, chemical cost $0.00 and a blank CPC — real rows, invisible.
+//
+// Paginate on `count: "exact"` rather than on "short page means done": if the
+// server's cap is ever lower than PAGE, a short first page is not the end of
+// the table and the loop would stop early with the same silent truncation.
+//
+// .range() without a deterministic sort can repeat or skip rows across pages,
+// so every call orders by its key. Most tables key on `id`;
+// notification_recipient_locations has a composite PK and no id column.
+const PAGE = 1000;
+const ORDER_KEY: Record<string, string[]> = {
+  notification_recipient_locations: ["recipient_id", "location_code"]
+};
+
 async function selectAll(sb: SupabaseClient, table: string): Promise<Array<Record<string, unknown>>> {
-  const { data, error } = await inv(sb).from(table).select("*");
-  if (error) throw new Error(`Failed loading ${table}: ${error.message}`);
-  return (data || []) as Array<Record<string, unknown>>;
+  const keys = ORDER_KEY[table] ?? ["id"];
+  const out: Array<Record<string, unknown>> = [];
+  let total: number | null = null;
+
+  for (let page = 0; ; page += 1) {
+    if (page > 500) {
+      throw new Error(`Failed loading ${table}: pagination did not terminate`);
+    }
+    let q = inv(sb).from(table).select("*", { count: "exact" });
+    for (const k of keys) q = q.order(k, { ascending: true });
+    const { data, error, count } = await q.range(out.length, out.length + PAGE - 1);
+    if (error) throw new Error(`Failed loading ${table}: ${error.message}`);
+    if (total === null && typeof count === "number") total = count;
+
+    const rows = (data || []) as Array<Record<string, unknown>>;
+    out.push(...rows);
+    if (rows.length === 0) break;
+    if (total !== null && out.length >= total) break;
+  }
+
+  return out;
 }
 
 // ---------------------------------------------------------------------------

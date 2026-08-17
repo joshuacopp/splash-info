@@ -63,7 +63,10 @@ create table inventory.location_products (
   location_code     text not null,
   product_id        uuid not null references inventory.products(id) on delete restrict,
   target_ml_per_car numeric check (target_ml_per_car >= 0),
-  discount          numeric not null default 0 check (discount >= 0 and discount < 1),
+  -- discount = 1 is legal and means the product is supplied free (Viper Shine
+  -- at williamsville and newark). The standalone schema's exclusive `< 1`
+  -- rejected real config; see supabase/inventory-discount-allow-full.sql.
+  discount          numeric not null default 0 check (discount >= 0 and discount <= 1),
   unique (location_code, product_id)
 );
 create index on inventory.location_products (location_code);
@@ -112,7 +115,9 @@ create table inventory.inventory_entries (
   reservoir_count_gal numeric,
   floor_count_gal     numeric,
   ending_qty_gal      numeric not null default 0,
-  discount            numeric not null default 0 check (discount >= 0 and discount < 1),
+  -- <= 1, matching location_products: NewVisit.jsx seeds this from the
+  -- location's discount, so a free product would fail on submit. Same note.
+  discount            numeric not null default 0 check (discount >= 0 and discount <= 1),
   -- equipment tracking (migration 0005): a location meters with a colored tip
   -- OR a versadial number 1-32, never both; injector color identifies flow rate.
   metering_type       text check (metering_type in ('tip','versadial')),

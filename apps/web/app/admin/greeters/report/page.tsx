@@ -67,6 +67,7 @@ import {
   CaptureCell,
   CaptureLegend,
   captureTier,
+  type CaptureTier,
   dobTier,
   SCAN_TARGET_PCT,
   scanTier
@@ -147,6 +148,23 @@ export default async function GreeterReportPage({ searchParams }: PageProps) {
 
   const view = normalizeView(firstParam(sp.view).trim());
   const preset = PRESETS[view];
+
+  /**
+   * Morning call is a TABLE, not a dashboard.
+   *
+   * It's read off a phone on a standing call, so everything above the table —
+   * the KPI strip, both trend charts, the site ranking, the scatter — is scroll
+   * between the reader and the only thing they came for. The other three views
+   * keep all of it; this one renders the site table alone, with every site
+   * already expanded to its days so nobody has to tap through sixteen sites
+   * while people wait.
+   *
+   * Gating the FETCHES on this too, not just the markup: with the cards and
+   * charts gone, the prior-window comparison, the greeter period report and the
+   * missing-days count have no consumer, and three round trips whose results are
+   * thrown away are three round trips the call waits on.
+   */
+  const isMorning = preset.kind === "site";
 
   // The window. An explicit date beats the preset's default, so a manager can
   // keep the "underperformers" threshold while changing the range — the preset
@@ -231,25 +249,37 @@ export default async function GreeterReportPage({ searchParams }: PageProps) {
   let fetchError: string | null = null;
 
   try {
-    // Parallel: five independent reads plus the two dropdown rosters. The
-    // person days are skipped entirely unless a greeter is drilled into.
+    // Parallel: up to five independent reads plus the two dropdown rosters. The
+    // person days are skipped unless a greeter is drilled into, and everything
+    // but the site rows is skipped on the morning call, which renders none of
+    // it. Each skipped read resolves to null, and every consumer downstream
+    // reads through a `?? []` — so "skipped" and "came back empty" land in the
+    // same place rather than needing separate handling.
+    //
+    // The site rows are NOT optional — they are the morning call.
     [siteRows, priorRows, greeterRows, missingRows, personDays, rosters] =
       await Promise.all([
         performanceGetJson<LocationPeriodRow[]>(
           `/pertrack/api/greeter/location-rows?${windowQs}${locQs}${mgrQs}`
         ),
-        performanceGetJson<LocationPeriodRow[]>(
-          `/pertrack/api/greeter/location-rows?${priorQs}${locQs}${mgrQs}`
-        ),
-        performanceGetJson<GreeterPeriodReportRow[]>(
-          `/pertrack/api/greeter/period-report?${windowQs}${locQs}${mgrQs}${
-            greeter ? `&greeter=${encodeURIComponent(greeter)}` : ""
-          }`
-        ),
-        performanceGetJson<MissingDayRow[]>(
-          `/pertrack/api/greeter/missing-days?${windowQs}${locQs}${mgrQs}`
-        ),
-        selectedPerson
+        isMorning
+          ? Promise.resolve(null)
+          : performanceGetJson<LocationPeriodRow[]>(
+              `/pertrack/api/greeter/location-rows?${priorQs}${locQs}${mgrQs}`
+            ),
+        isMorning
+          ? Promise.resolve(null)
+          : performanceGetJson<GreeterPeriodReportRow[]>(
+              `/pertrack/api/greeter/period-report?${windowQs}${locQs}${mgrQs}${
+                greeter ? `&greeter=${encodeURIComponent(greeter)}` : ""
+              }`
+            ),
+        isMorning
+          ? Promise.resolve(null)
+          : performanceGetJson<MissingDayRow[]>(
+              `/pertrack/api/greeter/missing-days?${windowQs}${locQs}${mgrQs}`
+            ),
+        !isMorning && selectedPerson
           ? performanceGetJson<GreeterDayRow[]>(
               `/pertrack/api/greeter/days?${windowQs}${mgrQs}&beekeeper_user_id=${encodeURIComponent(
                 selectedPerson
@@ -473,7 +503,9 @@ export default async function GreeterReportPage({ searchParams }: PageProps) {
             rm={rm}
             note={
               <span className="text-[11px] text-splash-navy/60">
-                Narrows the whole page — cards, charts and both tables.
+                {isMorning
+                  ? "Narrows the whole table, sites and days alike."
+                  : "Narrows the whole page — cards, charts and both tables."}
               </span>
             }
           />
@@ -491,139 +523,149 @@ export default async function GreeterReportPage({ searchParams }: PageProps) {
         </div>
       </form>
 
-      {/* KPI strip */}
-      <div className="mb-6 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <Kpi
-          label="Capture rate"
-          value={pct(now.capture_pct)}
-          goal={
-            now.capture_goal_pct === null
-              ? null
-              : `${goalNum(now.capture_goal_pct)}% goal`
-          }
-          delta={delta(now.capture_pct, before.capture_pct)}
-          deltaUnit="pts"
-          tone={toneFor(now.capture_pct, now.capture_goal_pct)}
-          foot={`${num(now.sign_ups)} sign ups on ${num(now.wash_sales)} wash sales`}
-        />
-        <Kpi
-          label="D.O.B."
-          value={dobCell(now.dob)}
-          goal={now.dob_goal === null ? null : `$${goalNum(now.dob_goal)} goal`}
-          delta={delta(now.dob, before.dob)}
-          deltaUnit="$"
-          // dobTier, not toneFor: the capture band is three percentage POINTS,
-          // and subtracting 3 from a $4 goal would paint a $1.05 D.O.B. amber.
-          tone={
-            now.dob === null || now.dob_goal === null
-              ? null
-              : dobTier(now.dob, now.dob_goal)
-          }
-          foot={`${money(now.package_dollars + now.extras_dollars)} of packages and extras`}
-        />
-        <Kpi
-          label="Net members"
-          value={num(now.net_members)}
-          goal={
-            now.total_members === null
-              ? null
-              : `${num(now.total_members)} on the books`
-          }
-          // net_members is a plain number, so an empty prior window totals to 0
-          // and the delta would render this window's entire growth as if it
-          // beat a real prior period. No prior days means no comparison.
-          delta={before.days === 0 ? null : delta(now.net_members, before.net_members)}
-          deltaUnit=""
-          tone={now.net_members >= 0 ? "hit" : "miss"}
-          foot={`${num(now.sign_ups)} sign ups plus ${num(now.reactivations)} reactivations, less ${num(now.cancellations)} cancellations`}
-        />
-        {/* Data confidence, not a sales figure. It's a tile because every
-            number to its left is only as good as this one: unscanned cars and
-            unreported days both understate the greeters they belong to. */}
-        <Kpi
-          label="Data confidence"
-          value={pct(now.scanned_pct)}
-          goal={`${SCAN_TARGET_PCT}% scanned`}
-          delta={delta(now.scanned_pct, before.scanned_pct)}
-          deltaUnit="pts"
-          tone={now.scanned_pct === null ? null : scanTier(now.scanned_pct)}
-          foot={
-            missingCount === 0
-              ? "Every site reported every day."
-              : `${missingCount} site-day${missingCount === 1 ? "" : "s"} with a missing submission`
-          }
-        />
-      </div>
-
-      <p className="mb-6 text-[11px] text-splash-navy/60">
-        Deltas compare against {prior.date_from} to {prior.date_to} — the same
-        number of days immediately before this window, so the weekday mix
-        matches. Rates are recomputed from the summed numbers, never averaged
-        across days.
-      </p>
-
-      {/* Charts */}
-      <div className="mb-6 grid grid-cols-1 gap-4 lg:grid-cols-2">
-        <ChartFrame
-          title="Capture rate by day"
-          caption="Company-wide, weighted by volume. The line breaks on days with no wash sales, and on days nobody reported, rather than being drawn through them."
-        >
-          <TrendChart
-            points={trendPoints(windowDays, (d) => d.capture_pct, (d) =>
-              `${num(d.sign_ups)} sign ups / ${num(d.wash_sales)} wash sales`
-            )}
-            goal={now.capture_goal_pct}
-            unit="pct"
+      {/* Everything from here to the legend is the dashboard, and the morning
+          call deliberately has none of it — see the note beside `isMorning`.
+          One conditional wrapping the whole block rather than four separate
+          ones, so a chart added later can't accidentally opt itself back in. */}
+      {isMorning ? null : (
+        <>
+        {/* KPI strip */}
+        <div className="mb-6 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+          <Kpi
+            label="Capture rate"
+            value={pct(now.capture_pct)}
+            goal={
+              now.capture_goal_pct === null
+                ? null
+                : `${goalNum(now.capture_goal_pct)}% goal`
+            }
+            delta={delta(now.capture_pct, before.capture_pct)}
+            deltaUnit="pts"
+            tone={toneFor(now.capture_pct, now.capture_goal_pct)}
+            foot={`${num(now.sign_ups)} sign ups on ${num(now.wash_sales)} wash sales`}
           />
-        </ChartFrame>
-
-        <ChartFrame
-          title="D.O.B. by day"
-          caption="Package and extras dollars per wash sale, company-wide."
-        >
-          <TrendChart
-            points={trendPoints(windowDays, (d) => d.dob, (d) =>
-              `${money(d.package_dollars + d.extras_dollars)} over ${num(d.wash_sales)} wash sales`
-            )}
-            goal={now.dob_goal}
-            unit="money"
-            colour="#3dbeee"
+          <Kpi
+            label="D.O.B."
+            value={dobCell(now.dob)}
+            goal={now.dob_goal === null ? null : `$${goalNum(now.dob_goal)} goal`}
+            delta={delta(now.dob, before.dob)}
+            deltaUnit="$"
+            // dobTier, not toneFor: the capture band is three percentage POINTS,
+            // and subtracting 3 from a $4 goal would paint a $1.05 D.O.B. amber.
+            tone={
+              now.dob === null || now.dob_goal === null
+                ? null
+                : dobTier(now.dob, now.dob_goal)
+            }
+            foot={`${money(now.package_dollars + now.extras_dollars)} of packages and extras`}
           />
-        </ChartFrame>
-      </div>
-
-      <div className="mb-6 grid grid-cols-1 gap-4">
-        <ChartFrame
-          title="Capture rate by site"
-          caption="Worst first. The vertical mark on each bar is that site's own goal — goal windows are per site, so a single shared line would grade everyone against whichever site came first. Click a bar to open the site."
-        >
-          <RankBars rows={rankRows(sitesWorstFirst, selectedSite, link)} unit="pct" />
-        </ChartFrame>
-
-        <ChartFrame
-          title="Volume against capture rate"
-          caption={`Each dot is one greeter for the period: wash sales across, capture rate up. Dots on the left are working small numbers — a low rate there is arithmetic, not performance. Hollow dots have fewer than ${LOW_SAMPLE_DAYS} graded days. Click a dot to open the greeter.`}
-        >
-          {/* EVERY greeter, not the preset's filtered set. The whole point of
-              this chart is to separate "low capture because they're bad" from
-              "low capture on nine cars", and on Top performers the filtered set
-              contains nobody below the line to make that judgement about. */}
-          <VolumeScatter
-            points={scatterPoints(allGreeters, link)}
-            goal={now.capture_goal_pct}
+          <Kpi
+            label="Net members"
+            value={num(now.net_members)}
+            goal={
+              now.total_members === null
+                ? null
+                : `${num(now.total_members)} on the books`
+            }
+            // net_members is a plain number, so an empty prior window totals to 0
+            // and the delta would render this window's entire growth as if it
+            // beat a real prior period. No prior days means no comparison.
+            delta={before.days === 0 ? null : delta(now.net_members, before.net_members)}
+            deltaUnit=""
+            tone={now.net_members >= 0 ? "hit" : "miss"}
+            foot={`${num(now.sign_ups)} sign ups plus ${num(now.reactivations)} reactivations, less ${num(now.cancellations)} cancellations`}
           />
-        </ChartFrame>
-      </div>
+          {/* Data confidence, not a sales figure. It's a tile because every
+              number to its left is only as good as this one: unscanned cars and
+              unreported days both understate the greeters they belong to. */}
+          <Kpi
+            label="Data confidence"
+            value={pct(now.scanned_pct)}
+            goal={`${SCAN_TARGET_PCT}% scanned`}
+            delta={delta(now.scanned_pct, before.scanned_pct)}
+            deltaUnit="pts"
+            tone={now.scanned_pct === null ? null : scanTier(now.scanned_pct)}
+            foot={
+              missingCount === 0
+                ? "Every site reported every day."
+                : `${missingCount} site-day${missingCount === 1 ? "" : "s"} with a missing submission`
+            }
+          />
+        </div>
 
+        <p className="mb-6 text-[11px] text-splash-navy/60">
+          Deltas compare against {prior.date_from} to {prior.date_to} — the same
+          number of days immediately before this window, so the weekday mix
+          matches. Rates are recomputed from the summed numbers, never averaged
+          across days.
+        </p>
+
+        {/* Charts */}
+        <div className="mb-6 grid grid-cols-1 gap-4 lg:grid-cols-2">
+          <ChartFrame
+            title="Capture rate by day"
+            caption="Company-wide, weighted by volume. The line breaks on days with no wash sales, and on days nobody reported, rather than being drawn through them."
+          >
+            <TrendChart
+              points={trendPoints(windowDays, (d) => d.capture_pct, (d) =>
+                `${num(d.sign_ups)} sign ups / ${num(d.wash_sales)} wash sales`
+              )}
+              goal={now.capture_goal_pct}
+              unit="pct"
+            />
+          </ChartFrame>
+
+          <ChartFrame
+            title="D.O.B. by day"
+            caption="Package and extras dollars per wash sale, company-wide."
+          >
+            <TrendChart
+              points={trendPoints(windowDays, (d) => d.dob, (d) =>
+                `${money(d.package_dollars + d.extras_dollars)} over ${num(d.wash_sales)} wash sales`
+              )}
+              goal={now.dob_goal}
+              unit="money"
+              colour="#3dbeee"
+            />
+          </ChartFrame>
+        </div>
+
+        <div className="mb-6 grid grid-cols-1 gap-4">
+          <ChartFrame
+            title="Capture rate by site"
+            caption="Worst first. The vertical mark on each bar is that site's own goal — goal windows are per site, so a single shared line would grade everyone against whichever site came first. Click a bar to open the site."
+          >
+            <RankBars rows={rankRows(sitesWorstFirst, selectedSite, link)} unit="pct" />
+          </ChartFrame>
+
+          <ChartFrame
+            title="Volume against capture rate"
+            caption={`Each dot is one greeter for the period: wash sales across, capture rate up. Dots on the left are working small numbers — a low rate there is arithmetic, not performance. Hollow dots have fewer than ${LOW_SAMPLE_DAYS} graded days. Click a dot to open the greeter.`}
+          >
+            {/* EVERY greeter, not the preset's filtered set. The whole point of
+                this chart is to separate "low capture because they're bad" from
+                "low capture on nine cars", and on Top performers the filtered set
+                contains nobody below the line to make that judgement about. */}
+            <VolumeScatter
+              points={scatterPoints(allGreeters, link)}
+              goal={now.capture_goal_pct}
+            />
+          </ChartFrame>
+        </div>
+        </>
+      )}
+
+      {/* Kept on every view, including the morning call. It isn't a chart —
+          it's the key to the colours in the table, which mean nothing without
+          it, and it costs one line of vertical space. */}
       <CaptureLegend />
 
       {/* The view's own table */}
-      {preset.kind === "site" ? (
+      {isMorning ? (
         <MorningCall
           sites={sitesWorstFirst}
           allRows={siteList}
           selectedSite={selectedSite}
-          link={link}
         />
       ) : (
         <GreeterTable
@@ -637,7 +679,7 @@ export default async function GreeterReportPage({ searchParams }: PageProps) {
 
       {/* Drill-through: one site's days, reachable from the ranking chart even
           when the greeter tables are showing. */}
-      {preset.kind !== "site" && selectedSiteRow ? (
+      {!isMorning && selectedSiteRow ? (
         <Card
           title={`${selectedSiteRow.location_code} · site ${selectedSiteRow.site_number}`}
           subtitle={`Every day in the window for this site. ${spanDays} days requested, ${selectedSiteRow.days} reported.`}
@@ -647,8 +689,11 @@ export default async function GreeterReportPage({ searchParams }: PageProps) {
         </Card>
       ) : null}
 
-      {/* Drill-through: one greeter's days. */}
-      {selectedPerson ? (
+      {/* Drill-through: one greeter's days. Gated on !isMorning like the site
+          one above it — the preset buttons drop `person`, so this only fires on
+          a hand-edited or pasted URL, but "the table and nothing else" has to
+          mean nothing else however the reader got here. */}
+      {!isMorning && selectedPerson ? (
         <Card
           title={
             firstPersonDay
@@ -965,28 +1010,36 @@ function LowSampleTag({ row }: { row: GreeterPeriodReportRow }) {
 }
 
 /**
- * One row per site for the last seven days, worst capture first, with the
- * selected site's individual days expanded underneath it.
+ * One row per site for the last seven days, worst capture first, with each
+ * site's individual days expanded underneath it.
  *
  * The expansion is inline rather than a separate card so the site's days sit
  * directly under the total they add up to — the whole point of the call is
  * asking "which day did that happen on".
+ *
+ * EVERY site is open, always. This used to be click-to-expand, which meant the
+ * one question the call is for took a tap and a page load per site while people
+ * waited on the line. `selectedSite` is still honoured, but only to tint the row
+ * a link from elsewhere pointed at — it no longer decides what's visible, and
+ * the site name is plain text rather than a toggle because there is nothing left
+ * to toggle.
+ *
+ * The cost is length: sixteen sites over seven days is a long page. That's the
+ * right trade for a view whose entire job is being read start to finish.
  */
 function MorningCall({
   sites,
   allRows,
-  selectedSite,
-  link
+  selectedSite
 }: {
   sites: SiteTotals[];
   allRows: LocationPeriodRow[];
   selectedSite: number | null;
-  link: (patch: Record<string, string>) => string;
 }) {
   return (
     <Card
       title={`Morning call · ${sites.length} site${sites.length === 1 ? "" : "s"}`}
-      subtitle="Site numbers only, worst capture rate first. Click a site to open its days underneath. Scanned % is a data-quality signal, not a sales one — a low number means cars went unattributed, so every per-greeter figure for that site is understated."
+      subtitle="Site numbers only, worst capture rate first, each site's days listed underneath it. Scanned % is a data-quality signal, not a sales one — a low number means cars went unattributed, so every per-greeter figure for that site is understated."
     >
       {sites.length === 0 ? (
         <EmptyNote>No site-wide days were logged in this window.</EmptyNote>
@@ -1001,10 +1054,7 @@ function MorningCall({
               <th className="px-4 py-3">Scanned %</th>
               <th className="px-4 py-3">Sign ups</th>
               <th className="px-4 py-3">Reacts</th>
-              {/* A count of reviews collected, not a rating. This table mixes a
-                  period row with day rows, so churn is deliberately NOT here —
-                  it has no honest period value. It lives on SiteDayTable, which
-                  is days only. */}
+              {/* A count of reviews collected, not a rating. */}
               <th className="px-4 py-3">Reviews</th>
               <th className="px-4 py-3">Cancels</th>
               {/* Sign ups plus reacts less cancels — the three inputs are all
@@ -1013,22 +1063,27 @@ function MorningCall({
               <th className="px-4 py-3">Members</th>
               <th className="px-4 py-3">Capture %</th>
               <th className="px-4 py-3">D.O.B.</th>
+              {/* Day rows only. The site row above each group shows an em dash,
+                  not a total: churn arrives already divided, so a week's figure
+                  could only be a flat average of daily percentages. The dash is
+                  the honest answer and the reason this column sits last, well
+                  clear of the graded pair. */}
+              <th className="px-4 py-3">Churn %</th>
             </tr>
           </thead>
           <tbody className={TBODY_CLS}>
             {sites.map((s) => {
-              const open = selectedSite === s.location_id;
-              const dayRows = open ? daysForSite(allRows, s.location_id) : [];
+              // Always expanded. `highlight` only tints a row someone arrived
+              // at from a link — it does not gate the days below it.
+              const highlight = selectedSite === s.location_id;
+              const dayRows = daysForSite(allRows, s.location_id);
               return (
                 <Fragment key={s.location_id}>
-                  <tr className={open ? "bg-sudsy-blue-soft/50" : undefined}>
+                  <tr className={highlight ? "bg-sudsy-blue-soft/50" : undefined}>
                     <td className="px-4 py-3">
-                      <Link
-                        href={link({ site: open ? "" : String(s.location_id) })}
-                        className="font-semibold text-splash-blue hover:text-splash-blue-dark hover:underline"
-                      >
+                      <div className="font-semibold text-splash-navy">
                         {s.location_code}
-                      </Link>
+                      </div>
                       <div className="font-mono text-xs text-splash-navy/60">
                         {s.site_number}
                       </div>
@@ -1067,6 +1122,12 @@ function MorningCall({
                       <CaptureCell value={s.capture_pct} goal={s.capture_goal_pct} />
                     </td>
                     <td className="px-4 py-3 font-semibold">{dobCell(s.dob)}</td>
+                    <td
+                      className="px-4 py-3 text-splash-navy/40"
+                      title="Churn is reported per day and can't be combined across a window — read the day rows below."
+                    >
+                      —
+                    </td>
                   </tr>
                   {dayRows.map((d) => (
                     <tr
@@ -1115,6 +1176,9 @@ function MorningCall({
                         />
                       </td>
                       <td className="px-4 py-2 font-semibold">{dobCell(d.dob)}</td>
+                      <td className="px-4 py-2 text-splash-navy/80">
+                        {pct(d.churn_pct)}
+                      </td>
                     </tr>
                   ))}
                 </Fragment>
@@ -1285,33 +1349,72 @@ function ScanPill({ value }: { value: number | null }) {
     return (
       <span
         className="text-splash-navy/40"
-        title="No a-la-carte cars sold, so there was nothing to scan."
+        title="No wash sales in this window, so there was nothing to scan."
       >
         —
       </span>
     );
   }
+
+  const tier = scanTier(value);
   return (
     <span
-      className={`inline-flex items-center whitespace-nowrap rounded-full px-2 py-0.5 text-xs font-bold ${CAPTURE_TIER_CLASSES[scanTier(value)]}`}
-      title={`Target is ${SCAN_TARGET_PCT}% of wash sales attributed to a greeter.`}
+      className={`inline-flex items-center whitespace-nowrap rounded-full px-2 py-0.5 text-xs font-bold ${CAPTURE_TIER_CLASSES[tier]}`}
+      title={`${SCAN_TARGET_PCT}% of wash sales scanned is the target. Below it, some of these cars are attributed to nobody, so every capture rate on the row is understated.`}
     >
       {pct(value)}
     </span>
   );
 }
 
-/** Green when at or above goal, red when clearly under — same tiers as a pill. */
-function toneFor(value: number | null, goal: number | null) {
+/* ------------------------------------------------------------
+ * KPI tiles
+ * ------------------------------------------------------------ */
+
+/**
+ * Grade a value against its goal, tolerating either side being missing.
+ *
+ * Null in, null out — a window with no wash sales has no capture rate to judge,
+ * and a scope with no goal window covering it was never given a target. Neither
+ * is "met the goal", so neither gets painted green.
+ */
+function toneFor(value: number | null, goal: number | null): CaptureTier | null {
   if (value === null || goal === null) return null;
   return captureTier(value, goal);
 }
 
+/**
+ * A change rendered in the metric's OWN units, with an explicit sign.
+ *
+ * Percentages arrive as points (see delta() in _lib/aggregate) and are labelled
+ * "pts" so nobody reads "+3.0" on a rate as a relative 3%. Exact zero gets "±"
+ * rather than "+0.0", because "no movement" and "moved up slightly" are
+ * different answers and a plus sign in front of a zero implies the second.
+ */
+function deltaText(value: number, unit: string): string {
+  const sign = value > 0 ? "+" : value < 0 ? "-" : "±";
+  const mag = Math.abs(value);
+  if (unit === "$") return `${sign}$${mag.toFixed(2)}`;
+  if (unit === "pts") return `${sign}${mag.toFixed(1)} pts`;
+  return `${sign}${mag.toLocaleString()}`;
+}
+
+/**
+ * One headline number: the value, the goal it's judged against, the change from
+ * the prior window, and a line of the arithmetic underneath it.
+ *
+ * `foot` is not decoration. Every tile here is a rate or a net, and both hide
+ * their inputs; showing "412 sign ups on 1,504 wash sales" under a 27.4% is
+ * what stops the number from being argued with.
+ *
+ * A null `delta` renders nothing at all rather than 0.0 — "there was no prior
+ * window" must not read as "flat".
+ */
 function Kpi({
   label,
   value,
   goal,
-  delta: d,
+  delta: change,
   deltaUnit,
   tone,
   foot
@@ -1321,59 +1424,63 @@ function Kpi({
   goal: string | null;
   delta: number | null;
   deltaUnit: string;
-  tone: "hit" | "near" | "miss" | null;
+  tone: CaptureTier | null;
   foot: string;
 }) {
-  const toneCls =
-    tone === "hit"
-      ? "text-splash-success"
-      : tone === "miss"
-        ? "text-splash-deny"
-        : tone === "near"
-          ? "text-yellow-900"
-          : "text-splash-navy";
-
   return (
     <div className="rounded-splash-lg border border-gray-light bg-white p-5 shadow-splash-card">
-      <p className={LABEL_CLS}>{label}</p>
-      <p className={`mt-1 text-3xl font-bold ${toneCls}`}>{value}</p>
-      <div className="mt-1 flex flex-wrap items-baseline gap-2 text-xs">
-        {goal ? <span className="text-splash-navy/60">{goal}</span> : null}
-        <DeltaTag value={d} unit={deltaUnit} />
+      <p className="text-xs font-semibold uppercase tracking-wider text-splash-navy/60">
+        {label}
+      </p>
+      <div className="mt-1 flex flex-wrap items-baseline gap-2">
+        <span
+          className={`text-2xl font-bold ${
+            tone === null ? "text-splash-navy" : ""
+          }`}
+        >
+          {tone === null ? (
+            value
+          ) : (
+            <span
+              className={`inline-flex items-center rounded-splash-sm px-2 py-0.5 ${CAPTURE_TIER_CLASSES[tone]}`}
+            >
+              {value}
+            </span>
+          )}
+        </span>
+        {change === null ? null : (
+          <span
+            className={`text-xs font-bold ${
+              change > 0
+                ? "text-splash-success"
+                : change < 0
+                  ? "text-splash-deny"
+                  : "text-splash-navy/50"
+            }`}
+            title="Change from the equal-length window immediately before this one."
+          >
+            {deltaText(change, deltaUnit)}
+          </span>
+        )}
       </div>
+      {goal === null ? null : (
+        <p className="mt-1 text-xs font-semibold text-splash-navy/70">{goal}</p>
+      )}
       <p className="mt-2 text-[11px] leading-snug text-splash-navy/60">{foot}</p>
     </div>
   );
 }
 
-/**
- * Change against the prior window.
- *
- * "No prior data" is rendered as its own state, never as 0.0 — a period with
- * nothing to compare against is not a flat period, and the difference matters
- * most in exactly the case where it's easiest to miss: a site's first week.
- */
-function DeltaTag({ value, unit }: { value: number | null; unit: string }) {
-  if (value === null) {
-    return <span className="text-splash-navy/40">no prior data</span>;
-  }
-  if (value === 0) {
-    return <span className="text-splash-navy/50">flat</span>;
-  }
-  const up = value > 0;
-  const shown =
-    unit === "$"
-      ? `$${Math.abs(value).toFixed(2)}`
-      : `${Math.abs(value).toFixed(unit === "pts" ? 1 : 0)}${unit ? ` ${unit}` : ""}`;
-  return (
-    <span
-      className={`font-bold ${up ? "text-splash-success" : "text-splash-deny"}`}
-    >
-      {up ? "▲" : "▼"} {shown}
-    </span>
-  );
-}
+/* ------------------------------------------------------------
+ * Chrome
+ * ------------------------------------------------------------ */
 
+/**
+ * Section shell. `action` is the escape hatch out of a drill-through — a site
+ * or greeter opened from a chart has no other obvious way back to the whole
+ * window, and the browser back button doesn't help once someone has changed a
+ * filter since.
+ */
 function Card({
   title,
   subtitle,
@@ -1387,8 +1494,8 @@ function Card({
 }) {
   return (
     <div className="mb-6 overflow-hidden rounded-splash-lg border border-gray-light bg-white shadow-splash-card">
-      <div className="flex items-start justify-between gap-4 border-b border-gray-light px-5 py-4">
-        <div>
+      <div className="flex flex-wrap items-start justify-between gap-3 border-b border-gray-light px-5 py-4">
+        <div className="min-w-0">
           <h2 className="text-lg font-bold text-splash-navy">{title}</h2>
           {subtitle ? (
             <p className="mt-1 text-xs text-splash-navy/60">{subtitle}</p>
@@ -1397,7 +1504,7 @@ function Card({
         {action ? (
           <Link
             href={action.href}
-            className="shrink-0 text-xs font-semibold text-splash-blue hover:text-splash-blue-dark"
+            className="whitespace-nowrap text-sm font-semibold text-splash-blue hover:text-splash-blue-dark"
           >
             {action.label}
           </Link>
@@ -1423,9 +1530,12 @@ function EmptyNote({ children }: { children: ReactNode }) {
 }
 
 /**
- * Carries rd/rm back to the scorecard and nothing else — the mirror of
- * PageBanner over there, for the same reason. The window and the drill-through
- * selections belong to this view; who you're responsible for follows you.
+ * Mirrors PageBanner on /admin/greeters, pointing the other way.
+ *
+ * The manager filter is carried across the link on purpose: someone who has
+ * narrowed the report to one Regional Manager and clicks back to the scorecard
+ * means to stay narrowed, and silently widening to the whole company would show
+ * them sites they don't run without saying so.
  */
 function ReportBanner({ mgrQs }: { mgrQs: string }) {
   const backHref = mgrQs
@@ -1437,13 +1547,15 @@ function ReportBanner({ mgrQs }: { mgrQs: string }) {
         <p className="mb-1 text-xs font-semibold uppercase tracking-[0.18em] text-sudsy-blue">
           Internal Tools
         </p>
-        <h1 className="text-2xl font-bold text-splash-navy">Greeter Report</h1>
+        <h1 className="text-2xl font-bold text-splash-navy">
+          Greeter Report &amp; Charts
+        </h1>
       </div>
       <Link
         href={backHref}
         className="text-sm font-semibold text-splash-blue hover:text-splash-blue-dark"
       >
-        ← Back to the scorecard
+        ← Greeter Scorecard
       </Link>
     </div>
   );

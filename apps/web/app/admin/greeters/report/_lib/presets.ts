@@ -67,7 +67,7 @@ export const PRESETS: Record<ViewKey, Preset> = {
     days: 7,
     kind: "site",
     blurb:
-      "Site numbers only, last seven days, worst capture first. Click a site to open its seven days."
+      "Site numbers only, last seven days, worst capture first, every site already opened to its individual days. This view is the table and nothing else — no cards, no charts — because it gets read aloud off a phone."
   }
 };
 
