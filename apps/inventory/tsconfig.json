@@ -1,5 +1,28 @@
 {
   "extends": "@splash/config/tsconfig.worker.json",
+  // allowJs so the worker can import src/lib/calc.js directly.
+  //
+  // The visit-report email has to show the same numbers as the Visit Detail
+  // page — goal vs actual ml/car per product, the composition-weighted blended
+  // target CPC, and the previous-visit deltas. calc.js already computes all of
+  // that and is pure arithmetic (its only import is `num` from format.js; no
+  // DOM, no browser globals), so the worker imports it rather than carrying a
+  // second implementation that would silently drift out of agreement with the
+  // screen.
+  //
+  // `src` stays in `exclude` on purpose: that only stops tsc from GLOBBING the
+  // SPA into the program. Files reached through an import are pulled in
+  // regardless, so calc.js and format.js are typed by inference while the rest
+  // of src/ (JSX, browser globals) is still ignored.
+  //
+  // checkJs is left off — calc.js is not type-checked, only inferred from.
+  // declaration is off because it cannot be combined with allowJs on every TS
+  // version we build with, and noEmit makes it meaningless here anyway.
+  "compilerOptions": {
+    "allowJs": true,
+    "declaration": false,
+    "declarationMap": false
+  },
   "include": ["worker/**/*"],
   "exclude": ["node_modules", "dist", ".wrangler", ".turbo", "src"]
 }

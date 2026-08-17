@@ -64,17 +64,29 @@ export async function saveRecipients(list) {
 // ---------------------------------------------------------------------------
 // Visit report email.
 //
-// The worker resolves the recipient list, renders the body and writes one row
-// per recipient onto the shared `outbound_emails` queue (Power Automate
-// delivers). Send only the visit's facts — recipients, the link origin and the
-// dedup key are all decided server-side.
+// The request is the visit id and nothing else. The worker re-reads the visit,
+// recomputes every figure through the same calc.js this app renders from,
+// resolves the recipient list (site + RM off the location registry, unioned
+// with the configured recipients), builds the goal-vs-actual comparison
+// attachment and writes one row per recipient onto the shared `outbound_emails`
+// queue. Power Automate delivers. Recipients, the link origin and the dedup key
+// are all decided server-side, so nothing this client sends can redirect the
+// mail or change what it claims.
 //
-// Returns { queued, duplicates, recipients[] }. `duplicates` is non-zero when
-// this visit was already queued for that address, which is how a double-tapped
-// Submit is absorbed instead of mailing everybody twice.
+// Returns { queued, duplicates, recipients[], via[], flagCount }. `duplicates`
+// is non-zero when this visit was already queued for that address, which is how
+// a double-tapped Submit is absorbed instead of mailing everybody twice.
 // ---------------------------------------------------------------------------
-export async function sendVisitReport(payload) {
-  return apiPost('/report', payload)
+export async function sendVisitReport(visitId) {
+  return apiPost('/report', { visitId })
+}
+
+// Deliberate re-send of a visit that has already been mailed. Same endpoint;
+// the `resend` flag varies the dedup key so the queue lets it through, and the
+// worker gates it to super_admin because it is the only way to mail a site's
+// managers about the same visit twice.
+export async function resendVisitReport(visitId) {
+  return apiPost('/report', { visitId, resend: true })
 }
 
 // ---------------------------------------------------------------------------

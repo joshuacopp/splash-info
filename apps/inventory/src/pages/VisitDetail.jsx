@@ -3,7 +3,7 @@ import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useData } from '../context/DataContext'
 import { useAuth } from '../context/AuthContext'
 import { computeVisit, attachPrevDeltas } from '../lib/calc'
-import { deleteVisit } from '../lib/data'
+import { deleteVisit, resendVisitReport } from '../lib/data'
 import VisitView from '../components/VisitView'
 import { EmptyState, PageHeader, ConfirmDialog, Toast } from '../components/ui'
 import { fmtDate } from '../lib/format'
@@ -15,6 +15,7 @@ export default function VisitDetail() {
   const navigate = useNavigate()
   const location = idx.locationById[locationId]
   const [confirming, setConfirming] = useState(false)
+  const [resending, setResending] = useState(false)
   const [busy, setBusy] = useState(false)
   const [toast, setToast] = useState(null)
 
@@ -33,6 +34,36 @@ export default function VisitDetail() {
       setToast({ tone: 'error', title: 'Could not delete', message: e.message || String(e) })
       setBusy(false)
       setConfirming(false)
+    }
+  }
+
+  // Confirmed rather than fired on click. The automatic send is deduped on the
+  // visit id forever, so this is the only path that can put a second copy of a
+  // site's cost figures in its managers' inboxes — worth one deliberate step.
+  async function onResend() {
+    setResending(true)
+    try {
+      const r = await resendVisitReport(visitId)
+      const queued = r?.queued || 0
+      const who = (r?.via || []).map((v) => `${v.email} (${v.via})`)
+      setToast(
+        queued
+          ? {
+              tone: 'success',
+              title: `Report re-queued to ${queued} recipient${queued === 1 ? '' : 's'}`,
+              message: who.join(', ') || undefined,
+            }
+          : {
+              tone: 'info',
+              title: 'Nothing sent',
+              message:
+                'No recipients resolved for this location — check the site and RM emails on the location record, or add someone under Admin.',
+            }
+      )
+    } catch (e) {
+      setToast({ tone: 'error', title: 'Resend failed', message: e.message || String(e) })
+    } finally {
+      setResending(false)
     }
   }
 
@@ -64,6 +95,9 @@ export default function VisitDetail() {
               )}
               {isAdmin && (
                 <>
+                  <button onClick={onResend} disabled={resending} className="btn-ghost">
+                    {resending ? 'Sending…' : 'Resend report'}
+                  </button>
                   <Link to={`/location/${locationId}/visit/${visitId}/edit`} className="btn-ghost">
                     Edit
                   </Link>

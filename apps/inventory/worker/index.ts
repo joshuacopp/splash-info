@@ -31,7 +31,6 @@ import {
   updateVisit,
   upsertProduct
 } from "./db.js";
-import type { VisitReportPayload } from "./report-email.js";
 import type { Env } from "./env.js";
 
 const ROUTE_PREFIX = "/inventory";
@@ -140,8 +139,14 @@ export default {
         return json(await saveRecipients(sb, Array.isArray(list) ? list : []));
       }
 
-      // POST /api/report — render the visit report and enqueue it onto the
+      // POST /api/report — recompute the visit report and enqueue it onto the
       // shared outbound_emails queue (Power Automate delivers).
+      //
+      // Body is { visitId, resend? } and nothing else is read. The worker
+      // reloads the visit, its previous visit and the location's products from
+      // the database and recomputes every number through the same calc.js the
+      // Visit Detail page uses, so the email cannot drift from the screen and a
+      // caller cannot dictate what the email claims.
       //
       // Scoped like every other write. This endpoint sends mail from a splash
       // address carrying a location's cost figures, so it needs the same check
@@ -152,12 +157,24 @@ export default {
       // Visit" link lands on the host the operator is actually using.
       if (sub === "report" && segments.length === 2) {
         if (method !== "POST") return jsonError(405, "method not allowed");
-        const body = await readJson<VisitReportPayload>(request);
-        const code = String(body.locationId || "");
-        if (!code || !userCanAccessLocation(session, code)) {
+        const body = await readJson<{ visitId?: string; resend?: boolean }>(request);
+        const visitId = String(body.visitId || "").trim();
+        if (!visitId) return jsonError(400, "visitId is required");
+
+        // The location comes from the STORED visit, not the body. Every other
+        // field a caller sends is ignored — which is also why a browser tab
+        // still holding the previous client keeps working after this deploy:
+        // that payload was fat, but it already carried visitId.
+        const code = await getVisitLocationCode(sb, visitId);
+        if (!code) return jsonError(404, "visit not found");
+        if (!userCanAccessLocation(session, code)) {
           return jsonError(403, "forbidden for that location");
         }
-        return json(await sendVisitReport(sb, env, url.origin, body));
+        // Resend is admin-only. The automatic send is idempotent on visit id,
+        // so this flag is the only way to mail a site's managers twice.
+        if (body.resend && !isInventoryAdmin(session)) return jsonError(403, "admin only");
+
+        return json(await sendVisitReport(sb, env, url.origin, { visitId, resend: !!body.resend }));
       }
 
       // /api/flags/resolve | /api/flags/unresolve

@@ -27,7 +27,12 @@ import type { Session } from "@splash/types/session";
 // (userCanAccessLocation used to be imported here and never called — dropped
 // with the overlay change so the module graph is db -> overlay only.)
 import { loadOverlay } from "./overlay.js";
-import { renderVisitReport, type VisitReportPayload } from "./report-email.js";
+import { renderVisitReport } from "./report-email.js";
+import type { ComputedVisitLike } from "./report-email.js";
+// Imported, not reimplemented. calc.js is the same module the Visit Detail
+// page renders from, so the email cannot disagree with the screen. See the
+// allowJs note in tsconfig.json for why the worker can reach into src/.
+import { attachPrevDeltas, buildIndex, computeVisit } from "../src/lib/calc.js";
 
 const SCHEMA = "inventory";
 const inv = (sb: SupabaseClient) => sb.schema(SCHEMA);
@@ -660,12 +665,88 @@ export async function saveRecipients(sb: SupabaseClient, list: Array<Record<stri
 // re-enqueues nothing — and once PA has stamped sent_at, it never re-sends.
 // ---------------------------------------------------------------------------
 
+export interface ReportRecipient {
+  email: string;
+  name: string | null;
+  /** Where this address came from — surfaced in the Admin list and the logs. */
+  via: "site" | "rm" | "configured";
+}
+
 /**
- * Active recipients who should receive the report for `locationCode`.
+ * The site and regional-manager addresses for `locationCode`, straight off the
+ * platform registry.
  *
- * Two ways to qualify: `all_locations = true` (the default, and how most
- * recipients are configured), or an explicit row in
- * notification_recipient_locations for this site.
+ * These are DERIVED, not administered: nobody maintains a list, so an RM
+ * handoff or a corrected site mailbox propagates to the reports the moment
+ * pricing_simple changes. That is the whole point — an email list that has to
+ * be hand-edited after a personnel change is an email list that goes stale.
+ *
+ * Overlay locations (IBAs, lubes) have no pricing_simple row of their own, so
+ * they resolve through `parent_code` exactly as manager/region already do in
+ * getLocations. An IBA's report goes to the tunnel's site mailbox and RM.
+ *
+ * Fail-soft throughout. A registry read that errors costs the derived
+ * addresses; it must not cost the configured ones, and it must not 500 a
+ * request whose visit is already saved.
+ */
+async function resolveDerivedEmails(
+  sb: SupabaseClient,
+  locationCode: string
+): Promise<ReportRecipient[]> {
+  const code = locationCode.trim().toLowerCase();
+
+  // Resolve through the overlay first so a child code asks the registry about
+  // its parent rather than about a code the registry has never heard of.
+  let effective = code;
+  try {
+    const overlay = await loadOverlay(sb);
+    const row = overlay.find((o) => o.code === code);
+    const parent = row?.parent_code?.trim().toLowerCase();
+    if (parent) effective = parent;
+  } catch (err) {
+    console.error("[inventory.report] overlay lookup failed; using code as-is", err);
+  }
+
+  const { data, error } = await sb
+    .from("pricing_simple")
+    .select("site_email,rm_email")
+    .eq("location_code", effective)
+    .limit(1)
+    .maybeSingle();
+
+  if (error) {
+    console.error("[inventory.report] registry email read failed", error.message);
+    return [];
+  }
+
+  const row = (data || {}) as Record<string, unknown>;
+  const out: ReportRecipient[] = [];
+  const site = String(row.site_email || "").trim().toLowerCase();
+  const rm = String(row.rm_email || "").trim().toLowerCase();
+  if (site.includes("@")) out.push({ email: site, name: null, via: "site" });
+  if (rm.includes("@")) out.push({ email: rm, name: null, via: "rm" });
+  return out;
+}
+
+/**
+ * Everyone who should receive the report for `locationCode`.
+ *
+ * Two independent sources, unioned and deduped by lowercased address:
+ *
+ *   DERIVED    — site_email + rm_email off the registry (resolveDerivedEmails).
+ *                Automatic, unadministered, follows the org chart.
+ *   CONFIGURED — inventory.notification_recipients. `all_locations = true`
+ *                (every visit everywhere: vendor reps, ops) or `false` plus an
+ *                explicit notification_recipient_locations row (a GM at two
+ *                specific stores). This is how anyone outside the location
+ *                tables gets added, and it needs no schema change to do it.
+ *
+ * SUPPRESSION reuses `active = false` rather than adding a column. A recipients
+ * row marked inactive means "never mail this address", and that now applies to
+ * derived addresses too — so a wrong site mailbox or an RM who doesn't want
+ * thirty of these a month is fixed by adding one inactive row, in the same
+ * table and the same admin screen used for adding people. One place a human
+ * edits, whether they are adding or subtracting.
  *
  * Deliberately NOT filtered by the sender's own scope. A recipient list is an
  * admin-configured distribution list, not a permission — the area manager who
@@ -675,12 +756,13 @@ export async function saveRecipients(sb: SupabaseClient, list: Array<Record<stri
 async function resolveReportRecipients(
   sb: SupabaseClient,
   locationCode: string
-): Promise<Array<{ email: string; name: string | null }>> {
+): Promise<ReportRecipient[]> {
   const code = locationCode.trim().toLowerCase();
 
-  const [people, links] = await Promise.all([
+  const [people, links, derived] = await Promise.all([
     inv(sb).from("notification_recipients").select("id,email,name,active,all_locations"),
-    inv(sb).from("notification_recipient_locations").select("recipient_id,location_code")
+    inv(sb).from("notification_recipient_locations").select("recipient_id,location_code"),
+    resolveDerivedEmails(sb, code)
   ]);
   if (people.error) throw new Error(`Failed loading recipients: ${people.error.message}`);
   // A failed link read is NOT fatal, but it must not silently widen the send:
@@ -697,51 +779,108 @@ async function resolveReportRecipients(
     }
   }
 
-  const out: Array<{ email: string; name: string | null }> = [];
-  const seen = new Set<string>();
+  // Suppressions are collected across the WHOLE recipients table, not just the
+  // rows that qualify for this site. An inactive row is a statement about the
+  // address itself ("never mail this"), so it has to outrank a derived address
+  // that no list row would otherwise be scoped to.
+  const suppressed = new Set<string>();
+  const configured: ReportRecipient[] = [];
   for (const raw of (people.data || []) as Array<Record<string, unknown>>) {
-    if (raw.active === false) continue;
     const email = String(raw.email || "").trim().toLowerCase();
-    if (!email || seen.has(email)) continue;
+    if (!email.includes("@")) continue;
+    if (raw.active === false) {
+      suppressed.add(email);
+      continue;
+    }
     const qualifies = raw.all_locations !== false || scoped.has(String(raw.id || ""));
     if (!qualifies) continue;
-    seen.add(email);
-    out.push({ email, name: raw.name ? String(raw.name) : null });
+    configured.push({ email, name: raw.name ? String(raw.name) : null, via: "configured" });
   }
-  return out;
+
+  // Derived first so that when an address is in both sources it reports as
+  // site/rm — the more useful answer when you're looking at the queue asking
+  // "why did this person get mail". A configured row for the same address
+  // still contributes its display name below.
+  const byEmail = new Map<string, ReportRecipient>();
+  for (const r of [...derived, ...configured]) {
+    if (suppressed.has(r.email)) continue;
+    const existing = byEmail.get(r.email);
+    if (!existing) byEmail.set(r.email, r);
+    else if (!existing.name && r.name) existing.name = r.name;
+  }
+  return [...byEmail.values()];
+}
+
+/**
+ * Load the whole dataset with NO location scoping.
+ *
+ * The report is rendered from the visited site's own data, and the caller has
+ * already been authorized against that site by the route (getVisitLocationCode
+ * + userCanAccessLocation). Inheriting the caller's scope here would mean a
+ * narrowly-scoped user's resend silently rendered an empty comparison rather
+ * than being refused — a wrong report is worse than no report.
+ */
+function loadUnscoped(sb: SupabaseClient) {
+  return loadInventoryData(sb, {
+    role: "super_admin",
+    email: "",
+    locations: []
+  } as unknown as Session);
+}
+
+export interface SendVisitReportOptions {
+  visitId: string;
+  /** Deliberate re-send; varies the dedup key. Route-gated to admins. */
+  resend?: boolean;
 }
 
 export async function sendVisitReport(
   sb: SupabaseClient,
   env: { SUPABASE_URL: string; SUPABASE_SERVICE_KEY: string },
   origin: string,
-  payload: VisitReportPayload
+  opts: SendVisitReportOptions
 ) {
-  const locationCode = String(payload.locationId || "").trim();
-  if (!locationCode) throw new Error("report: locationId is required");
+  const visitId = String(opts.visitId || "").trim();
+  if (!visitId) throw new Error("report: visitId is required");
+
+  // Everything in the email is recomputed here from stored rows — the request
+  // body contributes nothing but the visit id. That is what keeps the email in
+  // agreement with the Visit Detail page, and it is why a stale browser tab
+  // POSTing the old fat payload still produces a correct report.
+  const ds = await loadUnscoped(sb);
+  const idx = buildIndex(ds);
+  const computed = attachPrevDeltas(ds, idx, computeVisit(ds, idx, visitId));
+  if (!computed) throw new Error("report: visit not found");
+
+  const locationCode = String(computed.visit.location_id || "").trim();
+  if (!locationCode) throw new Error("report: visit has no location");
 
   const recipients = await resolveReportRecipients(sb, locationCode);
   if (!recipients.length) {
     // Not an error. Plenty of sites have no recipient configured yet, and the
     // visit itself is already saved — the caller surfaces this as a note.
-    return { queued: 0, duplicates: 0, recipients: [] as string[] };
+    return { queued: 0, duplicates: 0, recipients: [] as string[], flagCount: computed.flagCount };
   }
 
   // Built here, from the worker's own origin, so staging links stay on staging
   // and nothing in the request body can choose where the email points.
-  const visitUrl = payload.visitId
-    ? `${origin}/inventory/location/${encodeURIComponent(locationCode)}/visit/${encodeURIComponent(
-        payload.visitId
-      )}`
-    : null;
+  const visitUrl = `${origin}/inventory/location/${encodeURIComponent(
+    locationCode
+  )}/visit/${encodeURIComponent(visitId)}`;
 
-  const { subject, bodyHtml, bodyText } = renderVisitReport(payload, visitUrl);
+  // Cast because calc.js is untyped JS reached through allowJs, so `computed`
+  // arrives here as `any`. ComputedVisitLike in report-email.ts is the
+  // hand-written contract between the two, and this is where it's asserted.
+  const { subject, bodyHtml, bodyText, attachment } = renderVisitReport(
+    computed as ComputedVisitLike,
+    visitUrl
+  );
 
-  // `source_id` falls back to location+date when visitId is missing so the
-  // dedup key is still stable rather than degrading to "send every time".
-  const sourceId = payload.visitId
-    ? String(payload.visitId)
-    : `${locationCode}:${String(payload.visitDate || "unknown")}`;
+  // Automatic sends key on the visit id alone, which is what makes a
+  // double-tapped Submit a no-op forever. A deliberate resend has to differ or
+  // the queue would swallow it — but only down to the minute, so a
+  // double-clicked Resend button is still absorbed.
+  const sourceId = opts.resend ? `${visitId}:r${Math.floor(Date.now() / 60000)}` : visitId;
 
   let queued = 0;
   let duplicates = 0;
@@ -759,7 +898,13 @@ export async function sendVisitReport(
         recipient: r.email,
         subject,
         body_html: bodyHtml,
-        body_text: bodyText
+        body_text: bodyText,
+        // base64 rather than r2_key. The comparison sheet is tens of KB, and
+        // an r2_key would mean widening the bucket union in @splash/db-supabase,
+        // binding a new bucket on FORMS-worker's wrangler.toml, and extending
+        // its claim-endpoint dispatch — three coordinated changes across two
+        // workers to save a few KB per queue row.
+        attachments: [attachment]
       });
       if (result.was_duplicate) duplicates++;
       else queued++;
@@ -769,7 +914,16 @@ export async function sendVisitReport(
     }
   }
 
-  return { queued, duplicates, recipients: delivered };
+  // `via` rides back so the toast can say "site, RM and 2 others" rather than
+  // just a count, and so a surprising recipient is traceable without opening
+  // the queue.
+  return {
+    queued,
+    duplicates,
+    recipients: delivered,
+    via: recipients.map((r) => ({ email: r.email, via: r.via })),
+    flagCount: computed.flagCount
+  };
 }
 
 // ---------------------------------------------------------------------------

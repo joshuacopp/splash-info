@@ -269,17 +269,15 @@ export default function NewVisit() {
     return { reservoir, floor, ending, usage, cost, mlPerCar, negative }
   }
 
-  // onHand is the dollar value still sitting at the site after this count —
-  // ending gallons at the same effective price the usage is costed at, so the
-  // two numbers in the report email are directly comparable.
+  // Running cost only. On-hand value used to be accumulated here to ship in the
+  // report payload; the worker now computes it from the stored rows, so keeping
+  // a second copy here would only create something to drift.
   const totals = productRows.reduce(
     (acc, r) => {
-      const cr = computeRow(r)
-      acc.cost += cr.cost
-      acc.onHand += cr.ending * GAL_TO_ML * r.pricePerMl * (1 - r.discount)
+      acc.cost += computeRow(r).cost
       return acc
     },
-    { cost: 0, onHand: 0 }
+    { cost: 0 }
   )
 
   async function onSubmit(e) {
@@ -333,42 +331,17 @@ export default function NewVisit() {
       await refresh()
 
       // Queue the report email — new visits only; editing a past visit doesn't
-      // re-notify. The worker resolves recipients, renders the body and writes
-      // one row per recipient onto the shared outbound_emails queue, so nothing
-      // here decides who gets mail or where the link points. visitId is passed
-      // so the worker can build the "View Full Visit" URL from its own origin
-      // and use the visit id as the queue's dedup key.
+      // re-notify.
+      //
+      // The visit id is the entire request. The worker re-reads the visit it
+      // just stored, recomputes every number through the same calc.js this page
+      // renders from, resolves the recipient list, builds the comparison
+      // attachment and writes one queue row per recipient. Nothing sent from
+      // here can influence who gets mail, where the link points, or what the
+      // email claims about the site's costs — which also means this page can't
+      // drift out of agreement with the report by forgetting to send a field.
       try {
-        const flags = []
-        for (const r of productRows) {
-          const cr = computeRow(r)
-          if (r.targetMlPerCar && cr.mlPerCar != null && cr.mlPerCar > r.targetMlPerCar * 1.15) {
-            flags.push(`${r.name}: ${cr.mlPerCar.toFixed(1)} ml/car vs target ${r.targetMlPerCar}`)
-          }
-          // Usage came out negative — more product on hand than the starting
-          // count plus deliveries can explain. Worth surfacing in the email.
-          if (cr.negative) flags.push(`${r.name}: negative usage (${cr.usage.toFixed(1)} gal)`)
-        }
-        // Blank stays blank. Number('') is 0, and 0 gpg is a real reading, so
-        // an untested site must send null rather than a fabricated zero.
-        const hardnessVal = hardness.trim() === '' ? null : num(hardness)
-        const tdsVal = tds.trim() === '' ? null : num(tds)
-
-        const result = await sendVisitReport({
-          visitId,
-          locationId,
-          locationName: location.name,
-          visitDate,
-          submitter: submitter.trim() || null,
-          totalWashCount: totalWashes,
-          chemicalCost: totals.cost,
-          blendedCpc: totalWashes > 0 ? totals.cost / totalWashes : null,
-          onHandValue: totals.onHand,
-          waterHardnessGpg: hardnessVal,
-          tdsPpm: tdsVal,
-          flags,
-          notes: notes.trim() || null,
-        })
+        const result = await sendVisitReport(visitId)
 
         // queued vs duplicates: the queue dedups on (worker, kind, visit id,
         // recipient), so a double-tapped Submit reports 0 queued rather than
