@@ -179,6 +179,7 @@ import {
   runClaimUploadsCleanup
 } from "./uploads.js";
 import { handleJotformSeed } from "./seed-jotform.js";
+import { expandGrantedCodes, loadOverlay } from "./overlay.js";
 
 interface Env extends SupabaseEnv {
   DB: D1Database;
@@ -625,13 +626,25 @@ type DamageScope =
   | { kind: "scoped"; codes: string[] }
   | { kind: "denied" };
 
-function damageScopeForSession(session: Session): DamageScope {
+async function damageScopeForSession(
+  env: Env,
+  session: Session
+): Promise<DamageScope> {
   if (session.dcRole === null) return { kind: "denied" };
   if (session.dcRole === "super_admin" || session.dcRole === "admin") {
     return { kind: "global" };
   }
-  // gm / rm — restricted to dcLocations.
-  return { kind: "scoped", codes: session.dcLocations };
+  // gm / rm — restricted to dcLocations, PLUS any profit-centre child of a
+  // location they already hold.
+  //
+  // Grants are keyed to pricing_simple location_codes and the permission sync
+  // trigger destructively reconciles against that table, so an overlay code
+  // (`bridgeport_lube`, `liverpool_iba`) can never carry a durable grant of its
+  // own. Without this expansion a claim filed at a lube or in-bay is visible to
+  // super_admin only and sits in a queue nobody works. Additive and one level
+  // deep — see src/overlay.ts.
+  const overlay = await loadOverlay(env);
+  return { kind: "scoped", codes: expandGrantedCodes(session.dcLocations, overlay) };
 }
 
 /**
@@ -655,7 +668,7 @@ function damageScopeForSession(session: Session): DamageScope {
  * so the existence of locations outside scope isn't leaked.
  */
 async function getClaimsList(env: Env, session: Session, url: URL): Promise<Response> {
-  const scope = damageScopeForSession(session);
+  const scope = await damageScopeForSession(env, session);
   if (scope.kind === "denied") return jsonError(403, "no damage role assigned");
 
   const requestedLocation = url.searchParams.get("location") ?? "All";
@@ -818,7 +831,7 @@ function normalizeSubmittedBound(
  * one of their dcLocations.
  */
 async function getContactRoster(env: Env, session: Session, url: URL): Promise<Response> {
-  const scope = damageScopeForSession(session);
+  const scope = await damageScopeForSession(env, session);
   if (scope.kind === "denied") return jsonError(403, "no damage role assigned");
 
   const roleParam = url.searchParams.get("role");
@@ -1015,7 +1028,7 @@ function resolveReportingWindow(window: ReportingWindow, now: Date): { from: str
 }
 
 async function getReporting(env: Env, session: Session, url: URL): Promise<Response> {
-  const scope = damageScopeForSession(session);
+  const scope = await damageScopeForSession(env, session);
   if (scope.kind === "denied") return jsonError(403, "no damage role assigned");
 
   const requestedLocation = url.searchParams.get("location") ?? "All";
@@ -1588,7 +1601,7 @@ function emptyReportingResponse(
  * dc_role scope, so the existence of out-of-scope claim_ids isn't leaked.
  */
 async function getClaimDetail(env: Env, session: Session, claimId: string): Promise<Response> {
-  const scope = damageScopeForSession(session);
+  const scope = await damageScopeForSession(env, session);
   if (scope.kind === "denied") return jsonError(403, "no damage role assigned");
 
   const claim = await getClaimById(env.DB, claimId);
@@ -1718,7 +1731,7 @@ async function fetchClaimsExportRows(
   session: Session,
   url: URL
 ): Promise<ClaimsExportResult> {
-  const scope = damageScopeForSession(session);
+  const scope = await damageScopeForSession(env, session);
   if (scope.kind === "denied") return { kind: "denied" };
 
   const requestedLocation = url.searchParams.get("location") ?? "All";
@@ -2233,7 +2246,7 @@ async function loadAndScopeCheck(
   session: Session,
   claimId: string
 ): Promise<ScopeGuard> {
-  const scope = damageScopeForSession(session);
+  const scope = await damageScopeForSession(env, session);
   if (scope.kind === "denied") {
     return { ok: false, response: jsonError(403, "no damage role assigned") };
   }

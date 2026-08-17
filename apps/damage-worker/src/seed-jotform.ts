@@ -36,6 +36,7 @@ import type { SupabaseEnv } from "@splash/db-supabase";
 import { json, jsonError } from "@splash/http";
 import { generateClaimIdAt } from "@splash/storage-r2";
 import type { ClaimStatus } from "@splash/types/claims";
+import { loadOverlay } from "./overlay.js";
 
 /** The only form this endpoint will seed from. */
 export const DAMAGE_FORM_ID = "250653826954971";
@@ -461,16 +462,38 @@ async function fetchSiteMap(
   }>) ?? [];
 
   const out = new Map<string, { code: string; pretty: string }>();
+  const add = (site: string, value: { code: string; pretty: string }) => {
+    for (const variant of [site, site.replace(/^0+/, ""), site.padStart(3, "0")]) {
+      if (variant && !out.has(variant)) out.set(variant, value);
+    }
+  };
+
   for (const row of rows) {
     const code = (row.location_code ?? "").trim().toLowerCase();
     if (!code) continue;
     const site = String(row.site ?? "").trim();
     if (!site) continue;
-    const value = { code, pretty: (row.location_pretty ?? "").trim() || code };
-    for (const variant of [site, site.replace(/^0+/, ""), site.padStart(3, "0")]) {
-      if (variant && !out.has(variant)) out.set(variant, value);
-    }
+    add(site, { code, pretty: (row.location_pretty ?? "").trim() || code });
   }
+
+  // Second profit centres — lubes, in-bay automatics, self-serve banks. They
+  // cannot have a pricing_simple row (that table is the customer-facing
+  // membership catalogue, so a row there becomes a buyable plan on the signup
+  // page), but they file damage claims under their own site number: Bridgeport
+  // Lube is site 23 while the Bridgeport tunnel is 22.
+  //
+  // Added AFTER pricing_simple and via the same `add`, which never overwrites,
+  // so a real wash always wins a site-number collision.
+  //
+  // Inactive rows are included deliberately: a sold site's historic claims
+  // still have to resolve, or backfilling them silently drops the location.
+  for (const row of await loadOverlay(env)) {
+    const code = (row.code ?? "").trim().toLowerCase();
+    const site = row.site_number == null ? "" : String(row.site_number).trim();
+    if (!code || !site) continue;
+    add(site, { code, pretty: (row.name ?? "").trim() || code });
+  }
+
   return out;
 }
 
