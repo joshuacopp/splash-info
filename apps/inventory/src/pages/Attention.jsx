@@ -45,7 +45,6 @@ export default function Attention() {
                   ? ((e.actualMlPerCar - e.targetMlPerCar) / e.actualMlPerCar) * e.cost
                   : 0,
             })),
-            ...r.computed.reconFlags.map((e) => ({ type: 'recon', flagKey: e.flagKeyRecon, entry: e })),
             ...r.computed.negativeUsageFlags.map((e) => ({ type: 'negative', flagKey: e.flagKeyNegative, entry: e })),
           ]
       if (!items.length && !r.stale) continue
@@ -74,17 +73,16 @@ export default function Attention() {
   }, [groups])
 
   const totals = useMemo(() => {
-    let overOpen = 0, reconOpen = 0, negativeOpen = 0, excess = 0
+    let overOpen = 0, negativeOpen = 0, excess = 0
     for (const g of groups) {
       for (const i of g.items) {
         if (resolutionByKey[i.flagKey]) continue
         if (i.type === 'over') { overOpen++; excess += i.excessCost }
-        else if (i.type === 'negative') negativeOpen++
-        else reconOpen++
+        else negativeOpen++
       }
     }
     const staleOpen = groups.filter((g) => g.stale).length
-    return { overOpen, reconOpen, negativeOpen, excess, staleOpen }
+    return { overOpen, negativeOpen, excess, staleOpen }
   }, [groups, resolutionByKey])
 
   // Flat audit list — every resolved item across every visible location,
@@ -205,9 +203,9 @@ export default function Attention() {
         </div>
       ) : (
         <>
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
             <KpiCard
-              label="Products over target"
+              label="Products over goal"
               value={fmtInt(totals.overOpen)}
               sub={`≈ ${fmtCurrency(totals.excess, 0)} excess chemical spend`}
               tone={totals.overOpen ? 'warn' : 'good'}
@@ -217,12 +215,6 @@ export default function Attention() {
               value={fmtInt(totals.negativeOpen)}
               sub="ending exceeds starting + delivered"
               tone={totals.negativeOpen ? 'bad' : 'good'}
-            />
-            <KpiCard
-              label="Count mismatches"
-              value={fmtInt(totals.reconOpen)}
-              sub="reservoir + floor ≠ ending"
-              tone={totals.reconOpen ? 'bad' : 'good'}
             />
             <KpiCard
               label="Stale sites"
@@ -445,25 +437,16 @@ function FlagLabel({ item }) {
   if (item.type === 'over') {
     return (
       <span>
-        <b className="text-slate-700">{e.name}</b> — {fmtNumber(e.actualMlPerCar, 1)} ml/car vs target{' '}
+        <b className="text-slate-700">{e.name}</b> — {fmtNumber(e.actualMlPerCar, 1)} ml/car vs goal{' '}
         {fmtNumber(e.targetMlPerCar, 1)} ({fmtPct(e.overTargetPct, 0)} over)
-      </span>
-    )
-  }
-  if (item.type === 'negative') {
-    return (
-      <span>
-        <b className="text-slate-700">{e.name}</b> — usage {fmtNumber(e.usageGal)} gal (starting{' '}
-        {fmtNumber(e.startingQtyGal)} + delivered {fmtNumber(e.qtyDeliveredGal)} − ending{' '}
-        {fmtNumber(e.endingQtyGal)}) — likely a missed delivery or count error
       </span>
     )
   }
   return (
     <span>
-      <b className="text-slate-700">{e.name}</b> — reservoir {fmtNumber(e.reservoirCountGal)} + floor{' '}
-      {fmtNumber(e.floorCountGal)} = {fmtNumber(e.reservoirCountGal + e.floorCountGal)} gal, but ending ={' '}
-      {fmtNumber(e.endingQtyGal)} gal
+      <b className="text-slate-700">{e.name}</b> — usage {fmtNumber(e.usageGal)} gal (starting{' '}
+      {fmtNumber(e.startingQtyGal)} + delivered {fmtNumber(e.qtyDeliveredGal)} − ending{' '}
+      {fmtNumber(e.endingQtyGal)}) — likely a missed delivery or count error
     </span>
   )
 }

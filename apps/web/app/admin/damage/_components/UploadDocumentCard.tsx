@@ -42,7 +42,26 @@ const inputCls =
 type DocType = "" | "Quote" | "Receipt";
 type PayToType = "" | "customer" | "vendor";
 
-export function UploadDocumentCard({ claimId }: { claimId: string }) {
+export function UploadDocumentCard({
+  claimId,
+  filterQs = ""
+}: {
+  claimId: string;
+  /**
+   * The claims-list filter querystring currently on the detail page's URL
+   * (already built + encoded by listFilterQuery in ../[id]/page.tsx; empty
+   * when no filters are set).
+   *
+   * Because this form posts straight to the worker rather than through a
+   * server action, the worker's 303 — not Next — decides where the browser
+   * lands afterwards. Hanging the filters on the action URL is the only way
+   * they can survive the round trip; the worker echoes back the keys in its
+   * own allow-list (UPLOAD_RETURN_FILTER_KEYS in damage-worker/src/index.ts).
+   * The worker ignores this querystring for routing — it dispatches on the
+   * pathname only.
+   */
+  filterQs?: string;
+}) {
   const [docType, setDocType] = useState<DocType>("");
   const [payToType, setPayToType] = useState<PayToType>("");
 
@@ -54,7 +73,9 @@ export function UploadDocumentCard({ claimId }: { claimId: string }) {
   // the POST directly to the damage-worker. In dev the next.config.mjs
   // rewrite under /manage/api/:path* proxies to NEXT_PUBLIC_DAMAGE_WORKER_URL
   // when set.
-  const action = `/manage/api/claim/${encodeURIComponent(claimId)}/document`;
+  const action =
+    `/manage/api/claim/${encodeURIComponent(claimId)}/document` +
+    (filterQs ? `?${filterQs}` : "");
 
   return (
     <div

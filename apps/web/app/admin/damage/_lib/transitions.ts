@@ -174,6 +174,17 @@ export const CLAIM_TRANSITIONS_UI: readonly UITransition[] = [
     role: "gm",
     optionalInputs: ["parts", "vendor"]
   }),
+  // Operator change (2026-08-17) — no-cost settlement. Mirrors the worker
+  // entry; see that file for rationale. The label names the outcome rather
+  // than the mechanism so a GM can tell it apart at a glance from the
+  // Parts Ordered option, which ends in a receipt-gated close.
+  tx({
+    from: "Pending GM Review",
+    to: "Closed — Settled",
+    label: "Settle at No Cost (note required)",
+    role: "gm",
+    requiresNote: true
+  }),
   tx({
     from: "Pending GM Review",
     to: "Pending RM Review",
@@ -200,6 +211,14 @@ export const CLAIM_TRANSITIONS_UI: readonly UITransition[] = [
     label: "Approve — In House (Parts Ordered)",
     role: "rm",
     optionalInputs: ["parts", "vendor"]
+  }),
+  // Operator change (2026-08-17) — RM twin of the no-cost settlement entry.
+  tx({
+    from: "Pending RM Review",
+    to: "Closed — Settled",
+    label: "Settle at No Cost (note required)",
+    role: "rm",
+    requiresNote: true
   }),
   tx({
     from: "Pending RM Review",
@@ -278,14 +297,9 @@ export const CLAIM_TRANSITIONS_UI: readonly UITransition[] = [
     role: "gm",
     requiresReceiptOnFile: true
   }),
-
-  // ===== From "Approved — In House — Repaired" =====
-  tx({
-    from: "Approved — In House — Repaired",
-    to: "Closed — Paid",
-    label: "Mark Paid",
-    role: "gm"
-  }),
+  // NOTE (2026-08-17): Parts Ordered has exactly one exit and it is
+  // receipt-gated on purpose — see the worker table. No-cost work never
+  // enters this status; it closes to Closed — Settled from GM/RM Review.
 
   // ===== From "Approved — Check Request Submitted" =====
   tx({
@@ -381,14 +395,6 @@ export const CLAIM_TRANSITIONS_UI: readonly UITransition[] = [
     requiresNote: true,
     clearApprovalDetails: true
   }),
-  // Intra-in-house — approval still valid.
-  tx({
-    from: "Approved — In House — Repaired",
-    to: "Approved — In House — Parts Ordered",
-    label: "Revert to Parts Ordered (admin)",
-    role: "admin",
-    requiresNote: true
-  }),
   tx({
     from: "Approved — Check Request Submitted",
     to: "Pending RM Quote Approval",
@@ -471,6 +477,23 @@ export const CLAIM_TRANSITIONS_UI: readonly UITransition[] = [
     label: "Reopen to Check Request Submitted (admin)",
     role: "admin",
     requiresNote: true
+  }),
+  // Operator change (2026-08-17) — reopen paths for Closed — Settled.
+  tx({
+    from: "Closed — Settled",
+    to: "Pending GM Review",
+    label: "Reopen to GM Review (admin)",
+    role: "admin",
+    requiresNote: true,
+    clearApprovalDetails: true
+  }),
+  tx({
+    from: "Closed — Settled",
+    to: "Pending RM Review",
+    label: "Reopen to RM Review (admin)",
+    role: "admin",
+    requiresNote: true,
+    clearApprovalDetails: true
   })
 ];
 

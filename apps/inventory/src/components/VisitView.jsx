@@ -58,7 +58,7 @@ export default function VisitView({ computed }) {
         />
       </div>
 
-      {(c.overTargetFlags.length > 0 || c.reconFlags.length > 0 || c.negativeUsageFlags.length > 0) && (
+      {(c.overTargetFlags.length > 0 || c.negativeUsageFlags.length > 0) && (
         <div className="space-y-3">
           {c.negativeUsageFlags.length > 0 && (
             <Banner tone="rose" title={`${c.negativeUsageFlags.length} product(s) show negative usage`}>
@@ -79,29 +79,12 @@ export default function VisitView({ computed }) {
             </Banner>
           )}
           {c.overTargetFlags.length > 0 && (
-            <Banner tone="amber" title={`${c.overTargetFlags.length} product(s) over target usage (>15%)`}>
+            <Banner tone="amber" title={`${c.overTargetFlags.length} product(s) over goal usage (>30%)`}>
               <ul className="mt-1 space-y-0.5">
                 {c.overTargetFlags.map((e) => (
                   <li key={e.id}>
                     <span className="font-semibold">{e.name}</span> — {fmtNumber(e.actualMlPerCar, 1)} ml/car
-                    vs target {fmtNumber(e.targetMlPerCar, 1)} ({fmtPct(e.overTargetPct)} over)
-                  </li>
-                ))}
-              </ul>
-            </Banner>
-          )}
-          {c.reconFlags.length > 0 && (
-            <Banner tone="rose" title={`${c.reconFlags.length} reconciliation mismatch(es)`}>
-              <p className="mb-1 text-xs">
-                Reservoir + floor counts don&rsquo;t match the ending quantity (tolerance 0.05 gal) —
-                usually a measurement error at entry.
-              </p>
-              <ul className="mt-1 space-y-0.5">
-                {c.reconFlags.map((e) => (
-                  <li key={e.id}>
-                    <span className="font-semibold">{e.name}</span> — reservoir {fmtNumber(e.reservoirCountGal)} +
-                    floor {fmtNumber(e.floorCountGal)} = {fmtNumber(e.reservoirCountGal + e.floorCountGal)} gal,
-                    but ending = {fmtNumber(e.endingQtyGal)} gal
+                    vs goal {fmtNumber(e.targetMlPerCar, 1)} ({fmtPct(e.overTargetPct)} over)
                   </li>
                 ))}
               </ul>
@@ -188,7 +171,6 @@ export default function VisitView({ computed }) {
                     <td className="td">
                       <div className="flex items-center gap-2">
                         <span className="font-semibold text-slate-900">{e.name}</span>
-                        {e.reconMismatch && <Pill tone="rose">recon</Pill>}
                         {e.negativeUsage && <Pill tone="rose">negative</Pill>}
                       </div>
                       {e.description && (

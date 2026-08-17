@@ -156,6 +156,29 @@ export const CLAIM_TRANSITIONS: readonly ClaimTransitionDef[] = [
     role: "gm",
     optionalInputs: ["parts", "vendor"]
   }),
+  // Operator change (2026-08-17) — no-cost settlement. Some claims are made
+  // right without spending anything: buffed out on the spot, comped washes, a
+  // courtesy detail. Before this entry the only in-house path was
+  // Parts Ordered → Closed — Paid, which is receipt-gated, so a GM who fixed
+  // it for free had nothing to upload, no way to close, and ended up marking
+  // the claim Denied — which says "we told the customer no" and is the
+  // opposite of what happened.
+  //
+  // Deliberately a ONE-STEP close, not an approve-then-close pair: there is
+  // no intermediate state to sit in when the work is already done. The note
+  // is mandatory and is the entire audit record — it must say how it was
+  // settled (zero-cost repair, comped washes, courtesy detail).
+  //
+  // Deliberately does NOT route through Approved — In House — Parts Ordered.
+  // That status means money is being spent and its exit is receipt-gated;
+  // giving it a note-only escape would let a real expense close without a
+  // receipt.
+  tx({
+    from: "Pending GM Review",
+    to: "Closed — Settled",
+    role: "gm",
+    requiresNote: true
+  }),
   tx({ from: "Pending GM Review", to: "Pending RM Review", role: "gm" }),
   tx({ from: "Pending GM Review", to: "Closed — Denied", role: "gm" }),
 
@@ -166,6 +189,14 @@ export const CLAIM_TRANSITIONS: readonly ClaimTransitionDef[] = [
     to: "Approved — In House — Parts Ordered",
     role: "rm",
     optionalInputs: ["parts", "vendor"]
+  }),
+  // Operator change (2026-08-17) — RM twin of the no-cost settlement entry
+  // above. Same rationale; see the Pending GM Review block.
+  tx({
+    from: "Pending RM Review",
+    to: "Closed — Settled",
+    role: "rm",
+    requiresNote: true
   }),
   tx({ from: "Pending RM Review", to: "Closed — Denied", role: "rm" }),
   tx({
@@ -236,9 +267,13 @@ export const CLAIM_TRANSITIONS: readonly ClaimTransitionDef[] = [
     role: "gm",
     requiresReceiptOnFile: true
   }),
-
-  // ===== From "Approved — In House — Repaired" =====
-  tx({ from: "Approved — In House — Repaired", to: "Closed — Paid", role: "gm" }),
+  // NOTE (2026-08-17): a note-only "Parts Ordered → repaired" exit was
+  // briefly added here and then removed before shipping. It would have let a
+  // GM who ordered parts and spent real money reach Closed — Paid without
+  // ever uploading the receipt, defeating the only spend control in the
+  // table. Parts Ordered means money is being spent; its sole exit stays
+  // receipt-gated. No-cost work never enters this status — it closes
+  // straight to Closed — Settled from GM/RM Review.
 
   // ===== From "Approved — Check Request Submitted" =====
   tx({
@@ -341,13 +376,6 @@ export const CLAIM_TRANSITIONS: readonly ClaimTransitionDef[] = [
     requiresNote: true,
     clearApprovalDetails: true
   }),
-  // In-house parts-ordered ↔ repaired is intra-workflow, not a revert.
-  tx({
-    from: "Approved — In House — Repaired",
-    to: "Approved — In House — Parts Ordered",
-    role: "admin",
-    requiresNote: true
-  }),
   tx({
     from: "Approved — Check Request Submitted",
     to: "Pending RM Quote Approval",
@@ -422,6 +450,25 @@ export const CLAIM_TRANSITIONS: readonly ClaimTransitionDef[] = [
     to: "Approved — Check Request Submitted",
     role: "admin",
     requiresNote: true
+  }),
+  // Operator change (2026-08-17) — reopen paths for Closed — Settled, so the
+  // new status isn't a one-way door. Mirrors the Closed — Paid /
+  // Closed — Denied reopens exactly: admin-only, note required, and
+  // clearApprovalDetails because a settled claim that turns out to need real
+  // money must go back through review with a clean slate.
+  tx({
+    from: "Closed — Settled",
+    to: "Pending GM Review",
+    role: "admin",
+    requiresNote: true,
+    clearApprovalDetails: true
+  }),
+  tx({
+    from: "Closed — Settled",
+    to: "Pending RM Review",
+    role: "admin",
+    requiresNote: true,
+    clearApprovalDetails: true
   })
 ];
 

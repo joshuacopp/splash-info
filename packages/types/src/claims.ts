@@ -93,8 +93,17 @@ export type ClaimDetermination =
   | "customer_get_quotes";
 
 /**
- * Full claim_status enum. Em-dashes are U+2014 — gotcha #254 (and the legacy
- * comment at line 334): the DB has a CHECK constraint that rejects mismatches.
+ * Full claim_status enum. Em-dashes are U+2014 — gotcha #254.
+ *
+ * CORRECTION (2026-08-17): the long-standing comment here (and at line 334 of
+ * the legacy file, and in several other places) claimed the DB has a CHECK
+ * constraint on claim_status that rejects hyphen variants. It does not — the
+ * live DDL was dumped and `claim_status` is plain `TEXT NOT NULL DEFAULT
+ * 'New — Pending Review'` with no CHECK. The only CHECKs on `claims` are on
+ * lifecycle_state, site_approval_status, contact_owner, contact_status,
+ * maintainx_priority and fault_category. So em-dash discipline is enforced by
+ * this union and nothing else: a hyphen variant would insert silently and then
+ * fall out of every status filter. Upside — adding a status needs no migration.
  *
  * 14 statuses are listed in legacy/damagemanager.js:2884 CLAIM_STATUSES.
  * "Approved — Submitted for Payment" appears in the transition table
@@ -111,14 +120,41 @@ export type ClaimStatus =
   | "Approved — Pending Quotes"
   | "Pending RM Quote Approval"
   | "Approved — In House — Parts Ordered"
-  | "Approved — In House — Repaired"
   | "Approved — Check Request Submitted"
   | "Approved — Submitted for Payment"
   | "Approved — Pending CEO Approval"
   | "Approved — Check Issued"
   | "Closed — Paid"
   | "Closed — Denied"
-  | "Closed — Approved/No Response";
+  | "Closed — Approved/No Response"
+  /**
+   * Added 2026-08-17, replacing "Approved — In House — Repaired".
+   *
+   * The claim was resolved by the location at no cost to the company —
+   * buffed out on the spot, comped washes, a courtesy detail. The customer
+   * was made whole; no money left the claims budget.
+   *
+   * Why it exists: the in-house branch used to dead-end at
+   * "Approved — In House — Parts Ordered → Closed — Paid", which requires a
+   * receipt on file. A GM who fixed something for free had nothing to
+   * upload and no way to close, so these claims were being marked
+   * "Closed — Denied" — which reads as "we told the customer no" and is the
+   * opposite of what happened. That mis-labelling is visible in the 2026
+   * backfill: every hand-worked in-kind settlement landed on Denied.
+   *
+   * "Approved — In House — Repaired" was the natural home for this, but it
+   * had no inbound transition in the table and never had — it was a dead
+   * enum value referenced only by the two transition tables, the pill map,
+   * the waiting-on map and the filter dropdown. Rather than resurrect a
+   * status whose name implies an approval step that doesn't happen here,
+   * it was replaced outright.
+   *
+   * Counts as an APPROVED outcome in the KPIs (alongside Closed — Paid and
+   * Closed — Approved/No Response), because responsibility was accepted —
+   * it simply cost $0. The transitions into it require a note, which is the
+   * record of what was actually done.
+   */
+  | "Closed — Settled";
 
 /**
  * Photo / document categories on claim_photos.

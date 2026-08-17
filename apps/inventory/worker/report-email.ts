@@ -59,7 +59,6 @@ export interface ReportEntry {
   cost: number;
   onHandValue: number;
   endingQtyGal: number;
-  reconMismatch: boolean;
   negativeUsage: boolean;
   /** Attached by attachPrevDeltas; absent when the site has no earlier visit. */
   prevMlPerCar?: number | null;
@@ -85,7 +84,6 @@ export interface ComputedVisitLike {
   blendedTargetCpc: number | null;
   entries: ReportEntry[];
   overTargetFlags: ReportEntry[];
-  reconFlags: ReportEntry[];
   negativeUsageFlags: ReportEntry[];
   flagCount: number;
   prevVisit?: { id: string; visit_date: string } | null;
@@ -149,9 +147,6 @@ function buildFlagLines(c: ComputedVisitLike): string[] {
   for (const e of c.overTargetFlags || []) {
     const pct = e.overTargetPct != null ? ` (${e.overTargetPct > 0 ? "+" : ""}${fmtNum(e.overTargetPct * 100, 0)}%)` : "";
     out.push(`${e.name}: ${fmtNum(e.actualMlPerCar, 1)} ml/car vs goal ${fmtNum(e.targetMlPerCar, 1)}${pct}`);
-  }
-  for (const e of c.reconFlags || []) {
-    out.push(`${e.name}: reservoir + floor counts don't reconcile with ${fmtNum(e.endingQtyGal, 2)} gal ending`);
   }
   for (const e of c.negativeUsageFlags || []) {
     out.push(`${e.name}: negative usage (${fmtNum(e.usageGal, 2)} gal) — check for a missed delivery`);
@@ -280,7 +275,7 @@ function renderBodyHtml(
 // down the column, which is the entire point; per-row autoscaling would make
 // every product look identical.
 //
-// Colour carries the verdict: amber actual = over goal by more than the 15%
+// Colour carries the verdict: amber actual = over goal by more than the 30%
 // tolerance calc.js applies, blue = within it. Colour is never the ONLY signal
 // — the numeric ml/car sits at the right of every bar for the colour-blind and
 // for the Outlook configurations that strip bgcolor.

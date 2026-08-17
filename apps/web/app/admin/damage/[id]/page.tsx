@@ -108,6 +108,45 @@ function firstParam(value: string | string[] | undefined): string {
   return value ?? "";
 }
 
+/**
+ * Filter keys owned by the claims list page. The list is a server component
+ * that reads its filters straight out of the URL, so a filtered view only
+ * survives a visit to a claim if the detail page carries the params along and
+ * hands them back on the way out.
+ *
+ * Deliberately an allow-list, not a blind copy of every param: detail-local
+ * params (`confirm_delete_id`, `upload_error`) must NOT ride back to the list,
+ * or the back link would resurrect a stale delete-confirm banner. Keep in sync
+ * with the `qs` builder in ../page.tsx.
+ *
+ * THIRD copy of this list (2026-08-17): the document-upload form posts
+ * straight to damage-worker, so the worker's 303 — not Next — decides where
+ * the browser lands, and it re-applies the same allow-list before echoing the
+ * params back. See UPLOAD_RETURN_FILTER_KEYS in damage-worker/src/index.ts.
+ * Adding a filter means touching all three.
+ */
+const LIST_FILTER_KEYS = [
+  "search",
+  "location",
+  "status",
+  "lifecycle",
+  "regional_director_email",
+  "regional_manager_email",
+  "submitted_from",
+  "submitted_to"
+] as const;
+
+function listFilterQuery(
+  sp: Record<string, string | string[] | undefined>
+): string {
+  const qs = new URLSearchParams();
+  for (const key of LIST_FILTER_KEYS) {
+    const value = firstParam(sp[key]).trim();
+    if (value) qs.set(key, value);
+  }
+  return qs.toString();
+}
+
 // Photo categories rendered in this fixed order. Categories with zero
 // non-deleted photos are skipped at render time; the order list keeps
 // the gallery grouping stable.
@@ -195,7 +234,15 @@ export default async function DamageClaimDetailPage({ params, searchParams }: Pa
       ? Number.parseInt(confirmDeleteIdRaw, 10)
       : null;
   const uploadError = firstParam(sp.upload_error).trim().slice(0, 240) || null;
-  const returnPath = `/admin/damage/${encodeURIComponent(id)}`;
+
+  // Filter round-trip — see LIST_FILTER_KEYS. `listHref` is where every "back
+  // to the list" affordance on this page points; it restores whatever filters
+  // the user had set before they clicked into this claim. `returnPath` folds
+  // them in too so a sign-in bounce doesn't quietly lose them either.
+  const filterQs = listFilterQuery(sp);
+  const listHref = filterQs ? `/admin/damage?${filterQs}` : "/admin/damage";
+  const selfPath = `/admin/damage/${encodeURIComponent(id)}`;
+  const returnPath = filterQs ? `${selfPath}?${filterQs}` : selfPath;
 
   // Fetch claim + session in parallel. getMe() is React-cached so the root
   // layout's call (for the Header) and this one share a single fetch.
@@ -210,7 +257,7 @@ export default async function DamageClaimDetailPage({ params, searchParams }: Pa
     if (result.status === 401 || result.status === 403) {
       return (
         <section className="mx-auto w-full max-w-[1100px] px-5 py-9">
-          <BackLink />
+          <BackLink href={listHref} />
           <PageBanner customerName={null} claimId={id} />
           <div className="rounded-splash-lg border border-gray-light bg-white p-6 shadow-splash-card">
             <p className="mb-4 text-splash-deny">
@@ -231,7 +278,7 @@ export default async function DamageClaimDetailPage({ params, searchParams }: Pa
     if (result.status === 404) {
       return (
         <section className="mx-auto w-full max-w-[1100px] px-5 py-9">
-          <BackLink />
+          <BackLink href={listHref} />
           <PageBanner customerName={null} claimId={id} />
           <div className="rounded-splash-lg border border-gray-light bg-white p-6 shadow-splash-card">
             <h2 className="mb-2 text-lg font-bold text-splash-navy">
@@ -243,7 +290,7 @@ export default async function DamageClaimDetailPage({ params, searchParams }: Pa
               link below.
             </p>
             <Link
-              href="/admin/damage"
+              href={listHref}
               className="inline-flex items-center gap-1.5 rounded-splash-sm bg-splash-blue px-5 py-2.5 text-sm font-bold text-white shadow-splash-btn transition-colors hover:bg-splash-blue-dark"
             >
               Back to claims list
@@ -255,7 +302,7 @@ export default async function DamageClaimDetailPage({ params, searchParams }: Pa
 
     return (
       <section className="mx-auto w-full max-w-[1100px] px-5 py-9">
-        <BackLink />
+        <BackLink href={listHref} />
         <PageBanner customerName={null} claimId={id} />
         <div className="rounded-splash-lg border border-gray-light bg-white p-6 shadow-splash-card">
           <h2 className="mb-2 text-lg font-bold text-splash-deny">
@@ -315,9 +362,13 @@ export default async function DamageClaimDetailPage({ params, searchParams }: Pa
   return (
     <section className="mx-auto w-full max-w-[1100px] px-5 py-9">
       {pendingDelete ? (
-        <ConfirmDeleteBanner claimId={claim.claim_id} photo={pendingDelete} />
+        <ConfirmDeleteBanner
+          claimId={claim.claim_id}
+          photo={pendingDelete}
+          selfHref={returnPath}
+        />
       ) : null}
-      <BackLink />
+      <BackLink href={listHref} />
       <PageBanner customerName={claim.customer_name} claimId={claim.claim_id} />
 
       <SummaryCard
@@ -345,9 +396,13 @@ export default async function DamageClaimDetailPage({ params, searchParams }: Pa
         claimId={claim.claim_id}
         photos={livePhotos}
         session={session}
+        selfHref={returnPath}
       />
       {uploadError ? <UploadErrorBanner message={uploadError} /> : null}
-      <UploadDocumentCard claimId={claim.claim_id} />
+      {/* filterQs rides along on the form's action URL — this form posts
+          directly to the damage-worker, so the worker's 303 (not Next) picks
+          the landing URL. Without it the upload drops the user's filters. */}
+      <UploadDocumentCard claimId={claim.claim_id} filterQs={filterQs} />
       <ActivityTimelineCard activity={activity} />
       <AddNoteCard claimId={claim.claim_id} />
       {dcRole === "super_admin" ? (
@@ -438,11 +493,11 @@ function CauseCard({
  * Header pieces
  * ============================================================ */
 
-function BackLink() {
+function BackLink({ href = "/admin/damage" }: { href?: string }) {
   return (
     <div className="mb-3">
       <Link
-        href="/admin/damage"
+        href={href}
         className="text-sm font-semibold text-splash-blue hover:text-splash-blue-dark"
       >
         &larr; Back to claims list
@@ -1184,11 +1239,21 @@ function isImagePhoto(p: ClaimPhotoRow): boolean {
 async function PhotoGalleryCard({
   claimId,
   photos,
-  session
+  session,
+  selfHref
 }: {
   claimId: string;
   photos: ClaimPhotoRow[];
   session: Session | null;
+  /**
+   * This claim's own URL *with the list's filter params still attached*
+   * (see LIST_FILTER_KEYS). The document Delete / Cancel links below bounce
+   * the user back to this page, and rebuilding the path from `claimId`
+   * alone would silently strip the filters — so the next "back to list"
+   * click would land on an unfiltered list. Passed down rather than
+   * recomputed so there is exactly one place that knows the shape.
+   */
+  selfHref: string;
 }) {
   if (photos.length === 0) {
     return (
@@ -1252,6 +1317,7 @@ async function PhotoGalleryCard({
                           : null
                       }
                       session={session}
+                      selfHref={selfHref}
                     />
                   ))}
                 </div>
@@ -1269,13 +1335,16 @@ function PhotoTile({
   photo,
   url,
   checkRequestUrl,
-  session
+  session,
+  selfHref
 }: {
   claimId: string;
   photo: ClaimPhotoRow;
   url: string;
   checkRequestUrl: string | null;
   session: Session | null;
+  /** Filter-preserving self URL — see PhotoGalleryCard. */
+  selfHref: string;
 }) {
   const isImage = isImagePhoto(photo);
   const isQuoteOrReceipt =
@@ -1352,7 +1421,11 @@ function PhotoTile({
       ) : null}
 
       {canMutate ? (
-        <DocumentMutateRow claimId={claimId} photo={photo} />
+        <DocumentMutateRow
+          claimId={claimId}
+          photo={photo}
+          selfHref={selfHref}
+        />
       ) : null}
     </div>
   );
@@ -1364,10 +1437,13 @@ function PhotoTile({
 
 function DocumentMutateRow({
   claimId,
-  photo
+  photo,
+  selfHref
 }: {
   claimId: string;
   photo: ClaimPhotoRow;
+  /** Filter-preserving self URL — see PhotoGalleryCard. */
+  selfHref: string;
 }) {
   return (
     <div className="flex flex-col gap-1">
@@ -1377,10 +1453,14 @@ function DocumentMutateRow({
          *  (Bug 8) and that drives Quote-row conditional `required` attrs
          *  on amount / pay_to_type / vendor / vendor_address (Bugs 5+6). */}
         <DocumentEditDetails claimId={claimId} photo={photo} />
+        {/* selfHref already carries the list's filter params, so it may or
+         *  may not have a querystring — pick the right joiner rather than
+         *  hardcoding "?". Dropping the filters here would break the back
+         *  link after a delete. */}
         <Link
-          href={`/admin/damage/${encodeURIComponent(
-            claimId
-          )}?confirm_delete_id=${photo.id}#docs`}
+          href={`${selfHref}${
+            selfHref.includes("?") ? "&" : "?"
+          }confirm_delete_id=${photo.id}#docs`}
           className="rounded-splash-sm border border-splash-deny/40 bg-splash-deny/5 px-2 py-1 text-xs font-semibold text-splash-deny hover:bg-splash-deny/10"
         >
           Delete
@@ -1396,10 +1476,13 @@ function DocumentMutateRow({
 
 function ConfirmDeleteBanner({
   claimId,
-  photo
+  photo,
+  selfHref
 }: {
   claimId: string;
   photo: ClaimPhotoRow;
+  /** Filter-preserving self URL — see PhotoGalleryCard. */
+  selfHref: string;
 }) {
   return (
     <div
@@ -1426,8 +1509,9 @@ function ConfirmDeleteBanner({
             Yes, delete
           </button>
         </ActionForm>
+        {/* Cancel drops confirm_delete_id but keeps the list filters. */}
         <Link
-          href={`/admin/damage/${encodeURIComponent(claimId)}`}
+          href={selfHref}
           className="rounded-splash-sm border border-gray-light bg-white px-4 py-2 text-xs font-semibold text-splash-navy hover:bg-sudsy-blue-soft"
         >
           Cancel

@@ -8,8 +8,7 @@
 import { num } from './format'
 
 export const GAL_TO_ML = 3785.411784
-export const OVER_TARGET_FACTOR = 1.15 // flag usage >15% over target
-export const RECON_TOLERANCE_GAL = 0.05
+export const OVER_TARGET_FACTOR = 1.3 // flag usage >30% over target
 export const STALE_AFTER_DAYS = 30 // vs the network's most recent visit
 
 // Display label for how a product's chemical is metered at this visit.
@@ -151,10 +150,6 @@ export function computeVisit(ds, idx, visitId) {
       totalWashCount > 0 &&
       actualMlPerCar > targetMlPerCar * OVER_TARGET_FACTOR
     const hasCounts = e.reservoir_count_gal != null && e.floor_count_gal != null
-    const reconMismatch =
-      hasCounts &&
-      Math.abs(num(e.reservoir_count_gal) + num(e.floor_count_gal) - num(e.ending_qty_gal)) >
-        RECON_TOLERANCE_GAL
     // Usage can never physically be negative — ending can't exceed what you
     // started with plus what was delivered. Almost always a missed delivery
     // entry or a miscounted reservoir/floor. Flagged, never blocked.
@@ -186,10 +181,8 @@ export function computeVisit(ds, idx, visitId) {
         targetMlPerCar && targetMlPerCar > 0 && actualMlPerCar != null
           ? actualMlPerCar / targetMlPerCar - 1
           : null,
-      reconMismatch,
       negativeUsage,
       flagKeyOverTarget: `overtarget:${visitId}:${e.product_id}`,
-      flagKeyRecon: `recon:${visitId}:${e.product_id}`,
       flagKeyNegative: `negative:${visitId}:${e.product_id}`,
       meteringType: e.metering_type || null,
       tipColor: e.tip_color || null,
@@ -224,8 +217,12 @@ export function computeVisit(ds, idx, visitId) {
   const targetWeighted = washPackages.reduce((s, p) => s + (p.targetCpc || 0) * p.washCount, 0)
   const blendedTargetCpc = totalWashCount > 0 ? targetWeighted / totalWashCount : null
 
+  // Two flag conditions, by design: usage more than 30% over goal, and
+  // physically impossible negative usage. Reservoir/floor reconciliation used
+  // to be a third; it was dropped because the entry form derives
+  // ending = reservoir + floor, so a mismatch can only ever come from imported
+  // history — it says something about the import, not about the site.
   const overTargetFlags = entries.filter((e) => e.overTarget)
-  const reconFlags = entries.filter((e) => e.reconMismatch)
   const negativeUsageFlags = entries.filter((e) => e.negativeUsage)
 
   return {
@@ -243,9 +240,8 @@ export function computeVisit(ds, idx, visitId) {
     blendedCpc,
     blendedTargetCpc,
     overTargetFlags,
-    reconFlags,
     negativeUsageFlags,
-    flagCount: overTargetFlags.length + reconFlags.length + negativeUsageFlags.length,
+    flagCount: overTargetFlags.length + negativeUsageFlags.length,
   }
 }
 

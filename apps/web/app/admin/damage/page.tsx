@@ -63,8 +63,11 @@ type ClaimListRow = Pick<
 };
 
 // Full ClaimStatus enum, ordered as in the type union for legibility (15 values).
-// Em-dashes are U+2014 — matches the DB CHECK constraint exactly. Do not
-// substitute hyphens.
+// Em-dashes are U+2014. NOTE (2026-08-17): the old comment here said this
+// "matches the DB CHECK constraint" — there is no CHECK on claim_status; the
+// live DDL has it as plain TEXT. The em-dashes still matter, but nothing in
+// the database will catch a hyphen — it would insert fine and then vanish
+// from this filter. See packages/types/src/claims.ts.
 const CLAIM_STATUSES: ReadonlyArray<ClaimStatus> = [
   "New — Pending Review",
   "No Responsibility — Pending Review",
@@ -73,14 +76,14 @@ const CLAIM_STATUSES: ReadonlyArray<ClaimStatus> = [
   "Approved — Pending Quotes",
   "Pending RM Quote Approval",
   "Approved — In House — Parts Ordered",
-  "Approved — In House — Repaired",
   "Approved — Check Request Submitted",
   "Approved — Submitted for Payment",
   "Approved — Pending CEO Approval",
   "Approved — Check Issued",
   "Closed — Paid",
   "Closed — Denied",
-  "Closed — Approved/No Response"
+  "Closed — Approved/No Response",
+  "Closed — Settled"
 ];
 
 const LIFECYCLE_OPTIONS: ReadonlyArray<LifecycleParam> = [
@@ -139,6 +142,17 @@ export default async function DamageClaimsListPage({ searchParams }: PageProps) 
   if (submittedFromParam) qs.set("submitted_from", submittedFromParam);
   if (submittedToParam) qs.set("submitted_to", submittedToParam);
   const workerPath = `/manage/api/claims${qs.toString() ? `?${qs.toString()}` : ""}`;
+
+  // This page is a server component that reads every filter out of the URL,
+  // so "go back to the list" only preserves the user's filters if the detail
+  // page knows what they were. Carry the same querystring into each row link;
+  // the detail page's BackLink hands it straight back. The param names are
+  // identical on both sides (they're read back out of `sp` above), so the
+  // worker querystring can be reused verbatim as a UI one.
+  const detailHref = (claimId: string) =>
+    `/admin/damage/${encodeURIComponent(claimId)}${
+      qs.toString() ? `?${qs.toString()}` : ""
+    }`;
 
   // Use damageGetJsonOrStatus for the claims fetch so we can distinguish
   // 401 (no/invalid cookie — typically a stale session post forced-reset;
@@ -500,7 +514,7 @@ export default async function DamageClaimsListPage({ searchParams }: PageProps) 
                   >
                     <td className="px-4 py-3 font-mono text-xs">
                       <Link
-                        href={`/admin/damage/${encodeURIComponent(c.claim_id)}`}
+                        href={detailHref(c.claim_id)}
                         className="text-splash-blue hover:text-splash-blue-dark"
                       >
                         {c.claim_id}
@@ -508,7 +522,7 @@ export default async function DamageClaimsListPage({ searchParams }: PageProps) 
                     </td>
                     <td className="px-4 py-3">
                       <Link
-                        href={`/admin/damage/${encodeURIComponent(c.claim_id)}`}
+                        href={detailHref(c.claim_id)}
                         className="block font-semibold text-splash-navy"
                       >
                         {c.customer_name}

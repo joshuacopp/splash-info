@@ -18,11 +18,17 @@
 //              clearing payment. Informational, lower-urgency.
 // Closed statuses return null (nothing to wait on — the claim is done).
 //
-// Orphaned statuses (no inbound transition today — In House — Repaired,
-// Pending CEO Approval, Check Issued) are intentionally KEPT in the map.
-// They can't currently be reached, so the pill will never render for
-// them, but leaving the entries here is a ready-made reference if we ever
-// wire those states back into the flow.
+// Orphaned statuses (no inbound transition today — Pending CEO Approval,
+// Check Issued) are intentionally KEPT in the map. They can't currently be
+// reached, so the pill will never render for them, but leaving the entries
+// here is a ready-made reference if we ever wire those states back into the
+// flow.
+//
+// 2026-08-17: "Approved — In House — Repaired" was removed from ClaimStatus
+// and its entry deleted from this map. It had no inbound transition and never
+// had, so its pill could never render. The case it was standing in for — a
+// claim the location fixed at no cost — is now the closed status
+// "Closed — Settled", which correctly gets no pill.
 //
 // Mirrors AgePill.tsx: utility-class pill, server-renderable, no shared
 // package dependency. Returns null for any status not in the map so
@@ -75,11 +81,6 @@ const STATUS_ACTION_PILLS: Partial<Record<ClaimStatus, PillConfig>> = {
     label: "Parts / in-house repair",
     classes: AMBER,
     title: "In-house repair underway — parts ordered."
-  },
-  "Approved — In House — Repaired": {
-    label: "GM to close out",
-    classes: AMBER,
-    title: "In-house repair done — GM to close out with a receipt."
   },
   // --- In the finance / CEO pipeline (sky, informational) ---
   "Approved — Check Request Submitted": {

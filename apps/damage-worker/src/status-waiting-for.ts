@@ -10,10 +10,15 @@
 // export column and the on-screen pill never drift.
 //
 // Closed statuses map to "" (empty) — the claim is done, nothing is
-// pending. Orphaned statuses (In House — Repaired, Pending CEO Approval,
-// Check Issued) are kept here for the same reason they're kept in the
-// pill map: they can't be reached today, but the entry is a ready
-// reference if the flow is ever rewired.
+// pending. Orphaned statuses (Pending CEO Approval, Check Issued) are kept
+// here for the same reason they're kept in the pill map: they can't be
+// reached today, but the entry is a ready reference if the flow is ever
+// rewired.
+//
+// 2026-08-17: "Approved — In House — Repaired" was REMOVED from ClaimStatus
+// entirely (it had no inbound transition and never had) and replaced by the
+// closed status "Closed — Settled" — the claim was resolved by the location
+// at no cost. Being closed, it maps to "" like the other Closed statuses.
 
 import type { ClaimStatus } from "@splash/types/claims";
 
@@ -26,7 +31,6 @@ const WAITING_FOR: Record<ClaimStatus, string> = {
   "Approved — Pending Quotes": "Needs quotes",
   "Pending RM Quote Approval": "RM to approve quote",
   "Approved — In House — Parts Ordered": "Parts / in-house repair",
-  "Approved — In House — Repaired": "GM to close out",
   // In the finance / CEO pipeline.
   "Approved — Check Request Submitted": "Accounting to submit",
   "Approved — Submitted for Payment": "Accounting to issue check",
@@ -35,7 +39,8 @@ const WAITING_FOR: Record<ClaimStatus, string> = {
   // Closed — nothing pending.
   "Closed — Paid": "",
   "Closed — Denied": "",
-  "Closed — Approved/No Response": ""
+  "Closed — Approved/No Response": "",
+  "Closed — Settled": ""
 };
 
 /**

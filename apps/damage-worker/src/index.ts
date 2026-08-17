@@ -1105,6 +1105,10 @@ async function getReporting(env: Env, session: Session, url: URL): Promise<Respo
       AND deleted_at IS NULL
     GROUP BY bucket
   `;
+  // 2026-08-17: 'Closed — Settled' joins the approved set. Responsibility was
+  // accepted — the location just fixed it at no cost (comped washes, buffed it
+  // out). It belongs with the approved outcomes, not with Denied. It carries no
+  // Quote/Receipt rows, so it adds counts here but $0 to the cost queries.
   const approvedSql = `
     SELECT COUNT(*) AS n
     FROM claims
@@ -1115,6 +1119,7 @@ async function getReporting(env: Env, session: Session, url: URL): Promise<Respo
         claim_status LIKE 'Approved —%'
         OR claim_status = 'Closed — Paid'
         OR claim_status = 'Closed — Approved/No Response'
+        OR claim_status = 'Closed — Settled'
       )
   `;
   const deniedSql = `
@@ -1139,6 +1144,7 @@ async function getReporting(env: Env, session: Session, url: URL): Promise<Respo
         c.claim_status LIKE 'Approved —%'
         OR c.claim_status = 'Closed — Paid'
         OR c.claim_status = 'Closed — Approved/No Response'
+        OR c.claim_status = 'Closed — Settled'
       )
   `;
   // Brief 172 — per-location lifecycle counts use the same 3-way derived
@@ -1170,6 +1176,7 @@ async function getReporting(env: Env, session: Session, url: URL): Promise<Respo
         claim_status LIKE 'Approved —%'
         OR claim_status = 'Closed — Paid'
         OR claim_status = 'Closed — Approved/No Response'
+        OR claim_status = 'Closed — Settled'
       )
     GROUP BY location_code
   `;
@@ -1196,6 +1203,7 @@ async function getReporting(env: Env, session: Session, url: URL): Promise<Respo
         c.claim_status LIKE 'Approved —%'
         OR c.claim_status = 'Closed — Paid'
         OR c.claim_status = 'Closed — Approved/No Response'
+        OR c.claim_status = 'Closed — Settled'
       )
     GROUP BY c.location_code
   `;
@@ -1246,6 +1254,7 @@ async function getReporting(env: Env, session: Session, url: URL): Promise<Respo
         c.claim_status LIKE 'Approved —%'
         OR c.claim_status = 'Closed — Paid'
         OR c.claim_status = 'Closed — Approved/No Response'
+        OR c.claim_status = 'Closed — Settled'
       )
     GROUP BY c.damage_type
     ORDER BY n DESC
@@ -1290,7 +1299,7 @@ async function getReporting(env: Env, session: Session, url: URL): Promise<Respo
         WHEN c.lifecycle_state = 'Open' THEN 'open'
         WHEN c.claim_status = 'Closed — Denied' THEN 'denied'
         WHEN c.claim_status LIKE 'Approved —%' THEN 'approved'
-        WHEN c.claim_status IN ('Closed — Paid', 'Closed — Approved/No Response') THEN 'closed_approved'
+        WHEN c.claim_status IN ('Closed — Paid', 'Closed — Approved/No Response', 'Closed — Settled') THEN 'closed_approved'
         ELSE 'closed_other'
       END AS outcome_bucket,
       COALESCE(c.damage_type, '(none)') AS damage_type,
@@ -3045,24 +3054,71 @@ function applyStamps(
  * the browser on every cross-/same-origin form POST). Falls back to the
  * worker's own URL origin for the same-zone production case where the
  * two share `splashcarwashes.info`.
+ *
+ * 2026-08-17 — filter round-trip. The claims list is a server component that
+ * reads its filters straight out of the URL, so a filtered view only survives
+ * a round trip if the params travel with every navigation. The rest of the
+ * detail page threads them through (see LIST_FILTER_KEYS in
+ * apps/web/app/admin/damage/[id]/page.tsx), but this upload bypasses Next
+ * entirely, so the 303 built here was landing the user on a bare
+ * /admin/damage/{claimId} and silently dropping their filters.
+ *
+ * Fix: UploadDocumentCard appends the active filter querystring to the form
+ * `action`, and we echo it back onto the redirect. Only keys in
+ * UPLOAD_RETURN_FILTER_KEYS are echoed — the list is the security boundary,
+ * and it must stay in sync with LIST_FILTER_KEYS on the web side. The
+ * redirect's origin and path are still computed here and never taken from a
+ * query param, so this can't be turned into an open redirect; values are
+ * re-encoded through URLSearchParams, which percent-encodes CR/LF and so
+ * can't be used to inject a second header.
  * ============================================================ */
 
 const UPLOAD_ERROR_MAX_LEN = 240;
+
+/**
+ * Claims-list filter params echoed back onto the post-upload redirect.
+ * Allow-list, not a blind copy: detail-local params (confirm_delete_id,
+ * upload_error) must not ride along, and an unknown param must not be able
+ * to reach the redirect at all. Mirrors LIST_FILTER_KEYS in
+ * apps/web/app/admin/damage/[id]/page.tsx — edit both together.
+ */
+const UPLOAD_RETURN_FILTER_KEYS = [
+  "search",
+  "location",
+  "status",
+  "lifecycle",
+  "regional_director_email",
+  "regional_manager_email",
+  "submitted_from",
+  "submitted_to"
+] as const;
+
+/** Per-value cap so a hand-crafted action URL can't produce a giant Location. */
+const UPLOAD_RETURN_VALUE_MAX_LEN = 200;
 
 function buildUploadRedirect(
   request: Request,
   claimId: string,
   errorMessage?: string
 ): Response {
+  const requestUrl = new URL(request.url);
   const originHeader = request.headers.get("Origin");
   const origin = originHeader && /^https?:\/\//.test(originHeader)
     ? originHeader
-    : new URL(request.url).origin;
+    : requestUrl.origin;
   const path = `/admin/damage/${encodeURIComponent(claimId)}`;
-  const query = errorMessage
-    ? `?upload_error=${encodeURIComponent(errorMessage.slice(0, UPLOAD_ERROR_MAX_LEN))}`
-    : "";
-  return Response.redirect(`${origin}${path}${query}`, 303);
+
+  const qs = new URLSearchParams();
+  for (const key of UPLOAD_RETURN_FILTER_KEYS) {
+    const value = (requestUrl.searchParams.get(key) ?? "").trim();
+    if (value) qs.set(key, value.slice(0, UPLOAD_RETURN_VALUE_MAX_LEN));
+  }
+  if (errorMessage) {
+    qs.set("upload_error", errorMessage.slice(0, UPLOAD_ERROR_MAX_LEN));
+  }
+
+  const query = qs.toString();
+  return Response.redirect(`${origin}${path}${query ? `?${query}` : ""}`, 303);
 }
 
 async function handleDocumentUpload(

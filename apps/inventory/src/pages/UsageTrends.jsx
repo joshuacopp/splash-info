@@ -151,10 +151,10 @@ export default function UsageTrends() {
 
         <div className="flex flex-wrap items-center gap-4 border-t border-slate-100 px-5 py-3 text-[11px] font-medium text-slate-400">
           <span className="flex items-center gap-1.5">
-            <span className="h-3 w-3 rounded bg-amber-100 ring-1 ring-amber-300" /> over target by &gt;15%
+            <span className="h-3 w-3 rounded bg-amber-100 ring-1 ring-amber-300" /> over goal by &gt;30%
           </span>
           <span className="flex items-center gap-1.5">
-            <span className="h-3 w-3 rounded bg-emerald-100 ring-1 ring-emerald-300" /> at or under target
+            <span className="h-3 w-3 rounded bg-emerald-100 ring-1 ring-emerald-300" /> at or under goal
           </span>
           <span className="ml-auto">
             <Pill tone="blue">latest visit first</Pill>
