@@ -192,6 +192,35 @@ function indexByName(answers: AnswerMap): Map<string, AnswerEntry> {
 }
 
 /**
+ * `prettyFormat` is JotForm's *email-rendering* of a composite control, so it
+ * is HTML — `control_address` comes through as
+ * "Street Address: 45 Raymond Terrace<br>City: Norwalk<br>...".
+ *
+ * Storing that raw puts markup in a DB column that the admin UI renders as
+ * text, so staff would read literal "<br>" tags. Flatten to newlines and drop
+ * any other tags. Applied ONLY to prettyFormat values, never to `answer` —
+ * `answer` is customer free-text where "<" is a character, not a tag, and
+ * stripping there could eat part of a damage description.
+ */
+function flattenPrettyHtml(value: string): string {
+  return value
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\/(p|div|li|tr)>/gi, "\n")
+    .replace(/<[^>]+>/g, "")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&quot;/gi, '"')
+    .replace(/&#0?39;|&apos;/gi, "'")
+    .replace(/&amp;/gi, "&")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .join("\n")
+    .trim();
+}
+
+/**
  * Read one answer as a trimmed string, or null. Prefers `prettyFormat` —
  * JotForm renders composite controls (name, address, datetime) there, while
  * `answer` holds an object that stringifies to "[object Object]".
@@ -200,8 +229,15 @@ function str(byName: Map<string, AnswerEntry>, field: string): string | null {
   if (!field) return null;
   const entry = byName.get(field);
   if (!entry) return null;
-  for (const raw of [entry.prettyFormat, entry.answer]) {
-    if (typeof raw === "string" && raw.trim()) return raw.trim();
+  const candidates: Array<{ raw: unknown; pretty: boolean }> = [
+    { raw: entry.prettyFormat, pretty: true },
+    { raw: entry.answer, pretty: false }
+  ];
+  for (const { raw, pretty } of candidates) {
+    if (typeof raw === "string") {
+      const value = pretty ? flattenPrettyHtml(raw) : raw.trim();
+      if (value) return value;
+    }
     if (typeof raw === "number") return String(raw);
   }
   return null;
@@ -308,6 +344,19 @@ function isAffirmative(raw: string | null): boolean {
 function normalizeUniqueId(raw: string | null): string | null {
   const value = (raw ?? "").trim().toUpperCase();
   return /^DC\d{8,9}$/.test(value) ? value : null;
+}
+
+/**
+ * Postgres hands timestamps back as "2026-01-02T13:38:33+00:00", but every
+ * claim written by the live form uses `toISOString()` —
+ * "2026-01-02T13:38:33.000Z". Two formats in one column means any lexicographic
+ * ORDER BY or string equality on `submitted_at` behaves differently for seeded
+ * rows than for real ones, so normalise to the `Z` form on the way in.
+ */
+function toIsoInstant(raw: string | null | undefined): string {
+  const parsed = raw ? new Date(raw) : null;
+  if (parsed && !Number.isNaN(parsed.getTime())) return parsed.toISOString();
+  return new Date().toISOString();
 }
 
 /**
@@ -560,7 +609,7 @@ export async function handleJotformSeed(
       continue;
     }
 
-    const submittedAt = row.jotform_created_at ?? new Date().toISOString();
+    const submittedAt = toIsoInstant(row.jotform_created_at);
     const { status, slug } = normalizeDetermination(str(byName, FIELD.determination));
     const yearRaw = str(byName, FIELD.vehicleYear);
     const yearDigits = yearRaw?.match(/\d{4}/)?.[0];
