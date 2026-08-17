@@ -398,7 +398,7 @@ function supabaseHeaders(env: SupabaseEnv & { SUPABASE_SERVICE_KEY?: string }) {
   };
 }
 
-interface SubmissionRow {
+export interface SubmissionRow {
   id: string;
   site_number: string | null;
   site: string | null;
@@ -412,7 +412,7 @@ interface SubmissionRow {
  * `from` / `to` bound the submission timestamp — the ONLY safe way to split
  * 2026 from 2025, given the overlapping id series.
  */
-async function fetchSubmissionPage(
+export async function fetchSubmissionPage(
   env: SupabaseEnv & { SUPABASE_SERVICE_KEY?: string },
   opts: { from: string; to: string; limit: number; offset: number }
 ): Promise<SubmissionRow[]> {
@@ -546,8 +546,41 @@ async function fetchMigratedJotNumbers(db: D1Database): Promise<Set<string>> {
 }
 
 /** `DC202600026` → `202600026`, the shape the workbooks and staff_notes use. */
-function jotNumberOf(uniqueId: string): string {
+export function jotNumberOf(uniqueId: string): string {
   return uniqueId.replace(/^DC/i, "");
+}
+
+/**
+ * JOT# → claim_id for the hand-migrated claims, i.e. the same rows
+ * `fetchMigratedJotNumbers` finds, but carrying the claim_id.
+ *
+ * The seed only ever needed "does this exist" (a Set). The photo pass needs
+ * "which claim does this submission's files belong to", and for the nine
+ * hand-migrated Copp locations the `jotform:` idempotency key is NULL — the
+ * staff_notes JOT# is the only link back to the submission. Without this,
+ * every pre-cutover Copp claim would silently get zero photos.
+ */
+export async function fetchClaimIdsByJotNumber(
+  db: D1Database
+): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  const { results } = await db
+    .prepare(
+      "SELECT claim_id, staff_notes FROM claims WHERE staff_notes LIKE '%JOT#%' AND deleted_at IS NULL"
+    )
+    .all<{ claim_id: string; staff_notes: string | null }>();
+  for (const row of results ?? []) {
+    for (const match of (row.staff_notes ?? "").matchAll(/JOT#\s*(\d{6,12})/g)) {
+      const digits = match[1];
+      if (!digits) continue;
+      // First writer wins: if two claims somehow cite the same JOT#, attaching
+      // the files to one of them beats duplicating onto both.
+      if (!out.has(digits)) out.set(digits, row.claim_id);
+      const trimmed = digits.replace(/^0+/, "");
+      if (!out.has(trimmed)) out.set(trimmed, row.claim_id);
+    }
+  }
+  return out;
 }
 
 /* ============================================================

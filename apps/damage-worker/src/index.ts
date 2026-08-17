@@ -43,6 +43,7 @@
 //   POST /manage/api/claim/{id}/document/{docId}/edit       — edit doc metadata
 //   GET  /manage/api/claim/{id}/quote/{quoteId}/preview-check-request.pdf
 //                                                            — render PDF preview
+//   POST /manage/api/seed/jotform-photos?from=&to=&limit=&offset= — task #7 files
 //   POST /manage/api/seed/jotform?from=&to=&limit=&offset=   — historic JotForm
 //                                                            claim seed; re-gated
 //                                                            to super_admin inside
@@ -182,6 +183,7 @@ import {
   runClaimUploadsCleanup
 } from "./uploads.js";
 import { handleJotformSeed } from "./seed-jotform.js";
+import { handleJotformPhotoSeed } from "./seed-jotform-photos.js";
 import { handlePaperClaimSeed } from "./seed-paper-claims.js";
 import { expandGrantedCodes, loadOverlay } from "./overlay.js";
 
@@ -469,6 +471,19 @@ async function dispatchManageApi(
     method === "POST"
   ) {
     return handlePaperClaimSeed(request, env, session.dcRole ?? null);
+  }
+
+  // POST /manage/api/seed/jotform-photos — task #7, second pass over the same
+  // submissions to pull their uploaded files into R2. Phase 1 seeded
+  // `photos: []` on purpose. `?dry_run=1` parses and resolves without
+  // fetching or writing; add `&probe=1` to test-fetch a few URLs.
+  if (
+    subParts.length === 2 &&
+    subParts[0] === "seed" &&
+    subParts[1] === "jotform-photos" &&
+    method === "POST"
+  ) {
+    return handleJotformPhotoSeed(request, env, session.dcRole ?? null);
   }
 
   // Brief 172 — GET /manage/api/claims.csv — CSV export of the same
