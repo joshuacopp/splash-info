@@ -796,10 +796,44 @@ async function handleCreateUser(
   const email = stringOrNull(body.email);
   const password = stringOrNull(body.password);
   const role = stringOrNull(body.role);
-  const locationCode = stringOrNull(body.location_code);
   const tools = Array.isArray(body.tools)
     ? body.tools.filter((t): t is ToolName => typeof t === "string" && VALID_TOOLS.has(t as ToolName))
     : [];
+
+  // Locations arrive as `location_codes: string[]`, mirroring handleSetRole.
+  // The pre-array `location_code` scalar is still accepted so any caller
+  // predating the multi-select keeps working.
+  //
+  // Why this went multi (2026-08-17): the create form accepted exactly one
+  // location, so onboarding anyone with several sites forced the operator
+  // down Create-without-role → Set role. That path wrote
+  // must_change_password = false, because setRole derived the flag from a row
+  // set that did not exist yet. The flag bug is fixed in @splash/db-supabase;
+  // this removes the reason operators were pushed down that path at all.
+  const scalarCode = stringOrNull(body.location_code);
+  const rawCodes: unknown[] = Array.isArray(body.location_codes)
+    ? body.location_codes
+    : scalarCode !== null
+      ? [scalarCode]
+      : [];
+
+  if (rawCodes.length > SET_ROLE_MAX_LOCATIONS) {
+    return jsonError(
+      400,
+      `location_codes may contain at most ${SET_ROLE_MAX_LOCATIONS} entries`
+    );
+  }
+  const locationCodes: string[] = [];
+  for (const entry of rawCodes) {
+    if (typeof entry !== "string") {
+      return jsonError(400, "location_codes entries must be strings");
+    }
+    const trimmed = entry.trim();
+    if (!LOCATION_CODE_RE.test(trimmed)) {
+      return jsonError(400, `Invalid location_code: ${entry}`);
+    }
+    if (!locationCodes.includes(trimmed)) locationCodes.push(trimmed);
+  }
 
   if (!email || !password) return jsonError(400, "email and password required");
   if (!isValidPassword(password)) return jsonError(400, PASSWORD_POLICY_MESSAGE);
@@ -807,9 +841,9 @@ async function handleCreateUser(
     return jsonError(400, `Invalid role: ${role}`);
   }
   // Brief 18 guard — symmetric with handleSetRole. A location_admin row
-  // without location_code is misconfigured; reject at the boundary.
-  if (role === "location_admin" && !locationCode) {
-    return jsonError(400, "location_code is required when role is location_admin");
+  // without a location is misconfigured; reject at the boundary.
+  if (role === "location_admin" && locationCodes.length === 0) {
+    return jsonError(400, "location_codes is required when role is location_admin");
   }
 
   // 1) Create auth user.
@@ -825,13 +859,21 @@ async function handleCreateUser(
   //    Brief 18: forward location_code when role = location_admin (was
   //    hardcoded null until now, requiring a two-step Create + Set role
   //    workflow to attach a location).
+  //    2026-08-17: one row per location for location_admin. super_admin and
+  //    any other role still get exactly one row with location_code = null.
+  //    A throw partway through leaves the user with a subset of their
+  //    locations — recoverable with the Set role card, which is additive.
+  //    Unlike an orphaned auth.users row, that is not a dead end.
   if (role) {
-    await createUserPermissionsRow(sb, {
-      userId: newUserId,
-      email: created.email,
-      role: role as UserRole,
-      locationCode: role === "location_admin" ? locationCode : null
-    });
+    const codesToWrite = role === "location_admin" ? locationCodes : [null];
+    for (const code of codesToWrite) {
+      await createUserPermissionsRow(sb, {
+        userId: newUserId,
+        email: created.email,
+        role: role as UserRole,
+        locationCode: code
+      });
+    }
   }
 
   // 3) Insert tool grants.
@@ -851,7 +893,16 @@ async function handleCreateUser(
     target_type: "auth.users",
     target_id: newUserId,
     before: null,
-    after: { email: created.email, role: role ?? null, tools }
+    after: {
+      email: created.email,
+      role: role ?? null,
+      // 2026-08-17: locations are now plural. Recorded so the audit row
+      // shows what scope the user was actually born with — previously the
+      // single location_code was omitted entirely and the grant was
+      // invisible in the log.
+      location_codes: role === "location_admin" ? locationCodes : [],
+      tools
+    }
   });
 
   return json({ ok: true, user_id: newUserId, email: created.email });

@@ -18,10 +18,11 @@
 // NOT included in FormData, so the existing Create User code path is
 // unchanged (no DC writes, no regression for non-claims users).
 //
-// The Location field higher up in the form serves as the dc_locations
+// The Locations field higher up in the form serves as the dc_locations
 // source when dc_role is gm/rm — no second picker per the operator's
-// directive in the brief. The createUserAction reads location_code once
-// and forwards it to both worker calls.
+// directive in the brief. createUserAction reads location_codes once and
+// forwards the whole array to both worker calls (2026-08-17: it was a
+// single location_code, so a GM with six sites got dc_locations for one).
 
 import { useState, type ChangeEvent } from "react";
 import { FieldLabel, inputClass } from "./OperationCard";

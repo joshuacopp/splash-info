@@ -24,7 +24,6 @@ import {
   submitClass
 } from "../_components/OperationCard";
 import { CreateUserToolsAndDcRole } from "../_components/CreateUserToolsAndDcRole";
-import { LocationCodePicker } from "../_components/LocationCodePicker";
 import { LocationCodeMultiPicker } from "../_components/LocationCodeMultiPicker";
 import { PermissionsViewer } from "../_components/PermissionsViewer";
 import { ResetMfaCard } from "../_components/ResetMfaCard";
@@ -149,17 +148,19 @@ function CreateUserCard() {
 
         <div>
           <FieldLabel
-            htmlFor="create-location-code"
-            helper="Required for location_admin role; also used as dc_locations when DC role is gm/rm"
+            htmlFor="create-location-codes"
+            helper="Required for location_admin — pick one or more; also used as dc_locations when DC role is gm/rm"
           >
-            Location
+            Locations
           </FieldLabel>
-          <LocationCodePicker
-            name="location_code"
-            inputId="create-location-code"
+          <LocationCodeMultiPicker
+            name="location_codes"
+            inputId="create-location-codes"
           />
           <p className="mt-1 text-[0.6875rem] text-splash-navy/50">
-            Ignored for super_admin and no-role.
+            Ignored for super_admin and no-role. One user_permissions row is
+            written per location, so a multi-site manager can be onboarded in
+            a single step.
           </p>
         </div>
 

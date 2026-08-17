@@ -233,7 +233,15 @@ export async function setRole(
   // replace decision, the preserved must_change_password flag, and the
   // caller's audit-log before-snapshot.
   const before = await readPermissionRows(client, args.userId);
-  const preservedMustChange = before.some((r) => r.must_change_password === true);
+  // No prior rows means this is the user's FIRST grant — there is nothing to
+  // preserve, and their password was set by an admin who knows it, so the
+  // forced-reset gate must default ON. `some()` returns false on an empty
+  // array, which silently produced must_change_password = false for every
+  // user onboarded via the two-step "create without role, then set role"
+  // flow — the exact bug this function's doc block claims to have closed,
+  // reached by a different door. Found 2026-08-17 (kenny.hoffman).
+  const preservedMustChange =
+    before.length === 0 ? true : before.some((r) => r.must_change_password === true);
 
   // De-dupe within the request — the operator can't select the same site
   // twice in the picker, but the endpoint is callable directly.

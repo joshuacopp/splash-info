@@ -47,14 +47,6 @@ function fieldString(formData: FormData, name: string): string {
   return String(formData.get(name) ?? "").trim();
 }
 
-function fieldStringOrUndefined(
-  formData: FormData,
-  name: string
-): string | undefined {
-  const raw = String(formData.get(name) ?? "").trim();
-  return raw.length > 0 ? raw : undefined;
-}
-
 /**
  * Brief 20 — read the worker's `changed: boolean` discriminator on
  * grant/revoke responses. Returns `false` (treat as no-op) if the worker
@@ -109,8 +101,13 @@ interface CreateUserBody {
   email: string;
   password: string;
   role?: UserRole;
-  /** Brief 18 — forwarded only when role === "location_admin". */
-  location_code?: string;
+  /**
+   * Brief 18 — forwarded only when role === "location_admin".
+   * 2026-08-17: went plural. The create form accepted one location, so
+   * onboarding a multi-site user forced the operator into Create-then-Set-role,
+   * which wrote must_change_password = false. Same shape as setRoleAction.
+   */
+  location_codes?: string[];
   tools?: string[];
 }
 
@@ -138,8 +135,11 @@ export async function createUserAction(
   const email = fieldString(formData, "email");
   const password = fieldString(formData, "password");
   const roleRaw = fieldString(formData, "role");
-  const locationCode = fieldStringOrUndefined(formData, "location_code");
   // FormData.getAll returns FormDataEntryValue[]; coerce to string[].
+  const locationCodes = formData
+    .getAll("location_codes")
+    .map((v) => (typeof v === "string" ? v.trim() : ""))
+    .filter((v) => v.length > 0);
   const tools = formData
     .getAll("tools")
     .map((v) => (typeof v === "string" ? v : ""))
@@ -150,8 +150,8 @@ export async function createUserAction(
   if (roleRaw.length > 0) {
     body.role = roleRaw as UserRole;
   }
-  if (body.role === "location_admin" && locationCode !== undefined) {
-    body.location_code = locationCode;
+  if (body.role === "location_admin" && locationCodes.length > 0) {
+    body.location_codes = locationCodes;
   }
   if (tools.length > 0) {
     body.tools = tools;
@@ -185,16 +185,15 @@ export async function createUserAction(
     newUserId
   ) {
     const dcRole = dcRoleRaw as DcRoleValue;
-    // dc_locations mirrors the existing Location field for gm/rm; admin
-    // and super_admin bypass scoping per Brief 61's worker contract.
-    const locationCodes: string[] =
-      (dcRole === "gm" || dcRole === "rm") && locationCode !== undefined
-        ? [locationCode]
-        : [];
-
+    // dc_locations mirrors the Location field for gm/rm; admin and
+    // super_admin bypass scoping per Brief 61's worker contract.
+    // 2026-08-17: now forwards ALL selected locations, not just the first.
+    // A GM/RM with six sites gets six dc_locations rows, matching what the
+    // operator picked instead of silently scoping them to one.
     const dcBody: SetDcRoleBodyForChain = {
       role: dcRole,
-      location_codes: locationCodes
+      location_codes:
+        dcRole === "gm" || dcRole === "rm" ? locationCodes : []
     };
 
     const dcResult = await sysadminPostJson(
