@@ -38,14 +38,22 @@
 // Path 2 is not optional. Skipping it would leave every pre-cutover Copp claim
 // with no photos and no error to explain why.
 //
+// AUTH: JotForm's `/uploads/` server is NOT public on this account, and it
+// does not say so with a 401 — an unauthenticated GET returns HTTP **200**
+// with a ~2,745-byte `text/html` interstitial, byte-identical for every URL.
+// The first probe run against this form returned exactly that. So every fetch
+// carries the API key (header + query param) and every response is checked by
+// content type, not status. See fetchJotformFile.
+//
 // PROFILE BEFORE YOU TRUST: `?dry_run=1` resolves claims and parses the file
 // answers but performs no fetch, no R2 write and no D1 write; it echoes the
 // raw answer values verbatim so the actual stored shape can be read off the
 // response rather than assumed. `?probe=1` additionally fetches the first few
-// URLs to prove they are reachable and to measure content-type / size. The
-// field map in seed-jotform.ts carries an explicit "DO NOT add a name here
-// from memory — profile it first" warning; the same applies here, and these
-// two flags are how you honour it.
+// URLs and reports content-type, size, and — when the response isn't a file —
+// the first 300 bytes of the body, which is what turned the 200-with-HTML case
+// from a mystery into a one-line diagnosis. The field map in seed-jotform.ts
+// carries an explicit "DO NOT add a name here from memory — profile it first"
+// warning; the same applies here, and these two flags are how you honour it.
 // =============================================================================
 
 import { getClaimByIdempotencyKey } from "@splash/db-d1";
@@ -84,6 +92,150 @@ const MAX_PROBES = 3;
 const MAX_FILE_BYTES = 25 * 1024 * 1024;
 
 const UPLOADED_BY = "JotForm import";
+
+/**
+ * Hosts we will pull files from. JotForm Enterprise 302s from `/uploads/...`
+ * to a CDN URL, and following a redirect off-host with the API key attached
+ * would leak the key to whoever the redirect points at.
+ */
+const ALLOWED_ASSET_HOSTS = new Set([
+  "splashcarwashes.jotform.com",
+  "www.jotform.com",
+  "jotform.com"
+]);
+
+/**
+ * Content types that are actually a file. JotForm answers 200 with a ~2.7 KB
+ * `text/html` interstitial when the request isn't authenticated — see
+ * fetchJotformFile. Storing those would give us thousands of identical
+ * "images" that render as broken thumbnails, which is far worse than failing.
+ */
+function isUsableAssetType(contentType: string | null): boolean {
+  if (!contentType) return false;
+  const ct = contentType.toLowerCase();
+  return (
+    ct.startsWith("image/") ||
+    ct.startsWith("video/") ||
+    ct.startsWith("application/pdf") ||
+    ct.startsWith("application/octet-stream")
+  );
+}
+
+interface AssetFetchResult {
+  ok: boolean;
+  status: number | null;
+  contentType: string | null;
+  bytes: ArrayBuffer | null;
+  reason?: string;
+  /** First bytes of a non-file response, so a failure explains itself. */
+  bodySnippet?: string;
+}
+
+/**
+ * Fetch one JotForm upload.
+ *
+ * The `/uploads/` file server is NOT public on this account. An unauthenticated
+ * GET returns HTTP **200** with a ~2,745-byte `text/html` page — the same body
+ * for every URL — so status alone cannot tell you the fetch worked. That is why
+ * this checks the content type and refuses HTML explicitly.
+ *
+ * Auth posture is copied verbatim from the working asset proxy in
+ * apps/jotform-worker/src/handlers/admin.js (Brief 115): the API key goes on as
+ * BOTH an `APIKEY` header and an `?apikey=` query param, because the direct
+ * file server has been observed rejecting query-param-only requests while other
+ * JotForm asset paths want the param. Redirects are followed manually, host-
+ * checked at every hop, with the key re-attached — `redirect: "follow"` would
+ * drop the header on the cross-origin hop and land us back on the HTML page.
+ */
+async function fetchJotformFile(
+  fileUrl: string,
+  apiKey: string
+): Promise<AssetFetchResult> {
+  let current: URL;
+  try {
+    current = new URL(fileUrl);
+  } catch {
+    return { ok: false, status: null, contentType: null, bytes: null, reason: "invalid url" };
+  }
+  if (!ALLOWED_ASSET_HOSTS.has(current.host)) {
+    return {
+      ok: false,
+      status: null,
+      contentType: null,
+      bytes: null,
+      reason: `host not allowed: ${current.host}`
+    };
+  }
+  current.searchParams.set("apikey", apiKey);
+
+  for (let hop = 0; hop < 4; hop++) {
+    let resp: Response;
+    try {
+      resp = await fetch(current.toString(), {
+        method: "GET",
+        redirect: "manual",
+        headers: { APIKEY: apiKey },
+        signal: AbortSignal.timeout(20_000)
+      });
+    } catch (err) {
+      return {
+        ok: false,
+        status: null,
+        contentType: null,
+        bytes: null,
+        reason: err instanceof Error ? err.message : "fetch failed"
+      };
+    }
+
+    if (resp.status >= 300 && resp.status < 400) {
+      const location = resp.headers.get("Location");
+      if (!location) {
+        return { ok: false, status: resp.status, contentType: null, bytes: null, reason: "redirect missing Location" };
+      }
+      let next: URL;
+      try {
+        next = new URL(location, current);
+      } catch {
+        return { ok: false, status: resp.status, contentType: null, bytes: null, reason: "redirect unparseable" };
+      }
+      if (!ALLOWED_ASSET_HOSTS.has(next.host)) {
+        // Never carry the API key off-host.
+        return {
+          ok: false,
+          status: resp.status,
+          contentType: null,
+          bytes: null,
+          reason: `redirect off-host: ${next.host}`
+        };
+      }
+      next.searchParams.set("apikey", apiKey);
+      current = next;
+      continue;
+    }
+
+    const contentType = resp.headers.get("content-type");
+    if (!resp.ok) {
+      return { ok: false, status: resp.status, contentType, bytes: null, reason: `http ${resp.status}` };
+    }
+    if (!isUsableAssetType(contentType)) {
+      // The 200-with-HTML case. Capture the body so the operator sees what
+      // JotForm actually said rather than a bare "wrong content type".
+      const text = await resp.text().catch(() => "");
+      return {
+        ok: false,
+        status: resp.status,
+        contentType,
+        bytes: null,
+        reason: `non-file content-type ${contentType ?? "(none)"} — not authenticated?`,
+        bodySnippet: text.slice(0, 300)
+      };
+    }
+    const bytes = await resp.arrayBuffer();
+    return { ok: true, status: resp.status, contentType, bytes };
+  }
+
+  return { ok: false, status: null, contentType: null, bytes: null, reason: "redirect loop" };
+}
 
 /**
  * qid → claim_photos.photo_type for this form's upload fields.
@@ -238,6 +390,7 @@ export async function handleJotformPhotoSeed(
     DB: D1Database;
     R2_BUCKET: R2Bucket;
     SUPABASE_SERVICE_KEY?: string;
+    JOTFORM_API_KEY?: string;
   },
   dcRole: string | null
 ): Promise<Response> {
@@ -246,6 +399,15 @@ export async function handleJotformPhotoSeed(
   }
   if (!env.SUPABASE_URL || !env.SUPABASE_SERVICE_KEY) {
     return jsonError(500, "seed not configured (SUPABASE_SERVICE_KEY unbound)");
+  }
+  // Hard requirement, not a soft one: without the key JotForm answers 200 with
+  // an HTML interstitial, and a run would cheerfully store thousands of
+  // identical 2.7 KB "images". Fail before any of that happens.
+  if (!env.JOTFORM_API_KEY) {
+    return jsonError(
+      503,
+      "JOTFORM_API_KEY unbound — the /uploads/ file server is not public on this account"
+    );
   }
 
   const url = new URL(request.url);
@@ -288,10 +450,12 @@ export async function handleJotformPhotoSeed(
   }> = [];
   const probes: Array<{
     url: string;
+    ok: boolean;
     status: number | null;
     content_type: string | null;
     bytes: number | null;
     error?: string;
+    body_snippet?: string;
   }> = [];
   // Upload fields present in the data that UPLOAD_FIELDS doesn't cover. A
   // non-empty list here means files would be dropped on the floor.
@@ -387,24 +551,16 @@ export async function handleJotformPhotoSeed(
 
         if (dryRun) {
           if (probe && probes.length < MAX_PROBES) {
-            try {
-              const resp = await fetch(fileUrl);
-              const buf = resp.ok ? await resp.arrayBuffer() : null;
-              probes.push({
-                url: fileUrl,
-                status: resp.status,
-                content_type: resp.headers.get("content-type"),
-                bytes: buf ? buf.byteLength : null
-              });
-            } catch (err) {
-              probes.push({
-                url: fileUrl,
-                status: null,
-                content_type: null,
-                bytes: null,
-                error: err instanceof Error ? err.message : "fetch failed"
-              });
-            }
+            const result = await fetchJotformFile(fileUrl, env.JOTFORM_API_KEY);
+            probes.push({
+              url: fileUrl,
+              ok: result.ok,
+              status: result.status,
+              content_type: result.contentType,
+              bytes: result.bytes ? result.bytes.byteLength : null,
+              error: result.reason,
+              body_snippet: result.bodySnippet
+            });
           }
           fileOutcomes.push({
             qid,
@@ -429,8 +585,8 @@ export async function handleJotformPhotoSeed(
         }
 
         try {
-          const resp = await fetch(fileUrl);
-          if (!resp.ok) {
+          const result = await fetchJotformFile(fileUrl, env.JOTFORM_API_KEY);
+          if (!result.ok || !result.bytes) {
             failed += 1;
             fileOutcomes.push({
               qid,
@@ -438,11 +594,11 @@ export async function handleJotformPhotoSeed(
               filename,
               r2_key: r2Key,
               outcome: "failed",
-              reason: `fetch ${resp.status}`
+              reason: result.reason ?? "fetch failed"
             });
             continue;
           }
-          const bytes = await resp.arrayBuffer();
+          const bytes = result.bytes;
           if (bytes.byteLength === 0 || bytes.byteLength > MAX_FILE_BYTES) {
             failed += 1;
             fileOutcomes.push({
@@ -455,10 +611,7 @@ export async function handleJotformPhotoSeed(
             });
             continue;
           }
-          const contentType = contentTypeFor(
-            filename,
-            resp.headers.get("content-type")
-          );
+          const contentType = contentTypeFor(filename, result.contentType);
 
           // R2 first, D1 after — an orphaned object is cheap to sweep, but a
           // claim_photos row pointing at a missing key renders as a broken

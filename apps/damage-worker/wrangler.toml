@@ -124,6 +124,20 @@ routes = [
 #                         Fail-soft: when unbound the internal-notification
 #                         path is silently skipped — the customer-email path,
 #                         the PDF, and the claim write are all unaffected.)
+# JOTFORM_API_KEY       — secret (task #7 migration only; consumed by
+#                         POST /manage/api/seed/jotform-photos to pull the
+#                         historic uploads off JotForm's file server. That
+#                         server is NOT public on this account: an
+#                         unauthenticated GET returns HTTP 200 with a ~2.7 KB
+#                         text/html interstitial rather than a 401, so the key
+#                         is a hard requirement — the endpoint 503s without
+#                         it rather than risk storing thousands of HTML pages
+#                         as .jpg. Use the SAME value already configured on
+#                         splash-jotform:
+#                           pnpm --filter @splash/damage-worker exec \
+#                             wrangler secret put JOTFORM_API_KEY
+#                         Safe to delete once the 2025 + 2026 photo passes
+#                         are done; nothing else in this worker reads it.)
 #
 # OPERATOR PREREQUISITE: the Check Request AcroForm template MUST be uploaded
 # to R2 at key "templates/check-request.pdf" before any transition that

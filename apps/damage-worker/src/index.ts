@@ -198,6 +198,12 @@ interface Env extends SupabaseEnv {
    *  moved to a secret binding for the new worker. Set via
    *  `wrangler secret put POWER_AUTOMATE_URL`. */
   POWER_AUTOMATE_URL?: string;
+  /** JotForm Enterprise API key — task #7 photo migration only. The
+   *  `/uploads/` file server is not public on this account and answers 200
+   *  with an HTML interstitial when unauthenticated, so
+   *  /manage/api/seed/jotform-photos 503s without it. Same value as the one
+   *  bound on splash-jotform; removable once the photo passes are done. */
+  JOTFORM_API_KEY?: string;
   /** Webhook URL fired after RM approves a quote — INCIDENTS desk receives
    *  the auto-generated Check Request PDF. Optional; fail-soft. */
   INCIDENTS_WEBHOOK_URL?: string;
