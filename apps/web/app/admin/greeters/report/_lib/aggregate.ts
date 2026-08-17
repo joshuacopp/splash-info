@@ -16,7 +16,11 @@
 // The other rule: `total_members` is a LEVEL, not a flow. Summing it across
 // days would count the same member once per day. It's read at each location's
 // latest day in the window and only then added across locations. `net_members`
-// (sign ups minus cancellations) is the summable one.
+// (sign ups plus reactivations minus cancellations) is the summable one.
+//
+// `reactivations` is summed and reported, and that is ALL it does here. It is
+// deliberately NOT in capture_pct's numerator — a returning member was never a
+// new capture opportunity — so do not "fix" that by adding it in.
 
 import type { LocationPeriodRow } from "@splash/types/greeter";
 
@@ -28,6 +32,8 @@ export interface Totals {
   package_dollars: number;
   extras_dollars: number;
   sign_ups: number;
+  /** Plain total. Feeds net_members only — never capture_pct. See the note above. */
+  reactivations: number;
   cancellations: number;
   net_members: number;
   scanned_wash_sales: number;
@@ -102,6 +108,7 @@ export function totals(rows: LocationPeriodRow[]): Totals {
     package_dollars: 0,
     extras_dollars: 0,
     sign_ups: 0,
+    reactivations: 0,
     cancellations: 0,
     net_members: 0,
     scanned_wash_sales: 0,
@@ -120,6 +127,7 @@ export function totals(rows: LocationPeriodRow[]): Totals {
     t.package_dollars += n(r.package_dollars);
     t.extras_dollars += n(r.extras_dollars);
     t.sign_ups += n(r.sign_ups);
+    t.reactivations += n(r.reactivations);
     t.cancellations += n(r.cancellations);
     t.net_members += n(r.net_members);
     t.scanned_wash_sales += r.scanned_wash_sales;

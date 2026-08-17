@@ -27,10 +27,17 @@
 --   rewashes         Re-runs, on both tables. Authoritative figure is the
 --                    site's; the greeter copy is optional and informational.
 --   cancellations    Memberships cancelled that day. Site-level only.
+--   reactivations    Lapsed members coming back. On BOTH tables, but only the
+--                    site's copy is used for anything: it feeds net_members.
+--                    The greeter's copy is optional and purely informational —
+--                    nothing is computed from it, and specifically NOT capture %
+--                    (a reactivating customer already knew the product, so they
+--                    were never a capture opportunity).
 --   total_members    Active members as of that day. A LEVEL, not a delta — it
 --                    is never summed across days, only read at the latest date
 --                    in a window. Site-level only.
---   net_members      Generated: sign_ups - cancellations. The day's delta.
+--   net_members      Generated: sign_ups + reactivations - cancellations. The
+--                    day's delta.
 --   package_dollars  Wash package revenue.
 --   extras_dollars   Wash extras revenue.
 --   sign_ups         Unlimited memberships sold.
@@ -174,6 +181,10 @@ CREATE TABLE IF NOT EXISTS greeter_daily (
   package_dollars     numeric(12,2),
   extras_dollars      numeric(12,2),
   sign_ups            integer       CHECK (sign_ups IS NULL OR sign_ups >= 0),
+  -- Optional and informational. Nothing on this table is computed from it —
+  -- see the header note. There is no greeter-side net_members to feed, because
+  -- cancellations are site-only and the delta can't be assembled from a row.
+  reactivations       integer       CHECK (reactivations IS NULL OR reactivations >= 0),
 
   -- Shift window, bare `time` (no date, no zone). End before start = overnight.
   shift_start         time,
@@ -283,6 +294,7 @@ CREATE TABLE IF NOT EXISTS location_daily (
   extras_dollars      numeric(12,2),
   sign_ups            integer       CHECK (sign_ups IS NULL OR sign_ups >= 0),
   cancellations       integer       CHECK (cancellations IS NULL OR cancellations >= 0),
+  reactivations       integer       CHECK (reactivations IS NULL OR reactivations >= 0),
   -- A LEVEL, not a delta. Never SUM this across days; read it at the latest
   -- business_date in the window.
   total_members       integer       CHECK (total_members IS NULL OR total_members >= 0),
@@ -293,7 +305,9 @@ CREATE TABLE IF NOT EXISTS location_daily (
 
   -- The day's membership delta. Generated so it can't drift from its inputs.
   net_members         integer GENERATED ALWAYS AS (
-                        COALESCE(sign_ups, 0) - COALESCE(cancellations, 0)
+                        COALESCE(sign_ups, 0)
+                        + COALESCE(reactivations, 0)
+                        - COALESCE(cancellations, 0)
                       ) STORED,
 
   capture_pct         numeric(6,2) GENERATED ALWAYS AS (
@@ -397,6 +411,7 @@ RETURNS TABLE (
   package_dollars     numeric,
   extras_dollars      numeric,
   sign_ups            bigint,
+  reactivations       bigint,
   hours_worked        numeric,
   wash_sales_per_hour numeric,
   capture_goal_pct    numeric,
@@ -420,6 +435,9 @@ AS $$
     SUM(g.package_dollars)       AS package_dollars,
     SUM(g.extras_dollars)        AS extras_dollars,
     SUM(g.sign_ups)              AS sign_ups,
+    -- A plain total and nothing else. Not added to sign_ups, not divided by
+    -- wash_sales, not compared to a goal.
+    SUM(g.reactivations)         AS reactivations,
     SUM(g.hours_worked)          AS hours_worked,
     CASE WHEN SUM(g.hours_worked) > 0
       THEN ROUND(SUM(COALESCE(g.wash_sales, 0))::numeric / SUM(g.hours_worked), 2)
@@ -737,6 +755,7 @@ RETURNS TABLE (
   low_sample          boolean,
   wash_sales          bigint,
   sign_ups            bigint,
+  reactivations       bigint,
   package_dollars     numeric,
   extras_dollars      numeric,
   hours_worked        numeric,
@@ -761,6 +780,7 @@ AS $$
       g.business_date,
       g.wash_sales,
       g.sign_ups,
+      g.reactivations,
       g.package_dollars,
       g.extras_dollars,
       g.hours_worked,
@@ -806,6 +826,7 @@ AS $$
     (COUNT(*) FILTER (WHERE r.gradeable) < 5)             AS low_sample,
     SUM(r.wash_sales)::bigint                             AS wash_sales,
     SUM(r.sign_ups)::bigint                               AS sign_ups,
+    SUM(r.reactivations)::bigint                          AS reactivations,
     SUM(r.package_dollars)                                AS package_dollars,
     SUM(r.extras_dollars)                                 AS extras_dollars,
     SUM(r.hours_worked)                                   AS hours_worked,
@@ -873,6 +894,7 @@ RETURNS TABLE (
   package_dollars    numeric,
   extras_dollars     numeric,
   sign_ups           integer,
+  reactivations      integer,
   cancellations      integer,
   total_members      integer,
   net_members        integer,
@@ -898,6 +920,7 @@ AS $$
       l.package_dollars,
       l.extras_dollars,
       l.sign_ups,
+      l.reactivations,
       l.cancellations,
       l.total_members,
       l.net_members,
@@ -936,6 +959,7 @@ AS $$
     s.package_dollars,
     s.extras_dollars,
     s.sign_ups,
+    s.reactivations,
     s.cancellations,
     s.total_members,
     s.net_members,

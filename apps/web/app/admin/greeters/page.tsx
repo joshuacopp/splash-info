@@ -100,6 +100,8 @@ interface DayRow extends GoalSnapshot {
   package_dollars: number | null;
   extras_dollars: number | null;
   sign_ups: number | null;
+  /** Informational only. Not in capture_pct, not graded — see MetricFields. */
+  reactivations: number | null;
   /** 24-hour "HH:MM:SS" from Postgres `time`, or null when no shift was logged. */
   shift_start: string | null;
   shift_end: string | null;
@@ -125,6 +127,7 @@ interface LocationDayRow extends GoalSnapshot {
   package_dollars: number | null;
   extras_dollars: number | null;
   sign_ups: number | null;
+  reactivations: number | null;
   cancellations: number | null;
   /** Active members as of that day — a level. Never sum this across rows. */
   total_members: number | null;
@@ -150,6 +153,7 @@ interface RollupRow extends GoalSnapshot {
   package_dollars: number | null;
   extras_dollars: number | null;
   sign_ups: number | null;
+  reactivations: number | null;
   hours_worked: number | null;
   wash_sales_per_hour: number | null;
   capture_pct: number | null;
@@ -669,6 +673,7 @@ export default async function GreetersPage({ searchParams }: PageProps) {
                 <th className="px-4 py-3">Extras $</th>
                 <th className="px-4 py-3">D.O.B.</th>
                 <th className="px-4 py-3">Sign ups</th>
+                <th className="px-4 py-3">Reacts</th>
                 <th className="px-4 py-3">Capture %</th>
               </tr>
             </thead>
@@ -712,6 +717,12 @@ export default async function GreetersPage({ searchParams }: PageProps) {
                   <td className="px-4 py-3 text-splash-navy/80">
                     {num(r.sign_ups)}
                   </td>
+                  {/* Reactivations. Sits next to sign ups because that is where
+                      a reader looks for it, NOT because it is part of the same
+                      number — capture % counts sign ups only. */}
+                  <td className="px-4 py-3 text-splash-navy/80">
+                    {num(r.reactivations)}
+                  </td>
                   <td className="px-4 py-3">
                     <CaptureCell
                       value={r.capture_pct}
@@ -745,6 +756,7 @@ export default async function GreetersPage({ searchParams }: PageProps) {
                 <th className="px-4 py-3">Extras $</th>
                 <th className="px-4 py-3">D.O.B.</th>
                 <th className="px-4 py-3">Sign ups</th>
+                <th className="px-4 py-3">Reacts</th>
                 <th className="px-4 py-3">Capture %</th>
               </tr>
             </thead>
@@ -791,6 +803,12 @@ export default async function GreetersPage({ searchParams }: PageProps) {
                   <td className="px-4 py-3 text-splash-navy/80">
                     {num(r.sign_ups)}
                   </td>
+                  {/* Reactivations. Sits next to sign ups because that is where
+                      a reader looks for it, NOT because it is part of the same
+                      number — capture % counts sign ups only. */}
+                  <td className="px-4 py-3 text-splash-navy/80">
+                    {num(r.reactivations)}
+                  </td>
                   <td className="px-4 py-3">
                     <CaptureCell
                       value={r.capture_pct}
@@ -825,6 +843,7 @@ export default async function GreetersPage({ searchParams }: PageProps) {
                 <th className="px-4 py-3">Extras $</th>
                 <th className="px-4 py-3">D.O.B.</th>
                 <th className="px-4 py-3">Sign ups</th>
+                <th className="px-4 py-3">Reacts</th>
                 <th className="px-4 py-3">Cancels</th>
                 <th className="px-4 py-3">Net</th>
                 <th className="px-4 py-3">Members</th>
@@ -870,10 +889,17 @@ export default async function GreetersPage({ searchParams }: PageProps) {
                   <td className="px-4 py-3 text-splash-navy/80">
                     {num(r.sign_ups)}
                   </td>
+                  {/* Reactivations. Sits next to sign ups because that is where
+                      a reader looks for it, NOT because it is part of the same
+                      number — capture % counts sign ups only. */}
+                  <td className="px-4 py-3 text-splash-navy/80">
+                    {num(r.reactivations)}
+                  </td>
                   <td className="px-4 py-3 text-splash-navy/80">
                     {num(r.cancellations)}
                   </td>
-                  {/* sign ups minus cancellations, computed in Postgres. */}
+                  {/* sign ups plus reactivations minus cancellations, computed
+                      in Postgres. All three inputs are columns above. */}
                   <td className="px-4 py-3 text-splash-navy/80">
                     {num(r.net_members)}
                   </td>

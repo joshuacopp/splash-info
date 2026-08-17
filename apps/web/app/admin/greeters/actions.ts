@@ -34,6 +34,10 @@ function strOrNull(formData: FormData, name: string): string | null {
  * cancellations and total_members (facts a single greeter can't own), and the
  * greeter's day adds a shift window (a fact a site doesn't have) — so each
  * action spreads this and then names its own extras.
+ *
+ * `reactivations` is shared as a FIELD but not as a metric: the site's copy
+ * feeds net_members, the greeter's copy is informational only. That asymmetry
+ * lives downstream (in the SQL), not here — both forms just post the box.
  */
 function sharedMetricFields(formData: FormData): Record<string, unknown> {
   return {
@@ -42,6 +46,7 @@ function sharedMetricFields(formData: FormData): Record<string, unknown> {
     package_dollars: strOrNull(formData, "package_dollars"),
     extras_dollars: strOrNull(formData, "extras_dollars"),
     sign_ups: strOrNull(formData, "sign_ups"),
+    reactivations: strOrNull(formData, "reactivations"),
     comments: strOrNull(formData, "comments")
   };
 }

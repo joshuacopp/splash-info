@@ -11,7 +11,11 @@
 //                   for both derived metrics. NOT the same as total_cars.
 //   total_members — active members as of that day. A LEVEL, not a delta. Never
 //                   sum it across days; read it at the latest date in a window.
-//   net_members   — sign_ups - cancellations. THAT is the delta.
+//   net_members   — sign_ups + reactivations - cancellations. THAT is the delta.
+//   reactivations — lapsed members coming back. NOT sign_ups: a sign-up is a new
+//                   member, the register counts them separately, and capture %
+//                   deliberately excludes reactivations (the customer already
+//                   knew the product, so they were never an opportunity).
 //   dob           — dollars over base = (package $ + extras $) / wash_sales.
 //   capture_pct   — sign_ups / wash_sales as a percentage (0-100), NOT a 0-1
 //                   fraction, matching performance_tracking.capture_rate.
@@ -28,6 +32,19 @@ export interface GreeterSharedMetrics {
   package_dollars: number | null;
   extras_dollars: number | null;
   sign_ups: number | null;
+  /**
+   * Shared as a FIELD, not as a metric. Both forms collect it, but only the
+   * site's copy is consumed by anything — it is one of the three inputs to
+   * location_daily.net_members. The greeter's copy is optional and purely
+   * informational (Josh, 2026-08-16: "make it optional for greeter and don't
+   * calculate anything off of it"), so it feeds no rate, no goal and no
+   * generated column, and in particular is NOT part of capture_pct on either
+   * table.
+   *
+   * Null means "not reported"; 0 means "reported, and there were none". Do not
+   * collapse the two — a blank box on the greeter form is not a confirmed zero.
+   */
+  reactivations: number | null;
 }
 
 /**
@@ -180,7 +197,7 @@ export interface LocationDailyRow
   extends LocationDailyInsert,
     GreeterDerivedMetrics {
   id: string;
-  /** Generated: sign_ups - cancellations. Read-only. */
+  /** Generated: sign_ups + reactivations - cancellations. Read-only. */
   net_members: number | null;
   created_at: string;
   updated_at: string;
@@ -248,6 +265,8 @@ export interface GreeterRollupRow extends GreeterDerivedMetrics {
   package_dollars: number | null;
   extras_dollars: number | null;
   sign_ups: number | null;
+  /** Plain total. Not folded into capture_pct — see GreeterSharedMetrics. */
+  reactivations: number | null;
   hours_worked: number | null;
   wash_sales_per_hour: number | null;
   capture_goal_pct: number | null;
@@ -376,6 +395,8 @@ export interface GreeterPeriodReportRow {
   low_sample: boolean;
   wash_sales: number | null;
   sign_ups: number | null;
+  /** Plain total. Enters neither side of the goal comparison above. */
+  reactivations: number | null;
   package_dollars: number | null;
   extras_dollars: number | null;
   hours_worked: number | null;
@@ -402,8 +423,8 @@ export interface GreeterPeriodReportRow {
  *
  * `total_members` IS A LEVEL, NOT A DELTA. Summing it across a window gives
  * roughly (days x members) and is always wrong. Read it at the latest
- * business_date present. Use `net_members` (sign_ups - cancellations) for the
- * period's actual change.
+ * business_date present. Use `net_members` (sign_ups + reactivations -
+ * cancellations) for the period's actual change.
  *
  * Only submitted days appear — a day the site skipped produces no row, so
  * "reported 5 of 7" comes from counting rows against the window. Which specific
@@ -422,6 +443,7 @@ export interface LocationPeriodRow {
   package_dollars: number | null;
   extras_dollars: number | null;
   sign_ups: number | null;
+  reactivations: number | null;
   cancellations: number | null;
   total_members: number | null;
   net_members: number | null;

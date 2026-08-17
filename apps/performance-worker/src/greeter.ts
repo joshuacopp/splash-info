@@ -177,19 +177,13 @@ export async function handleGreeterRoute(
  * empty state, and scopeCodes() in @splash/db-supabase/greeter already fails
  * closed on an empty array by substituting a sentinel code.
  *
- * LOWERCASES, which the codes stamped onto greeter_daily.location_code are not
- * — see the note on resolveRosterCodes. inScope() folds both sides so it is
- * unaffected, but anything that passes this array on to SQL as
- * p_location_codes is comparing against exact-cased stored values.
- *
- * That leaves the two read paths disagreeing for a location admin: an
- * unfiltered read sends these lowercased codes, while a manager-filtered one
- * sends the roster's original casing, so picking a manager could return MORE
- * rows than picking none. Both are correct only while every
- * pricing_simple.location_code is already lowercase, which is the case today.
- * The fix is to stop lowercasing here rather than to start lowercasing there —
- * the stored casing is the truth — but that changes scoping for every greeter
- * read, so it wants its own change and its own verification, not a drive-by.
+ * LOWERCASES, which is a no-op against the data and load-bearing anyway.
+ * pricing_simple.location_code is lowercase for every row — the human-readable
+ * name lives in `location`, not here — so this never actually changes a code.
+ * It stays because it normalises the SESSION side, which is assembled from
+ * elsewhere, and because the SQL compares `location_code = ANY(p_location_codes)`
+ * with no folding at either end: the day a mixed-case code is inserted, the
+ * comparison is exact and silent about it.
  */
 function locationScopeFor(session: Session): string[] | undefined {
   if (
@@ -257,13 +251,15 @@ async function cachedContactRoster(
  * The location_codes one named manager covers, as lowercased key -> code as
  * stored.
  *
- * BOTH HALVES MATTER. The key is lowercased because locationScopeFor()
- * lowercases the session's locations, so that is the only casing the two sides
- * can be compared in. The value keeps pricing_simple's original casing because
- * that is what resolveGreeterLocationKey() stamps onto greeter_daily.
- * location_code, and the SQL compares `location_code = ANY(p_location_codes)`
- * with no folding at either end. Lowercasing the value would silently drop
- * every site whose code is not already lowercase.
+ * The two halves are the same string today — pricing_simple.location_code is
+ * lowercase for every row — and the split is here so that stays a fact about
+ * the data rather than an assumption in the code. The key is lowercased to
+ * match locationScopeFor(), which lowercases the session's locations. The value
+ * is left exactly as stored, because that is what resolveGreeterLocationKey()
+ * stamps onto greeter_daily.location_code and the SQL compares
+ * `location_code = ANY(p_location_codes)` with no folding at either end. Fold
+ * the value and a single mixed-case code inserted later drops its site out of
+ * every filtered report, with nothing to see in the query.
  */
 async function resolveRosterCodes(
   env: Env,
@@ -758,6 +754,9 @@ async function apiSubmitGreeterDay(
     package_dollars: toNumOrNull(body.package_dollars),
     extras_dollars: toNumOrNull(body.extras_dollars),
     sign_ups: toIntOrNull(body.sign_ups),
+    // Stored and shown, never graded. Nothing on greeter_daily is computed from
+    // it — see GreeterSharedMetrics in @splash/types.
+    reactivations: toIntOrNull(body.reactivations),
     shift_start: shiftStart,
     shift_end: shiftEnd,
     ...greeterGoal,
@@ -805,6 +804,8 @@ async function apiSubmitLocationDay(
     package_dollars: toNumOrNull(body.package_dollars),
     extras_dollars: toNumOrNull(body.extras_dollars),
     sign_ups: toIntOrNull(body.sign_ups),
+    // One of the three inputs Postgres generates net_members from.
+    reactivations: toIntOrNull(body.reactivations),
     cancellations: toIntOrNull(body.cancellations),
     total_members: toIntOrNull(body.total_members),
     ...goal,

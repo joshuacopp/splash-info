@@ -2,13 +2,26 @@
 --
 -- Run greeter-clear-all-05.sql first if you still have hand-entered test rows.
 --
--- SOURCE: "Binghamton Greeter Charts.xlsx", site 122, August 2026. Every number
--- below is copied off that workbook. NOTHING IS INVENTED — no synthetic days,
--- no filled-in blanks, no other sites. That means the report's 60-day presets
--- (underperformers / top performers) and the site-ranking chart will look thin:
--- one site, fifteen calendar days, and only five of them with site totals.
--- That is the real shape of the data, and a scorecard that looked fuller than
--- the numbers behind it would be worse than a sparse one.
+-- TWO SOURCES, ON PURPOSE:
+--
+--   * location_daily (section 4) comes from a SALES EXPORT out of the database
+--     — `sales_202608162351.csv`, site 122, Aug 1-16 2026. Sixteen days, every
+--     one of them with cars, ALC, packages and extras. This REPLACED an earlier
+--     transcription off the workbook's site tab; the two disagreed and Josh
+--     spot-checked the export as the correct one.
+--
+--   * greeter_daily (section 5) comes from "Binghamton Greeter Charts.xlsx",
+--     site 122, August 2026 — the individual greeters' tabs, Aug 1-15.
+--
+-- Keeping them from different sources is the point, not an oversight: the site
+-- knows what it sold, the greeters know what they scanned, and the gap between
+-- the two is exactly what greeter_scan_rates() measures.
+--
+-- NOTHING IS INVENTED — no synthetic days, no filled-in blanks, no other sites.
+-- That means the report's 60-day presets (underperformers / top performers) and
+-- the site-ranking chart will still look thin: one site, sixteen days. That is
+-- the real shape of the data, and a scorecard that looked fuller than the
+-- numbers behind it would be worse than a sparse one.
 --
 -- WHY THIS IS ONE GIANT `DO` BLOCK. The first cut of this file resolved the
 -- location and the greeter ids into TEMP TABLES and then read them from the
@@ -26,12 +39,14 @@
 -- TWO JUDGEMENT CALLS, both flagged because they are NOT from the workbook:
 --
 --   1. dob_goal = 7.00. Only the capture goal (20%) was specified, and
---      greeter_goals.dob_goal is NOT NULL so a number had to go in. 7.00 is a
---      round figure just under the site's actual D.O.B. for the days that have
---      one ($7.11 — see the footer note below), which mirrors how the capture
---      goal was set: 20% against an actual 23.2%, a floor rather than a
---      stretch. Change it with the UPDATE at the bottom of this file; nothing
---      else depends on the value.
+--      greeter_goals.dob_goal is NOT NULL so a number had to go in. It was
+--      picked when the site figures came off the workbook, where it sat just
+--      under the actual. Against the sales export it is a STRETCH, not a floor:
+--      the site's real D.O.B. for Aug 1-16 is $5.61, so every day will grade
+--      under goal. Same story for the 20% capture goal against an actual 6.67%.
+--      Both are left exactly as specified rather than quietly retuned to make
+--      the seeded data look good — change dob_goal with the UPDATE at the
+--      bottom of this file if you want a target the data can reach.
 --
 --   2. Kedar Clarke's 2026-08-05 shift is stored as 16:00–20:00, read off the
 --      "4pm-8pm" note on his sheet. It is the only shift window anywhere in
@@ -39,31 +54,45 @@
 --      wash_sales_per_hour compute at all. Drop the two time values if you'd
 --      rather every row be shift-less and consistent.
 --
--- THREE NUMBERS THAT LOOK WRONG AND AREN'T:
+-- FOUR NUMBERS THAT LOOK WRONG AND AREN'T:
 --
---   a) THE SITE TOTAL WILL NOT MATCH THE WORKBOOK'S OWN FOOTER, and that is the
---      point. The workbook reports 27.50% capture and $7.41 D.O.B. for the
---      month; this data will report 23.16% and $7.11. Neither transcription is
---      wrong — the footer is a FLAT AVERAGE of the five daily percentages
---      ((30.77 + 18.18 + 30.77 + 14.94 + 42.86) / 5 = 27.50), which lets a
---      14-car Tuesday count as heavily as an 87-car Monday. The scorecard
---      recomputes from summed numerators and denominators (41 sign ups over 177
---      wash sales = 23.16%), which is the number that actually reconciles to
---      the rows underneath it. This gap is exactly the reporting error the
---      scorecard exists to remove; expect it, don't "fix" it.
+--   a) THE SITE TOTAL WILL NOT MATCH THE WORKBOOK'S FOOTER, and it is not
+--      supposed to. The workbook reports 27.50% capture and $7.41 D.O.B. for
+--      the month, computed as a FLAT AVERAGE of its daily percentages, which
+--      lets a 4-car Sunday count as heavily as a 65-car Saturday. This file's
+--      site rows come from the sales export instead, and the scorecard
+--      recomputes from summed numerators and denominators: 39 sign ups over 585
+--      wash sales = 6.67% capture, and ($2,733 + $550) / 585 = $5.61 D.O.B.
+--      Both gaps — flat-average vs weighted, and workbook vs export — are the
+--      reporting errors the scorecard exists to remove. Expect the low numbers;
+--      don't "fix" them.
 --
 --   b) Dylan Donovan, 2026-08-13 — 2 wash sales, 3 sign ups. capture_pct
 --      generates as 150.00. What the sheet says (a member signed up off a car
 --      that wasn't an ALC sale, or a scan landed on the wrong day).
 --
---   c) 2026-08-05 scans over 100%. The site tab records 14 ALC cars; the
---      greeter tabs record 15 + 6 + 1 = 22 for the same day, so
---      greeter_scan_rates() returns 157.1%. Again a source-sheet
---      inconsistency, preserved rather than papered over.
+--   c) The greeter tabs never add up to the site's ALC, and now they add up to
+--      LESS on every single day. Against the workbook's site tab, Aug 5 scanned
+--      157% (14 site ALC vs 22 greeter ALC) — a clear source inconsistency.
+--      Against the export it is 22 of 43, or 51%, and the month lands at 331 of
+--      585 = 56.6%. Nothing over 100% survives. That is the scan rate behaving
+--      like a scan rate, and it is evidence the export is the better source.
 --
--- All three are left as-is per "workbook only". If any turns out to be a
--- transcription error on the sheet, fix the sheet and re-run — this file is
--- idempotent.
+--   d) Aug 7, 8 and 9 show 0% capture on 113 wash sales between them. That is
+--      real: those three days are BLANK in the export's sign-up column, and
+--      Josh confirmed they are genuine zeroes — the site sold no memberships —
+--      rather than days nobody reported. So they are seeded as 0, NOT NULL.
+--
+--      The difference is not cosmetic. As 0 they generate capture_pct = 0.00
+--      and the report draws three days flat on the floor, which is the true
+--      story. As NULL they would generate capture_pct = NULL and the chart
+--      would BREAK THE LINE across them, reading as "no data" — hiding the
+--      worst three days in the month. The month total is 39/585 = 6.67% either
+--      way (a NULL and a 0 both add nothing to a SUM), so the tables agree
+--      while the day-level charts would not.
+--
+-- All four are left as-is: transcribe, don't interpret. If any turns out to be
+-- a source error, fix the source and re-run — this file is idempotent.
 --
 -- WHAT THIS FILE DOES NOT WRITE:
 --   * capture_pct, dob, hours_worked, wash_sales_per_hour, net_members — all
@@ -74,14 +103,16 @@
 --     them as integers would be interpretation, not transcription. They are
 --     preserved verbatim in `comments` instead. Say the word and they can be
 --     promoted to the rewashes column.
---   * cancellations, total_members, member_goal_month_end — the workbook has no
---     membership roll or churn figures at all, so these stay NULL. One caveat:
---     net_members is generated as
---     COALESCE(sign_ups, 0) - COALESCE(cancellations, 0), so a NULL
---     cancellations day reports its sign ups as pure net growth. That is the
---     schema's existing behaviour rather than something this file introduces,
---     but it means "net members" on these rows reads as "sign ups, churn
---     unknown" — do not present it as real membership growth.
+--   * reactivations, cancellations, total_members, member_goal_month_end —
+--     neither source carries a membership roll, churn or reactivation figure,
+--     so these stay NULL on both tables. One caveat: net_members is generated
+--     as COALESCE(sign_ups, 0) + COALESCE(reactivations, 0)
+--     - COALESCE(cancellations, 0), so a day with both of those NULL reports
+--     its sign ups as pure net growth. That is the schema's behaviour rather
+--     than something this file introduces, but it means "net members" on these
+--     rows reads as "sign ups, churn unknown" — do not present it as real
+--     membership growth. On greeter_daily reactivations is optional and
+--     informational anyway: nothing is computed from it there.
 --
 -- IDEMPOTENT. Both daily tables upsert on their natural unique keys and the
 -- goal row is ON CONFLICT DO NOTHING, so re-running corrects rows rather than
@@ -252,8 +283,12 @@ BEGIN
   -- joins below would then write NULL goals onto those days. Nothing errors —
   -- the rows just land ungradeable, and greeter_period_report() quietly reports
   -- them as "couldn't be graded" weeks later. Check every day in the window.
+  --
+  -- The window runs to Aug 16 because that is the last day in the sales export
+  -- (section 4). The greeter tabs stop at Aug 15; the union of the two is what
+  -- has to be covered.
   SELECT d::date INTO v_uncovered
-  FROM generate_series(DATE '2026-08-01', DATE '2026-08-15', interval '1 day') d
+  FROM generate_series(DATE '2026-08-01', DATE '2026-08-16', interval '1 day') d
   WHERE NOT EXISTS (
     SELECT 1
     FROM greeter_goals g
@@ -264,45 +299,62 @@ BEGIN
   LIMIT 1;
 
   IF v_uncovered IS NOT NULL THEN
-    RAISE EXCEPTION 'Seed aborted: no greeter_goals window covers % for site 122. A goal row already exists but does not span 2026-08-01..2026-08-15; delete it and re-run, or widen its effective_to.', v_uncovered;
+    RAISE EXCEPTION 'Seed aborted: no greeter_goals window covers % for site 122. A goal row already exists but does not span 2026-08-01..2026-08-16; delete it and re-run, or widen its effective_to.', v_uncovered;
   END IF;
 
   -- =========================================================================
-  -- 4. location_daily — the site's own totals. Seven days.
+  -- 4. location_daily — the site's own totals. Sixteen days, Aug 1-16.
   -- =========================================================================
-  -- They are not uniform: Aug 1-5 have the full metric set, then the site tab
-  -- records sign ups only on Aug 14 and 15 with no car counts and no dollars.
-  -- Those two rows go in exactly as they are. With wash_sales NULL their
-  -- capture_pct and dob generate as NULL, which is correct — a day with no
-  -- denominator has no rate, and the report draws that as a gap rather than 0%.
-  -- Aug 6-13 have no site row at all in the workbook, so they get none here,
-  -- and greeter_missing_days() will correctly flag them.
+  -- These do NOT come from the workbook. They are a straight database export of
+  -- the site's own sales (`sales_202608162351.csv`: total_cars,
+  -- wash_sales_qty, wash_packages, qty_unlimited_signups, wash_extras), which
+  -- Josh spot-checked as correct. The workbook's site tab — 401 cars on Aug 1,
+  -- 87 ALC on Aug 4, sign-ups-only rows on Aug 14/15 — is superseded wholesale.
+  -- The greeter tabs in section 5 are still the workbook's; that is deliberate,
+  -- and the gap between the two IS the scan rate (see note (c) in the header).
+  --
+  -- Aug 7, 8 and 9 are BLANK in the export's sign-up column. They are written as
+  -- 0, not NULL: Josh confirmed the site genuinely sold no memberships on those
+  -- days, so they are reported zeroes and the export just leaves an empty cell
+  -- where a zero belongs. That distinction is load-bearing — see note (d).
+  --
+  -- Aug 17 is present in the export but blank on both of its rows, so it gets no
+  -- row here and greeter_missing_days() will correctly flag it.
   --
   -- Goal columns are joined off greeter_goals rather than typed in, so the
   -- snapshot on each row can't drift from the goal that governs it.
   INSERT INTO location_daily (
     business_date, location_id, site_number, location_code,
     total_cars, wash_sales, rewashes, package_dollars, extras_dollars,
-    sign_ups, cancellations, total_members,
+    sign_ups, reactivations, cancellations, total_members,
     capture_goal_pct, dob_goal, member_goal_month_end,
     comments, created_by, created_by_email
   )
   SELECT
     v.business_date, v_location_id, v_site_number, v_location_code,
     v.total_cars, v.wash_sales, NULL, v.package_dollars, v.extras_dollars,
-    v.sign_ups, NULL, NULL,
+    v.sign_ups, NULL, NULL, NULL,
     g.capture_goal_pct, g.dob_goal, g.member_goal_month_end,
     v.comments, v_user_id, v_email
   FROM (VALUES
-    --  date                     cars       ALC       package $         extras $       sign ups  comment
-    (DATE '2026-08-01', 401::integer,  39::integer, 202.00::numeric, 112.00::numeric, 12::integer, NULL::text),
-    (DATE '2026-08-02', 180,           11,          128.00,           11.00,           2,          NULL),
-    (DATE '2026-08-03', 346,           26,           87.00,           46.00,           8,          NULL),
-    (DATE '2026-08-04', 327,           87,          422.00,          192.00,          13,          NULL),
-    (DATE '2026-08-05', 164,           14,           43.00,           16.00,           6,          NULL),
-    -- Sign ups only from here — the site tab stops recording cars and dollars.
-    (DATE '2026-08-14', NULL,          NULL,        NULL,             NULL,            7,          'Sign ups only on the site tab; no car count or dollars recorded.'),
-    (DATE '2026-08-15', NULL,          NULL,        NULL,             NULL,            4,          'Sign ups only on the site tab; no car count or dollars recorded.')
+    --  date                     cars        ALC        package $         extras $       sign ups   comment
+    (DATE '2026-08-01', 293::integer,  45::integer, 272.00::numeric,  30.00::numeric,  2::integer, NULL::text),
+    (DATE '2026-08-02',  78,            4,           31.00,             4.00,           1,          NULL),
+    (DATE '2026-08-03', 200,           18,           52.00,            40.00,           4,          NULL),
+    (DATE '2026-08-04', 295,           35,          140.00,            16.00,           4,          NULL),
+    (DATE '2026-08-05', 285,           43,          193.00,            36.00,           2,          NULL),
+    (DATE '2026-08-06', 252,           33,          128.00,            22.00,           2,          NULL),
+    -- Blank in the export, confirmed by Josh as a real zero. See above.
+    (DATE '2026-08-07', 224,           31,           85.00,             4.00,           0,          'No memberships sold. Blank in the sales export; confirmed zero, not unreported.'),
+    (DATE '2026-08-08', 237,           39,          216.00,            52.00,           0,          'No memberships sold. Blank in the sales export; confirmed zero, not unreported.'),
+    (DATE '2026-08-09', 268,           43,          251.00,            68.00,           0,          'No memberships sold. Blank in the sales export; confirmed zero, not unreported.'),
+    (DATE '2026-08-10', 233,           28,          115.00,             4.00,           1,          NULL),
+    (DATE '2026-08-11', 287,           49,          225.00,            24.00,           2,          NULL),
+    (DATE '2026-08-12', 271,           53,          250.00,            52.00,           2,          NULL),
+    (DATE '2026-08-13', 270,           32,          160.00,            52.00,           6,          NULL),
+    (DATE '2026-08-14', 339,           51,          232.00,            58.00,           8,          NULL),
+    (DATE '2026-08-15', 319,           65,          309.00,            62.00,           4,          NULL),
+    (DATE '2026-08-16', 138,           16,           74.00,            26.00,           1,          NULL)
   ) AS v(business_date, total_cars, wash_sales, package_dollars, extras_dollars, sign_ups, comments)
   LEFT JOIN greeter_goals g
     ON g.site_number = v_site_number
@@ -327,6 +379,7 @@ BEGIN
     package_dollars       = EXCLUDED.package_dollars,
     extras_dollars        = EXCLUDED.extras_dollars,
     sign_ups              = EXCLUDED.sign_ups,
+    reactivations         = EXCLUDED.reactivations,
     cancellations         = EXCLUDED.cancellations,
     total_members         = EXCLUDED.total_members,
     capture_goal_pct      = EXCLUDED.capture_goal_pct,
@@ -337,8 +390,8 @@ BEGIN
     updated_by_email      = EXCLUDED.created_by_email;
 
   GET DIAGNOSTICS v_rows = ROW_COUNT;
-  IF v_rows <> 7 THEN
-    RAISE EXCEPTION 'Seed aborted: location_daily touched % rows, expected 7. The VALUES list below section 4 has been edited without updating this check.', v_rows;
+  IF v_rows <> 16 THEN
+    RAISE EXCEPTION 'Seed aborted: location_daily touched % rows, expected 16. The VALUES list below section 4 has been edited without updating this check.', v_rows;
   END IF;
   RAISE NOTICE 'location_daily: % rows', v_rows;
 
@@ -351,8 +404,9 @@ BEGIN
   -- the crew would multiply the day).
   --
   -- The per-greeter ALC deliberately does not reconcile to the site's ALC — that
-  -- gap IS the scan rate, and greeter_scan_rates() exists to measure it. Aug 4
-  -- is the loud example: the site sold 87 ALC cars and greeters scanned 20.
+  -- gap IS the scan rate, and greeter_scan_rates() exists to measure it. Aug 15
+  -- is the loud example: the site sold 65 ALC cars and greeters scanned 16, or
+  -- 25%. Across the month it is 331 of 585 = 56.6%, and no day exceeds 100%.
   --
   -- Each row carries the greeter's STANDARDIZED name (the one in the form's
   -- dropdown), not the workbook's tab name — "Nate", "Dave" and "Max" are
@@ -381,6 +435,7 @@ BEGIN
     business_date, location_id, site_number, location_code,
     beekeeper_user_id, greeter_name,
     wash_sales, rewashes, package_dollars, extras_dollars, sign_ups,
+    reactivations,
     shift_start, shift_end,
     capture_goal_pct, dob_goal,
     comments, created_by, created_by_email
@@ -389,6 +444,9 @@ BEGIN
     v.business_date, v_location_id, v_site_number, v_location_code,
     r.beekeeper_user_id, r.greeter_name,
     v.wash_sales, NULL, v.package_dollars, v.extras_dollars, v.sign_ups,
+    -- The workbook has no reactivation counts. NULL = not reported; the column
+    -- is optional and informational on this table, so nothing depends on it.
+    NULL,
     v.shift_start, v.shift_end,
     g.capture_goal_pct, g.dob_goal,
     v.comments, v_user_id, v_email
@@ -455,6 +513,7 @@ BEGIN
     package_dollars   = EXCLUDED.package_dollars,
     extras_dollars    = EXCLUDED.extras_dollars,
     sign_ups          = EXCLUDED.sign_ups,
+    reactivations     = EXCLUDED.reactivations,
     shift_start       = EXCLUDED.shift_start,
     shift_end         = EXCLUDED.shift_end,
     capture_goal_pct  = EXCLUDED.capture_goal_pct,
@@ -484,11 +543,11 @@ END $$;
 -- all three are actually visible. Nothing here writes; re-run it any time.
 --
 -- EXPECTED:
---   counts     greeter_goals 1 · location_daily 7 · greeter_daily 37
+--   counts     greeter_goals 1 · location_daily 16 · greeter_daily 37
 --   goal       capture 20.00, dob 7.00, from 2026-08-01, no end
 --   greeter    Nathan 11 days, Kedar 2, Hasan 5, Skylar 3, David 2, Dylan 6,
 --              Maximus 8. Daniel Ralston must NOT appear.
---   site       1418 cars, 177 wash sales, 41 sign ups, 23.16%, $7.11
+--   site       3989 cars, 585 wash sales, 39 sign ups, 6.67%, $5.61
 --
 -- READ THE `goal` LINE, don't skim past it. The insert in section 3 is
 -- ON CONFLICT DO NOTHING, so a goal row that already existed for site 122 wins
@@ -502,20 +561,28 @@ END $$;
 -- site, nothing errors — that greeter just splits into two identities the first
 -- time someone submits the form. Spot-check the ids against the dropdown once.
 --
--- The site line is restricted to the five days that HAVE a denominator. Drop
--- that filter and Aug 14-15's 11 sign ups ride into the numerator while
--- contributing nothing to the denominator, inflating capture to 29.38% — the
--- same shape of error as the workbook's flat-average footer. And 23.16% is
--- correct: it is NOT the workbook's 27.50%. See note (a) in the header.
+-- The site line keeps its `wash_sales > 0` filter even though every seeded day
+-- now has a denominator: it is a guard, not a workaround. If a sign-ups-only
+-- day is ever added back, those sign ups would otherwise ride into the
+-- numerator while contributing nothing to the denominator — the same shape of
+-- error as the workbook's flat-average footer.
 --
--- The two daily counts are bounded to the seeded window. Unbounded they would
--- also count any pre-existing site-122 rows from another month and the "7 / 37"
--- expectation above would be wrong whenever clear-all wasn't run first.
+-- 6.67% is CORRECT. It is not the workbook's 27.50%, and it is low because the
+-- site sold 585 ALC cars against 39 sign ups. Three of those days (Aug 7-9)
+-- sold zero memberships on 113 wash sales between them; see note (d).
+--
+-- EVERY block below is bounded to the seeded window, not just the counts.
+-- Unbounded, a pre-existing site-122 row from another month would silently roll
+-- into the per-greeter day counts and the site totals, and the EXPECTED figures
+-- above would be wrong whenever clear-all wasn't run first — a verification
+-- query that can be broken by data it isn't verifying is worse than none. The
+-- two windows differ on purpose: the sales export runs a day longer (to Aug 16)
+-- than the greeter tabs (Aug 15).
 WITH counts AS (
   SELECT 'greeter_goals'  AS label, count(*) AS n FROM greeter_goals  WHERE site_number = 122
   UNION ALL
-  SELECT 'location_daily (Aug 1-15)', count(*) FROM location_daily
-   WHERE site_number = 122 AND business_date BETWEEN DATE '2026-08-01' AND DATE '2026-08-15'
+  SELECT 'location_daily (Aug 1-16)', count(*) FROM location_daily
+   WHERE site_number = 122 AND business_date BETWEEN DATE '2026-08-01' AND DATE '2026-08-16'
   UNION ALL
   SELECT 'greeter_daily (Aug 1-15)',  count(*) FROM greeter_daily
    WHERE site_number = 122 AND business_date BETWEEN DATE '2026-08-01' AND DATE '2026-08-15'
@@ -536,10 +603,11 @@ per_greeter AS (
          round(sum(sign_ups)::numeric * 100 / nullif(sum(wash_sales), 0), 2) AS capture_pct
   FROM greeter_daily
   WHERE site_number = 122
+    AND business_date BETWEEN DATE '2026-08-01' AND DATE '2026-08-15'
   GROUP BY greeter_name
 ),
 site AS (
-  SELECT 'Aug 1-5 (days with a denominator)'                              AS label,
+  SELECT 'Aug 1-16 (days with a denominator)'                             AS label,
          sum(total_cars)::bigint                                          AS n,
          sum(wash_sales)::bigint                                          AS wash_sales,
          sum(sign_ups)::bigint                                            AS sign_ups,
@@ -547,6 +615,7 @@ site AS (
          round((sum(package_dollars) + sum(extras_dollars)) / sum(wash_sales), 2) AS dob
   FROM location_daily
   WHERE site_number = 122
+    AND business_date BETWEEN DATE '2026-08-01' AND DATE '2026-08-16'
     AND wash_sales > 0
 )
 SELECT 1 AS ord, 'counts' AS section, label, NULL::text AS beekeeper_user_id, n,
@@ -566,6 +635,6 @@ ORDER BY ord, capture_pct DESC NULLS LAST, label;
 -- that was taken from it, so the two can't disagree. Run all three together as
 -- one selection — the editor wraps a multi-statement run in a transaction.
 -- ---------------------------------------------------------------------------
--- UPDATE greeter_goals  SET dob_goal = 7.11 WHERE site_number = 122;
--- UPDATE greeter_daily  SET dob_goal = 7.11 WHERE site_number = 122;
--- UPDATE location_daily SET dob_goal = 7.11 WHERE site_number = 122;
+-- UPDATE greeter_goals  SET dob_goal = 5.50 WHERE site_number = 122;
+-- UPDATE greeter_daily  SET dob_goal = 5.50 WHERE site_number = 122;
+-- UPDATE location_daily SET dob_goal = 5.50 WHERE site_number = 122;

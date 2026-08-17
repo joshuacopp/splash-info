@@ -15,6 +15,11 @@
 //                    active member count as of that day. Never summed.
 //   rewashes         Both, but the site's figure is the authoritative one; the
 //                    greeter's copy is optional context.
+//   reactivations    Both, and asymmetric on purpose. The site's copy is a real
+//                    input — Postgres generates net_members from it. The
+//                    greeter's copy is optional and informational only: nothing
+//                    is computed from it, and it is NOT part of capture %,
+//                    because a returning member was never a new opportunity.
 //
 // No "use client" on purpose: this is presentational markup with no hooks or
 // handlers, so it renders as a server component inside the location-day form
@@ -90,6 +95,11 @@ export function GreeterMetricFields() {
         label="Sign ups"
         hint="Unlimited memberships sold."
       />
+      <NumberField
+        name="reactivations"
+        label="Reactivations"
+        hint="Optional. Lapsed members you brought back. Not counted in capture %."
+      />
       <NumberField name="package_dollars" label="Package $" money />
       <NumberField name="extras_dollars" label="Extras $" money />
       <NumberField
@@ -120,6 +130,11 @@ export function LocationMetricFields() {
       <NumberField name="package_dollars" label="Package $" money />
       <NumberField name="extras_dollars" label="Extras $" money />
       <NumberField name="sign_ups" label="Sign ups" />
+      <NumberField
+        name="reactivations"
+        label="Reactivations"
+        hint="Lapsed members reinstated today. Counts toward net members."
+      />
       <NumberField
         name="cancellations"
         label="Cancellations"

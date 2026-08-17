@@ -116,6 +116,8 @@ interface GreeterDayRow {
   package_dollars: number | null;
   extras_dollars: number | null;
   sign_ups: number | null;
+  /** Optional on the greeter form, and nothing is computed from it. */
+  reactivations: number | null;
   hours_worked: number | null;
   wash_sales_per_hour: number | null;
   capture_pct: number | null;
@@ -531,7 +533,7 @@ export default async function GreeterReportPage({ searchParams }: PageProps) {
           delta={before.days === 0 ? null : delta(now.net_members, before.net_members)}
           deltaUnit=""
           tone={now.net_members >= 0 ? "hit" : "miss"}
-          foot={`${num(now.sign_ups)} sign ups less ${num(now.cancellations)} cancellations`}
+          foot={`${num(now.sign_ups)} sign ups plus ${num(now.reactivations)} reactivations, less ${num(now.cancellations)} cancellations`}
         />
         {/* Data confidence, not a sales figure. It's a tile because every
             number to its left is only as good as this one: unscanned cars and
@@ -864,6 +866,10 @@ function GreeterTable({
               <th className="px-4 py-3">Wash sales</th>
               <th className="px-4 py-3">WS / hr</th>
               <th className="px-4 py-3">Sign ups</th>
+              {/* Reported, never graded. Sits beside sign ups because that's
+                  where a reader looks for it, NOT because it joins the same
+                  number — capture % counts sign ups only. */}
+              <th className="px-4 py-3">Reacts</th>
               <th className="px-4 py-3">Capture %</th>
               <th className="px-4 py-3">D.O.B.</th>
             </tr>
@@ -922,6 +928,9 @@ function GreeterTable({
                   </td>
                   <td className="px-4 py-3 text-splash-navy/80">
                     {num(r.sign_ups)}
+                  </td>
+                  <td className="px-4 py-3 text-splash-navy/80">
+                    {num(r.reactivations)}
                   </td>
                   <td className="px-4 py-3">
                     <CaptureCell value={r.capture_pct} goal={r.capture_goal_pct} />
@@ -984,7 +993,10 @@ function MorningCall({
               <th className="px-4 py-3">Wash sales</th>
               <th className="px-4 py-3">Scanned %</th>
               <th className="px-4 py-3">Sign ups</th>
+              <th className="px-4 py-3">Reacts</th>
               <th className="px-4 py-3">Cancels</th>
+              {/* Sign ups plus reacts less cancels — all three inputs are the
+                  columns to the left, so the arithmetic is checkable on sight. */}
               <th className="px-4 py-3">Net</th>
               <th className="px-4 py-3">Members</th>
               <th className="px-4 py-3">Capture %</th>
@@ -1021,6 +1033,9 @@ function MorningCall({
                     </td>
                     <td className="px-4 py-3 text-splash-navy/80">
                       {num(s.sign_ups)}
+                    </td>
+                    <td className="px-4 py-3 text-splash-navy/80">
+                      {num(s.reactivations)}
                     </td>
                     <td className="px-4 py-3 text-splash-navy/80">
                       {num(s.cancellations)}
@@ -1062,6 +1077,9 @@ function MorningCall({
                       </td>
                       <td className="px-4 py-2 text-splash-navy/80">
                         {num(d.sign_ups)}
+                      </td>
+                      <td className="px-4 py-2 text-splash-navy/80">
+                        {num(d.reactivations)}
                       </td>
                       <td className="px-4 py-2 text-splash-navy/80">
                         {num(d.cancellations)}
@@ -1106,6 +1124,7 @@ function SiteDayTable({ rows }: { rows: LocationPeriodRow[] }) {
           <th className="px-4 py-3">Wash sales</th>
           <th className="px-4 py-3">Scanned %</th>
           <th className="px-4 py-3">Sign ups</th>
+          <th className="px-4 py-3">Reacts</th>
           <th className="px-4 py-3">Cancels</th>
           <th className="px-4 py-3">Net</th>
           <th className="px-4 py-3">Members</th>
@@ -1126,6 +1145,9 @@ function SiteDayTable({ rows }: { rows: LocationPeriodRow[] }) {
               <ScanPill value={dayScanPct(d)} />
             </td>
             <td className="px-4 py-3 text-splash-navy/80">{num(d.sign_ups)}</td>
+            <td className="px-4 py-3 text-splash-navy/80">
+              {num(d.reactivations)}
+            </td>
             <td className="px-4 py-3 text-splash-navy/80">
               {num(d.cancellations)}
             </td>
@@ -1161,6 +1183,9 @@ function PersonDayTable({ rows }: { rows: GreeterDayRow[] }) {
           <th className="px-4 py-3">Package $</th>
           <th className="px-4 py-3">Extras $</th>
           <th className="px-4 py-3">Sign ups</th>
+          {/* Optional on the greeter form and informational only — an em dash
+              here means "not reported", not zero. */}
+          <th className="px-4 py-3">Reacts</th>
           <th className="px-4 py-3">Capture %</th>
           <th className="px-4 py-3">D.O.B.</th>
         </tr>
@@ -1186,6 +1211,9 @@ function PersonDayTable({ rows }: { rows: GreeterDayRow[] }) {
               {money(d.extras_dollars)}
             </td>
             <td className="px-4 py-3 text-splash-navy/80">{num(d.sign_ups)}</td>
+            <td className="px-4 py-3 text-splash-navy/80">
+              {num(d.reactivations)}
+            </td>
             <td className="px-4 py-3">
               <CaptureCell value={d.capture_pct} goal={d.capture_goal_pct} />
             </td>

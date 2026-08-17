@@ -1,5 +1,13 @@
 -- Greeter scorecard, migration 04: the two functions behind /admin/greeters/report.
 --
+-- SUPERSEDED BY 07 (greeter-reactivations-07.sql). Both functions defined here
+-- gained a `reactivations` column in their RETURNS TABLE. Do NOT re-run this
+-- file on a database that has had 07 applied: the CREATE OR REPLACEs below will
+-- fail with "cannot change return type of existing function", which is a loud
+-- failure rather than a silent rollback, but it is a wasted run. Run 07 instead
+-- — it drops and recreates both functions in full. This file is kept for the
+-- history of why they are shaped the way they are.
+--
 -- Run in the Supabase SQL editor. Safe to re-run (CREATE OR REPLACE only).
 -- Independent of 01, 02 and 03 — adds no columns and changes no existing object.
 --
