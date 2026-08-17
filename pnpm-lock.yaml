@@ -196,6 +196,9 @@ importers:
       '@splash/http':
         specifier: workspace:*
         version: link:../../packages/http
+      '@splash/storage-r2':
+        specifier: workspace:*
+        version: link:../../packages/storage-r2
       '@splash/types':
         specifier: workspace:*
         version: link:../../packages/types

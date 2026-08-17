@@ -475,12 +475,60 @@ async function fetchSiteMap(
 }
 
 /* ============================================================
+ * Legacy-backfill collision guard
+ * ============================================================ */
+
+/**
+ * The nine Copp-region locations were migrated into D1 by hand *before* this
+ * seed existed, from each site's own spreadsheet — which covers the whole year,
+ * including the claims those sites filed through JotForm before they moved to
+ * the damage worker. Those rows carry `idempotency_key = NULL`, so the
+ * `jotform:` dedup cannot see them and every pre-cutover Copp submission would
+ * be inserted a second time.
+ *
+ * What saves us is that the manual backfill wrote the JotForm id into
+ * staff_notes in a fixed shape:
+ *
+ *   Legacy backfill — JOT# 202600026 · Paperwork: https://...box.com/file/...
+ *
+ * JOT# is the JotForm `uniqueId` minus its `DC` prefix, so it maps 1:1 back to
+ * a submission. Read them once per request (not per row — this is one query
+ * for the whole page) and skip any submission already represented.
+ *
+ * Deliberately unscoped by location or date: any future hand-migrated site
+ * using the same note format is protected for free, and the 2025 pass gets it
+ * without a change.
+ */
+async function fetchMigratedJotNumbers(db: D1Database): Promise<Set<string>> {
+  const out = new Set<string>();
+  const { results } = await db
+    .prepare("SELECT staff_notes FROM claims WHERE staff_notes LIKE '%JOT#%'")
+    .all<{ staff_notes: string | null }>();
+  for (const row of results ?? []) {
+    for (const match of (row.staff_notes ?? "").matchAll(/JOT#\s*(\d{6,12})/g)) {
+      const digits = match[1];
+      if (!digits) continue;
+      out.add(digits);
+      // Guard against a transcriber padding or trimming a leading zero.
+      out.add(digits.replace(/^0+/, ""));
+    }
+  }
+  return out;
+}
+
+/** `DC202600026` → `202600026`, the shape the workbooks and staff_notes use. */
+function jotNumberOf(uniqueId: string): string {
+  return uniqueId.replace(/^DC/i, "");
+}
+
+/* ============================================================
  * Handler
  * ============================================================ */
 
 type RowOutcome =
   | { id: string; unique_id: string; outcome: "inserted"; claim_id: string }
   | { id: string; unique_id: string; outcome: "already_seeded"; claim_id: string }
+  | { id: string; unique_id: string; outcome: "already_migrated" }
   | { id: string; unique_id: string | null; outcome: "skipped"; reason: string };
 
 /**
@@ -529,10 +577,12 @@ export async function handleJotformSeed(
 
   let rows: SubmissionRow[];
   let siteMap: Map<string, { code: string; pretty: string }>;
+  let migratedJotNumbers: Set<string>;
   try {
-    [rows, siteMap] = await Promise.all([
+    [rows, siteMap, migratedJotNumbers] = await Promise.all([
       fetchSubmissionPage(env, { from, to, limit, offset }),
-      fetchSiteMap(env)
+      fetchSiteMap(env),
+      fetchMigratedJotNumbers(env.DB)
     ]);
   } catch (err) {
     console.error("[damage.seed] upstream read failed:", err);
@@ -546,6 +596,7 @@ export async function handleJotformSeed(
   const samples: ClaimInsert[] = [];
   let inserted = 0;
   let alreadySeeded = 0;
+  let alreadyMigrated = 0;
   let skipped = 0;
 
   for (const row of rows) {
@@ -560,6 +611,19 @@ export async function handleJotformSeed(
         unique_id: null,
         outcome: "skipped",
         reason: "no usable uniqueId"
+      });
+      continue;
+    }
+
+    // Checked before the idempotency lookup: a hand-migrated claim has a NULL
+    // idempotency_key, so the lookup below would miss it and we would insert a
+    // duplicate of a claim that is already live.
+    if (migratedJotNumbers.has(jotNumberOf(uniqueId))) {
+      alreadyMigrated += 1;
+      outcomes.push({
+        id: row.id,
+        unique_id: uniqueId,
+        outcome: "already_migrated"
       });
       continue;
     }
@@ -722,6 +786,10 @@ export async function handleJotformSeed(
     next_offset: offset + rows.length,
     inserted,
     already_seeded: alreadySeeded,
+    // Present in D1 already via the hand-run legacy backfill (matched on the
+    // JOT# in staff_notes, not on idempotency_key, which is NULL on those).
+    already_migrated: alreadyMigrated,
+    migrated_jot_numbers_known: migratedJotNumbers.size,
     skipped,
     // Only the non-clean rows are enumerated — a 200-row page of "inserted"
     // outcomes is noise the operator has to scroll past to find the one that

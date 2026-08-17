@@ -3,6 +3,29 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!--
+      The tab icon was blank because this file declared no icon at all, so the
+      browser fell back to requesting /favicon.ico at the ORIGIN root. This app
+      is path-carved at /inventory/*, so that request never reaches the
+      inventory worker — it goes to whatever serves the site root.
+
+      An absolute URL is required, not a relative one: Vite's `base` is
+      "/inventory/", and a root-relative href would resolve against the origin
+      and miss for the same reason.
+
+      URL duplicated from packages/storage-r2/src/assets.ts (ASSETS.favicon).
+      index.html is static and cannot import it; same hardcode as
+      apps/fleet-inquiry-worker/src/index.js. Keep in sync if the asset moves.
+    -->
+    <link
+      rel="icon"
+      type="image/png"
+      href="https://pub-88f136a47a5846d5b7e47fbce605719b.r2.dev/favicon-32x32.png"
+    />
+    <link
+      rel="apple-touch-icon"
+      href="https://pub-88f136a47a5846d5b7e47fbce605719b.r2.dev/favicon-32x32.png"
+    />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link

@@ -17,6 +17,7 @@
     "@splash/auth": "workspace:*",
     "@splash/db-supabase": "workspace:*",
     "@splash/http": "workspace:*",
+    "@splash/storage-r2": "workspace:*",
     "@splash/types": "workspace:*",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
