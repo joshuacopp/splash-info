@@ -118,6 +118,8 @@ interface GreeterDayRow {
   sign_ups: number | null;
   /** Optional on the greeter form, and nothing is computed from it. */
   reactivations: number | null;
+  /** A COUNT of reviews collected that day, not a star rating. Informational. */
+  google_reviews: number | null;
   hours_worked: number | null;
   wash_sales_per_hour: number | null;
   capture_pct: number | null;
@@ -870,6 +872,8 @@ function GreeterTable({
                   where a reader looks for it, NOT because it joins the same
                   number — capture % counts sign ups only. */}
               <th className="px-4 py-3">Reacts</th>
+              {/* A count of reviews collected, not a rating. Summed only. */}
+              <th className="px-4 py-3">Reviews</th>
               <th className="px-4 py-3">Capture %</th>
               <th className="px-4 py-3">D.O.B.</th>
             </tr>
@@ -931,6 +935,9 @@ function GreeterTable({
                   </td>
                   <td className="px-4 py-3 text-splash-navy/80">
                     {num(r.reactivations)}
+                  </td>
+                  <td className="px-4 py-3 text-splash-navy/80">
+                    {num(r.google_reviews)}
                   </td>
                   <td className="px-4 py-3">
                     <CaptureCell value={r.capture_pct} goal={r.capture_goal_pct} />
@@ -994,8 +1001,13 @@ function MorningCall({
               <th className="px-4 py-3">Scanned %</th>
               <th className="px-4 py-3">Sign ups</th>
               <th className="px-4 py-3">Reacts</th>
+              {/* A count of reviews collected, not a rating. This table mixes a
+                  period row with day rows, so churn is deliberately NOT here —
+                  it has no honest period value. It lives on SiteDayTable, which
+                  is days only. */}
+              <th className="px-4 py-3">Reviews</th>
               <th className="px-4 py-3">Cancels</th>
-              {/* Sign ups plus reacts less cancels — all three inputs are the
+              {/* Sign ups plus reacts less cancels — the three inputs are all
                   columns to the left, so the arithmetic is checkable on sight. */}
               <th className="px-4 py-3">Net</th>
               <th className="px-4 py-3">Members</th>
@@ -1036,6 +1048,9 @@ function MorningCall({
                     </td>
                     <td className="px-4 py-3 text-splash-navy/80">
                       {num(s.reactivations)}
+                    </td>
+                    <td className="px-4 py-3 text-splash-navy/80">
+                      {num(s.google_reviews)}
                     </td>
                     <td className="px-4 py-3 text-splash-navy/80">
                       {num(s.cancellations)}
@@ -1082,6 +1097,9 @@ function MorningCall({
                         {num(d.reactivations)}
                       </td>
                       <td className="px-4 py-2 text-splash-navy/80">
+                        {num(d.google_reviews)}
+                      </td>
+                      <td className="px-4 py-2 text-splash-navy/80">
                         {num(d.cancellations)}
                       </td>
                       <td className="px-4 py-2 text-splash-navy/80">
@@ -1125,11 +1143,17 @@ function SiteDayTable({ rows }: { rows: LocationPeriodRow[] }) {
           <th className="px-4 py-3">Scanned %</th>
           <th className="px-4 py-3">Sign ups</th>
           <th className="px-4 py-3">Reacts</th>
+          <th className="px-4 py-3">Reviews</th>
           <th className="px-4 py-3">Cancels</th>
           <th className="px-4 py-3">Net</th>
           <th className="px-4 py-3">Members</th>
           <th className="px-4 py-3">Capture %</th>
           <th className="px-4 py-3">D.O.B.</th>
+          {/* The ONLY place a period-capable table shows churn, and it's safe
+              here because every row is one day. Self-reported, ungraded, and
+              last on purpose: put it beside Members and someone will give it a
+              goal to match its neighbours. */}
+          <th className="px-4 py-3">Churn %</th>
         </tr>
       </thead>
       <tbody className={TBODY_CLS}>
@@ -1149,6 +1173,9 @@ function SiteDayTable({ rows }: { rows: LocationPeriodRow[] }) {
               {num(d.reactivations)}
             </td>
             <td className="px-4 py-3 text-splash-navy/80">
+              {num(d.google_reviews)}
+            </td>
+            <td className="px-4 py-3 text-splash-navy/80">
               {num(d.cancellations)}
             </td>
             <td className="px-4 py-3 text-splash-navy/80">{num(d.net_members)}</td>
@@ -1159,6 +1186,7 @@ function SiteDayTable({ rows }: { rows: LocationPeriodRow[] }) {
               <CaptureCell value={d.capture_pct} goal={d.capture_goal_pct} />
             </td>
             <td className="px-4 py-3 font-semibold">{dobCell(d.dob)}</td>
+            <td className="px-4 py-3 text-splash-navy/80">{pct(d.churn_pct)}</td>
           </tr>
         ))}
       </tbody>
@@ -1186,6 +1214,9 @@ function PersonDayTable({ rows }: { rows: GreeterDayRow[] }) {
           {/* Optional on the greeter form and informational only — an em dash
               here means "not reported", not zero. */}
           <th className="px-4 py-3">Reacts</th>
+          {/* Also optional and informational — a count of reviews, not a
+              rating, and an em dash means "not reported". */}
+          <th className="px-4 py-3">Reviews</th>
           <th className="px-4 py-3">Capture %</th>
           <th className="px-4 py-3">D.O.B.</th>
         </tr>
@@ -1213,6 +1244,9 @@ function PersonDayTable({ rows }: { rows: GreeterDayRow[] }) {
             <td className="px-4 py-3 text-splash-navy/80">{num(d.sign_ups)}</td>
             <td className="px-4 py-3 text-splash-navy/80">
               {num(d.reactivations)}
+            </td>
+            <td className="px-4 py-3 text-splash-navy/80">
+              {num(d.google_reviews)}
             </td>
             <td className="px-4 py-3">
               <CaptureCell value={d.capture_pct} goal={d.capture_goal_pct} />

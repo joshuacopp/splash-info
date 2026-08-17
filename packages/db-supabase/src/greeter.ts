@@ -407,6 +407,7 @@ const DAY_COLS =
   "id,business_date,location_id,site_number,location_code," +
   "beekeeper_user_id,greeter_name," +
   "wash_sales,rewashes,package_dollars,extras_dollars,sign_ups,reactivations," +
+  "google_reviews," +
   "shift_start,shift_end,hours_worked,wash_sales_per_hour," +
   "capture_goal_pct,dob_goal,capture_pct,dob," +
   "comments,created_at,created_by_email,updated_at,updated_by_email";
@@ -433,6 +434,7 @@ const LOCATION_DAY_COLS =
   "id,business_date,location_id,site_number,location_code," +
   "total_cars,wash_sales,rewashes,package_dollars,extras_dollars," +
   "sign_ups,reactivations,cancellations,total_members,net_members," +
+  "churn_pct,google_reviews," +
   "capture_goal_pct,dob_goal,member_goal_month_end,capture_pct,dob," +
   "comments,created_at,created_by_email,updated_at,updated_by_email";
 

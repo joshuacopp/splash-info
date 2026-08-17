@@ -20,6 +20,11 @@
 //                    greeter's copy is optional and informational only: nothing
 //                    is computed from it, and it is NOT part of capture %,
 //                    because a returning member was never a new opportunity.
+//   churn_pct        Site only, and a PERCENTAGE rather than a count — the one
+//                    box on either form that isn't a raw tally. A greeter has no
+//                    member base to churn. Informational: no goal, no grading.
+//   google_reviews   Both, informational on both. A COUNT of reviews collected,
+//                    not a star rating.
 //
 // No "use client" on purpose: this is presentational markup with no hooks or
 // handlers, so it renders as a server component inside the location-day form
@@ -39,16 +44,24 @@ const inputCls =
 const hintCls = "text-[11px] text-splash-navy/60";
 const gridCls = "grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3";
 
+/**
+ * `pct` caps the input at 100 and allows two decimals. The max is a courtesy —
+ * a browser will still let a determined user submit past it, so the real
+ * enforcement is the worker's 400 and the DB's CHECK. It exists to catch the
+ * fat-finger at the point where it's cheapest to fix.
+ */
 function NumberField({
   name,
   label,
   hint,
-  money = false
+  money = false,
+  pct = false
 }: {
   name: string;
   label: string;
   hint?: string;
   money?: boolean;
+  pct?: boolean;
 }) {
   return (
     <label className="flex flex-col gap-1">
@@ -57,8 +70,9 @@ function NumberField({
         type="number"
         name={name}
         min="0"
-        step={money ? "0.01" : "1"}
-        placeholder={money ? "0.00" : "0"}
+        max={pct ? "100" : undefined}
+        step={money || pct ? "0.01" : "1"}
+        placeholder={money || pct ? "0.00" : "0"}
         className={inputCls}
       />
       {hint ? <span className={hintCls}>{hint}</span> : null}
@@ -107,6 +121,11 @@ export function GreeterMetricFields() {
         label="Rewashes"
         hint="Optional. The site's total is the number that counts."
       />
+      <NumberField
+        name="google_reviews"
+        label="Google reviews"
+        hint="Optional. How many reviews you got today — a count, not a rating."
+      />
       <CommentsField />
     </div>
   );
@@ -144,6 +163,17 @@ export function LocationMetricFields() {
         name="total_members"
         label="Total members"
         hint="Active members as of today — a running total, not today's adds."
+      />
+      <NumberField
+        name="churn_pct"
+        label="Churn %"
+        pct
+        hint="Optional. Today's churn as a percentage, 0-100. Reported, not graded."
+      />
+      <NumberField
+        name="google_reviews"
+        label="Google reviews"
+        hint="Optional. Reviews collected today — a count, not a rating."
       />
       <CommentsField />
     </div>

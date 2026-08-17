@@ -757,6 +757,8 @@ async function apiSubmitGreeterDay(
     // Stored and shown, never graded. Nothing on greeter_daily is computed from
     // it — see GreeterSharedMetrics in @splash/types.
     reactivations: toIntOrNull(body.reactivations),
+    // Same: a COUNT of reviews collected, stored and summed, never graded.
+    google_reviews: toIntOrNull(body.google_reviews),
     shift_start: shiftStart,
     shift_end: shiftEnd,
     ...greeterGoal,
@@ -789,6 +791,22 @@ async function apiSubmitLocationDay(
     return jsonResponse({ error: "location_id is required" }, 400);
   }
 
+  // Range-checked here as well as by location_daily_churn_pct_range, so the
+  // caller gets a readable 400 instead of a raw constraint violation. The most
+  // likely bad input is a member COUNT typed into a percent box, which lands
+  // well outside 0-100 and is worth naming rather than silently discarding.
+  const churnPct = toNumOrNull(body.churn_pct);
+  if (churnPct !== null && (churnPct < 0 || churnPct > 100)) {
+    return jsonResponse(
+      {
+        error: "churn out of range",
+        reason:
+          "Churn is a percentage between 0 and 100. If you have a count of members lost, divide it by the member base first."
+      },
+      400
+    );
+  }
+
   const resolved = await resolveWritableLocation(env, locationId, scope);
   if (!resolved.ok) return resolved.response;
 
@@ -808,6 +826,10 @@ async function apiSubmitLocationDay(
     reactivations: toIntOrNull(body.reactivations),
     cancellations: toIntOrNull(body.cancellations),
     total_members: toIntOrNull(body.total_members),
+    // Both informational. churn_pct is validated above; neither feeds a
+    // generated column, a goal, or any rate.
+    churn_pct: churnPct,
+    google_reviews: toIntOrNull(body.google_reviews),
     ...goal,
     comments: trimOrNull(body.comments),
     created_by: session.userId,

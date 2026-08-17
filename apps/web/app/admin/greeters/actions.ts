@@ -31,13 +31,14 @@ function strOrNull(formData: FormData, name: string): string | null {
  * The metrics both day forms collect.
  *
  * The two forms diverge beyond this — the site's day adds total_cars,
- * cancellations and total_members (facts a single greeter can't own), and the
- * greeter's day adds a shift window (a fact a site doesn't have) — so each
- * action spreads this and then names its own extras.
+ * cancellations, total_members and churn_pct (facts a single greeter can't
+ * own), and the greeter's day adds a shift window (a fact a site doesn't have)
+ * — so each action spreads this and then names its own extras.
  *
  * `reactivations` is shared as a FIELD but not as a metric: the site's copy
  * feeds net_members, the greeter's copy is informational only. That asymmetry
  * lives downstream (in the SQL), not here — both forms just post the box.
+ * `google_reviews` is shared the same way, and is informational on BOTH sides.
  */
 function sharedMetricFields(formData: FormData): Record<string, unknown> {
   return {
@@ -47,6 +48,7 @@ function sharedMetricFields(formData: FormData): Record<string, unknown> {
     extras_dollars: strOrNull(formData, "extras_dollars"),
     sign_ups: strOrNull(formData, "sign_ups"),
     reactivations: strOrNull(formData, "reactivations"),
+    google_reviews: strOrNull(formData, "google_reviews"),
     comments: strOrNull(formData, "comments")
   };
 }
@@ -122,6 +124,9 @@ export async function submitLocationDayAction(formData: FormData): Promise<void>
     total_cars: strOrNull(formData, "total_cars"),
     cancellations: strOrNull(formData, "cancellations"),
     total_members: strOrNull(formData, "total_members"),
+    // Site only — a greeter has no member base to churn. The worker range-checks
+    // it and returns a readable 400, so nothing is validated here.
+    churn_pct: strOrNull(formData, "churn_pct"),
     ...sharedMetricFields(formData)
   });
 

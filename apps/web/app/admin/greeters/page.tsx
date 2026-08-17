@@ -102,6 +102,8 @@ interface DayRow extends GoalSnapshot {
   sign_ups: number | null;
   /** Informational only. Not in capture_pct, not graded — see MetricFields. */
   reactivations: number | null;
+  /** A COUNT of reviews collected, not a star rating. Informational. */
+  google_reviews: number | null;
   /** 24-hour "HH:MM:SS" from Postgres `time`, or null when no shift was logged. */
   shift_start: string | null;
   shift_end: string | null;
@@ -133,6 +135,15 @@ interface LocationDayRow extends GoalSnapshot {
   total_members: number | null;
   net_members: number | null;
   member_goal_month_end: number | null;
+  /**
+   * Self-reported percentage, site only. Day-grain ONLY: it arrives already
+   * divided, with neither numerator nor denominator on the row, so there is no
+   * honest way to combine it across days. Never sum it, never average it —
+   * display the day's own figure or nothing.
+   */
+  churn_pct: number | null;
+  /** A COUNT of reviews collected, not a star rating. Informational. */
+  google_reviews: number | null;
   capture_pct: number | null;
   dob: number | null;
   comments: string | null;
@@ -154,6 +165,8 @@ interface RollupRow extends GoalSnapshot {
   extras_dollars: number | null;
   sign_ups: number | null;
   reactivations: number | null;
+  /** Plain total across the window. A review is not a capture. */
+  google_reviews: number | null;
   hours_worked: number | null;
   wash_sales_per_hour: number | null;
   capture_pct: number | null;
@@ -674,6 +687,7 @@ export default async function GreetersPage({ searchParams }: PageProps) {
                 <th className="px-4 py-3">D.O.B.</th>
                 <th className="px-4 py-3">Sign ups</th>
                 <th className="px-4 py-3">Reacts</th>
+                <th className="px-4 py-3">Reviews</th>
                 <th className="px-4 py-3">Capture %</th>
               </tr>
             </thead>
@@ -723,6 +737,11 @@ export default async function GreetersPage({ searchParams }: PageProps) {
                   <td className="px-4 py-3 text-splash-navy/80">
                     {num(r.reactivations)}
                   </td>
+                  {/* A count of reviews collected, not a rating. Summed and
+                      shown; it grades nothing. */}
+                  <td className="px-4 py-3 text-splash-navy/80">
+                    {num(r.google_reviews)}
+                  </td>
                   <td className="px-4 py-3">
                     <CaptureCell
                       value={r.capture_pct}
@@ -757,6 +776,7 @@ export default async function GreetersPage({ searchParams }: PageProps) {
                 <th className="px-4 py-3">D.O.B.</th>
                 <th className="px-4 py-3">Sign ups</th>
                 <th className="px-4 py-3">Reacts</th>
+                <th className="px-4 py-3">Reviews</th>
                 <th className="px-4 py-3">Capture %</th>
               </tr>
             </thead>
@@ -809,6 +829,11 @@ export default async function GreetersPage({ searchParams }: PageProps) {
                   <td className="px-4 py-3 text-splash-navy/80">
                     {num(r.reactivations)}
                   </td>
+                  {/* A count of reviews collected, not a rating. Displayed and
+                      nothing more. */}
+                  <td className="px-4 py-3 text-splash-navy/80">
+                    {num(r.google_reviews)}
+                  </td>
                   <td className="px-4 py-3">
                     <CaptureCell
                       value={r.capture_pct}
@@ -844,10 +869,15 @@ export default async function GreetersPage({ searchParams }: PageProps) {
                 <th className="px-4 py-3">D.O.B.</th>
                 <th className="px-4 py-3">Sign ups</th>
                 <th className="px-4 py-3">Reacts</th>
+                <th className="px-4 py-3">Reviews</th>
                 <th className="px-4 py-3">Cancels</th>
                 <th className="px-4 py-3">Net</th>
                 <th className="px-4 py-3">Members</th>
                 <th className="px-4 py-3">Capture %</th>
+                {/* Churn sits AFTER the graded pair on purpose. Put it beside
+                    Members and the next person to touch this table will give it
+                    a goal to match its neighbours; it has none, and shouldn't. */}
+                <th className="px-4 py-3">Churn %</th>
               </tr>
             </thead>
             <tbody className={TBODY_CLS}>
@@ -895,6 +925,10 @@ export default async function GreetersPage({ searchParams }: PageProps) {
                   <td className="px-4 py-3 text-splash-navy/80">
                     {num(r.reactivations)}
                   </td>
+                  {/* A count of reviews collected, not a rating. */}
+                  <td className="px-4 py-3 text-splash-navy/80">
+                    {num(r.google_reviews)}
+                  </td>
                   <td className="px-4 py-3 text-splash-navy/80">
                     {num(r.cancellations)}
                   </td>
@@ -914,6 +948,14 @@ export default async function GreetersPage({ searchParams }: PageProps) {
                       value={r.capture_pct}
                       goal={r.capture_goal_pct}
                     />
+                  </td>
+                  {/* Self-reported, ungraded, and DAY-GRAIN ONLY. It appears
+                      here and on the report's site-day table, and nowhere that
+                      covers more than one day — the row carries no numerator or
+                      denominator, so it can't be re-derived over a range, and a
+                      flat average of daily percentages would be a lie. */}
+                  <td className="px-4 py-3 text-splash-navy/80">
+                    {pct(r.churn_pct)}
                   </td>
                 </tr>
               ))}

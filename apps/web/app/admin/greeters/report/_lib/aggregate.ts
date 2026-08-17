@@ -21,6 +21,17 @@
 // `reactivations` is summed and reported, and that is ALL it does here. It is
 // deliberately NOT in capture_pct's numerator — a returning member was never a
 // new capture opportunity — so do not "fix" that by adding it in.
+//
+// `google_reviews` is the same deal: a COUNT of reviews collected, summed for a
+// window total and nothing else. Not a star rating, not in any rate.
+//
+// `churn_pct` is ABSENT FROM Totals ON PURPOSE, and that absence is the point.
+// It arrives already divided, and the row carries neither its numerator nor its
+// denominator, so there is no way to recompute it over a range. The only thing
+// that could be built here is a flat average of daily percentages — precisely
+// the mistake the weighting rule at the top of this file exists to prevent, and
+// the same one that makes the greeter workbooks disagree with this report.
+// Churn is day-grain only: the site-day tables render each row's own figure.
 
 import type { LocationPeriodRow } from "@splash/types/greeter";
 
@@ -34,6 +45,8 @@ export interface Totals {
   sign_ups: number;
   /** Plain total. Feeds net_members only — never capture_pct. See the note above. */
   reactivations: number;
+  /** Plain total. A review is not a capture — see the note above. */
+  google_reviews: number;
   cancellations: number;
   net_members: number;
   scanned_wash_sales: number;
@@ -109,6 +122,7 @@ export function totals(rows: LocationPeriodRow[]): Totals {
     extras_dollars: 0,
     sign_ups: 0,
     reactivations: 0,
+    google_reviews: 0,
     cancellations: 0,
     net_members: 0,
     scanned_wash_sales: 0,
@@ -128,6 +142,7 @@ export function totals(rows: LocationPeriodRow[]): Totals {
     t.extras_dollars += n(r.extras_dollars);
     t.sign_ups += n(r.sign_ups);
     t.reactivations += n(r.reactivations);
+    t.google_reviews += n(r.google_reviews);
     t.cancellations += n(r.cancellations);
     t.net_members += n(r.net_members);
     t.scanned_wash_sales += r.scanned_wash_sales;

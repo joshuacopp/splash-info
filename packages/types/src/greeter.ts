@@ -19,6 +19,16 @@
 //   dob           — dollars over base = (package $ + extras $) / wash_sales.
 //   capture_pct   — sign_ups / wash_sales as a percentage (0-100), NOT a 0-1
 //                   fraction, matching performance_tracking.capture_rate.
+//   churn_pct     — the site's self-reported daily churn, as a percentage.
+//                   SITE-LEVEL ONLY, and the one number here that must NEVER be
+//                   aggregated: it arrives already divided, with the site
+//                   keeping the members-lost count and the member base to
+//                   itself, so there is nothing to re-sum. Any period figure
+//                   would be a flat average of daily percentages, which is the
+//                   exact error the rest of this schema is built to avoid.
+//                   Day-level display only.
+//   google_reviews— a COUNT of reviews collected that day, not a star rating.
+//                   On both tables, informational, summed and nothing more.
 
 /**
  * Metrics both forms collect. Split out from the two form-specific interfaces
@@ -45,6 +55,16 @@ export interface GreeterSharedMetrics {
    * collapse the two — a blank box on the greeter form is not a confirmed zero.
    */
   reactivations: number | null;
+  /**
+   * Reviews collected that day. A COUNT, not a rating — if this ever needs to
+   * hold a 1-5 star average it needs a different column, not a reinterpretation
+   * of this one.
+   *
+   * Informational on BOTH tables. Summed for a period total and nothing else:
+   * it is not in capture_pct, not in dob, has no goal, and grades nothing. Same
+   * null-versus-zero rule as reactivations.
+   */
+  google_reviews: number | null;
 }
 
 /**
@@ -63,6 +83,15 @@ export interface LocationMetricInputs extends GreeterSharedMetrics {
   total_cars: number | null;
   cancellations: number | null;
   total_members: number | null;
+  /**
+   * Self-reported daily churn, percent (0-100), site only. Deliberately NOT on
+   * GreeterSharedMetrics: a greeter has no member base to churn.
+   *
+   * Informational — no goal column, nothing grades on it, and it is never
+   * aggregated across days. See the vocabulary note at the top of this file for
+   * why a period churn number can't be derived from this column.
+   */
+  churn_pct: number | null;
 }
 
 /**
@@ -267,6 +296,8 @@ export interface GreeterRollupRow extends GreeterDerivedMetrics {
   sign_ups: number | null;
   /** Plain total. Not folded into capture_pct — see GreeterSharedMetrics. */
   reactivations: number | null;
+  /** Plain total. Same rule: a review is not a capture. */
+  google_reviews: number | null;
   hours_worked: number | null;
   wash_sales_per_hour: number | null;
   capture_goal_pct: number | null;
@@ -397,6 +428,8 @@ export interface GreeterPeriodReportRow {
   sign_ups: number | null;
   /** Plain total. Enters neither side of the goal comparison above. */
   reactivations: number | null;
+  /** Plain total. Also enters neither side. */
+  google_reviews: number | null;
   package_dollars: number | null;
   extras_dollars: number | null;
   hours_worked: number | null;
@@ -426,6 +459,11 @@ export interface GreeterPeriodReportRow {
  * business_date present. Use `net_members` (sign_ups + reactivations -
  * cancellations) for the period's actual change.
  *
+ * `churn_pct` IS ALREADY DIVIDED and has no companion numerator or denominator
+ * on this row, so unlike every other rate here it cannot be re-derived from
+ * sums. That makes it the one field a caller must NOT roll up — display it per
+ * day and leave the period cell blank. See the vocabulary note at the top.
+ *
  * Only submitted days appear — a day the site skipped produces no row, so
  * "reported 5 of 7" comes from counting rows against the window. Which specific
  * days are missing is GreeterMissingDayRow's job.
@@ -451,6 +489,9 @@ export interface LocationPeriodRow {
   dob: number | null;
   capture_goal_pct: number | null;
   dob_goal: number | null;
+  /** Day-level only. Never sum or average this — see the note above. */
+  churn_pct: number | null;
+  google_reviews: number | null;
   scanned_wash_sales: number;
   greeters_logged: number;
 }

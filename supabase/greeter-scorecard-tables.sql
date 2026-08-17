@@ -38,6 +38,17 @@
 --                    in a window. Site-level only.
 --   net_members      Generated: sign_ups + reactivations - cancellations. The
 --                    day's delta.
+--   churn_pct        Self-reported daily churn as a percentage. Site-level only,
+--                    and INFORMATIONAL: no goal column, never graded, and never
+--                    aggregated across days. It arrives already divided — the
+--                    site keeps both inputs — so there is nothing to re-sum and
+--                    a period figure could only be a flat average of daily
+--                    percentages, which is exactly what the weighting rule in
+--                    section 5 exists to prevent. Day-level display only.
+--   google_reviews   Count of Google reviews collected that day, NOT a star
+--                    rating. On BOTH tables. Informational: summed so a period
+--                    total is visible, and nothing else. A review is not a
+--                    capture and must never reach capture_pct.
 --   package_dollars  Wash package revenue.
 --   extras_dollars   Wash extras revenue.
 --   sign_ups         Unlimited memberships sold.
@@ -185,6 +196,17 @@ CREATE TABLE IF NOT EXISTS greeter_daily (
   -- see the header note. There is no greeter-side net_members to feed, because
   -- cancellations are site-only and the delta can't be assembled from a row.
   reactivations       integer       CHECK (reactivations IS NULL OR reactivations >= 0),
+  -- Also optional and informational. A COUNT of reviews collected, not a star
+  -- rating — the scale would be 1-5 and the CHECK would look very different.
+  --
+  -- Named explicitly rather than left to Postgres's auto-naming: the ALTER path
+  -- (greeter-churn-reviews-09.sql) names it, and that file's verification query
+  -- looks the constraint up BY NAME. An inline unnamed CHECK here would produce
+  -- `greeter_daily_google_reviews_check` instead and quietly fail that check on
+  -- any database provisioned from this file.
+  google_reviews      integer,
+  CONSTRAINT greeter_daily_google_reviews_nonneg
+    CHECK (google_reviews IS NULL OR google_reviews >= 0),
 
   -- Shift window, bare `time` (no date, no zone). End before start = overnight.
   shift_start         time,
@@ -299,6 +321,22 @@ CREATE TABLE IF NOT EXISTS location_daily (
   -- business_date in the window.
   total_members       integer       CHECK (total_members IS NULL OR total_members >= 0),
 
+  -- Self-reported, informational, and NEVER aggregated — see the header note.
+  -- The CHECK, not the numeric(5,2) scale, is what holds this to a percentage:
+  -- the scale alone would accept 999.99, and a site typing a member COUNT into a
+  -- percent box is the likeliest bad input this column will ever see.
+  --
+  -- Both constraints are named, matching greeter-churn-reviews-09.sql. That
+  -- file verifies them BY NAME, so an inline unnamed CHECK here would auto-name
+  -- to `..._check` and fail the verification on any database built from this
+  -- file rather than from the ALTER path.
+  churn_pct           numeric(5,2),
+  CONSTRAINT location_daily_churn_pct_range
+    CHECK (churn_pct IS NULL OR (churn_pct >= 0 AND churn_pct <= 100)),
+  google_reviews      integer,
+  CONSTRAINT location_daily_google_reviews_nonneg
+    CHECK (google_reviews IS NULL OR google_reviews >= 0),
+
   capture_goal_pct      numeric(6,2),
   dob_goal              numeric(12,2),
   member_goal_month_end integer,
@@ -412,6 +450,7 @@ RETURNS TABLE (
   extras_dollars      numeric,
   sign_ups            bigint,
   reactivations       bigint,
+  google_reviews      bigint,
   hours_worked        numeric,
   wash_sales_per_hour numeric,
   capture_goal_pct    numeric,
@@ -438,6 +477,8 @@ AS $$
     -- A plain total and nothing else. Not added to sign_ups, not divided by
     -- wash_sales, not compared to a goal.
     SUM(g.reactivations)         AS reactivations,
+    -- Same deal. A review is not a capture and must never reach capture_pct.
+    SUM(g.google_reviews)        AS google_reviews,
     SUM(g.hours_worked)          AS hours_worked,
     CASE WHEN SUM(g.hours_worked) > 0
       THEN ROUND(SUM(COALESCE(g.wash_sales, 0))::numeric / SUM(g.hours_worked), 2)
@@ -730,7 +771,9 @@ GRANT EXECUTE ON FUNCTION greeter_missing_days(date, date, integer, integer, tex
 -- Weighting follows section 5: summed numerator over summed denominator for
 -- capture_pct/dob, AVG for the goal columns.
 --
--- Kept in lockstep with supabase/greeter-report-04.sql. Change both.
+-- Kept in lockstep with supabase/greeter-churn-reviews-09.sql. Change both.
+-- (04 defined this function first, but 07 and 09 have since superseded it —
+-- read 09, not 04, for the current shape.)
 CREATE OR REPLACE FUNCTION greeter_period_report(
   p_date_from         date,
   p_date_to           date,
@@ -759,6 +802,7 @@ RETURNS TABLE (
   wash_sales          bigint,
   sign_ups            bigint,
   reactivations       bigint,
+  google_reviews      bigint,
   package_dollars     numeric,
   extras_dollars      numeric,
   hours_worked        numeric,
@@ -784,6 +828,7 @@ AS $$
       g.wash_sales,
       g.sign_ups,
       g.reactivations,
+      g.google_reviews,
       g.package_dollars,
       g.extras_dollars,
       g.hours_worked,
@@ -826,11 +871,12 @@ AS $$
     CASE WHEN COUNT(*) FILTER (WHERE r.gradeable) > 0
       THEN ROUND(SUM(r.is_under)::numeric * 100 / COUNT(*) FILTER (WHERE r.gradeable), 1)
     END                                                   AS pct_days_under,
-    -- Keep in lockstep with greeter-reactivations-07.sql. See the note above.
+    -- Keep in lockstep with greeter-churn-reviews-09.sql. See the note above.
     (COUNT(*) FILTER (WHERE r.gradeable) < 3)             AS low_sample,
     SUM(r.wash_sales)::bigint                             AS wash_sales,
     SUM(r.sign_ups)::bigint                               AS sign_ups,
     SUM(r.reactivations)::bigint                          AS reactivations,
+    SUM(r.google_reviews)::bigint                         AS google_reviews,
     SUM(r.package_dollars)                                AS package_dollars,
     SUM(r.extras_dollars)                                 AS extras_dollars,
     SUM(r.hours_worked)                                   AS hours_worked,
@@ -879,7 +925,13 @@ GRANT EXECUTE ON FUNCTION greeter_period_report(date, date, integer, integer, te
 -- of that day — and summing it across a week gives roughly seven times the
 -- truth. A caller wanting "members now" reads it at the latest business_date.
 --
--- Kept in lockstep with supabase/greeter-report-04.sql. Change both.
+-- churn_pct rides along at DAY grain, which is the only grain it is honest at.
+-- It arrives already divided, with the site keeping the numerator and the member
+-- base to itself, so there is nothing to re-sum and any period figure would be a
+-- flat average of daily percentages — the exact thing section 5 forbids. Day rows
+-- only; do not add it to a rollup function.
+--
+-- Kept in lockstep with supabase/greeter-churn-reviews-09.sql. Change both.
 CREATE OR REPLACE FUNCTION location_period_rows(
   p_date_from      date,
   p_date_to        date,
@@ -906,6 +958,10 @@ RETURNS TABLE (
   dob                numeric,
   capture_goal_pct   numeric,
   dob_goal           numeric,
+  -- After the goal-graded block on purpose: churn has no goal, and slotting it
+  -- in among columns that do invites someone to give it one to match.
+  churn_pct          numeric,
+  google_reviews     integer,
   scanned_wash_sales bigint,
   greeters_logged    bigint
 )
@@ -931,7 +987,9 @@ AS $$
       l.capture_pct,
       l.dob,
       l.capture_goal_pct,
-      l.dob_goal
+      l.dob_goal,
+      l.churn_pct,
+      l.google_reviews
     FROM location_daily l
     WHERE l.business_date >= p_date_from
       AND l.business_date <= p_date_to
@@ -971,6 +1029,8 @@ AS $$
     s.dob,
     s.capture_goal_pct,
     s.dob_goal,
+    s.churn_pct,
+    s.google_reviews,
     COALESCE(sc.scanned, 0)::bigint,
     COALESCE(sc.greeters, 0)::bigint
   FROM site s
