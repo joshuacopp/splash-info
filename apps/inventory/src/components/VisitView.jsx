@@ -232,6 +232,37 @@ export default function VisitView({ computed }) {
         </div>
       </div>
 
+      {/* Rendered only when at least one reading exists. Every imported visit
+          has neither, and an empty "Water" card on 1,628 of them would read as
+          a defect rather than as history that predates the fields. Each value
+          is tested against null rather than truthiness: 0 gpg is a real
+          reading at an RO or softened site. */}
+      {(c.visit.water_hardness_gpg != null || c.visit.tds_ppm != null) && (
+        <div className="card p-5">
+          <SectionTitle>Water</SectionTitle>
+          <div className="mt-2 flex flex-wrap gap-8">
+            {c.visit.water_hardness_gpg != null && (
+              <div>
+                <div className="text-xs font-bold text-slate-500">Hardness</div>
+                <div className="text-lg font-extrabold tabular-nums text-slate-900">
+                  {Number(c.visit.water_hardness_gpg)}
+                  <span className="ml-1 text-xs font-bold text-slate-400">gpg</span>
+                </div>
+              </div>
+            )}
+            {c.visit.tds_ppm != null && (
+              <div>
+                <div className="text-xs font-bold text-slate-500">TDS</div>
+                <div className="text-lg font-extrabold tabular-nums text-slate-900">
+                  {Number(c.visit.tds_ppm)}
+                  <span className="ml-1 text-xs font-bold text-slate-400">ppm</span>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
       {c.visit.notes && (
         <div className="card p-5">
           <SectionTitle>Visit notes</SectionTitle>

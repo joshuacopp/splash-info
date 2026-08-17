@@ -94,13 +94,25 @@ create table inventory.package_products (
 create index on inventory.package_products (package_id);
 
 -- Site visits ---------------------------------------------------------------
+-- water_hardness_gpg / tds_ppm: one reading of each, taken at the visit. The
+-- hardness column names its unit because gpg and "ppm as CaCO3" differ by a
+-- factor of ~17.1 and a bare "10" is ordinary municipal water in one and
+-- nearly distilled in the other. Only `>= 0` is enforced -- see
+-- inventory-water-readings.sql for why there is deliberately no ceiling.
+-- Both nullable with no default: the 1,628 imported visits have no water data
+-- and never will, so NULL means "not recorded" and stays distinguishable from
+-- a real 0 gpg reading (RO or softened water).
 create table inventory.site_visits (
-  id            uuid primary key default gen_random_uuid(),
-  location_code text not null,
-  visit_date    date not null,
-  submitter     text,
-  notes         text,
-  created_at    timestamptz not null default now()
+  id                 uuid primary key default gen_random_uuid(),
+  location_code      text not null,
+  visit_date         date not null,
+  submitter          text,
+  notes              text,
+  water_hardness_gpg numeric
+    constraint site_visits_water_hardness_gpg_check check (water_hardness_gpg >= 0),
+  tds_ppm            numeric
+    constraint site_visits_tds_ppm_check check (tds_ppm >= 0),
+  created_at         timestamptz not null default now()
 );
 create index on inventory.site_visits (location_code, visit_date desc);
 

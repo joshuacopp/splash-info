@@ -375,7 +375,17 @@ function mapWashCounts(list: unknown, visitId: string) {
     }));
 }
 
-/** payload: { location_id, visit_date, submitter, notes, entries[], washCounts[] } */
+// Water readings arrive as strings from the form. `|| 0` is deliberately NOT
+// used here the way it is for gallons: a blank box must land as NULL ("not
+// recorded"), never as 0, because 0 gpg is a real reading at an RO or softened
+// site and the two must stay distinguishable in the history.
+const reading = (v: unknown) => {
+  if (v == null || v === "") return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+};
+
+/** payload: { location_id, visit_date, submitter, notes, water_hardness_gpg, tds_ppm, entries[], washCounts[] } */
 export async function createVisit(sb: SupabaseClient, payload: Record<string, unknown>) {
   const visitId = newId();
   const visit = {
@@ -383,7 +393,9 @@ export async function createVisit(sb: SupabaseClient, payload: Record<string, un
     location_code: payload.location_id, // SPA sends the code in location_id
     visit_date: payload.visit_date,
     submitter: payload.submitter || null,
-    notes: payload.notes || null
+    notes: payload.notes || null,
+    water_hardness_gpg: reading(payload.water_hardness_gpg),
+    tds_ppm: reading(payload.tds_ppm)
   };
   const entries = ((payload.entries as Array<Record<string, unknown>>) || []).map((e) =>
     mapEntryRow(e, visitId)
@@ -412,7 +424,9 @@ export async function updateVisit(
   const visitPatch = {
     visit_date: payload.visit_date,
     submitter: payload.submitter || null,
-    notes: payload.notes || null
+    notes: payload.notes || null,
+    water_hardness_gpg: reading(payload.water_hardness_gpg),
+    tds_ppm: reading(payload.tds_ppm)
   };
   const entries = ((payload.entries as Array<Record<string, unknown>>) || []).map((e) =>
     mapEntryRow(e, visitId)

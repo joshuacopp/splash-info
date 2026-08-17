@@ -30,16 +30,38 @@ export interface ImagesBinding {
  * ============================================================ */
 
 /**
- * Generate a claim ID like `BIN-20260502-143055-AB12`.
- * Source: legacy/damagemanager.js:243 generateClaimId.
+ * Generate a claim ID like `BIN-20260502-143055-AB12` for an arbitrary
+ * instant. Format is `LOC-YYYYMMDD-HHMMSS-XXXX` (UTC) — identical to
+ * `generateClaimId`; only the clock source differs.
+ *
+ * Needed by the JotForm historic seed: `generateClaimId` stamps
+ * `new Date()`, which would encode the *run* date into every backfilled
+ * claim id and make the ids useless for eyeballing. Pass the submission's
+ * timestamp instead so the id encodes when the incident was reported.
+ *
+ * A caller seeding from a date-only value should still pass a full Date —
+ * if every claim at one location lands at 00:00:00 the 4-char random
+ * suffix becomes the only thing keeping ids distinct.
  */
-export function generateClaimId(location: string | null | undefined): string {
-  const now = new Date();
-  const dateStr = now.toISOString().slice(0, 10).replace(/-/g, "");
-  const timeStr = now.toISOString().slice(11, 19).replace(/:/g, "");
+export function generateClaimIdAt(
+  location: string | null | undefined,
+  at: Date
+): string {
+  const when =
+    at instanceof Date && !Number.isNaN(at.getTime()) ? at : new Date();
+  const dateStr = when.toISOString().slice(0, 10).replace(/-/g, "");
+  const timeStr = when.toISOString().slice(11, 19).replace(/:/g, "");
   const random = Math.random().toString(36).substring(2, 6).toUpperCase();
   const locCode = (location ?? "UNK").substring(0, 3).toUpperCase();
   return `${locCode}-${dateStr}-${timeStr}-${random}`;
+}
+
+/**
+ * Generate a claim ID like `BIN-20260502-143055-AB12` for right now.
+ * Source: legacy/damagemanager.js:243 generateClaimId.
+ */
+export function generateClaimId(location: string | null | undefined): string {
+  return generateClaimIdAt(location, new Date());
 }
 
 /**

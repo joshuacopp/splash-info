@@ -43,6 +43,10 @@
 //   POST /manage/api/claim/{id}/document/{docId}/edit       — edit doc metadata
 //   GET  /manage/api/claim/{id}/quote/{quoteId}/preview-check-request.pdf
 //                                                            — render PDF preview
+//   POST /manage/api/seed/jotform?from=&to=&limit=&offset=   — historic JotForm
+//                                                            claim seed; re-gated
+//                                                            to super_admin inside
+//                                                            the handler
 //
 // READ ENDPOINTS for apps/web SSR (added in Chunk 2):
 //   GET  /manage/api/claims                                 — list claims (filtered)
@@ -174,6 +178,7 @@ import {
   handleClaimPhotoUpload,
   runClaimUploadsCleanup
 } from "./uploads.js";
+import { handleJotformSeed } from "./seed-jotform.js";
 
 interface Env extends SupabaseEnv {
   DB: D1Database;
@@ -431,6 +436,20 @@ async function dispatchManageApi(
   // GET /manage/api/claims — list claims, dc_role-scoped.
   if (subParts.length === 1 && subParts[0] === "claims" && method === "GET") {
     return getClaimsList(env, session, new URL(request.url));
+  }
+
+  // POST /manage/api/seed/jotform — historic JotForm claim seed, super_admin
+  // only (re-gated inside the handler; the /manage/api/* gate above is
+  // checkToolAccess "claims", which is too low a bar for a bulk insert).
+  // Lives under /manage/api/* deliberately: that prefix is already bound in
+  // wrangler.toml, so no new prod route is needed.
+  if (
+    subParts.length === 2 &&
+    subParts[0] === "seed" &&
+    subParts[1] === "jotform" &&
+    method === "POST"
+  ) {
+    return handleJotformSeed(request, env, session.dcRole ?? null);
   }
 
   // Brief 172 — GET /manage/api/claims.csv — CSV export of the same

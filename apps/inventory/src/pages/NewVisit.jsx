@@ -15,7 +15,7 @@ export default function NewVisit() {
   const { locationId, visitId: editVisitId } = useParams()
   const isEdit = !!editVisitId
   const { dataset, idx, refresh } = useData()
-  const { canSubmit, isAdmin, visibleLocationIds } = useAuth()
+  const { canSubmit, isAdmin, visibleLocationIds, email } = useAuth()
   const navigate = useNavigate()
 
   const location = idx.locationById[locationId]
@@ -100,8 +100,24 @@ export default function NewVisit() {
   }, [dataset, idx, locationId, isEdit, editVisitId, editingVisit])
 
   const [visitDate, setVisitDate] = useState(() => (isEdit ? editingVisit?.visit.visit_date : todayIso()))
-  const [submitter, setSubmitter] = useState(() => (isEdit ? editingVisit?.visit.submitter || '' : ''))
+  // Prefilled with the signed-in email, editable. The session carries no
+  // display name — only the email — and that is the point: the 1,628 imported
+  // visits are signed "Nate", "nh", "Mike Grubka" for the same person across
+  // different periods, which cannot be grouped or joined on. An email is one
+  // stable identifier per human. Editing an old visit keeps whatever it
+  // already said rather than rewriting history to the current user.
+  const [submitter, setSubmitter] = useState(() =>
+    isEdit ? editingVisit?.visit.submitter || '' : email || ''
+  )
   const [notes, setNotes] = useState(() => (isEdit ? editingVisit?.visit.notes || '' : ''))
+  const [hardness, setHardness] = useState(() =>
+    isEdit && editingVisit?.visit.water_hardness_gpg != null
+      ? String(editingVisit.visit.water_hardness_gpg)
+      : ''
+  )
+  const [tds, setTds] = useState(() =>
+    isEdit && editingVisit?.visit.tds_ppm != null ? String(editingVisit.visit.tds_ppm) : ''
+  )
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState(null)
   const [toast, setToast] = useState(null)
@@ -190,6 +206,10 @@ export default function NewVisit() {
         visit_date: visitDate,
         submitter: submitter.trim() || null,
         notes: notes.trim() || null,
+        // Sent as '' when blank so the worker stores NULL. Never coerce to 0 —
+        // 0 gpg is a real reading at an RO/softened site.
+        water_hardness_gpg: hardness.trim(),
+        tds_ppm: tds.trim(),
         entries: productRows.map((r) => {
           const cr = computeRow(r)
           const st = rows[r.productId] || {}
@@ -316,10 +336,59 @@ export default function NewVisit() {
           <label className="mb-1 block text-xs font-bold text-slate-500">Visit date</label>
           <input type="date" className="input" value={visitDate} onChange={(e) => setVisitDate(e.target.value)} required />
         </div>
-        <div>
+        {/* Spans 2 so the water row below starts clean on its own line rather
+            than the first input flowing up into an empty third cell. */}
+        <div className="sm:col-span-2">
           <label className="mb-1 block text-xs font-bold text-slate-500">Submitter</label>
-          <input type="text" className="input" placeholder="Your name" value={submitter} onChange={(e) => setSubmitter(e.target.value)} />
+          <input
+            type="text"
+            className="input"
+            placeholder="you@splashcarwashes.com"
+            value={submitter}
+            onChange={(e) => setSubmitter(e.target.value)}
+          />
         </div>
+
+        {/* Units are in the labels, not just the placeholders, because hardness
+            has two conventions in common use (gpg and ppm as CaCO3) that differ
+            by ~17x — a reading of 10 is ordinary water in one and nearly
+            distilled in the other, and the stored number cannot tell them
+            apart. The soft range hints below warn but never block: the column
+            only rejects negatives, so an unusual-but-real reading still
+            submits in the field. */}
+        <div>
+          <label className="mb-1 block text-xs font-bold text-slate-500">
+            Water hardness <span className="text-slate-400">(grains per gallon)</span>
+          </label>
+          <input
+            type="number"
+            step="0.1"
+            min="0"
+            inputMode="decimal"
+            className="input"
+            placeholder="e.g. 8.5"
+            value={hardness}
+            onChange={(e) => setHardness(e.target.value)}
+          />
+          <RangeHint value={hardness} max={100} unit="gpg" />
+        </div>
+        <div>
+          <label className="mb-1 block text-xs font-bold text-slate-500">
+            TDS <span className="text-slate-400">(ppm)</span>
+          </label>
+          <input
+            type="number"
+            step="1"
+            min="0"
+            inputMode="decimal"
+            className="input"
+            placeholder="e.g. 320"
+            value={tds}
+            onChange={(e) => setTds(e.target.value)}
+          />
+          <RangeHint value={tds} max={5000} unit="ppm" />
+        </div>
+
         <div className="sm:col-span-3">
           <label className="mb-1 block text-xs font-bold text-slate-500">Notes</label>
           <textarea
@@ -582,6 +651,23 @@ export default function NewVisit() {
 
       <Toast toast={toast} onDismiss={() => setToast(null)} />
     </form>
+  )
+}
+
+// A warning, not a validator. The columns only reject negatives — see
+// supabase/inventory-water-readings.sql — because a CHECK that fires on a
+// legitimate reading would strand a tech mid-submit with no way to proceed.
+// The far more likely mistake is a unit mix-up (hardness entered as ppm as
+// CaCO3 is ~17x the gpg figure) or a slipped decimal, and both show up as an
+// implausibly large number. So flag it here, where it can be overridden, and
+// say nothing when the box is blank.
+function RangeHint({ value, max, unit }) {
+  const n = Number(value)
+  if (value === '' || !Number.isFinite(n) || n <= max) return null
+  return (
+    <p className="mt-1 text-[11px] font-medium text-amber-600">
+      {`Unusually high for ${unit} — check the units. Saves as entered.`}
+    </p>
   )
 }
 
