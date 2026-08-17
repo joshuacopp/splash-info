@@ -52,6 +52,7 @@
 //   GET  /manage/api/claims                                 — list claims (filtered)
 //   GET  /manage/api/claim/{id}                             — claim detail JSON
 //   GET  /manage/api/contact-roster?role=...                — Brief 59 RD/RM list
+//   GET  /manage/api/locations                              — scoped location roster
 //   GET  /manage/api/reporting?...                          — Brief 59 reporting aggregates
 //
 // =============================================================================
@@ -83,6 +84,7 @@
 import { authenticate, checkToolAccess, type Session } from "@splash/auth";
 import {
   type ClaimsListFilters,
+  countClaims,
   countPhotosOfType,
   determinationToClaimStatus,
   getClaimById,
@@ -90,6 +92,7 @@ import {
   insertDocPhoto,
   lifecycleForStatus,
   listActivityForClaim,
+  listClaimLocations,
   listClaims,
   listPhotosForClaim,
   logActivity,
@@ -490,6 +493,13 @@ async function dispatchManageApi(
     return getContactRoster(env, session, new URL(request.url));
   }
 
+  // GET /manage/api/locations — scoped LOCATION dropdown roster for the list
+  // page. Already under the bound /manage/api/* prefix, so no new
+  // wrangler.toml route is needed.
+  if (subParts.length === 1 && subParts[0] === "locations" && method === "GET") {
+    return getClaimLocations(env, session);
+  }
+
   // Brief 59 — GET /manage/api/reporting?...
   if (subParts.length === 1 && subParts[0] === "reporting" && method === "GET") {
     return getReporting(env, session, new URL(request.url));
@@ -700,7 +710,9 @@ async function getClaimsList(env: Env, session: Session, url: URL): Promise<Resp
     rdEmail,
     rmEmail
   });
-  if (resolved.kind === "empty") return json([]);
+  if (resolved.kind === "empty") {
+    return json({ claims: [], total: 0, limit: CLAIMS_LIST_LIMIT });
+  }
 
   const filters: ClaimsListFilters = {
     locationCodes: resolved.codes,
@@ -715,8 +727,45 @@ async function getClaimsList(env: Env, session: Session, url: URL): Promise<Resp
     submittedTo: normalizeSubmittedBound(submittedToParam, "to")
   };
 
-  const claims = await listClaims(env.DB, filters);
-  return json(claims);
+  const [claims, total] = await Promise.all([
+    listClaims(env.DB, { ...filters, limit: CLAIMS_LIST_LIMIT }),
+    countClaims(env.DB, filters)
+  ]);
+  // Response shape changed 2026-08-17 from a bare array to {claims,total,limit}
+  // so the page can say "showing 1,000 of 1,147". apps/web tolerates both
+  // shapes — web and worker deploy independently and an out-of-order rollout
+  // would otherwise white-page the list.
+  return json({ claims, total, limit: CLAIMS_LIST_LIMIT });
+}
+
+/**
+ * Row cap for the manager grid.
+ *
+ * Was an unspecified 100 (db-d1's default) until 2026-08-17, which nothing
+ * surfaced: fine at ~40 claims, but after the 2026 seed it hid roughly 90% of
+ * the table and — because the LOCATION dropdown was derived from the returned
+ * rows — made whole locations unfilterable. 1000 covers the full 2026 set with
+ * headroom; a real pager is the fix once 2025 lands.
+ */
+const CLAIMS_LIST_LIMIT = 1000;
+
+/**
+ * GET /manage/api/locations — the LOCATION dropdown roster for the list page.
+ *
+ * Scoped by dc_role exactly like the claims list, so a gm/rm never sees a
+ * location they can't open. Independent of the page's other filters by
+ * design: the dropdown is how you move between locations, so it must not
+ * shrink as you narrow status or date.
+ */
+async function getClaimLocations(env: Env, session: Session): Promise<Response> {
+  const scope = await damageScopeForSession(env, session);
+  if (scope.kind === "denied") return jsonError(403, "no damage role assigned");
+
+  const rows = await listClaimLocations(
+    env.DB,
+    scope.kind === "global" ? undefined : scope.codes
+  );
+  return json(rows);
 }
 
 /**

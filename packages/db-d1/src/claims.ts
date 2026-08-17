@@ -367,6 +367,125 @@ export async function listClaims(
   db: D1Database,
   filters: ClaimsListFilters = {}
 ): Promise<ClaimsListRow[]> {
+  const built = buildClaimsListWhere(filters);
+  if (built === null) return [];
+  const { where, params } = built;
+
+  const sql = `
+    SELECT ${CLAIMS_LIST_COLS}
+    FROM claims
+    WHERE ${where}
+    ORDER BY submitted_at DESC
+    LIMIT ${filters.limit ?? DEFAULT_CLAIMS_LIST_LIMIT}
+  `;
+
+  const result = await db
+    .prepare(sql)
+    .bind(...params)
+    .all();
+  return (result.results ?? []) as ClaimsListRow[];
+}
+
+/**
+ * Total number of claims matching `filters`, ignoring `limit`.
+ *
+ * 2026-08-17 — added so the list page can say "showing 1,000 of 1,147"
+ * instead of silently presenting a truncated list as if it were complete.
+ * `listClaims` has always capped its result set (see
+ * DEFAULT_CLAIMS_LIST_LIMIT) and nothing surfaced that fact; with ~40 claims
+ * in the table the cap was never reached, and after the 2026 JotForm seed it
+ * hid most of the data.
+ *
+ * Shares `buildClaimsListWhere` with listClaims deliberately — a count that
+ * drifts from the query it describes is worse than no count at all.
+ */
+export async function countClaims(
+  db: D1Database,
+  filters: ClaimsListFilters = {}
+): Promise<number> {
+  const built = buildClaimsListWhere(filters);
+  if (built === null) return 0;
+  const { where, params } = built;
+
+  const row = await db
+    .prepare(`SELECT COUNT(*) AS n FROM claims WHERE ${where}`)
+    .bind(...params)
+    .first<{ n: number }>();
+  return row?.n ?? 0;
+}
+
+/**
+ * Row cap applied when the caller doesn't specify one. Historically the only
+ * behaviour, and the reason the list page silently truncated.
+ */
+const DEFAULT_CLAIMS_LIST_LIMIT = 100;
+
+/**
+ * One entry in the list page's LOCATION dropdown.
+ *
+ * Declared as a `type`, not an `interface`, on purpose: D1's `.all<T>()`
+ * constrains T to `Record<string, unknown>`, and only type aliases get the
+ * implicit index signature that satisfies it. An interface here fails to
+ * compile (the same reason ClaimsListRow above is a type alias).
+ */
+export type ClaimLocationRosterEntry = {
+  location_code: string;
+  location_pretty: string;
+  claim_count: number;
+};
+
+/**
+ * Distinct locations that have at least one non-deleted claim, optionally
+ * scoped to a set of location_codes.
+ *
+ * 2026-08-17 — the list page used to derive its LOCATION dropdown by walking
+ * the *returned rows*, so any location whose claims all fell outside the
+ * (silently capped) result set became unselectable. Cicero had 13 claims and
+ * no way to filter to them.
+ *
+ * Sourced from `claims` rather than `pricing_simple` on purpose: (a) the two
+ * disagree on some codes (`rensselear` vs `rensselaer`), and a divergence
+ * there would make a location permanently unreachable, and (b) sites with no
+ * claims would show up as dead options.
+ *
+ * Deliberately NOT narrowed by the page's other active filters — the dropdown
+ * should let you move between locations, not shrink as you filter.
+ */
+export async function listClaimLocations(
+  db: D1Database,
+  locationCodes?: string[]
+): Promise<ClaimLocationRosterEntry[]> {
+  const where: string[] = ["deleted_at IS NULL"];
+  const params: unknown[] = [];
+
+  if (locationCodes) {
+    if (locationCodes.length === 0) return [];
+    where.push(`location_code IN (${locationCodes.map(() => "?").join(",")})`);
+    params.push(...locationCodes);
+  }
+
+  const result = await db
+    .prepare(
+      `SELECT location_code, location_pretty, COUNT(*) AS claim_count
+       FROM claims
+       WHERE ${where.join(" AND ")}
+       GROUP BY location_code, location_pretty
+       ORDER BY location_pretty`
+    )
+    .bind(...params)
+    .all<ClaimLocationRosterEntry>();
+  return result.results ?? [];
+}
+
+/**
+ * Shared WHERE clause for listClaims / countClaims.
+ *
+ * Returns null for the "scoped to zero locations" case, which both callers
+ * turn into an empty result without touching D1.
+ */
+function buildClaimsListWhere(
+  filters: ClaimsListFilters
+): { where: string; params: unknown[] } | null {
   const where: string[] = ["deleted_at IS NULL"];
   const params: unknown[] = [];
 
@@ -376,7 +495,7 @@ export async function listClaims(
     params.push(...filters.locationCodes);
   } else if (filters.locationCodes && filters.locationCodes.length === 0) {
     // Caller asked us to scope to no locations — return nothing.
-    return [];
+    return null;
   }
 
   if (filters.lifecycle && filters.lifecycle !== "All") {
@@ -414,19 +533,7 @@ export async function listClaims(
     params.push(filters.submittedTo);
   }
 
-  const sql = `
-    SELECT ${CLAIMS_LIST_COLS}
-    FROM claims
-    WHERE ${where.join(" AND ")}
-    ORDER BY submitted_at DESC
-    LIMIT ${filters.limit ?? 100}
-  `;
-
-  const result = await db
-    .prepare(sql)
-    .bind(...params)
-    .all();
-  return (result.results ?? []) as ClaimsListRow[];
+  return { where: where.join(" AND "), params };
 }
 
 /**

@@ -62,6 +62,40 @@ type ClaimListRow = Pick<
   age_days: number;
 };
 
+// Shape returned from GET /manage/api/locations (added 2026-08-17) — the
+// dc_role-scoped set of locations that have at least one claim.
+interface LocationRosterEntry {
+  location_code: string;
+  location_pretty: string;
+  claim_count: number;
+}
+
+// GET /manage/api/claims returned a bare array until 2026-08-17 and returns
+// {claims,total,limit} after. Both are accepted because web and the worker
+// deploy independently: an out-of-order rollout would otherwise white-page
+// the list for however long the skew lasts.
+type ClaimListResponse =
+  | ClaimListRow[]
+  | { claims: ClaimListRow[]; total: number; limit: number };
+
+function normalizeClaimsResponse(raw: ClaimListResponse): {
+  data: ClaimListRow[];
+  total: number;
+  limit: number;
+} {
+  if (Array.isArray(raw)) {
+    // Legacy worker — it never told us whether it truncated, so the honest
+    // answer is "total equals what we got" and no truncation notice renders.
+    return { data: raw, total: raw.length, limit: raw.length };
+  }
+  const data = raw.claims ?? [];
+  return {
+    data,
+    total: typeof raw.total === "number" ? raw.total : data.length,
+    limit: typeof raw.limit === "number" ? raw.limit : data.length
+  };
+}
+
 // Full ClaimStatus enum, ordered as in the type union for legibility (15 values).
 // Em-dashes are U+2014. NOTE (2026-08-17): the old comment here said this
 // "matches the DB CHECK constraint" — there is no CHECK on claim_status; the
@@ -160,27 +194,37 @@ export default async function DamageClaimsListPage({ searchParams }: PageProps) 
   // The roster fetches keep the null-on-401/403 shape — they're decorative
   // and don't drive routing.
   let claimsResult:
-    | { kind: "ok"; data: ClaimListRow[] }
+    | { kind: "ok"; data: ClaimListRow[]; total: number; limit: number }
     | { kind: "denied" }
     | { kind: "session_stale" }
     | { kind: "error"; message: string }
     | null = null;
   let rdRoster: ContactRosterEntry[] = [];
   let rmRoster: ContactRosterEntry[] = [];
+  let locationRoster: LocationRosterEntry[] = [];
   try {
-    const [claimsRaw, rd, rm] = await Promise.all([
-      damageGetJsonOrStatus<ClaimListRow[]>(workerPath),
+    const [claimsRaw, rd, rm, locations] = await Promise.all([
+      damageGetJsonOrStatus<ClaimListResponse>(workerPath),
       damageGetJson<ContactRosterEntry[]>(
         "/manage/api/contact-roster?role=regional_director"
       ).then((r) => r ?? []),
       damageGetJson<ContactRosterEntry[]>(
         "/manage/api/contact-roster?role=regional_manager"
-      ).then((r) => r ?? [])
+      ).then((r) => r ?? []),
+      // Added 2026-08-17 alongside the row-cap fix. Null-tolerant on purpose:
+      // if the worker predates this endpoint (or the fetch fails) we fall
+      // back to deriving the dropdown from the returned rows, which is the
+      // old — merely incomplete — behaviour rather than an empty dropdown.
+      damageGetJson<LocationRosterEntry[]>("/manage/api/locations").then(
+        (r) => r ?? []
+      )
     ]);
     rdRoster = rd;
     rmRoster = rm;
+    locationRoster = locations;
     if ("data" in claimsRaw) {
-      claimsResult = { kind: "ok", data: claimsRaw.data };
+      const normalized = normalizeClaimsResponse(claimsRaw.data);
+      claimsResult = { kind: "ok", ...normalized };
     } else if (claimsRaw.status === 401) {
       claimsResult = { kind: "session_stale" };
     } else if (claimsRaw.status === 403) {
@@ -285,12 +329,29 @@ export default async function DamageClaimsListPage({ searchParams }: PageProps) 
   }
 
   const list = claims ?? [];
+  const totalMatching =
+    claimsResult && claimsResult.kind === "ok" ? claimsResult.total : list.length;
+  const rowLimit =
+    claimsResult && claimsResult.kind === "ok" ? claimsResult.limit : list.length;
+  const isTruncated = totalMatching > list.length;
 
-  // Derive the location dropdown options from the result set. v1 compromise:
-  // locations with zero matching claims under the current filters won't
-  // appear — preserve the currently-selected value as a fallback so the
-  // dropdown doesn't visually drop a filter the user explicitly set.
+  // Location dropdown options.
+  //
+  // These used to be derived by walking the *returned rows*, which quietly
+  // coupled "can I filter to this location" to "does this location appear in
+  // the current (capped) result set". Cicero had 13 claims and no way to
+  // reach them. The roster comes from the worker now, scoped by dc_role and
+  // independent of the other filters.
+  //
+  // Row-derived values are still merged in as a fallback for the case where
+  // the roster fetch failed or the worker predates the endpoint — degrading
+  // to the old incomplete list beats an empty dropdown. The
+  // currently-selected value is preserved either way so the form never
+  // silently drops a filter the user set.
   const locationMap = new Map<string, string>();
+  for (const loc of locationRoster) {
+    locationMap.set(loc.location_code, loc.location_pretty);
+  }
   for (const c of list) {
     if (!locationMap.has(c.location_code)) {
       locationMap.set(c.location_code, c.location_pretty);
@@ -493,6 +554,19 @@ export default async function DamageClaimsListPage({ searchParams }: PageProps) 
         </div>
       ) : (
         <div className="overflow-hidden rounded-splash-lg border border-gray-light bg-white shadow-splash-card">
+          {/* Truncation notice. The list has always been capped; until
+              2026-08-17 nothing said so, and a partial list read as a
+              complete one. Only renders when rows were actually withheld. */}
+          {isTruncated ? (
+            <div className="border-b border-gray-light bg-splash-navy/5 px-4 py-2.5 text-xs text-splash-navy/80">
+              Showing the {list.length.toLocaleString()} most recent of{" "}
+              <span className="font-semibold">
+                {totalMatching.toLocaleString()}
+              </span>{" "}
+              matching claims (cap: {rowLimit.toLocaleString()}). Narrow the
+              filters or use the export to see the rest.
+            </div>
+          ) : null}
           <div className="overflow-x-auto">
             <table className="min-w-full divide-y divide-gray-light text-sm">
               <thead className="bg-splash-navy/5 text-left text-xs font-semibold uppercase tracking-wider text-splash-navy/70">
