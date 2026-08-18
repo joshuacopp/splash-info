@@ -15,6 +15,12 @@
 // three independent permission domains — all must be set separately. Set
 // DC Role and Set Promo Role are positioned right after Set Role for
 // visual symmetry.
+//
+// Brief 173, phase 1 — Manage tools (desired-state, one submit) supersedes
+// Grant tool + Revoke tool. The superseded pair is parked below a divider
+// rather than deleted, so there's a fallback for one release while the new
+// path gets real use. Delete both, their actions, and their worker
+// endpoints once phase 2 lands and the parked group has gone unused.
 
 import { ActionForm } from "../../_components/ActionForm";
 import {
@@ -25,6 +31,7 @@ import {
 } from "../_components/OperationCard";
 import { CreateUserToolsAndDcRole } from "../_components/CreateUserToolsAndDcRole";
 import { LocationCodeMultiPicker } from "../_components/LocationCodeMultiPicker";
+import { ManageToolsCard } from "../_components/ManageToolsCard";
 import { PermissionsViewer } from "../_components/PermissionsViewer";
 import { ResetMfaCard } from "../_components/ResetMfaCard";
 import { SetDcRoleCard } from "../_components/SetDcRoleCard";
@@ -46,11 +53,55 @@ export function UserOperations() {
       <SetRoleCard />
       <SetDcRoleCard />
       <SetPromoRoleCard />
-      <GrantToolCard />
-      <RevokeToolCard />
+      <ManageToolsSection />
       <ResetPasswordCard />
       <ResetMfaSection />
+      <ParkedOperations />
     </>
+  );
+}
+
+/* ============================================================
+ * 3. Manage tools (Brief 173, phase 1)
+ * ============================================================ */
+
+function ManageToolsSection() {
+  return (
+    <OperationCard
+      title="Manage tools"
+      description="Pick a user, check the tools they should have, submit once. Reconciles user_tool_access — grants and revokes in one write."
+    >
+      <ManageToolsCard />
+    </OperationCard>
+  );
+}
+
+/* ============================================================
+ * Parked — superseded single-purpose cards (Brief 173)
+ *
+ * Kept for one release as a fallback while Manage tools gets real use.
+ * Removal is a follow-up, not a TODO in someone's head: delete these two
+ * functions, grantToolAction / revokeToolAction, and the worker's
+ * /sysadmin/api/{grant,revoke}-tool endpoints together.
+ * ============================================================ */
+
+function ParkedOperations() {
+  return (
+    <div className="space-y-3 pt-2">
+      <div className="flex items-center gap-3">
+        <div className="h-px flex-1 bg-gray-light" />
+        <span className="text-[0.6875rem] font-semibold uppercase tracking-wider text-splash-navy/45">
+          Single-purpose operations
+        </span>
+        <div className="h-px flex-1 bg-gray-light" />
+      </div>
+      <p className="text-xs text-splash-navy/60">
+        Superseded by Manage tools above. Still here as a fallback for one
+        release.
+      </p>
+      <GrantToolCard />
+      <RevokeToolCard />
+    </div>
   );
 }
 

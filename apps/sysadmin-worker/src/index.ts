@@ -22,6 +22,12 @@
 //                                          replaces the row set. Removal is a
 //                                          separate endpoint — see
 //                                          /sysadmin/api/remove-location.
+//   POST  /sysadmin/api/users/{id}/access — Brief 173 unified access editor.
+//                                          Takes DESIRED state and diffs it
+//                                          against live DB state; absent
+//                                          domain key = leave alone, empty
+//                                          array = remove all. Phase 1: the
+//                                          `tools` key only.
 //   POST  /sysadmin/api/reset-password   — admin-triggered password reset
 //                                          (FLIPS must_change_password = true
 //                                          per Josh's password-set policy —
@@ -206,6 +212,14 @@ const USER_PERMS_PATH_RE = /^\/sysadmin\/api\/users\/([^/]+)\/permissions$/;
 // static POST /sysadmin/api/reset-mfa (OWNED_POST_PATHS), mirroring
 // reset-password.
 const MFA_FACTORS_PATH_RE = /^\/sysadmin\/api\/users\/([^/]+)\/mfa-factors$/;
+// Brief 173 — unified access editor. POST /sysadmin/api/users/{userId}/access
+// takes DESIRED state, not a delta: the handler reads the user's current
+// access and computes adds/removes itself. Every domain key is optional and
+// an ABSENT key means "leave that domain alone" (distinct from an empty
+// array, which means "remove everything in that domain"). Phase 1 ships the
+// `tools` key only; pricing role/locations, DC role/locations and promo role
+// land in phase 2 behind the same endpoint.
+const USER_ACCESS_PATH_RE = /^\/sysadmin\/api\/users\/([^/]+)\/access$/;
 
 const OWNED_POST_PATHS = new Set([
   "/sysadmin/api/grant-tool",
@@ -251,6 +265,9 @@ export default {
     // Brief 159 — dynamic POST /sysadmin/api/users/{userId}/promo-role.
     const promoRolePathMatch = PROMO_ROLE_PATH_RE.exec(path);
     const isOwnedPromoRolePost = promoRolePathMatch !== null;
+    // Brief 173 — dynamic POST /sysadmin/api/users/{userId}/access.
+    const accessPathMatch = USER_ACCESS_PATH_RE.exec(path);
+    const isOwnedAccessPost = accessPathMatch !== null;
     // Permissions viewer — dynamic GET /sysadmin/api/users/{userId}/permissions.
     const userPermsPathMatch = USER_PERMS_PATH_RE.exec(path);
     const isOwnedUserPermsGet = userPermsPathMatch !== null;
@@ -263,6 +280,7 @@ export default {
       !isOwnedGet &&
       !isOwnedDcRolePost &&
       !isOwnedPromoRolePost &&
+      !isOwnedAccessPost &&
       !isOwnedUserPermsGet &&
       !isOwnedMfaFactorsGet
     ) {
@@ -270,7 +288,7 @@ export default {
     }
 
     if (
-      (isOwnedPost || isOwnedDcRolePost || isOwnedPromoRolePost) &&
+      (isOwnedPost || isOwnedDcRolePost || isOwnedPromoRolePost || isOwnedAccessPost) &&
       method !== "POST"
     ) {
       return jsonError(405, "POST required");
@@ -346,6 +364,11 @@ export default {
       if (isOwnedPromoRolePost && promoRolePathMatch) {
         const userId = decodeURIComponent(promoRolePathMatch[1] ?? "");
         return await handleSetPromoRole(env, userId, body, actor);
+      }
+
+      if (isOwnedAccessPost && accessPathMatch) {
+        const userId = decodeURIComponent(accessPathMatch[1] ?? "");
+        return await handleSetUserAccess(env, userId, body, actor);
       }
 
       switch (path) {
@@ -757,6 +780,219 @@ async function handleResetPassword(
  * handleGetUserPermissions). Returns the enrolled state plus the raw factor
  * list so the UI can show how many will be cleared.
  */
+/* ============================================================
+ * POST /sysadmin/api/users/{userId}/access   (Brief 173)
+ *
+ * The unified access editor's single write surface. Body carries DESIRED
+ * state, not a delta:
+ *
+ *   { tools?: ToolName[], expect?: { tools?: ToolName[] } }
+ *
+ * Key semantics — an ABSENT domain key means "don't touch that domain"; an
+ * empty array means "remove everything in that domain". Phase 1 accepts
+ * `tools` only; phase 2 adds role/locations, dc_role/dc_locations and
+ * promo_role behind the same contract so a four-domain edit stays one submit.
+ *
+ * Why the handler diffs instead of the caller: set-role deliberately has no
+ * replace path (adding one location to a seven-site admin must not leave them
+ * with one), so a reconciling UI has to compute removals somewhere. Doing it
+ * here means the diff is taken against live DB state at write time rather
+ * than against whatever the operator's tab loaded minutes ago.
+ *
+ * Adds run before removes. Matters once phase 2 writes user_permissions:
+ * create-user derives must_change_password from an empty pre-write row set,
+ * so removing first could momentarily empty a user's rows and flip a
+ * mid-reset user's flag. Order is fixed here for every domain so the rule
+ * doesn't have to be re-derived per domain later.
+ *
+ * Optimistic concurrency: `expect` is an optional snapshot of what the
+ * operator's form was rendered from. Any domain present in `expect` is
+ * compared (as a set) against live state before any write; a mismatch is a
+ * 409 carrying the current state, and NOTHING is written. This is what
+ * catches the pricing_simple -> user_permissions email trigger firing
+ * between page load and submit.
+ *
+ * Audit: one row per actually-changed tool, reusing the existing grant_tool /
+ * revoke_tool action names so ALLOWED_AUDIT_ACTIONS and the audit-log filters
+ * need no edit. Unlike the single-tool cards this does NOT write *_noop rows:
+ * a desired-state submit necessarily re-sends every tool the user already
+ * has, and logging those as attempted grants would bury real changes.
+ *
+ * super_admin gate + isOriginAllowed both enforced at the top of fetch().
+ * ============================================================ */
+
+async function handleSetUserAccess(
+  env: Env,
+  userId: string,
+  body: Record<string, unknown>,
+  actor: { id: string; email: string }
+): Promise<Response> {
+  if (!userId) return jsonError(400, "user_id required");
+
+  const toolsSupplied = Object.prototype.hasOwnProperty.call(body, "tools");
+  if (!toolsSupplied) {
+    return jsonError(400, "no access domain supplied");
+  }
+  if (!Array.isArray(body.tools)) {
+    return jsonError(400, "tools must be an array");
+  }
+
+  const desiredTools = parseToolList(body.tools);
+  if (desiredTools === null) return jsonError(400, "tools contains an unknown tool");
+
+  const expect = isRecord(body.expect) ? body.expect : null;
+  const expectTools =
+    expect && Array.isArray(expect.tools) ? parseToolList(expect.tools) : null;
+  if (expect && Array.isArray(expect.tools) && expectTools === null) {
+    return jsonError(400, "expect.tools contains an unknown tool");
+  }
+
+  const before = await fetchAuthUnifiedRow(env, userId);
+  if (before === null) return jsonError(404, "user not found");
+  const currentTools = parseTextArray(before.tools);
+
+  if (expectTools !== null && !sameSet(expectTools, currentTools)) {
+    return jsonStatus(
+      {
+        ok: false,
+        error:
+          "This user's tool access changed since the form was loaded. Reload to see the current state before submitting.",
+        conflict: { domain: "tools", expected: expectTools, current: currentTools },
+        permissions: before
+      },
+      409
+    );
+  }
+
+  const added: ToolName[] = desiredTools.filter((t) => !currentTools.includes(t));
+  const removed = currentTools.filter(
+    (t): t is ToolName => VALID_TOOLS.has(t as ToolName) && !desiredTools.includes(t as ToolName)
+  );
+
+  const sb = createServiceClient(env);
+
+  // Adds first — see the ordering note in the block comment above.
+  for (const tool of added) {
+    const result = await grantTool(sb, {
+      userId,
+      tool,
+      grantedBy: actor.id,
+      notes: "Granted via Splash Admin (access editor)"
+    });
+    if (result.was_new) {
+      await logSysadminAudit(sb, {
+        actor,
+        action: "grant_tool",
+        target_type: "user_tool_access",
+        target_id: `${userId}|${tool}`,
+        before: null,
+        after: { user_id: userId, tool, granted_by: actor.id }
+      });
+    }
+  }
+
+  for (const tool of removed) {
+    const result = await revokeTool(sb, { userId, tool });
+    if (result.was_present) {
+      await logSysadminAudit(sb, {
+        actor,
+        action: "revoke_tool",
+        target_type: "user_tool_access",
+        target_id: `${userId}|${tool}`,
+        before: result.before,
+        after: null
+      });
+    }
+  }
+
+  const after = added.length > 0 || removed.length > 0
+    ? await fetchAuthUnifiedRow(env, userId)
+    : before;
+
+  return json({
+    ok: true,
+    changed: added.length > 0 || removed.length > 0,
+    tools: { added, removed },
+    permissions: after ?? before
+  });
+}
+
+/** Validate a raw array into deduped ToolNames. null = contains an unknown. */
+function parseToolList(raw: unknown[]): ToolName[] | null {
+  const out: ToolName[] = [];
+  for (const value of raw) {
+    if (typeof value !== "string" || !VALID_TOOLS.has(value as ToolName)) return null;
+    if (!out.includes(value as ToolName)) out.push(value as ToolName);
+  }
+  return out;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** auth_unified's array columns come back as a real array or text-encoded
+ *  JSON depending on the column. Same defensive parse apps/web does. */
+function parseTextArray(value: unknown): string[] {
+  if (Array.isArray(value)) return value.filter((v): v is string => typeof v === "string");
+  if (typeof value === "string" && value.trim().length > 0) {
+    try {
+      const parsed = JSON.parse(value);
+      if (Array.isArray(parsed)) {
+        return parsed.filter((v): v is string => typeof v === "string");
+      }
+    } catch {
+      /* fall through */
+    }
+  }
+  return [];
+}
+
+function sameSet(a: readonly string[], b: readonly string[]): boolean {
+  const left = new Set(a);
+  const right = new Set(b);
+  if (left.size !== right.size) return false;
+  for (const value of left) if (!right.has(value)) return false;
+  return true;
+}
+
+/** JSON response with an explicit status. @splash/http's json() is 200-only
+ *  by contract here; the access editor needs 409 to carry a body. */
+function jsonStatus(body: unknown, status: number): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "content-type": "application/json" }
+  });
+}
+
+/** One user's row from the auth_unified view (all four permission domains),
+ *  or null when the user has no row. Shared by the permissions read and the
+ *  access editor's pre-write snapshot. */
+async function fetchAuthUnifiedRow(
+  env: Env,
+  userId: string
+): Promise<Record<string, unknown> | null> {
+  const restUrl =
+    `${env.SUPABASE_URL}/rest/v1/auth_unified` +
+    `?user_id=eq.${encodeURIComponent(userId)}` +
+    `&limit=1`;
+
+  const resp = await fetch(restUrl, {
+    headers: {
+      apikey: env.SUPABASE_SERVICE_KEY,
+      Authorization: `Bearer ${env.SUPABASE_SERVICE_KEY}`
+    }
+  });
+  if (!resp.ok) {
+    const errText = await resp.text().catch(() => "");
+    throw new Error(`auth_unified lookup failed: ${resp.status} ${errText}`);
+  }
+  const rows = (await resp.json().catch(() => [])) as unknown[];
+  if (!Array.isArray(rows) || rows.length === 0) return null;
+  const row = rows[0];
+  return isRecord(row) ? row : null;
+}
+
 async function handleGetMfaFactors(env: Env, userId: string): Promise<Response> {
   if (!userId) return jsonError(400, "user_id required");
   const factors = await adminListFactors(env, userId);
@@ -1320,26 +1556,13 @@ async function handleCreateLocation(
 async function handleGetUserPermissions(env: Env, userId: string): Promise<Response> {
   if (!userId) return jsonError(400, "user_id required");
 
-  const restUrl =
-    `${env.SUPABASE_URL}/rest/v1/auth_unified` +
-    `?user_id=eq.${encodeURIComponent(userId)}` +
-    `&limit=1`;
-
-  const resp = await fetch(restUrl, {
-    headers: {
-      apikey: env.SUPABASE_SERVICE_KEY,
-      Authorization: `Bearer ${env.SUPABASE_SERVICE_KEY}`
-    }
-  });
-  if (!resp.ok) {
-    const errText = await resp.text().catch(() => "");
-    return jsonError(500, `Lookup failed: ${resp.status} ${errText}`);
-  }
-  const rows = (await resp.json().catch(() => [])) as unknown[];
-  if (!Array.isArray(rows) || rows.length === 0) {
-    return jsonError(404, "user not found");
-  }
-  return json(rows[0]);
+  // Brief 173 — the raw fetch moved to fetchAuthUnifiedRow() so the access
+  // editor's pre-write snapshot reads exactly what this endpoint returns.
+  // A failed lookup now throws and lands on fetch()'s catch as a 500, same
+  // status as the inline check it replaced.
+  const row = await fetchAuthUnifiedRow(env, userId);
+  if (row === null) return jsonError(404, "user not found");
+  return json(row);
 }
 
 /* ============================================================

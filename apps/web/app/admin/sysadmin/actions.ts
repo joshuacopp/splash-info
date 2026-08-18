@@ -475,6 +475,87 @@ export async function revokeToolAction(
 }
 
 /* ============================================================
+ * Brief 173 — Manage tools (desired-state reconcile)
+ *
+ * Replaces the Grant tool / Revoke tool pair as the primary path: the
+ * operator checks the tools the user should end up with and submits once.
+ * The worker diffs against live DB state, so this action forwards the
+ * checked set verbatim rather than computing adds/removes here — a diff
+ * taken in the browser would be stale by the time it lands.
+ *
+ * `expect_tools` carries what the form was rendered from. The worker 409s if
+ * live state has drifted since (the pricing_simple -> user_permissions email
+ * trigger is the realistic culprit) and writes nothing.
+ * ============================================================ */
+
+interface SetToolAccessBody {
+  tools: ToolName[];
+  expect?: { tools: ToolName[] };
+}
+
+function parseToolsJson(raw: string): ToolName[] | null {
+  if (raw.length === 0) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return null;
+    return parsed.filter((v): v is ToolName => typeof v === "string");
+  } catch {
+    return null;
+  }
+}
+
+export async function setToolAccessAction(
+  _prevState: ActionResult | null,
+  formData: FormData
+): Promise<ActionResult> {
+  const userId = fieldString(formData, "user_id");
+  const tools = formData.getAll("tools").map((t) => String(t)) as ToolName[];
+  const expectTools = parseToolsJson(fieldString(formData, "expect_tools"));
+
+  const body: SetToolAccessBody = { tools };
+  if (expectTools !== null) body.expect = { tools: expectTools };
+
+  const result = await sysadminPostJson(
+    `/sysadmin/api/users/${encodeURIComponent(userId)}/access`,
+    body
+  );
+  if (!result.ok) {
+    return { ok: false, error: result.error };
+  }
+
+  revalidatePath(PAGE_PATH);
+  return { ok: true, message: describeToolChange(result.body) };
+}
+
+/** Turn the worker's { tools: { added, removed } } into operator-facing copy.
+ *  Falls back to a neutral success line if the shape is unexpected. */
+function describeToolChange(body: unknown): string {
+  if (!body || typeof body !== "object" || !("tools" in body)) {
+    return "Tool access saved";
+  }
+  const tools = (body as { tools?: unknown }).tools;
+  if (!tools || typeof tools !== "object") return "Tool access saved";
+  const added = Array.isArray((tools as { added?: unknown }).added)
+    ? ((tools as { added: unknown[] }).added.filter(
+        (t): t is string => typeof t === "string"
+      ) as string[])
+    : [];
+  const removed = Array.isArray((tools as { removed?: unknown }).removed)
+    ? ((tools as { removed: unknown[] }).removed.filter(
+        (t): t is string => typeof t === "string"
+      ) as string[])
+    : [];
+
+  if (added.length === 0 && removed.length === 0) {
+    return "Already matched — no change";
+  }
+  const parts: string[] = [];
+  if (added.length > 0) parts.push(`Granted ${added.join(", ")}`);
+  if (removed.length > 0) parts.push(`Revoked ${removed.join(", ")}`);
+  return parts.join(" · ");
+}
+
+/* ============================================================
  * Permissions viewer — inline remove actions (plain-arg)
  *
  * The View Permissions card removes grants inline (per-chip ✕) instead of

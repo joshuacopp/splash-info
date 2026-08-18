@@ -31,6 +31,17 @@ interface UserPickerProps {
   required?: boolean;
   /** Optional id forwarded to the visible input — pairs with FieldLabel htmlFor. */
   inputId?: string;
+  /**
+   * Brief 173 — fires on pick (with the row) and on clear (with null). Added
+   * for the Manage tools card, which prefills its checkboxes from the
+   * selected user's current grants. Purely additive: the hidden input that
+   * every other card submits through is unchanged, and cards that don't pass
+   * this prop behave exactly as before.
+   *
+   * The row is the typeahead's snapshot, so treat it as display state only —
+   * the worker re-reads live state and diffs against that at write time.
+   */
+  onSelect?: (user: SelectedUser | null) => void;
 }
 
 interface UserSearchRow {
@@ -41,7 +52,7 @@ interface UserSearchRow {
   must_change_password: boolean;
 }
 
-interface SelectedUser {
+export interface SelectedUser {
   user_id: string;
   email: string;
   role: string | null;
@@ -65,7 +76,8 @@ export function UserPicker({
   defaultLabel,
   placeholder,
   required,
-  inputId
+  inputId,
+  onSelect
 }: UserPickerProps) {
   const listboxId = useId();
   const optionIdPrefix = useId();
@@ -161,20 +173,23 @@ export function UserPicker({
   }, [open]);
 
   function pick(row: UserSearchRow) {
-    setSelected({
+    const next: SelectedUser = {
       user_id: row.user_id,
       email: row.email,
       role: row.role,
       tools: row.tools ?? []
-    });
+    };
+    setSelected(next);
     setQuery("");
     setResults([]);
     setOpen(false);
     setActiveIndex(-1);
+    onSelect?.(next);
   }
 
   function clear() {
     setSelected(null);
+    onSelect?.(null);
     setQuery("");
     setResults([]);
     setOpen(false);
