@@ -106,7 +106,7 @@ function isInventoryOnly(session: Session | null): boolean {
   if (session.role === "super_admin") return false;
   if (session.dcRole != null) return false;
   if (session.promoRole != null) return false;
-  const tools = session.tools ?? [];
+  const tools = session.tools;
   return tools.length === 1 && tools[0] === "inventory";
 }
 

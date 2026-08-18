@@ -50,7 +50,13 @@ export default async function AdminDashboardPage() {
   })).filter((entry) => entry.count > 0);
 
   // Collapse the group level when there's nothing to choose between.
-  if (visibleTiles.length === 1) {
+  //
+  // Bound to a local rather than indexed inline: `noUncheckedIndexedAccess` is
+  // on repo-wide (packages/config/tsconfig.base.json), so `visibleTiles[0]`
+  // types as `Tile | undefined` and a `.length === 1` check does NOT narrow it.
+  // The truthiness guard below does.
+  const soleTile = visibleTiles.length === 1 ? visibleTiles[0] : undefined;
+  if (soleTile) {
     return (
       <section className="mx-auto w-full max-w-[1100px] px-5 py-9">
         <div className="mb-9">
@@ -60,7 +66,7 @@ export default async function AdminDashboardPage() {
           <h1 className="text-2xl font-bold text-splash-navy">Dashboard</h1>
         </div>
         <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3">
-          <DashboardTile tile={visibleTiles[0]} />
+          <DashboardTile tile={soleTile} />
         </div>
       </section>
     );
