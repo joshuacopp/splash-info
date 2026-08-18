@@ -64,12 +64,34 @@ async function readTurnstileSiteKey(): Promise<string | undefined> {
 
 /**
  * Same-origin path allowlist — mirrors dashboard-worker's sanitizeRedirect
- * to keep client + server in sync. Defends against open-redirect attacks
- * where an attacker links to /login?return=https://evil.com.
+ * (REDIRECT_ALLOWED_PREFIXES) to keep client + server in sync. Defends against
+ * open-redirect attacks where an attacker links to /login?return=https://evil.com.
+ *
+ * This used to accept ANY same-origin path while the worker accepted only three
+ * prefixes, so an off-allowlist return (e.g. /schedule) looked like it worked
+ * right up until the worker quietly rewrote it to "/" and dumped the user on
+ * the public homepage. Falling back to the dashboard here makes the mismatch
+ * visible instead of silent. If you add a prefix, add it in BOTH places.
  */
+const RETURN_ALLOWED_PREFIXES = [
+  "/admin",
+  "/manage",
+  "/pertrack",
+  "/inventory",
+  "/workorders",
+  "/schedule",
+  "/forms"
+];
+
 function sanitizeReturn(raw: string | undefined): string {
-  if (!raw) return "/admin/dashboard";
-  if (!raw.startsWith("/")) return "/admin/dashboard";
-  if (raw.startsWith("//")) return "/admin/dashboard"; // protocol-relative — reject
-  return raw;
+  const fallback = "/admin/dashboard";
+  if (!raw) return fallback;
+  if (!raw.startsWith("/")) return fallback;
+  if (raw.startsWith("//")) return fallback; // protocol-relative — reject
+  for (const prefix of RETURN_ALLOWED_PREFIXES) {
+    if (raw === prefix || raw.startsWith(prefix + "/") || raw.startsWith(prefix + "?")) {
+      return raw;
+    }
+  }
+  return fallback;
 }

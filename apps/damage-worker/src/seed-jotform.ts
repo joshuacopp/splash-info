@@ -554,11 +554,17 @@ export function jotNumberOf(uniqueId: string): string {
  * JOT# → claim_id for the hand-migrated claims, i.e. the same rows
  * `fetchMigratedJotNumbers` finds, but carrying the claim_id.
  *
- * The seed only ever needed "does this exist" (a Set). The photo pass needs
- * "which claim does this submission's files belong to", and for the nine
- * hand-migrated Copp locations the `jotform:` idempotency key is NULL — the
- * staff_notes JOT# is the only link back to the submission. Without this,
- * every pre-cutover Copp claim would silently get zero photos.
+ * The seed only ever needed "does this exist" (a Set). This variant carries the
+ * claim_id, for any pass that needs to attach something to a hand-migrated
+ * claim, whose `jotform:` idempotency key is NULL and whose staff_notes JOT# is
+ * the only link back to the submission.
+ *
+ * NO CURRENT CALLER. Written for the photo importer, then removed from it on
+ * 2026-08-18 — those claims already have their photos, and matching them would
+ * have written a duplicate copy of each under the importer's r2_key scheme.
+ * Kept because the JOT# join itself is correct and the next backfill that needs
+ * to reach those claims should not have to rediscover it. Check whether your
+ * pass can duplicate existing data before you wire it up.
  */
 export async function fetchClaimIdsByJotNumber(
   db: D1Database

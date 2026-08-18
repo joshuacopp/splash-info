@@ -568,13 +568,40 @@ async function handleMe(request: Request, env: Env): Promise<Response> {
  * Only same-origin paths to known tools are accepted; everything else
  * defaults to "/" (which apps/web will route to the dashboard tile grid
  * post-cutover).
+ *
+ * MUST STAY IN SYNC with two other lists, or deep links silently break:
+ *   - apps/web/middleware.ts `config.matcher` — every prefix that bounces an
+ *     unauthenticated user to /login?return=<path> has to be accepted here,
+ *     otherwise the return path survives the whole login flow and then gets
+ *     thrown away at the last step. That was the bug for /workorders,
+ *     /schedule and /forms: middleware preserved the path, this function
+ *     dropped it, and the user landed on the public homepage.
+ *   - apps/web/app/login/page.tsx `sanitizeReturn` — same list, so the form
+ *     shows the user the same target this function will honour.
+ *
+ * /inventory is NOT in apps/web's matcher — it's path-carved to the
+ * splash-inventory worker and never reaches Next middleware — but the SPA
+ * bounces to /login?return=<path> itself (see its AuthContext), so it needs
+ * a seat here all the same.
+ *
+ * /sysadmin is deliberately absent: it's an API prefix, not a page surface.
+ * The sysadmin UI lives at /admin/sysadmin and is covered by /admin.
  */
+const REDIRECT_ALLOWED_PREFIXES = [
+  "/admin",
+  "/manage",
+  "/pertrack",
+  "/inventory",
+  "/workorders",
+  "/schedule",
+  "/forms"
+];
+
 function sanitizeRedirect(target: string): string {
   if (!target) return "/";
   if (!target.startsWith("/")) return "/";
   if (target.startsWith("//")) return "/"; // protocol-relative — reject
-  const allowed = ["/admin", "/manage", "/pertrack"];
-  for (const prefix of allowed) {
+  for (const prefix of REDIRECT_ALLOWED_PREFIXES) {
     if (target === prefix || target.startsWith(prefix + "/") || target.startsWith(prefix + "?")) {
       return target;
     }
