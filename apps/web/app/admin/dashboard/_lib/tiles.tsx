@@ -86,9 +86,47 @@ function hasInventoryAccess(session: Session | null): boolean {
   return session.tools.includes("inventory");
 }
 
-function anySession(_session: Session | null): boolean {
-  // Page-level dcRole / email-on-locations gates apply at the destination.
-  return true;
+/**
+ * True for a session whose ONLY usable tool is chemical inventory: not
+ * super_admin, no damage-claim role, no promotions role, and exactly one tool
+ * grant which is `inventory`.
+ *
+ * This exists for the external-vendor population — chemical vendors get a
+ * `location_admin` row scoped to their sites plus the `inventory` grant, and
+ * nothing else. They aren't employees and have no reason to be shown the staff
+ * tiles.
+ *
+ * Deliberately narrow. The same argument applies to any single-tool session (a
+ * pricing-only or schedule-only account also sees a screen of dead tiles), but
+ * widening this changes what existing employees see, which is a policy call
+ * rather than a code one. Widen it when the tiles below get real predicates.
+ */
+function isInventoryOnly(session: Session | null): boolean {
+  if (!session) return false;
+  if (session.role === "super_admin") return false;
+  if (session.dcRole != null) return false;
+  if (session.promoRole != null) return false;
+  const tools = session.tools ?? [];
+  return tools.length === 1 && tools[0] === "inventory";
+}
+
+/**
+ * Tiles open to any signed-in STAFF member. Was `anySession` (literally
+ * `return true`), which held while every account belonged to an employee. It
+ * doesn't anymore: an inventory-only vendor landed on the dashboard and saw
+ * eight tiles, seven of which dead-end on an access message. None of them leak
+ * — every destination re-checks at the server layer — but it's a poor first
+ * impression and it generates support questions.
+ *
+ * Still true for a null session, preserving the documented fallback in
+ * dashboard/page.tsx: when the /api/me lookup fails, predicates evaluate
+ * against null and the staff tiles still render.
+ *
+ * This remains a UX hint only. Page-level dcRole / email-on-locations gates are
+ * still the actual access control.
+ */
+function allStaff(session: Session | null): boolean {
+  return !isInventoryOnly(session);
 }
 
 // ---------------------------------------------------------------------------
@@ -258,7 +296,7 @@ export const TILES: ReadonlyArray<Tile> = [
     description: "Recent customer enrollments by location.",
     href: "/admin/signups",
     icon: userPlusIcon,
-    visibleTo: anySession
+    visibleTo: allStaff
   },
   {
     id: "jotform",
@@ -268,7 +306,7 @@ export const TILES: ReadonlyArray<Tile> = [
     description: "Rewash, salt log, retention, and time card edits.",
     href: "/admin/jotform",
     icon: fileTextIcon,
-    visibleTo: anySession
+    visibleTo: allStaff
   },
   {
     id: "forms-submissions",
@@ -288,7 +326,7 @@ export const TILES: ReadonlyArray<Tile> = [
     description: "Submissions you submitted — waiting, approved, denied.",
     href: "/admin/my-requests",
     icon: sendIcon,
-    visibleTo: anySession
+    visibleTo: allStaff
   },
   {
     id: "fleet-inquiries",
@@ -310,7 +348,7 @@ export const TILES: ReadonlyArray<Tile> = [
     description: "Review and manage vehicle damage claims and resolutions.",
     href: "/admin/damage",
     icon: wrenchIcon,
-    visibleTo: anySession
+    visibleTo: allStaff
   },
   {
     id: "schedule",
@@ -330,7 +368,7 @@ export const TILES: ReadonlyArray<Tile> = [
     description: "View MaintainX work orders for your locations.",
     href: "/workorders",
     icon: wrenchIcon,
-    visibleTo: anySession
+    visibleTo: allStaff
   },
   {
     id: "pending-approvals",
@@ -340,7 +378,7 @@ export const TILES: ReadonlyArray<Tile> = [
     description: "Custom form submissions waiting on your review.",
     href: "/admin/approvals",
     icon: checkCircleIcon,
-    visibleTo: anySession
+    visibleTo: allStaff
   },
   {
     id: "inventory",
@@ -413,7 +451,7 @@ export const TILES: ReadonlyArray<Tile> = [
     description: "Set per-location MaxPass pricing.",
     href: "/admin/pricing",
     icon: creditCardIcon,
-    visibleTo: anySession
+    visibleTo: allStaff
   },
   {
     id: "form-builder",

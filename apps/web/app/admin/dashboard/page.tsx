@@ -13,15 +13,24 @@
 //
 // Server component. getMe() is best-effort: when the dashboard-worker
 // /api/me lookup fails, predicates evaluate against `null` and only the
-// `anySession` tiles count, so a sessionless caller still sees the groups
-// that have any-session sub-tiles.
+// `allStaff` tiles count, so a sessionless caller still sees the groups
+// that have staff-visible sub-tiles.
 //
 // Empty state: if zero groups have any visible sub-tile (theoretical — a
 // user with no accessible tools at all), the page renders a "No tools
 // available — contact a super_admin" message instead of empty space.
+//
+// Single-tile state: a session with exactly one visible tile (today, an
+// inventory-only chemical vendor) skips the group level entirely and gets that
+// tile rendered directly. Two clicks through a "Section: Operations — 1 tool"
+// card to reach the only thing you can open is pure friction. Kept general
+// rather than special-cased on `inventory` so it keeps working if the vendor
+// population later gains a second tile, or if another single-tool audience
+// appears.
 
 import Link from "next/link";
 import { getMe } from "../../_lib/me";
+import { DashboardTile } from "./_components/DashboardTile";
 import { GROUPS, TILES } from "./_lib/tiles";
 
 const GROUP_DESCRIPTIONS: Record<string, string> = {
@@ -33,12 +42,29 @@ const GROUP_DESCRIPTIONS: Record<string, string> = {
 export default async function AdminDashboardPage() {
   const session = await getMe().catch(() => null);
 
+  const visibleTiles = TILES.filter((tile) => tile.visibleTo(session));
+
   const visibleGroups = GROUPS.map((group) => ({
     group,
-    count: TILES.filter(
-      (tile) => tile.group === group.id && tile.visibleTo(session)
-    ).length
+    count: visibleTiles.filter((tile) => tile.group === group.id).length
   })).filter((entry) => entry.count > 0);
+
+  // Collapse the group level when there's nothing to choose between.
+  if (visibleTiles.length === 1) {
+    return (
+      <section className="mx-auto w-full max-w-[1100px] px-5 py-9">
+        <div className="mb-9">
+          <p className="mb-1 text-xs font-semibold uppercase tracking-[0.18em] text-sudsy-blue">
+            Internal Tools
+          </p>
+          <h1 className="text-2xl font-bold text-splash-navy">Dashboard</h1>
+        </div>
+        <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3">
+          <DashboardTile tile={visibleTiles[0]} />
+        </div>
+      </section>
+    );
+  }
 
   return (
     <section className="mx-auto w-full max-w-[1100px] px-5 py-9">

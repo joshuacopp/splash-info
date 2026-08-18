@@ -37,8 +37,13 @@ compatibility_flags = ["nodejs_compat"]
 workers_dev = true
 
 # Path-carve on the apex host so the worker shares the dashboard's host-only SSO
-# cookie. Staging is live; the production twin is staged commented per the
-# forms-worker / beekeeper cutover convention — uncomment on prod cutover.
+# cookie. Staging and production are BOTH live as of the 2026-08-18 cutover.
+#
+# Staging and prod are the same worker against the same Supabase project (see
+# SUPABASE_URL below) — the only difference is the hostname. So the cutover was
+# purely a routing change: no data migration, no separate secrets, and whatever
+# staging.splashcarwashes.info/inventory shows is exactly what production shows.
+# Rolling back means re-commenting the two prod lines and redeploying.
 #
 # NOTE: this MUST stay above the first [table] header. In TOML, a bare key that
 # follows a table header belongs to that table — when `routes` sat below
@@ -52,10 +57,10 @@ workers_dev = true
 # request to reach this worker.
 routes = [
   { pattern = "staging.splashcarwashes.info/inventory",   zone_name = "splashcarwashes.info" },
-  { pattern = "staging.splashcarwashes.info/inventory/*", zone_name = "splashcarwashes.info" }
-  # === PROD CUTOVER (uncomment on go-live) ===
-  # ,{ pattern = "splashcarwashes.info/inventory",   zone_name = "splashcarwashes.info" }
-  # ,{ pattern = "splashcarwashes.info/inventory/*", zone_name = "splashcarwashes.info" }
+  { pattern = "staging.splashcarwashes.info/inventory/*", zone_name = "splashcarwashes.info" },
+  # === PRODUCTION (live 2026-08-18) ===
+  { pattern = "splashcarwashes.info/inventory",   zone_name = "splashcarwashes.info" },
+  { pattern = "splashcarwashes.info/inventory/*", zone_name = "splashcarwashes.info" }
 ]
 
 # Static Assets: serve the built Vite SPA from ./dist.
