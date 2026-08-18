@@ -11,6 +11,12 @@
 // Submit shape: emits one <input type="hidden" name={name} value={code}>
 // per selected location_code so the server-side action reads the array
 // via formData.getAll(name).
+//
+// Brief 173 phase 2 added an optional controlled mode (`value` + `onChange`)
+// for the Access editor, which needs to mirror one picker's selection onto
+// another and diff both against a snapshot. Passing neither leaves the
+// original uncontrolled behaviour byte-for-byte intact, which is what the
+// Set role / Set DC Role / Create user cards still rely on.
 
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 
@@ -32,6 +38,19 @@ interface LocationCodeMultiPickerProps {
    * scoped to thirty sites at once.
    */
   enableRegionAdd?: boolean;
+  /**
+   * Brief 173 phase 2 — controlled mode. Pass `value` (plus `onChange`) and
+   * the parent owns the selection; omit it and the component keeps the
+   * uncontrolled `defaultValues` + hidden-input behaviour every other card
+   * relies on. The hidden inputs render either way, so a controlled caller
+   * can still submit through the form if it wants to.
+   *
+   * Chip labels stay internal in both modes — the parent only ever deals in
+   * location_code strings, and this component resolves the pretty names.
+   */
+  value?: string[];
+  /** Fires with the new code list on add / remove / region-add. */
+  onChange?: (codes: string[]) => void;
 }
 
 interface LocationCodeSearchRow {
@@ -64,14 +83,17 @@ export function LocationCodeMultiPicker({
   defaultValues,
   placeholder,
   disabled,
-  enableRegionAdd
+  enableRegionAdd,
+  value,
+  onChange
 }: LocationCodeMultiPickerProps) {
+  const controlled = value !== undefined;
   const listboxId = useId();
   const optionIdPrefix = useId();
   const regionSelectId = useId();
 
   const [selected, setSelected] = useState<LocationCodeSearchRow[]>(() =>
-    (defaultValues ?? []).map((code) => ({
+    (value ?? defaultValues ?? []).map((code) => ({
       location_code: code,
       location_pretty: null,
       site: null
@@ -92,33 +114,90 @@ export function LocationCodeMultiPicker({
   const fetchSeqRef = useRef(0);
   const containerRef = useRef<HTMLDivElement>(null);
 
-  // Resolve pretty labels for any pre-filled defaultValues. One call on
-  // mount; uses a per-code prefix query and stitches the matching rows
-  // back onto the selection state.
+  // Every row we've ever seen a label for, so a code that leaves the
+  // selection and comes back doesn't render as a bare slug again.
+  const labelCacheRef = useRef<Map<string, LocationCodeSearchRow>>(new Map());
+  for (const row of selected) {
+    if (row.location_pretty !== null) {
+      labelCacheRef.current.set(row.location_code, row);
+    }
+  }
+
+  // Controlled mode — mirror the parent's code list onto the internal row
+  // state, reusing any label we've already resolved. Uncontrolled callers
+  // skip this entirely and `selected` stays the source of truth.
+  const valueKey = controlled ? (value ?? []).join(",") : null;
   useEffect(() => {
-    const codes = (defaultValues ?? []).filter((c) => c.length > 0);
+    if (!controlled) return;
+    const codes = value ?? [];
+    setSelected((prev) => {
+      const known = new Map(labelCacheRef.current);
+      for (const r of prev) known.set(r.location_code, r);
+      if (
+        prev.length === codes.length &&
+        codes.every((c, i) => prev[i]?.location_code === c)
+      ) {
+        return prev;
+      }
+      return codes.map(
+        (code) =>
+          known.get(code) ?? {
+            location_code: code,
+            location_pretty: null,
+            site: null
+          }
+      );
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [controlled, valueKey]);
+
+  // Resolve pretty labels for any chip we don't have one for yet — the
+  // pre-filled defaultValues on mount, and (in controlled mode) whatever
+  // the parent hands us later. Codes are attempted once each; the ref
+  // stops a failed lookup from retrying on every render.
+  const labelTriedRef = useRef<Set<string>>(new Set());
+  const unresolved = selected
+    .filter((r) => r.location_pretty === null && r.location_code.length > 0)
+    .map((r) => r.location_code)
+    .filter((c) => !labelTriedRef.current.has(c));
+  const unresolvedKey = unresolved.join(",");
+
+  useEffect(() => {
+    const codes = unresolvedKey.length > 0 ? unresolvedKey.split(",") : [];
     if (codes.length === 0) return;
+    for (const code of codes) labelTriedRef.current.add(code);
 
     let cancelled = false;
     (async () => {
       try {
-        // The search endpoint matches by ilike substring; querying for
-        // each unique code-prefix and merging is the simplest way to get
-        // the pretty label for an arbitrary list. Failures are silent —
-        // the chip falls back to the raw code.
+        // The search endpoint matches by ilike substring, so there is no
+        // batch form — one query per code, merged. Chunked rather than
+        // fully sequential because a regional manager can carry thirty
+        // codes and thirty round-trips in series is a visible stall.
         const merged: Record<string, LocationCodeSearchRow> = {};
-        for (const code of codes) {
-          const url = `/sysadmin/api/pricing-simple/locations?q=${encodeURIComponent(code)}`;
-          const resp = await fetch(url, {
-            method: "GET",
-            credentials: "include",
-            cache: "no-store"
-          });
-          if (!resp.ok) continue;
-          const rows = (await resp.json()) as LocationCodeSearchRow[];
-          for (const row of rows) {
-            if (codes.includes(row.location_code)) {
-              merged[row.location_code] = row;
+        const wanted = new Set(codes);
+        for (let i = 0; i < codes.length; i += 8) {
+          if (cancelled) return;
+          const batch = codes.slice(i, i + 8);
+          const responses = await Promise.all(
+            batch.map(async (code) => {
+              try {
+                const url = `/sysadmin/api/pricing-simple/locations?q=${encodeURIComponent(code)}`;
+                const resp = await fetch(url, {
+                  method: "GET",
+                  credentials: "include",
+                  cache: "no-store"
+                });
+                if (!resp.ok) return [];
+                return (await resp.json()) as LocationCodeSearchRow[];
+              } catch {
+                return [];
+              }
+            })
+          );
+          for (const rows of responses) {
+            for (const row of rows) {
+              if (wanted.has(row.location_code)) merged[row.location_code] = row;
             }
           }
         }
@@ -134,8 +213,7 @@ export function LocationCodeMultiPicker({
     return () => {
       cancelled = true;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [unresolvedKey]);
 
   useEffect(() => {
     if (debounceRef.current !== null) {
@@ -211,12 +289,27 @@ export function LocationCodeMultiPicker({
     return () => document.removeEventListener("mousedown", onDocClick);
   }, [open]);
 
+  // Single write path for the three mutations below. Controlled: hand the
+  // codes up and let the sync effect above bring `selected` back round —
+  // writing state here too would race the parent. Uncontrolled: apply it
+  // directly, which is what the existing cards have always done.
+  function commit(next: LocationCodeSearchRow[]) {
+    for (const row of next) {
+      if (row.location_pretty !== null) {
+        labelCacheRef.current.set(row.location_code, row);
+      }
+    }
+    if (controlled) {
+      onChange?.(next.map((r) => r.location_code));
+      return;
+    }
+    setSelected(next);
+  }
+
   function add(row: LocationCodeSearchRow) {
-    setSelected((prev) =>
-      prev.some((p) => p.location_code === row.location_code)
-        ? prev
-        : [...prev, row]
-    );
+    if (!selected.some((p) => p.location_code === row.location_code)) {
+      commit([...selected, row]);
+    }
     setQuery("");
     setResults([]);
     setOpen(false);
@@ -224,7 +317,7 @@ export function LocationCodeMultiPicker({
   }
 
   function remove(code: string) {
-    setSelected((prev) => prev.filter((p) => p.location_code !== code));
+    commit(selected.filter((p) => p.location_code !== code));
   }
 
   // Region roster — one fetch on mount, only when the affordance is on.
@@ -276,15 +369,12 @@ export function LocationCodeMultiPicker({
         return;
       }
       const rows = (await resp.json()) as LocationCodeSearchRow[];
-      // Diffed against `selected` here rather than inside the updater on
-      // purpose: StrictMode invokes a functional updater twice, so a counter
+      // Diffed against `selected` here rather than inside a functional
+      // updater on purpose: StrictMode invokes those twice, so a counter
       // assigned in there reads 0 on the second pass and the note lies.
       const have = new Set(selected.map((p) => p.location_code));
       const fresh = rows.filter((r) => !have.has(r.location_code));
-      setSelected((prev) => {
-        const seen = new Set(prev.map((p) => p.location_code));
-        return [...prev, ...fresh.filter((r) => !seen.has(r.location_code))];
-      });
+      if (fresh.length > 0) commit([...selected, ...fresh]);
       // Report both numbers: "30 sites, 4 already selected" is the difference
       // between a working button and one the operator thinks did nothing.
       const dupes = rows.length - fresh.length;

@@ -26,8 +26,10 @@
 //                                          Takes DESIRED state and diffs it
 //                                          against live DB state; absent
 //                                          domain key = leave alone, empty
-//                                          array = remove all. Phase 1: the
-//                                          `tools` key only.
+//                                          array = remove all. Covers all
+//                                          four domains: tools, role +
+//                                          locations, dc_role +
+//                                          dc_locations, promo_role.
 //   POST  /sysadmin/api/reset-password   — admin-triggered password reset
 //                                          (FLIPS must_change_password = true
 //                                          per Josh's password-set policy —
@@ -786,12 +788,28 @@ async function handleResetPassword(
  * The unified access editor's single write surface. Body carries DESIRED
  * state, not a delta:
  *
- *   { tools?: ToolName[], expect?: { tools?: ToolName[] } }
+ *   {
+ *     tools?: ToolName[],
+ *     role?: UserRole | null,       locations?:    string[],
+ *     dc_role?: DcRole | null,      dc_locations?: string[],
+ *     promo_role?: PromoRole | null,
+ *     expect?: { ...any of the above... }
+ *   }
  *
  * Key semantics — an ABSENT domain key means "don't touch that domain"; an
- * empty array means "remove everything in that domain". Phase 1 accepts
- * `tools` only; phase 2 adds role/locations, dc_role/dc_locations and
- * promo_role behind the same contract so a four-domain edit stays one submit.
+ * empty array means "remove everything in that domain". A domain is claimed
+ * by its ROLE key: `locations` is only read when `role` is present, and
+ * `dc_locations` only when `dc_role` is present. That keeps a partial submit
+ * (phase 1's tools-only card, phase 3's presets) from silently clearing a
+ * domain the form wasn't showing.
+ *
+ * Per-domain write strategy, which is the asymmetry this endpoint exists to
+ * hide: setDcRole and setPromoRole already reconcile — they wipe and
+ * re-insert on every call, so this handler just forwards desired state and
+ * skips the call entirely when nothing differs (they'd otherwise churn rows
+ * and write a no-change audit row). Pricing is the odd one out: setRole is
+ * additive by design, so removals are computed here and issued as
+ * per-location deletes.
  *
  * Why the handler diffs instead of the caller: set-role deliberately has no
  * replace path (adding one location to a seven-site admin must not leave them
@@ -812,11 +830,19 @@ async function handleResetPassword(
  * catches the pricing_simple -> user_permissions email trigger firing
  * between page load and submit.
  *
- * Audit: one row per actually-changed tool, reusing the existing grant_tool /
- * revoke_tool action names so ALLOWED_AUDIT_ACTIONS and the audit-log filters
- * need no edit. Unlike the single-tool cards this does NOT write *_noop rows:
- * a desired-state submit necessarily re-sends every tool the user already
- * has, and logging those as attempted grants would bury real changes.
+ * Audit: one row per actually-changed domain (per changed tool and per removed
+ * location, since those are per-row operations), reusing the existing action
+ * names — grant_tool, revoke_tool, set_role_*, clear_role, remove_location,
+ * set_dc_role, set_promo_role — so ALLOWED_AUDIT_ACTIONS and the audit-log
+ * filters need no edit. Unlike the single-purpose cards this does NOT write
+ * *_noop rows: a desired-state submit necessarily re-sends everything the
+ * user already has, and logging that as an attempted grant would bury the
+ * real changes.
+ *
+ * NOT atomic. Supabase JS exposes no transactions, so a mid-flight failure
+ * leaves earlier writes applied — the same trade setDcRole and setRole
+ * already make internally. Everything that can be validated is validated
+ * before the first write for exactly this reason.
  *
  * super_admin gate + isOriginAllowed both enforced at the top of fetch().
  * ============================================================ */
@@ -829,50 +855,158 @@ async function handleSetUserAccess(
 ): Promise<Response> {
   if (!userId) return jsonError(400, "user_id required");
 
-  const toolsSupplied = Object.prototype.hasOwnProperty.call(body, "tools");
-  if (!toolsSupplied) {
+  const supplied = (key: string) => Object.prototype.hasOwnProperty.call(body, key);
+  const wantsTools = supplied("tools");
+  const wantsPricing = supplied("role");
+  const wantsDc = supplied("dc_role");
+  const wantsPromo = supplied("promo_role");
+  if (!wantsTools && !wantsPricing && !wantsDc && !wantsPromo) {
     return jsonError(400, "no access domain supplied");
   }
-  if (!Array.isArray(body.tools)) {
-    return jsonError(400, "tools must be an array");
+
+  /* ---- desired tools ---- */
+  let desiredTools: ToolName[] = [];
+  if (wantsTools) {
+    if (!Array.isArray(body.tools)) return jsonError(400, "tools must be an array");
+    const parsed = parseToolList(body.tools);
+    if (parsed === null) return jsonError(400, "tools contains an unknown tool");
+    desiredTools = parsed;
   }
 
-  const desiredTools = parseToolList(body.tools);
-  if (desiredTools === null) return jsonError(400, "tools contains an unknown tool");
-
-  const expect = isRecord(body.expect) ? body.expect : null;
-  const expectTools =
-    expect && Array.isArray(expect.tools) ? parseToolList(expect.tools) : null;
-  if (expect && Array.isArray(expect.tools) && expectTools === null) {
-    return jsonError(400, "expect.tools contains an unknown tool");
+  /* ---- desired pricing role + locations ---- */
+  let desiredRole: UserRole | null = null;
+  let desiredLocations: string[] = [];
+  if (wantsPricing) {
+    const raw = body.role;
+    if (raw !== null) {
+      if (typeof raw !== "string" || !VALID_ROLES.has(raw as UserRole)) {
+        return jsonError(400, `Invalid role: ${String(raw)}`);
+      }
+      desiredRole = raw as UserRole;
+    }
+    const locs = parseLocationCodes(body.locations, SET_ROLE_MAX_LOCATIONS);
+    if (typeof locs === "string") return jsonError(400, locs);
+    desiredLocations = locs;
+    // Decision (Josh, 2026-08-18): clearing the last location off a
+    // location_admin is a mis-click, not a request to strip the role. Block
+    // it and make the operator say "no role" out loud. setRole would throw on
+    // the empty array anyway; this turns a 500-shaped failure into guidance.
+    if (desiredRole === "location_admin" && desiredLocations.length === 0) {
+      return jsonError(
+        400,
+        "A location_admin needs at least one location. To take all of their access away, set the role to none instead."
+      );
+    }
+    // super_admin rows carry location_code = NULL, so any locations sent
+    // alongside it are meaningless. Drop them rather than 400 — the UI hides
+    // the picker on super_admin and the stale array is its leftovers.
+    if (desiredRole === "super_admin") desiredLocations = [];
   }
 
+  /* ---- desired DC role + locations ---- */
+  let desiredDcRole: DcRole | null = null;
+  let desiredDcLocations: string[] = [];
+  if (wantsDc) {
+    const raw = body.dc_role;
+    if (raw !== null) {
+      if (typeof raw !== "string" || !VALID_DC_ROLES.has(raw as DcRole)) {
+        return jsonError(400, `Invalid dc_role: ${String(raw)}`);
+      }
+      desiredDcRole = raw as DcRole;
+    }
+    const locs = parseLocationCodes(body.dc_locations, DC_ROLE_MAX_LOCATIONS);
+    if (typeof locs === "string") return jsonError(400, locs);
+    desiredDcLocations = locs;
+    if ((desiredDcRole === "gm" || desiredDcRole === "rm") && desiredDcLocations.length === 0) {
+      return jsonError(400, "dc_locations is required when dc_role is gm or rm");
+    }
+    // admin / super_admin bypass location scoping; setDcRole wipes the rows
+    // either way, so don't pretend the array meant something.
+    if (desiredDcRole === "admin" || desiredDcRole === "super_admin") desiredDcLocations = [];
+  }
+
+  /* ---- desired promo role ---- */
+  let desiredPromoRole: PromoRole | null = null;
+  if (wantsPromo) {
+    const raw = body.promo_role;
+    if (raw !== null) {
+      if (typeof raw !== "string" || !VALID_PROMO_ROLES.has(raw as PromoRole)) {
+        return jsonError(400, `Invalid promo_role: ${String(raw)}`);
+      }
+      desiredPromoRole = raw as PromoRole;
+    }
+  }
+
+  /* ---- live snapshot ---- */
   const before = await fetchAuthUnifiedRow(env, userId);
   if (before === null) return jsonError(404, "user not found");
-  const currentTools = parseTextArray(before.tools);
+  const current = {
+    role: stringOrNull(before.role),
+    locations: parseTextArray(before.locations),
+    tools: parseTextArray(before.tools),
+    dc_role: stringOrNull(before.dc_role),
+    dc_locations: parseTextArray(before.dc_locations),
+    promo_role: stringOrNull(before.promo_role)
+  };
 
-  if (expectTools !== null && !sameSet(expectTools, currentTools)) {
-    return jsonStatus(
-      {
-        ok: false,
-        error:
-          "This user's tool access changed since the form was loaded. Reload to see the current state before submitting.",
-        conflict: { domain: "tools", expected: expectTools, current: currentTools },
-        permissions: before
-      },
-      409
-    );
+  /* ---- optimistic concurrency ---- */
+  if (isRecord(body.expect)) {
+    const conflict = findAccessConflict(body.expect, current);
+    if (conflict !== null) {
+      return jsonStatus(
+        {
+          ok: false,
+          error: `This user's ${conflict.label} changed since the form was loaded. Reload to see the current state before submitting.`,
+          conflict,
+          permissions: before
+        },
+        409
+      );
+    }
   }
 
-  const added: ToolName[] = desiredTools.filter((t) => !currentTools.includes(t));
-  const removed = currentTools.filter(
-    (t): t is ToolName => VALID_TOOLS.has(t as ToolName) && !desiredTools.includes(t as ToolName)
-  );
+  /* ---- diffs ---- */
+  const toolsAdded = wantsTools
+    ? desiredTools.filter((t) => !current.tools.includes(t))
+    : [];
+  const toolsRemoved = wantsTools
+    ? current.tools.filter(
+        (t): t is ToolName =>
+          VALID_TOOLS.has(t as ToolName) && !desiredTools.includes(t as ToolName)
+      )
+    : [];
+
+  const roleChanged = wantsPricing && desiredRole !== current.role;
+  // Location adds/removes only mean something for a location_admin. On
+  // super_admin setRole collapses the row set itself, and on a clear
+  // clearRole takes everything — per-location deletes would be redundant.
+  const locationsAdded =
+    wantsPricing && desiredRole === "location_admin"
+      ? desiredLocations.filter((c) => !current.locations.includes(c))
+      : [];
+  const locationsRemoved =
+    wantsPricing && desiredRole === "location_admin"
+      ? current.locations.filter((c) => !desiredLocations.includes(c))
+      : [];
+
+  const dcChanged =
+    wantsDc &&
+    (desiredDcRole !== current.dc_role ||
+      !sameSet(desiredDcLocations, current.dc_locations));
+  const promoChanged = wantsPromo && desiredPromoRole !== current.promo_role;
+
+  // user_permissions.email is NOT NULL, so a pricing write needs an email in
+  // hand. Fail before the first write rather than halfway through — this
+  // endpoint has no transaction to roll back (Supabase JS exposes none).
+  const email = stringOrNull(before.email);
+  if (wantsPricing && desiredRole !== null && email === null) {
+    return jsonError(400, "User has no email on file");
+  }
 
   const sb = createServiceClient(env);
 
-  // Adds first — see the ordering note in the block comment above.
-  for (const tool of added) {
+  /* ---- phase A: adds and upgrades (see ordering note above) ---- */
+  for (const tool of toolsAdded) {
     const result = await grantTool(sb, {
       userId,
       tool,
@@ -891,7 +1025,124 @@ async function handleSetUserAccess(
     }
   }
 
-  for (const tool of removed) {
+  if (desiredRole !== null && (roleChanged || locationsAdded.length > 0)) {
+    // setRole is additive within location_admin and replaces on a role
+    // transition. Passing the FULL desired set is right for both: additive
+    // filters out what's already held, replace collapses to exactly this set.
+    const { before: roleBefore, after: roleAfter } = await setRole(sb, {
+      userId,
+      email: email ?? "",
+      role: desiredRole,
+      locationCodes: desiredLocations
+    });
+    await logSysadminAudit(sb, {
+      actor,
+      action:
+        desiredRole === "super_admin" ? "set_role_super_admin" : "set_role_location_admin",
+      target_type: "user_permissions",
+      target_id: userId,
+      before: roleBefore,
+      after: roleAfter
+    });
+  }
+
+  if (dcChanged && desiredDcRole !== null) {
+    const { before: dcBefore, after: dcAfter } = await setDcRole(sb, {
+      userId,
+      email: email ?? "",
+      role: desiredDcRole,
+      locationCodes: desiredDcLocations
+    });
+    await logSysadminAudit(sb, {
+      actor,
+      action: "set_dc_role",
+      target_type: "damage_claim_user_roles",
+      target_id: userId,
+      before: dcBefore,
+      after: dcAfter
+    });
+  }
+
+  if (promoChanged && desiredPromoRole !== null) {
+    const { before: promoBefore, after: promoAfter } = await setPromoRole(sb, {
+      userId,
+      role: desiredPromoRole,
+      createdBy: actor.id
+    });
+    await logSysadminAudit(sb, {
+      actor,
+      action: "set_promo_role",
+      target_type: "promo_user_roles",
+      target_id: userId,
+      before: promoBefore,
+      after: promoAfter
+    });
+  }
+
+  /* ---- phase B: removals ---- */
+  for (const code of locationsRemoved) {
+    const deleted = await deleteUserPermissionLocation(env, userId, code);
+    if (deleted !== null) {
+      await logSysadminAudit(sb, {
+        actor,
+        action: "remove_location",
+        target_type: "user_permissions",
+        target_id: `${userId}|${code}`,
+        before: deleted,
+        after: null
+      });
+    }
+  }
+
+  const roleCleared =
+    wantsPricing &&
+    desiredRole === null &&
+    (current.role !== null || current.locations.length > 0);
+  if (roleCleared) {
+    const cleared = await clearRole(sb, userId);
+    await logSysadminAudit(sb, {
+      actor,
+      action: "clear_role",
+      target_type: "user_permissions",
+      target_id: userId,
+      before: cleared,
+      after: null
+    });
+  }
+
+  if (dcChanged && desiredDcRole === null) {
+    const { before: dcBefore, after: dcAfter } = await setDcRole(sb, {
+      userId,
+      email: email ?? "",
+      role: null
+    });
+    await logSysadminAudit(sb, {
+      actor,
+      action: "set_dc_role",
+      target_type: "damage_claim_user_roles",
+      target_id: userId,
+      before: dcBefore,
+      after: dcAfter
+    });
+  }
+
+  if (promoChanged && desiredPromoRole === null) {
+    const { before: promoBefore, after: promoAfter } = await setPromoRole(sb, {
+      userId,
+      role: null,
+      createdBy: actor.id
+    });
+    await logSysadminAudit(sb, {
+      actor,
+      action: "set_promo_role",
+      target_type: "promo_user_roles",
+      target_id: userId,
+      before: promoBefore,
+      after: promoAfter
+    });
+  }
+
+  for (const tool of toolsRemoved) {
     const result = await revokeTool(sb, { userId, tool });
     if (result.was_present) {
       await logSysadminAudit(sb, {
@@ -905,16 +1156,113 @@ async function handleSetUserAccess(
     }
   }
 
-  const after = added.length > 0 || removed.length > 0
-    ? await fetchAuthUnifiedRow(env, userId)
-    : before;
+  const changed =
+    toolsAdded.length > 0 ||
+    toolsRemoved.length > 0 ||
+    locationsAdded.length > 0 ||
+    locationsRemoved.length > 0 ||
+    roleChanged ||
+    dcChanged ||
+    promoChanged;
+
+  const after = changed ? await fetchAuthUnifiedRow(env, userId) : before;
 
   return json({
     ok: true,
-    changed: added.length > 0 || removed.length > 0,
-    tools: { added, removed },
+    changed,
+    tools: { added: toolsAdded, removed: toolsRemoved },
+    locations: { added: locationsAdded, removed: locationsRemoved },
+    role: roleChanged ? { from: current.role, to: desiredRole } : null,
+    dc_role: dcChanged ? { from: current.dc_role, to: desiredDcRole } : null,
+    promo_role: promoChanged ? { from: current.promo_role, to: desiredPromoRole } : null,
     permissions: after ?? before
   });
+}
+
+/** Validate a raw locations array. Returns the trimmed codes, or an error
+ *  string the caller turns into a 400. Same rules as set-role / dc-role. */
+function parseLocationCodes(raw: unknown, max: number): string[] | string {
+  if (raw === undefined || raw === null) return [];
+  if (!Array.isArray(raw)) return "location arrays must be arrays of codes";
+  if (raw.length > max) return `location arrays may contain at most ${max} entries`;
+  const out: string[] = [];
+  for (const entry of raw) {
+    if (typeof entry !== "string") return "location codes must be strings";
+    const trimmed = entry.trim();
+    if (!LOCATION_CODE_RE.test(trimmed)) return `Invalid location_code: ${entry}`;
+    if (!out.includes(trimmed)) out.push(trimmed);
+  }
+  return out;
+}
+
+/** Compare the caller's `expect` snapshot against live state. Only keys the
+ *  caller actually sent are checked, so a form that edits one domain doesn't
+ *  409 on drift in a domain it wasn't showing. */
+function findAccessConflict(
+  expect: Record<string, unknown>,
+  current: {
+    role: string | null;
+    locations: string[];
+    tools: string[];
+    dc_role: string | null;
+    dc_locations: string[];
+    promo_role: string | null;
+  }
+): { domain: string; label: string; expected: unknown; current: unknown } | null {
+  const scalars: Array<[string, string, string | null]> = [
+    ["role", "role", current.role],
+    ["dc_role", "DC role", current.dc_role],
+    ["promo_role", "promo role", current.promo_role]
+  ];
+  for (const [key, label, live] of scalars) {
+    if (!Object.prototype.hasOwnProperty.call(expect, key)) continue;
+    const want = expect[key] === null ? null : stringOrNull(expect[key]);
+    if (want !== live) return { domain: key, label, expected: want, current: live };
+  }
+
+  const sets: Array<[string, string, string[]]> = [
+    ["tools", "tool access", current.tools],
+    ["locations", "locations", current.locations],
+    ["dc_locations", "DC locations", current.dc_locations]
+  ];
+  for (const [key, label, live] of sets) {
+    const want = expect[key];
+    if (!Array.isArray(want)) continue;
+    const wantStrings = want.filter((v): v is string => typeof v === "string");
+    if (!sameSet(wantStrings, live)) {
+      return { domain: key, label, expected: wantStrings, current: live };
+    }
+  }
+  return null;
+}
+
+/** Delete one (user_id, location_code) row from user_permissions. Returns the
+ *  deleted row, or null when there was nothing to delete. Shared by the
+ *  access editor's removal phase and POST /sysadmin/api/remove-location. */
+async function deleteUserPermissionLocation(
+  env: Env,
+  userId: string,
+  locationCode: string
+): Promise<unknown | null> {
+  const restUrl =
+    `${env.SUPABASE_URL}/rest/v1/user_permissions` +
+    `?user_id=eq.${encodeURIComponent(userId)}` +
+    `&location_code=eq.${encodeURIComponent(locationCode)}`;
+
+  const resp = await fetch(restUrl, {
+    method: "DELETE",
+    headers: {
+      apikey: env.SUPABASE_SERVICE_KEY,
+      Authorization: `Bearer ${env.SUPABASE_SERVICE_KEY}`,
+      Prefer: "return=representation"
+    }
+  });
+  if (!resp.ok) {
+    const errText = await resp.text().catch(() => "");
+    throw new Error(`Remove failed: ${resp.status} ${errText}`);
+  }
+  const deleted = (await resp.json().catch(() => [])) as unknown[];
+  return Array.isArray(deleted) && deleted.length > 0 ? (deleted[0] ?? null) : null;
 }
 
 /** Validate a raw array into deduped ToolNames. null = contains an unknown. */
@@ -1603,25 +1951,12 @@ async function handleRemoveLocation(
     );
   }
 
-  const restUrl =
-    `${env.SUPABASE_URL}/rest/v1/user_permissions` +
-    `?user_id=eq.${encodeURIComponent(userId)}` +
-    `&location_code=eq.${encodeURIComponent(locationCode)}`;
-
-  const resp = await fetch(restUrl, {
-    method: "DELETE",
-    headers: {
-      apikey: env.SUPABASE_SERVICE_KEY,
-      Authorization: `Bearer ${env.SUPABASE_SERVICE_KEY}`,
-      Prefer: "return=representation"
-    }
-  });
-  if (!resp.ok) {
-    const errText = await resp.text().catch(() => "");
-    return jsonError(500, `Remove failed: ${resp.status} ${errText}`);
-  }
-  const deleted = (await resp.json().catch(() => [])) as unknown[];
-  const wasPresent = Array.isArray(deleted) && deleted.length > 0;
+  // Brief 173 — the REST delete moved to deleteUserPermissionLocation() so
+  // this endpoint and the access editor's removal phase can't drift apart.
+  // A failed delete now throws and lands on fetch()'s catch as a 500, same
+  // status as the inline check it replaced.
+  const deleted = await deleteUserPermissionLocation(env, userId, locationCode);
+  const wasPresent = deleted !== null;
 
   const sb = createServiceClient(env);
   if (wasPresent) {
@@ -1630,7 +1965,7 @@ async function handleRemoveLocation(
       action: "remove_location",
       target_type: "user_permissions",
       target_id: `${userId}|${locationCode}`,
-      before: deleted[0] ?? null,
+      before: deleted,
       after: null
     });
   } else {

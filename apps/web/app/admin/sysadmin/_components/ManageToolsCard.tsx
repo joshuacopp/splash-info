@@ -25,31 +25,7 @@ import { ActionForm, type ActionResult } from "../../_components/ActionForm";
 import { FieldLabel, submitClass } from "./OperationCard";
 import { UserPicker, type SelectedUser } from "./UserPicker";
 import { setToolAccessAction } from "../actions";
-
-const ALL_TOOLS = [
-  "pricing",
-  "claims",
-  "pertrack",
-  "form_submissions",
-  "schedule",
-  "inventory"
-] as const;
-
-type Tool = (typeof ALL_TOOLS)[number];
-
-/** What each grant actually opens up, in operator terms. */
-const TOOL_HELP: Record<Tool, string> = {
-  pricing: "Pricing admin",
-  claims: "Damage claims — also needs a DC role",
-  pertrack: "Greeter scorecard",
-  form_submissions: "Form submissions viewer — also needs locations",
-  schedule: "Scheduling",
-  inventory: "Chemical inventory"
-};
-
-function sortTools(tools: readonly string[]): string[] {
-  return ALL_TOOLS.filter((t) => tools.includes(t));
-}
+import { ALL_TOOLS, TOOL_HELP, sortTools, type Tool } from "./tools";
 
 export function ManageToolsCard() {
   const [selected, setSelected] = useState<SelectedUser | null>(null);

@@ -556,6 +556,123 @@ function describeToolChange(body: unknown): string {
 }
 
 /* ============================================================
+ * Brief 173 phase 2 — unified access editor (plain-arg)
+ *
+ * The Access editor card owns rich client state across four domains, so it
+ * calls this directly rather than through <ActionForm>/FormData — flattening
+ * two location arrays and three nullable roles into form fields and back
+ * would be pure ceremony. Same sysadminPostJson transport as everything else.
+ *
+ * All six keys are always sent. The worker treats an absent key as "leave
+ * this domain alone", which is the right default for a partial caller but
+ * wrong here: this form IS the whole picture, so an unticked box has to mean
+ * "remove", not "unspecified".
+ *
+ * `expect` is the snapshot the form was rendered from. The worker diffs it
+ * against live state and 409s without writing if anything drifted — the
+ * pricing_simple -> user_permissions email trigger being the realistic cause.
+ * On 409 the client reloads the panel rather than retrying.
+ * ============================================================ */
+
+// Not exported — "use server" modules may only export async functions. The
+// client component keeps its own structurally-identical copies.
+interface AccessDesiredState {
+  role: string | null;
+  locations: string[];
+  tools: string[];
+  dc_role: string | null;
+  dc_locations: string[];
+  promo_role: string | null;
+}
+
+interface AccessActionResult {
+  ok: boolean;
+  error?: string;
+  /** Present on failure — 409 means "stale snapshot, reload", not "bad input". */
+  status?: number;
+  /** Operator-facing summary of what actually changed. */
+  message?: string;
+  changed?: boolean;
+}
+
+export async function setUserAccessAction(
+  userId: string,
+  desired: AccessDesiredState,
+  expect: AccessDesiredState
+): Promise<AccessActionResult> {
+  if (userId.length === 0) return { ok: false, error: "No user selected." };
+
+  const result = await sysadminPostJson(
+    `/sysadmin/api/users/${encodeURIComponent(userId)}/access`,
+    {
+      role: desired.role,
+      locations: desired.locations,
+      tools: desired.tools as ToolName[],
+      dc_role: desired.dc_role,
+      dc_locations: desired.dc_locations,
+      promo_role: desired.promo_role,
+      expect: {
+        role: expect.role,
+        locations: expect.locations,
+        tools: expect.tools,
+        dc_role: expect.dc_role,
+        dc_locations: expect.dc_locations,
+        promo_role: expect.promo_role
+      }
+    }
+  );
+
+  if (!result.ok) {
+    return { ok: false, error: result.error, status: result.status };
+  }
+
+  revalidatePath(PAGE_PATH);
+  const changed = readChanged(result.body);
+  return { ok: true, changed, message: describeAccessChange(result.body) };
+}
+
+/** Fold the worker's per-domain result into one line of operator copy. */
+function describeAccessChange(body: unknown): string {
+  if (!body || typeof body !== "object") return "Access saved";
+  const b = body as Record<string, unknown>;
+  const parts: string[] = [];
+
+  const listOf = (key: string, sub: "added" | "removed"): string[] => {
+    const domain = b[key];
+    if (!domain || typeof domain !== "object") return [];
+    const raw = (domain as Record<string, unknown>)[sub];
+    return Array.isArray(raw)
+      ? raw.filter((v): v is string => typeof v === "string")
+      : [];
+  };
+
+  const transition = (key: string, label: string): void => {
+    const t = b[key];
+    if (!t || typeof t !== "object") return;
+    const to = (t as { to?: unknown }).to;
+    parts.push(
+      typeof to === "string" ? `${label} → ${to}` : `${label} cleared`
+    );
+  };
+
+  transition("role", "Role");
+  transition("dc_role", "DC role");
+  transition("promo_role", "Promo role");
+
+  const locAdded = listOf("locations", "added");
+  const locRemoved = listOf("locations", "removed");
+  if (locAdded.length > 0) parts.push(`+${locAdded.length} location${locAdded.length === 1 ? "" : "s"}`);
+  if (locRemoved.length > 0) parts.push(`−${locRemoved.length} location${locRemoved.length === 1 ? "" : "s"}`);
+
+  const toolsAdded = listOf("tools", "added");
+  const toolsRemoved = listOf("tools", "removed");
+  if (toolsAdded.length > 0) parts.push(`Granted ${toolsAdded.join(", ")}`);
+  if (toolsRemoved.length > 0) parts.push(`Revoked ${toolsRemoved.join(", ")}`);
+
+  return parts.length === 0 ? "Already matched — no change" : parts.join(" · ");
+}
+
+/* ============================================================
  * Permissions viewer — inline remove actions (plain-arg)
  *
  * The View Permissions card removes grants inline (per-chip ✕) instead of

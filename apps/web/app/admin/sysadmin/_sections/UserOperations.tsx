@@ -1,26 +1,24 @@
-// Eight user-management cards. Brief 30 split this out from page.tsx as
-// part of the two-mode hub restructure (Manage Users / Manage Tables).
+// The user-management cards. Brief 30 split this out from page.tsx as part
+// of the two-mode hub restructure (Manage Users / Manage Tables).
 //
-// Cards (in order): Create user, Set role, Set DC Role (Brief 61), Set
-// Promo Role (Brief 159), Grant tool, Revoke tool, Reset password, Reset
+// Live cards (in order): Manage access, Create user, Reset password, Reset
 // MFA (lost-device recovery — a self-contained client card, not an
 // <ActionForm>, because it reads factor status + needs a destructive
-// confirm). All the others wrap their forms in <ActionForm> and POST to
-// /sysadmin/api/* via the
-// actions in ../actions.ts. Brief 18 / 19 patterns intact (UserPicker +
-// ActionForm).
+// confirm). Below a divider sit the parked single-purpose cards this brief
+// superseded. Brief 18 / 19 patterns intact (UserPicker + ActionForm).
 //
-// Set Role (user_permissions), Set DC Role (damage_claim_user_roles +
-// damage_claim_user_locations), and Set Promo Role (promo_user_roles) are
-// three independent permission domains — all must be set separately. Set
-// DC Role and Set Promo Role are positioned right after Set Role for
-// visual symmetry.
+// Brief 173 reorganised this page around the job instead of the tables.
+// Permissions live in four independent places — user_permissions (role +
+// locations), user_tool_access, damage_claim_user_roles(+_locations), and
+// promo_user_roles — and the console used to expose one card per table, so
+// onboarding a regional manager took seven submits and re-picked the same
+// person and location list three or four times. Manage access hides the
+// split: one form, one submit, desired-state. The tables are unchanged.
 //
-// Brief 173, phase 1 — Manage tools (desired-state, one submit) supersedes
-// Grant tool + Revoke tool. The superseded pair is parked below a divider
-// rather than deleted, so there's a fallback for one release while the new
-// path gets real use. Delete both, their actions, and their worker
-// endpoints once phase 2 lands and the parked group has gone unused.
+// The cards it replaced (View permissions, Set role, Set DC Role, Set Promo
+// Role, Manage tools, Grant tool, Revoke tool) are parked rather than
+// deleted so there's a fallback for one release. See the note above
+// ParkedOperations for what to delete with each.
 
 import { ActionForm } from "../../_components/ActionForm";
 import {
@@ -29,6 +27,7 @@ import {
   inputClass,
   submitClass
 } from "../_components/OperationCard";
+import { AccessEditor } from "../_components/AccessEditor";
 import { CreateUserToolsAndDcRole } from "../_components/CreateUserToolsAndDcRole";
 import { LocationCodeMultiPicker } from "../_components/LocationCodeMultiPicker";
 import { ManageToolsCard } from "../_components/ManageToolsCard";
@@ -48,16 +47,31 @@ import {
 export function UserOperations() {
   return (
     <>
-      <ViewPermissionsCard />
+      <ManageAccessCard />
       <CreateUserCard />
-      <SetRoleCard />
-      <SetDcRoleCard />
-      <SetPromoRoleCard />
-      <ManageToolsSection />
       <ResetPasswordCard />
       <ResetMfaSection />
       <ParkedOperations />
     </>
+  );
+}
+
+/* ============================================================
+ * 0. Manage access (Brief 173, phase 2) — the primary path
+ *
+ * Everything one person can touch, on one form, in one submit. The five
+ * cards it replaces are parked below rather than deleted; see the note on
+ * ParkedOperations for why mixing the two paths in one sitting will 409.
+ * ============================================================ */
+
+function ManageAccessCard() {
+  return (
+    <OperationCard
+      title="Manage access"
+      description="Pick a user once and set their role, locations, tools, damage-claims role and promo role together. Shows exactly what will change before you save."
+    >
+      <AccessEditor />
+    </OperationCard>
   );
 }
 
@@ -79,10 +93,21 @@ function ManageToolsSection() {
 /* ============================================================
  * Parked — superseded single-purpose cards (Brief 173)
  *
- * Kept for one release as a fallback while Manage tools gets real use.
- * Removal is a follow-up, not a TODO in someone's head: delete these two
- * functions, grantToolAction / revokeToolAction, and the worker's
- * /sysadmin/api/{grant,revoke}-tool endpoints together.
+ * Kept for one release as a fallback while Manage access gets real use.
+ * Removal is a follow-up, not a TODO in someone's head. When it happens,
+ * delete each card together with what only it uses:
+ *   ViewPermissionsCard  → PermissionsViewer.tsx, viewerRevokeToolAction /
+ *                          viewerRemoveLocationAction /
+ *                          viewerRemoveDcLocationAction
+ *   SetRoleCard          → setRoleAction
+ *   SetDcRoleCard        → SetDcRoleCard.tsx, SetDcRoleFields.tsx,
+ *                          setDcRoleAction
+ *   SetPromoRoleCard     → SetPromoRoleCard.tsx, setPromoRoleAction
+ *   ManageToolsSection   → ManageToolsCard.tsx, setToolAccessAction
+ *   Grant/RevokeToolCard → grantToolAction / revokeToolAction and the
+ *                          worker's /sysadmin/api/{grant,revoke}-tool
+ * The db-supabase helpers those endpoints wrap (setRole, setDcRole,
+ * setPromoRole) stay either way — the reconcile handler calls them directly.
  * ============================================================ */
 
 function ParkedOperations() {
@@ -96,9 +121,17 @@ function ParkedOperations() {
         <div className="h-px flex-1 bg-gray-light" />
       </div>
       <p className="text-xs text-splash-navy/60">
-        Superseded by Manage tools above. Still here as a fallback for one
-        release.
+        All superseded by Manage access above, kept as a fallback for one
+        release. One caveat if you use both in the same sitting: these cards
+        write without a snapshot, so a change made down here leaves the Manage
+        access form stale and its next save will be refused with a conflict.
+        Re-pick the user up there and it re-reads.
       </p>
+      <ViewPermissionsCard />
+      <SetRoleCard />
+      <SetDcRoleCard />
+      <SetPromoRoleCard />
+      <ManageToolsSection />
       <GrantToolCard />
       <RevokeToolCard />
     </div>

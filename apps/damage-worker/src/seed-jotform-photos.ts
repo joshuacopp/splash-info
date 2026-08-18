@@ -31,23 +31,36 @@
 // Re-running a page re-derives the same key and the row is skipped. The
 // existing keys are read once per claim (one SELECT), not once per file.
 //
-// CLAIM RESOLUTION is single-path, on purpose:
-//   idempotency_key = `jotform:{uniqueId}` — everything the claim seed inserted.
+// CLAIM RESOLUTION is two-path, mirroring the seed:
+//   1. idempotency_key = `jotform:{uniqueId}`  — everything the seed inserted.
+//   2. staff_notes `JOT# {digits}`             — the nine hand-migrated Copp
+//      locations, whose idempotency_key is NULL.
 //
-// An earlier draft added a second path for the nine hand-migrated Copp
-// locations, whose idempotency_key is NULL and which are linked to JotForm only
-// by a `JOT# {digits}` token in staff_notes (see fetchClaimIdsByJotNumber in
-// seed-jotform.ts, kept for other callers). That path was REMOVED 2026-08-18:
-// those claims already carry their photos, uploaded through the normal path at
-// `claims/{claim_id}/{filename}`. This importer writes
-// `claims/{claim_id}/jotform/{qid}/{filename}` — a different key, so the
-// r2_key dedup below would not have recognised them and every Copp photo would
-// have been duplicated, twice in the UI, with no way to tell the copies apart.
+// Path 2 was briefly removed on 2026-08-18 on the assumption that the
+// hand-migrated claims already carried their photos, and restored the same day
+// when the 2026 run disproved it. Keep it. The evidence, so nobody relitigates
+// this: 134 NULL-idempotency_key claims received imported photos, and every one
+// of them held either zero or exactly one pre-existing file — all 37 of those
+// files are photo_type `Receipt`. Josh had only ever attached paperwork to
+// paid Copp claims, never photo sets. So path 2 is additive, not duplicative,
+// and dropping it would leave those claims with no photos at all.
 //
-// The accepted cost is that a hand-migrated claim which is genuinely missing
-// photos stays missing. Historic photos are not essential (Josh, 2026-08-18);
-// silently doubling the ones that are already there is the worse failure. Such
-// submissions are reported as skipped with a reason, not dropped quietly.
+// The duplication risk is real in principle, though, because the two writers
+// use different keys: the normal upload path writes
+// `claims/{claim_id}/{filename}` and this importer writes
+// `claims/{claim_id}/jotform/{qid}/{filename}`, so the r2_key dedup below
+// cannot see a pre-existing copy. Before any future re-run, re-check that
+// hand-migrated claims still hold no photos of the three imported types:
+//
+//   SELECT p.photo_type, COUNT(*) FROM claim_photos p
+//   JOIN claims c ON c.claim_id = p.claim_id
+//   WHERE c.idempotency_key IS NULL
+//     AND p.r2_key NOT LIKE 'claims/%/jotform/%'
+//     AND c.claim_id GLOB '[0-9]*'
+//   GROUP BY p.photo_type;
+//
+// Anything other than paperwork types in that result means this pass needs a
+// per-claim guard before it runs again.
 //
 // AUTH: JotForm's `/uploads/` server is NOT public on this account, and it
 // does not say so with a 401 — an unauthenticated GET returns HTTP **200**
@@ -73,7 +86,9 @@ import { json, jsonError } from "@splash/http";
 import type { ClaimPhotoType } from "@splash/types/claims";
 import {
   DAMAGE_FORM_ID,
+  fetchClaimIdsByJotNumber,
   fetchSubmissionPage,
+  jotNumberOf,
   type SubmissionRow
 } from "./seed-jotform.js";
 
@@ -435,8 +450,12 @@ export async function handleJotformPhotoSeed(
   );
 
   let rows: SubmissionRow[];
+  let jotToClaimId: Map<string, string>;
   try {
-    rows = await fetchSubmissionPage(env, { from, to, limit, offset });
+    [rows, jotToClaimId] = await Promise.all([
+      fetchSubmissionPage(env, { from, to, limit, offset }),
+      fetchClaimIdsByJotNumber(env.DB)
+    ]);
   } catch (err) {
     console.error("[damage.seed.photos] upstream read failed:", err);
     return jsonError(500, err instanceof Error ? err.message : "upstream read failed");
@@ -491,12 +510,12 @@ export async function handleJotformPhotoSeed(
       continue;
     }
 
-    // Single-path claim resolution (see the header note). The JOT#-in-
-    // staff_notes fallback is deliberately absent: those claims already have
-    // their photos under a different r2_key and matching them here would
-    // duplicate every one of them.
+    // Two-path claim resolution (see the header note). Path 2 is load-bearing:
+    // it is the only link back to the hand-migrated Copp claims, and those
+    // claims hold no photos of their own.
     const existing = await getClaimByIdempotencyKey(env.DB, `jotform:${uniqueId}`);
-    const claimId = existing?.claim_id ?? null;
+    const claimId =
+      existing?.claim_id ?? jotToClaimId.get(jotNumberOf(uniqueId)) ?? null;
 
     if (!claimId) {
       skipped += 1;
@@ -505,9 +524,8 @@ export async function handleJotformPhotoSeed(
         unique_id: uniqueId,
         outcome: "skipped",
         reason:
-          "no seeded claim for this submission — either the claim seed has not " +
-          "run for this date range, or it is a hand-migrated claim that already " +
-          "carries its photos"
+          "no claim in D1 for this submission — no `jotform:` idempotency key " +
+          "and no matching JOT# in staff_notes; run the claim seed first"
       });
       continue;
     }
