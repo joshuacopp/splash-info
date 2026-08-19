@@ -44,6 +44,10 @@
 //   GET  /manage/api/claim/{id}/quote/{quoteId}/preview-check-request.pdf
 //                                                            — render PDF preview
 //   POST /manage/api/seed/jotform-photos?from=&to=&limit=&offset= — task #7 files
+//   POST /manage/api/seed/check-requests?from=&to=&limit=&offset= — task #13,
+//                                                            imports the 2026
+//                                                            check-request form
+//                                                            and rebuilds PDFs
 //   POST /manage/api/seed/jotform?from=&to=&limit=&offset=   — historic JotForm
 //                                                            claim seed; re-gated
 //                                                            to super_admin inside
@@ -184,6 +188,7 @@ import {
 } from "./uploads.js";
 import { handleJotformSeed } from "./seed-jotform.js";
 import { handleJotformPhotoSeed } from "./seed-jotform-photos.js";
+import { handleCheckRequestSeed } from "./seed-check-requests.js";
 import { handlePaperClaimSeed } from "./seed-paper-claims.js";
 import { expandGrantedCodes, loadOverlay } from "./overlay.js";
 
@@ -201,8 +206,10 @@ interface Env extends SupabaseEnv {
   /** JotForm Enterprise API key — task #7 photo migration only. The
    *  `/uploads/` file server is not public on this account and answers 200
    *  with an HTML interstitial when unauthenticated, so
-   *  /manage/api/seed/jotform-photos 503s without it. Same value as the one
-   *  bound on splash-jotform; removable once the photo passes are done. */
+   *  /manage/api/seed/jotform-photos 503s without it. Also required by
+   *  /manage/api/seed/check-requests (task #13), which reads a second form
+   *  straight off the JotForm API rather than the Supabase mirror. Same value
+   *  as the one bound on splash-jotform; removable once both passes are done. */
   JOTFORM_API_KEY?: string;
   /** Webhook URL fired after RM approves a quote — INCIDENTS desk receives
    *  the auto-generated Check Request PDF. Optional; fail-soft. */
@@ -490,6 +497,21 @@ async function dispatchManageApi(
     method === "POST"
   ) {
     return handleJotformPhotoSeed(request, env, session.dcRole ?? null);
+  }
+
+  // POST /manage/api/seed/check-requests — task #13. Payment was requested on
+  // a separate JotForm (250654062100038) whose output never reached D1, so
+  // paid 2026 claims show an amount with no paperwork. This imports the
+  // supporting document and rebuilds the check-request PDF from the company
+  // template. `?dry_run=1` reports how the free-text incident number joins —
+  // run it and read `incident_shapes` / `unresolved` before a real pass.
+  if (
+    subParts.length === 2 &&
+    subParts[0] === "seed" &&
+    subParts[1] === "check-requests" &&
+    method === "POST"
+  ) {
+    return handleCheckRequestSeed(request, env, session.dcRole ?? null);
   }
 
   // Brief 172 — GET /manage/api/claims.csv — CSV export of the same

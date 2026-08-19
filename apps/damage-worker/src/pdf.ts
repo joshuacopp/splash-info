@@ -68,7 +68,11 @@ export async function generateCheckRequestPdf(
   // extra page(s) after the quote. When absent/empty the check request is
   // built exactly as before. Fail-soft: a merge failure returns
   // claimSummaryBundled=false and the caller falls back to a link.
-  claimSummaryBytes?: Uint8Array | null
+  claimSummaryBytes?: Uint8Array | null,
+  // Historic backfill only — PNG bytes of the signatures captured on the
+  // original JotForm check request. Live call sites omit this and the two
+  // signature fields stay plain text exactly as before.
+  signatureImages?: SignatureImages | null
 ): Promise<{ pdfBytes: Uint8Array; quoteBundled: boolean; claimSummaryBundled: boolean }> {
   const templateObj = await bucket.get(CHECK_REQUEST_TEMPLATE_KEY);
   if (!templateObj) {
@@ -105,8 +109,22 @@ export async function generateCheckRequestPdf(
   setIf("Address Line 4", fields.addressLines[3] ?? "");
   setIf("Explanation", fields.explanation);
   setIf("Incident Number", fields.incidentNumber);
-  setIf("Signature of Requestor", fields.requestorSignature);
-  setIf("Approval", fields.approvalSignature);
+  // When a real signature image is supplied the text goes in blank — the
+  // drawn PNG replaces it. Two writers in the same box would overlap.
+  setIf(
+    "Signature of Requestor",
+    signatureImages?.requestor ? "" : fields.requestorSignature
+  );
+  setIf("Approval", signatureImages?.approval ? "" : fields.approvalSignature);
+
+  // Rects must be read BEFORE flatten — flatten destroys the widgets. The
+  // drawing itself happens after, so nothing the form renders sits on top.
+  const signatureTargets = signatureImages
+    ? [
+        { bytes: signatureImages.requestor, rect: widgetRectOf(pdfDoc, form, "Signature of Requestor") },
+        { bytes: signatureImages.approval, rect: widgetRectOf(pdfDoc, form, "Approval") }
+      ]
+    : [];
 
   // Brief 171 — append the approved quote pages BEFORE flatten/save.
   // `appendQuoteToPdf` never throws; on failure it just returns false and
@@ -137,8 +155,92 @@ export async function generateCheckRequestPdf(
     );
   }
 
+  // Post-flatten so the drawn signature is the only thing in the box.
+  for (const target of signatureTargets) {
+    if (!target.bytes || !target.rect) continue;
+    await drawSignatureImage(pdfDoc, target.rect, target.bytes);
+  }
+
   const pdfBytes = await pdfDoc.save();
   return { pdfBytes, quoteBundled, claimSummaryBundled };
+}
+
+/** PNG bytes for the two signature boxes. Historic backfill only. */
+export interface SignatureImages {
+  requestor?: Uint8Array | null;
+  approval?: Uint8Array | null;
+}
+
+interface WidgetRect {
+  pageIndex: number;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+/**
+ * Page + rectangle of a text field's first widget, or null if the field is
+ * missing / has no widget / isn't on a page we can identify. Never throws —
+ * a signature that can't be placed is a cosmetic loss, not a failed backfill.
+ */
+function widgetRectOf(
+  pdfDoc: PDFDocument,
+  form: ReturnType<PDFDocument["getForm"]>,
+  fieldName: string
+): WidgetRect | null {
+  try {
+    const widget = form.getTextField(fieldName).acroField.getWidgets()[0];
+    if (!widget) return null;
+    const rect = widget.getRectangle();
+    const pageRef = widget.P();
+    const pageIndex = pdfDoc
+      .getPages()
+      .findIndex((p) => pageRef && p.ref === pageRef);
+    return {
+      pageIndex: pageIndex >= 0 ? pageIndex : 0,
+      x: rect.x,
+      y: rect.y,
+      width: rect.width,
+      height: rect.height
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Draw a signature PNG centred inside `rect`, preserving aspect ratio and
+ * leaving a small margin so the stroke doesn't touch the box edge. Fail-soft.
+ */
+async function drawSignatureImage(
+  pdfDoc: PDFDocument,
+  rect: WidgetRect,
+  bytes: Uint8Array
+): Promise<boolean> {
+  try {
+    const png = await pdfDoc.embedPng(bytes);
+    const boxW = rect.width * 0.94;
+    const boxH = rect.height * 0.9;
+    const scale = Math.min(boxW / png.width, boxH / png.height);
+    if (!Number.isFinite(scale) || scale <= 0) return false;
+    const drawW = png.width * scale;
+    const drawH = png.height * scale;
+    const page = pdfDoc.getPage(rect.pageIndex);
+    page.drawImage(png, {
+      x: rect.x + (rect.width - drawW) / 2,
+      y: rect.y + (rect.height - drawH) / 2,
+      width: drawW,
+      height: drawH
+    });
+    return true;
+  } catch (err) {
+    console.warn(
+      "[checkreq.signature] draw failed (continuing without image):",
+      err instanceof Error ? err.message : err
+    );
+    return false;
+  }
 }
 
 /**
@@ -379,6 +481,21 @@ function splitAddressLines(address: string | null | undefined): string[] {
 }
 
 /**
+ * Field-level overrides for the historic check-request backfill. Every live
+ * call site omits this and behaves exactly as before.
+ */
+export interface CheckRequestOverrides {
+  /** Pre-formatted MM/DD/YYYY. */
+  date?: string | null;
+  makeOutTo?: string | null;
+  addressLines?: string[] | null;
+  explanation?: string | null;
+  email?: string | null;
+  phone?: string | null;
+  location?: string | null;
+}
+
+/**
  * Build PDF field set from a quote + claim. Source: legacy:2273
  * buildCheckRequestFields.
  *
@@ -386,12 +503,32 @@ function splitAddressLines(address: string | null | undefined): string[] {
  * — preview passes "(preview — not signed)" / "DRAFT — NOT FOR PAYMENT".
  * For the real generation path, requestor is the actor's email and
  * approval is either "" (RM stage) or actor's email (incidents stage).
+ *
+ * `overrides` exists for the historic check-request backfill and is ignored
+ * by every live call site (they pass nothing and behave exactly as before):
+ *
+ *   - `date` — the live path stamps today, which is right for a request being
+ *     raised now and wrong for one being reconstructed from a 2026 JotForm
+ *     submission. The rebuilt document must carry the date it was submitted.
+ *   - `makeOutTo` / `addressLines` — the JotForm check request records the
+ *     payee name and address exactly as they were written on the cheque, and
+ *     that is the better source: `claim.customer_mailing_address` is usually
+ *     empty (the damage form never asked for it), so deriving from the claim
+ *     would blank all four address lines. Note the payee is a person in nearly
+ *     every submission, so pay_to_type stays 'customer' — the override is
+ *     about fidelity to the original document, not about vendor payments.
+ *   - `explanation` — the submitter's own words beat the generated sentence.
+ *   - `location` / `email` / `phone` — the check-request form captured these
+ *     separately from the damage form, and they are what the original document
+ *     showed. They fall back to the claim record when the submission left them
+ *     blank.
  */
 export function buildCheckRequestFields(
   claim: ClaimRow,
   quote: ClaimPhotoRow,
   requestorSignature: string,
-  approvalSignature: string
+  approvalSignature: string,
+  overrides?: CheckRequestOverrides
 ): CheckRequestFields {
   const today = new Date();
   const dateStr = today.toLocaleDateString("en-US", {
@@ -410,21 +547,26 @@ export function buildCheckRequestFields(
     makeOutTo = claim.customer_name ?? "";
     addressLines = splitAddressLines(claim.customer_mailing_address);
   }
+  if (overrides?.makeOutTo) makeOutTo = overrides.makeOutTo;
+  if (overrides?.addressLines && overrides.addressLines.length > 0) {
+    addressLines = overrides.addressLines.slice(0, 4);
+  }
 
   const vehicleDesc = [claim.vehicle_year, claim.vehicle_make, claim.vehicle_model]
     .filter(Boolean)
     .join(" ");
   const vendorPart = quote.vendor ? `${quote.vendor} quote` : "Quote";
   const explanation =
+    overrides?.explanation ||
     `Vehicle damage claim for ${vehicleDesc || "customer vehicle"}` +
-    (claim.license_plate ? ` (plate ${claim.license_plate})` : "") +
-    `. ${vendorPart}: $${Number(quote.amount ?? 0).toFixed(2)}.`;
+      (claim.license_plate ? ` (plate ${claim.license_plate})` : "") +
+      `. ${vendorPart}: $${Number(quote.amount ?? 0).toFixed(2)}.`;
 
   return {
-    date: dateStr,
-    location: claim.location_pretty ?? "",
-    email: claim.customer_email ?? "",
-    phone: claim.customer_phone ?? "",
+    date: overrides?.date || dateStr,
+    location: overrides?.location || claim.location_pretty || "",
+    email: overrides?.email || claim.customer_email || "",
+    phone: overrides?.phone || claim.customer_phone || "",
     amount:
       quote.amount !== null && quote.amount !== undefined
         ? Number(quote.amount).toFixed(2)
@@ -472,15 +614,29 @@ export async function storeCheckRequestPdf(
   images: ImagesBinding | undefined,
   // Feature 3 — claim summary PDF bytes to merge into the check request.
   // Only the Submit-for-Payment (AP) call site supplies these.
-  claimSummaryBytes?: Uint8Array | null
+  claimSummaryBytes?: Uint8Array | null,
+  // Historic backfill only — see CheckRequestOverrides. Live call sites omit.
+  overrides?: CheckRequestOverrides,
+  signatureImages?: SignatureImages | null,
+  // Historic backfill only — the filename stem. Live calls derive it from the
+  // stage label; the backfill needs a stable, re-runnable name so a second
+  // pass overwrites rather than appending "_2".
+  filenameOverride?: string | null
 ): Promise<StoredCheckRequestPdf> {
-  const fields = buildCheckRequestFields(claim, quote, requestorEmail, approvalEmail);
+  const fields = buildCheckRequestFields(
+    claim,
+    quote,
+    requestorEmail,
+    approvalEmail,
+    overrides
+  );
   const { pdfBytes, quoteBundled, claimSummaryBundled } = await generateCheckRequestPdf(
     bucket,
     fields,
     quote,
     images,
-    claimSummaryBytes
+    claimSummaryBytes,
+    signatureImages
   );
 
   const stageSlug = stageLabel
@@ -489,20 +645,25 @@ export async function storeCheckRequestPdf(
     .replace(/[^a-z0-9-]/g, "")
     .replace(/-+/g, "-")
     .replace(/^-|-$/g, "");
-  const baseFilename = `Req_${claim.claim_id}_${stageSlug}`;
+  const baseFilename = filenameOverride || `Req_${claim.claim_id}_${stageSlug}`;
 
   // Check existing files with this base — append sequence suffix if any.
-  const existingResult = await db
-    .prepare(
-      `SELECT COUNT(*) AS n FROM claim_photos
-       WHERE claim_id = ? AND photo_type = 'Check Request' AND filename LIKE ?
-       AND deleted_at IS NULL`
-    )
-    .bind(claim.claim_id, baseFilename + "%")
-    .first<{ n: number }>();
-  const existingCount = existingResult?.n ?? 0;
-  const filename =
-    existingCount > 0 ? `${baseFilename}_${existingCount + 1}.pdf` : `${baseFilename}.pdf`;
+  // The backfill passes its own stem and skips this, because a re-run must
+  // land on the same key: an admin re-fire wants a new numbered document, but
+  // an idempotent import wants to overwrite the one it wrote last time.
+  let filename = `${baseFilename}.pdf`;
+  if (!filenameOverride) {
+    const existingResult = await db
+      .prepare(
+        `SELECT COUNT(*) AS n FROM claim_photos
+         WHERE claim_id = ? AND photo_type = 'Check Request' AND filename LIKE ?
+         AND deleted_at IS NULL`
+      )
+      .bind(claim.claim_id, baseFilename + "%")
+      .first<{ n: number }>();
+    const existingCount = existingResult?.n ?? 0;
+    if (existingCount > 0) filename = `${baseFilename}_${existingCount + 1}.pdf`;
+  }
   const r2Key = `claims/${claim.claim_id}/${filename}`;
 
   await bucket.put(r2Key, pdfBytes, {
