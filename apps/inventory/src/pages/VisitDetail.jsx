@@ -11,9 +11,14 @@ import { fmtDate } from '../lib/format'
 export default function VisitDetail() {
   const { locationId, visitId } = useParams()
   const { dataset, idx, refresh } = useData()
-  const { isAdmin } = useAuth()
+  // Three different capabilities on this page, not one:
+  //   canSubmit  -> Edit (a writer fixes their own mistyped count)
+  //   isAdmin    -> Resend (mails a site's costs again) and Delete (no undo)
+  // visibleLocationIds guards the scope side; null means unrestricted.
+  const { canSubmit, isAdmin, visibleLocationIds } = useAuth()
   const navigate = useNavigate()
   const location = idx.locationById[locationId]
+  const inScope = !visibleLocationIds || visibleLocationIds.has(locationId)
   const [confirming, setConfirming] = useState(false)
   const [resending, setResending] = useState(false)
   const [busy, setBusy] = useState(false)
@@ -94,17 +99,19 @@ export default function VisitDetail() {
                 </Link>
               )}
               {isAdmin && (
-                <>
-                  <button onClick={onResend} disabled={resending} className="btn-ghost">
-                    {resending ? 'Sending…' : 'Resend report'}
-                  </button>
-                  <Link to={`/location/${locationId}/visit/${visitId}/edit`} className="btn-ghost">
-                    Edit
-                  </Link>
-                  <button onClick={() => setConfirming(true)} className="btn-danger">
-                    Delete
-                  </button>
-                </>
+                <button onClick={onResend} disabled={resending} className="btn-ghost">
+                  {resending ? 'Sending…' : 'Resend report'}
+                </button>
+              )}
+              {inScope && canSubmit && (
+                <Link to={`/location/${locationId}/visit/${visitId}/edit`} className="btn-ghost">
+                  Edit
+                </Link>
+              )}
+              {inScope && isAdmin && (
+                <button onClick={() => setConfirming(true)} className="btn-danger">
+                  Delete
+                </button>
               )}
             </>
           }

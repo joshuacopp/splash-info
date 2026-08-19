@@ -16,13 +16,14 @@ export default function NewVisit() {
   const { locationId, visitId: editVisitId } = useParams()
   const isEdit = !!editVisitId
   const { dataset, idx, refresh } = useData()
-  const { canSubmit, isAdmin, visibleLocationIds, email } = useAuth()
+  const { canSubmit, visibleLocationIds, email } = useAuth()
   const navigate = useNavigate()
 
   const location = idx.locationById[locationId]
-  const canAccess = isEdit
-    ? isAdmin
-    : canSubmit && (!visibleLocationIds || visibleLocationIds.has(locationId))
+  // Editing was admin-only until 2026-08-19, back when inventory admin meant
+  // platform super_admin — so correcting a mistyped count meant finding one.
+  // Same test as filing a new visit now: write tier, in scope.
+  const canAccess = canSubmit && (!visibleLocationIds || visibleLocationIds.has(locationId))
 
   const editingVisit = isEdit ? computeVisit(dataset, idx, editVisitId) : null
 
@@ -280,6 +281,27 @@ export default function NewVisit() {
     { cost: 0 }
   )
 
+  // Kill implicit submission.
+  //
+  // A <form> with a submit button submits on Enter from any single-line input.
+  // On a page whose whole job is typing a few dozen numbers, a tech reaching for
+  // Tab and hitting Enter instead filed a half-empty visit — and for a NEW visit
+  // that also queues the report email, so the mistake leaves the building.
+  //
+  // Enter still works everywhere it should: textareas take a newline (the
+  // browser never implicit-submits from one), and buttons and links fire on
+  // Enter through the click path, not this one. Saving is the Save button only,
+  // which is the intent the accident was borrowing.
+  function onFormKeyDown(e) {
+    if (e.key !== 'Enter' || e.shiftKey || e.ctrlKey || e.metaKey || e.altKey) return
+    const el = e.target
+    const tag = el?.tagName
+    if (tag === 'TEXTAREA' || tag === 'BUTTON' || tag === 'A') return
+    // A <select> uses Enter to commit an open dropdown; leave it alone.
+    if (tag === 'SELECT') return
+    e.preventDefault()
+  }
+
   async function onSubmit(e) {
     e.preventDefault()
     setErr(null)
@@ -384,7 +406,7 @@ export default function NewVisit() {
     return (
       <EmptyState>
         {isEdit
-          ? 'Only admins can edit a past visit.'
+          ? "You don't have permission to edit visits for this location."
           : "You don't have permission to submit visits for this location."}
       </EmptyState>
     )
@@ -392,7 +414,7 @@ export default function NewVisit() {
   const cancelTo = isEdit ? `/location/${locationId}/visit/${editVisitId}` : `/location/${locationId}`
 
   return (
-    <form onSubmit={onSubmit} className="space-y-6">
+    <form onSubmit={onSubmit} onKeyDown={onFormKeyDown} className="space-y-6">
       <LocationHeader
         location={location}
         sub={

@@ -16,9 +16,11 @@
 //                           the app. Read-only sessions (inventory_view) pass.
 //   2. canWriteInventory  — required by every mutating route. A view-only
 //                           session that POSTs anything must 403 here.
-//   3. userCanAccessLocation — per-location scope, for routes that name a site.
-//      isInventoryAdmin   — the admin-tier writes: edit/delete any visit,
-//                           products, recipients, report resend.
+//   3. userCanAccessLocation — per-location scope, for routes that name a site
+//                           OR name a row from which a site can be resolved.
+//      isInventoryAdmin   — the admin-tier writes: DELETE a visit, products,
+//                           recipients, report resend. NOT editing a visit —
+//                           that moved down to the write tier on 2026-08-19.
 //
 // (2) is the one that's easy to forget, because until 2026-08-19 the gate
 // itself implied write and mutating routes only had to check scope. Adding a
@@ -134,13 +136,37 @@ export default {
         }
         if (segments.length === 3) {
           const visitId = decodeURIComponent(segments[2]!);
-          if (method === "PUT" || method === "DELETE") {
-            if (!isInventoryAdmin(session)) return jsonError(403, "admin only");
-            if (method === "PUT") return json(await updateVisit(sb, visitId, await readJson(request)));
-            await deleteVisit(sb, visitId);
-            return json({ ok: true });
+          if (method !== "PUT" && method !== "DELETE") return jsonError(405, "method not allowed");
+
+          // Scope comes from the STORED visit, not from anything the caller
+          // sends. This block needed no location check at all until 2026-08-19,
+          // because "admin" meant super_admin and super_admin is global — a
+          // location-scoped admin (or, now, a location-scoped writer) makes that
+          // assumption wrong, and without this a two-site user could PUT any
+          // visit id in the system. updateVisit never writes location_code, so
+          // the stored code is also the code after the edit.
+          const code = await getVisitLocationCode(sb, visitId);
+          if (!code) return jsonError(404, "visit not found");
+          if (!userCanAccessLocation(session, code)) {
+            return jsonError(403, "forbidden for that location");
           }
-          return jsonError(405, "method not allowed");
+
+          // Editing is a WRITE, not an admin power (2026-08-19). The tech who
+          // fat-fingers a reservoir count has to be able to correct it himself;
+          // making that an admin errand means the wrong number sits in the data
+          // until someone else is free. Viewers were already excluded by the
+          // blanket non-GET gate above.
+          if (method === "PUT") {
+            return json(await updateVisit(sb, visitId, await readJson(request)));
+          }
+
+          // DELETE stays admin-only. It is the only irreversible action in this
+          // API — the visit, its entries and its wash counts go together, and
+          // there is no undo. Every honest fix a writer needs is reachable
+          // through PUT, so the tier boundary sits here rather than at edit.
+          if (!isInventoryAdmin(session)) return jsonError(403, "admin only");
+          await deleteVisit(sb, visitId);
+          return json({ ok: true });
         }
       }
 

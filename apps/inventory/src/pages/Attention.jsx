@@ -11,7 +11,7 @@ const EXPIRE_MONTHS = 3
 
 export default function Attention() {
   const { dataset, idx, refresh } = useData()
-  const { visibleLocationIds, isAdmin } = useAuth()
+  const { visibleLocationIds, canSubmit, isAdmin } = useAuth()
   const [toast, setToast] = useState(null)
   const [openLocId, setOpenLocId] = useState(null)
   const [openManager, setOpenManager] = useState(null)
@@ -262,6 +262,7 @@ export default function Attention() {
                       open={openLocId === g.location.id}
                       onToggle={() => setOpenLocId(openLocId === g.location.id ? null : g.location.id)}
                       resolutionByKey={resolutionByKey}
+                      canSubmit={canSubmit}
                       isAdmin={isAdmin}
                       onResolve={handleResolve}
                       onUndo={handleUndo}
@@ -285,7 +286,7 @@ export default function Attention() {
   )
 }
 
-function LocationGroup({ group: g, open, onToggle, resolutionByKey, isAdmin, onResolve, onUndo, setToast }) {
+function LocationGroup({ group: g, open, onToggle, resolutionByKey, canSubmit, isAdmin, onResolve, onUndo, setToast }) {
   const [busyKey, setBusyKey] = useState(null)
   const [resolvingKey, setResolvingKey] = useState(null)
   const [nameInput, setNameInput] = useState('')
@@ -357,9 +358,11 @@ function LocationGroup({ group: g, open, onToggle, resolutionByKey, isAdmin, onR
               <span>
                 No visit recorded in {g.staleDays} days — resolves automatically once a new visit is logged.
               </span>
-              <Link to={`/location/${g.location.id}/new`} className="font-bold text-splash-600 hover:text-splash-700">
-                Record visit →
-              </Link>
+              {canSubmit && (
+                <Link to={`/location/${g.location.id}/new`} className="font-bold text-splash-600 hover:text-splash-700">
+                  Record visit →
+                </Link>
+              )}
             </div>
           )}
 
@@ -368,6 +371,7 @@ function LocationGroup({ group: g, open, onToggle, resolutionByKey, isAdmin, onR
               <FlagRow
                 key={item.flagKey}
                 item={item}
+                canSubmit={canSubmit}
                 locationId={g.location.id}
                 visitId={g.visit.id}
                 resolving={resolvingKey === item.flagKey}
@@ -451,19 +455,23 @@ function FlagLabel({ item }) {
   )
 }
 
-function FlagRow({ item, resolving, busy, nameInput, setNameInput, onCheck, onCancel, onConfirm }) {
+function FlagRow({ item, canSubmit, resolving, busy, nameInput, setNameInput, onCheck, onCancel, onConfirm }) {
   const tone = item.type === 'over' ? 'bg-amber-50' : 'bg-rose-50'
   return (
     <div className={`rounded-xl ${tone} px-4 py-2.5`}>
       <div className="flex items-center justify-between gap-3">
         <label className="flex flex-1 items-center gap-2.5 text-sm">
-          <input
-            type="checkbox"
-            checked={false}
-            onChange={onCheck}
-            disabled={resolving}
-            className="h-4 w-4 shrink-0 rounded accent-splash-600"
-          />
+          {/* Resolving a flag is a write. A viewer still sees the flag — that's
+              the point of a read-only tier — but not a tick box that 403s. */}
+          {canSubmit && (
+            <input
+              type="checkbox"
+              checked={false}
+              onChange={onCheck}
+              disabled={resolving}
+              className="h-4 w-4 shrink-0 rounded accent-splash-600"
+            />
+          )}
           <FlagLabel item={item} />
         </label>
         {item.type === 'over' && item.excessCost > 0 && (

@@ -5,9 +5,9 @@
 // nested grants rather than one (see ToolName in packages/types/src/auth.ts):
 //
 //   inventory_view    read-only
-//   inventory         read + write   (submit visits, package config, report,
-//                                     resolve flags)
-//   inventory_admin   read + write + admin (edit/delete visits, products,
+//   inventory         read + write   (submit AND edit visits, package config,
+//                                     report, resolve flags)
+//   inventory_admin   read + write + admin (delete visits, products,
 //                                     recipients, resend)
 //
 // They nest, so a user holds exactly one. The standalone app originally had
@@ -59,8 +59,13 @@ export function canReadInventory(session: Session): boolean {
 }
 
 /**
- * True if the session may create/modify data: submit a visit, save package
- * config, send a visit report, resolve or unresolve a flag.
+ * True if the session may create/modify data: submit a visit, EDIT a visit,
+ * save package config, send a visit report, resolve or unresolve a flag.
+ *
+ * Editing sits here rather than with the admin tier because the person most
+ * likely to need it is the person who filed the visit — a mistyped count should
+ * not require an admin to fix. Deleting a visit is the irreversible one and
+ * stays with isInventoryAdmin.
  *
  * The tiers nest, so `inventory_admin` implies this without also needing the
  * `inventory` grant — otherwise every admin would need two rows and forgetting
@@ -72,8 +77,9 @@ export function canWriteInventory(session: Session): boolean {
 }
 
 /**
- * True if the session has full-admin powers: edit/delete ANY visit, upsert
- * products, manage the recipient list, resend a report.
+ * True if the session has full-admin powers: DELETE a visit, upsert products,
+ * manage the recipient list, resend a report. (Editing a visit is NOT here —
+ * see canWriteInventory.)
  *
  * Was `role === "super_admin"` and nothing else. That is retained (a platform
  * super_admin is still an inventory admin everywhere) but is no longer the only
