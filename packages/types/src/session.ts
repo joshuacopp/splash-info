@@ -24,7 +24,9 @@ export interface Session {
    *  See @splash/auth/index.ts for the security context. */
   mustChangePassword: boolean;
 
-  /** Granted tools — subset of {pricing, claims, pertrack}. */
+  /** Granted tools — any subset of VALID_TOOLS (see ./auth.ts). Raw rows from
+   *  user_tool_access, unfiltered: a name Postgres accepts but this build
+   *  doesn't know about would still arrive here. */
   tools: ToolName[];
 
   /** Pricing/admin location scope. Empty array {} for super_admins (their

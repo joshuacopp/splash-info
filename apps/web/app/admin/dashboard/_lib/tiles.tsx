@@ -75,24 +75,38 @@ function hasScheduleAccess(session: Session | null): boolean {
   return session.tools.includes("schedule") || session.tools.includes("pricing");
 }
 
+// Every grant that opens the chemical-inventory app, in nesting order. Kept as
+// a local constant rather than imported from the worker because apps/web
+// doesn't depend on apps/inventory; canReadInventory() in
+// apps/inventory/worker/auth.ts is the authority and this must track it.
+const INVENTORY_GRANTS = ["inventory_view", "inventory", "inventory_admin"] as const;
+
 // Chemical Inventory (splash-inventory). Mirrors the worker's inventoryGate:
-// checkToolAccess(session, "inventory"), i.e. super_admin OR an explicit
-// `inventory` grant. Deliberately NARROWER than hasScheduleAccess — a `pricing`
-// grant does NOT imply inventory access. Per-location scope is enforced in the
-// worker; this only decides tile visibility.
+// super_admin OR any one of the three tier grants. A read-only holder still
+// gets the tile — there's plenty to look at, they just can't submit.
+//
+// Deliberately NARROWER than hasScheduleAccess — a `pricing` grant does NOT
+// imply inventory access. Per-location scope is enforced in the worker; this
+// only decides tile visibility.
 function hasInventoryAccess(session: Session | null): boolean {
   if (!session) return false;
   if (session.role === "super_admin") return true;
-  return session.tools.includes("inventory");
+  return INVENTORY_GRANTS.some((grant) => session.tools.includes(grant));
 }
 
 /**
  * True for a session whose ONLY usable tool is chemical inventory: not
- * super_admin, no damage-claim role, no promotions role, and exactly one tool
- * grant which is `inventory`.
+ * super_admin, no damage-claim role, no promotions role, and every tool grant
+ * they hold is an inventory tier.
+ *
+ * "Every grant is an inventory tier" rather than "exactly one grant": the tiers
+ * are meant to be held one at a time, but the console doesn't stop an operator
+ * ticking `inventory_view` and `inventory` together, and such a user is still
+ * unambiguously inventory-only. Keying off the count would have quietly dropped
+ * them back into the full staff dashboard.
  *
  * This exists for the external-vendor population — chemical vendors get a
- * `location_admin` row scoped to their sites plus the `inventory` grant, and
+ * `location_admin` row scoped to their sites plus an inventory grant, and
  * nothing else. They aren't employees and have no reason to be shown the staff
  * tiles.
  *
@@ -107,7 +121,8 @@ function isInventoryOnly(session: Session | null): boolean {
   if (session.dcRole != null) return false;
   if (session.promoRole != null) return false;
   const tools = session.tools;
-  return tools.length === 1 && tools[0] === "inventory";
+  if (tools.length === 0) return false;
+  return tools.every((tool) => (INVENTORY_GRANTS as readonly string[]).includes(tool));
 }
 
 /**

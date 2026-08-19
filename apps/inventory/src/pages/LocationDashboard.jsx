@@ -8,13 +8,18 @@ import { CostOverTimeChart, CpcOverTimeChart } from '../components/charts'
 import { SectionTitle, EmptyState, PageHeader, TabNav, Pill } from '../components/ui'
 import { fmtDate } from '../lib/format'
 
+// Packages is an editor, not a report — PackageEditor blocks a read-only
+// session outright. Dropping the tab for those users means they never click
+// into a dead end; the route still exists and still refuses, so this is
+// presentation, not access control.
 export function LocationTabs({ locationId }) {
+  const { canSubmit } = useAuth()
   return (
     <TabNav
       tabs={[
         { to: `/location/${locationId}`, label: 'Overview', end: true },
         { to: `/location/${locationId}/trends`, label: 'Usage Trends' },
-        { to: `/location/${locationId}/packages`, label: 'Packages' },
+        ...(canSubmit ? [{ to: `/location/${locationId}/packages`, label: 'Packages' }] : []),
         { to: `/location/${locationId}/history`, label: 'History' },
       ]}
     />
@@ -63,7 +68,9 @@ export default function LocationDashboard() {
   const visits = idx.visitsByLocation[locationId] || []
   const latest = visits[0]
   const [windowKey, setWindowKey] = useState('6m')
-  const canAccess = canSubmit && (!visibleLocationIds || visibleLocationIds.has(locationId))
+  // Named for what it actually controls — the only thing it gates is the "New
+  // site visit" button. A read-only session still gets the whole dashboard.
+  const canAddVisit = canSubmit && (!visibleLocationIds || visibleLocationIds.has(locationId))
 
   const computed = useMemo(() => {
     if (!latest) return null
@@ -102,7 +109,7 @@ export default function LocationDashboard() {
             : 'No visits yet'
         }
         actions={
-          canAccess && (
+          canAddVisit && (
             <Link to={`/location/${locationId}/new`} className="btn-primary">
               + New site visit
             </Link>

@@ -36,6 +36,7 @@ import { ResetMfaCard } from "../_components/ResetMfaCard";
 import { SetDcRoleCard } from "../_components/SetDcRoleCard";
 import { SetPromoRoleCard } from "../_components/SetPromoRoleCard";
 import { UserPicker } from "../_components/UserPicker";
+import { ALL_TOOLS, TOOL_HELP } from "../_components/tools";
 import {
   createUserAction,
   grantToolAction,
@@ -346,6 +347,9 @@ function GrantToolCard() {
 
         <div>
           <FieldLabel htmlFor="grant-tool">Tool</FieldLabel>
+          {/* Driven off ALL_TOOLS rather than hand-listed: this select and the
+              Revoke one below had drifted from the shared list before, and the
+              inventory tiers made three more names to forget. */}
           <select
             id="grant-tool"
             name="tool"
@@ -353,12 +357,11 @@ function GrantToolCard() {
             required
             className={inputClass}
           >
-            <option value="pricing">pricing</option>
-            <option value="claims">claims</option>
-            <option value="pertrack">pertrack</option>
-            <option value="form_submissions">form_submissions</option>
-            <option value="schedule">schedule</option>
-            <option value="inventory">inventory</option>
+            {ALL_TOOLS.map((tool) => (
+              <option key={tool} value={tool} title={TOOL_HELP[tool]}>
+                {tool}
+              </option>
+            ))}
           </select>
         </div>
 
@@ -399,12 +402,11 @@ function RevokeToolCard() {
             required
             className={inputClass}
           >
-            <option value="pricing">pricing</option>
-            <option value="claims">claims</option>
-            <option value="pertrack">pertrack</option>
-            <option value="form_submissions">form_submissions</option>
-            <option value="schedule">schedule</option>
-            <option value="inventory">inventory</option>
+            {ALL_TOOLS.map((tool) => (
+              <option key={tool} value={tool} title={TOOL_HELP[tool]}>
+                {tool}
+              </option>
+            ))}
           </select>
         </div>
 

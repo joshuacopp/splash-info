@@ -45,14 +45,44 @@ export const USER_ROLES: readonly UserRole[] = ["super_admin", "location_admin"]
  * location can edit that location's shifts without a separate grant (operator
  * decision, 2026-07-10).
  *
- * "inventory" gates the chemical-inventory app (inventory-worker) at
- * /inventory/*. For LOCATION admins the grant means view + submit site visits,
- * scoped to their own site(s); super_admin sees every location and gets the
- * full admin surface (products, package config, recipients). The inventory
- * app's own editor/viewer tiers were collapsed into this single grant on
- * integration — having the grant is enough to submit (2026-08-14).
+ * The chemical-inventory app (inventory-worker, /inventory/*) is the one tool
+ * with THREE grants rather than one. They are capability tiers and they nest —
+ * each implies the one below it, so a user needs exactly ONE of them, never a
+ * combination:
+ *
+ *   "inventory_view"   read-only. See visits, dashboards, flags and reports for
+ *                      the granted location(s). Every mutating endpoint 403s.
+ *   "inventory"        read + write. Submit visits, edit package config, send
+ *                      the visit report, resolve/unresolve flags. This is the
+ *                      original single grant and its meaning is unchanged, so
+ *                      no existing row needed rewriting when the tiers landed.
+ *   "inventory_admin"  read + write + admin. Additionally: edit/delete any
+ *                      visit, upsert products, manage the recipient list, and
+ *                      resend a report.
+ *
+ * The tiers were split out on 2026-08-19. Before that, inventory admin was
+ * `role === "super_admin"` and nothing else, which meant the only way to let a
+ * chemical program manager delete a mistyped visit was to hand them the entire
+ * platform: super_admin bypasses checkToolAccess for every tool, implies global
+ * location scope everywhere, and opens /admin/sysadmin. `inventory_admin`
+ * exists so that capability can be granted on its own.
+ *
+ * SCOPE IS ORTHOGONAL TO TIER. None of these grants widen which locations a
+ * user sees — that still comes from their user_permissions rows (and, for
+ * super_admin, from the role implying global). An inventory_admin scoped to two
+ * sites is an admin of those two sites only.
+ *
+ * super_admin continues to bypass all of this via checkToolAccess.
  */
-export type ToolName = "pricing" | "claims" | "pertrack" | "form_submissions" | "schedule" | "inventory";
+export type ToolName =
+  | "pricing"
+  | "claims"
+  | "pertrack"
+  | "form_submissions"
+  | "schedule"
+  | "inventory"
+  | "inventory_view"
+  | "inventory_admin";
 
 export const VALID_TOOLS: readonly ToolName[] = [
   "pricing",
@@ -60,7 +90,9 @@ export const VALID_TOOLS: readonly ToolName[] = [
   "pertrack",
   "form_submissions",
   "schedule",
-  "inventory"
+  "inventory_view",
+  "inventory",
+  "inventory_admin"
 ] as const;
 
 /**

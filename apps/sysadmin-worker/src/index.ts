@@ -186,7 +186,19 @@ import type { ToolName, UserRole } from "@splash/types/auth";
 
 type Env = SupabaseEnv;
 
-const VALID_TOOLS: ReadonlySet<ToolName> = new Set(["pricing", "claims", "pertrack", "form_submissions", "schedule", "inventory"]);
+// Keep in sync with VALID_TOOLS in packages/types/src/auth.ts and the DB's
+// user_tool_access_tool_check constraint. inventory_view/inventory_admin are
+// the read-only and admin tiers of the chemical-inventory grant.
+const VALID_TOOLS: ReadonlySet<ToolName> = new Set([
+  "pricing",
+  "claims",
+  "pertrack",
+  "form_submissions",
+  "schedule",
+  "inventory_view",
+  "inventory",
+  "inventory_admin"
+]);
 const VALID_ROLES: ReadonlySet<UserRole> = new Set(["super_admin", "location_admin"]);
 const VALID_DC_ROLES: ReadonlySet<DcRole> = new Set(["gm", "rm", "admin", "super_admin"]);
 const VALID_PROMO_ROLES: ReadonlySet<PromoRole> = new Set([

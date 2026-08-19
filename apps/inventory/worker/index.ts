@@ -10,14 +10,23 @@
 // strip the /inventory prefix, handle /api/* ourselves, and forward the rest to
 // the asset store (which SPA-falls-back to index.html for client routes).
 //
-// Auth: every /api/* route passes through inventoryGate (authenticate + the
-// `inventory` tool grant). Location scope is enforced per-write via
-// userCanAccessLocation; full-admin writes (products, recipients, edit/delete
-// visits) require super_admin (isInventoryAdmin).
+// Auth is THREE independent checks and a route needs all the ones that apply:
+//
+//   1. inventoryGate      — authenticated + holds any inventory grant. Opens
+//                           the app. Read-only sessions (inventory_view) pass.
+//   2. canWriteInventory  — required by every mutating route. A view-only
+//                           session that POSTs anything must 403 here.
+//   3. userCanAccessLocation — per-location scope, for routes that name a site.
+//      isInventoryAdmin   — the admin-tier writes: edit/delete any visit,
+//                           products, recipients, report resend.
+//
+// (2) is the one that's easy to forget, because until 2026-08-19 the gate
+// itself implied write and mutating routes only had to check scope. Adding a
+// POST without canWriteInventory now silently hands viewers write access.
 
 import { json, jsonError } from "@splash/http";
 import type { SupabaseClient } from "@splash/db-supabase";
-import { inventoryGate, isInventoryAdmin, userCanAccessLocation } from "./auth.js";
+import { canWriteInventory, inventoryGate, isInventoryAdmin, userCanAccessLocation } from "./auth.js";
 import {
   createVisit,
   deleteVisit,
@@ -71,7 +80,28 @@ export default {
       const method = request.method;
       const sub = segments[1];
 
+      // Blanket write gate. Every read in this API is a GET and every mutation
+      // is a POST/PUT/DELETE, so one check here covers the whole surface and —
+      // more importantly — covers routes that don't exist yet. Per-route checks
+      // would be equivalent today and wrong the first time someone adds an
+      // endpoint without reading the header comment.
+      //
+      // Deliberately ahead of route matching, so an unknown POST 403s for a
+      // viewer rather than 404ing. That leaks nothing: the caller already holds
+      // an inventory grant and knows the app exists.
+      if (method !== "GET" && method !== "HEAD" && !canWriteInventory(session)) {
+        return jsonError(403, "read-only access");
+      }
+
       // GET /api/me — session + scope for the SPA's AuthContext.
+      //
+      // canSubmit was hardcoded `true` while the single grant implied write.
+      // It now carries the real answer, and the SPA uses it to hide mutation
+      // affordances. Cosmetic only — the blanket check above is the control.
+      //
+      // allLocations is sent explicitly rather than inferred from isAdmin: the
+      // two came apart when inventory_admin stopped implying super_admin, and a
+      // location-scoped admin must not be told they see everything.
       if (sub === "me" && segments.length === 2) {
         if (method !== "GET") return jsonError(405, "method not allowed");
         return json({
@@ -79,7 +109,8 @@ export default {
           email: session.email,
           role: session.role,
           isAdmin: isInventoryAdmin(session),
-          canSubmit: true,
+          canSubmit: canWriteInventory(session),
+          allLocations: session.role === "super_admin",
           locations: session.locations
         });
       }

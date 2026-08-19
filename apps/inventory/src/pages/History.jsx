@@ -1,6 +1,7 @@
 import { useMemo } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { useData } from '../context/DataContext'
+import { useAuth } from '../context/AuthContext'
 import { computeVisit } from '../lib/calc'
 import { EmptyState, Pill } from '../components/ui'
 import { LocationTabs, LocationHeader } from './LocationDashboard'
@@ -9,6 +10,7 @@ import { fmtCurrency, fmtCpc, fmtInt, fmtDate } from '../lib/format'
 export default function History() {
   const { locationId } = useParams()
   const { dataset, idx } = useData()
+  const { canSubmit } = useAuth()
   const location = idx.locationById[locationId]
   const visits = idx.visitsByLocation[locationId] || []
 
@@ -25,9 +27,11 @@ export default function History() {
         location={location}
         sub={`${visits.length} recorded visit${visits.length === 1 ? '' : 's'}`}
         actions={
-          <Link to={`/location/${locationId}/new`} className="btn-primary">
-            + New site visit
-          </Link>
+          canSubmit && (
+            <Link to={`/location/${locationId}/new`} className="btn-primary">
+              + New site visit
+            </Link>
+          )
         }
       />
       <LocationTabs locationId={locationId} />

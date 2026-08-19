@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { useData } from '../context/DataContext'
+import { useAuth } from '../context/AuthContext'
 import { usageTrends } from '../lib/calc'
 import { LocationTabs, LocationHeader } from './LocationDashboard'
 import { SectionTitle, EmptyState, Pill } from '../components/ui'
@@ -11,6 +12,7 @@ const VISIT_OPTIONS = [4, 8, 12, 20]
 export default function UsageTrends() {
   const { locationId } = useParams()
   const { dataset, idx } = useData()
+  const { canSubmit } = useAuth()
   const location = idx.locationById[locationId]
   const [lastN, setLastN] = useState(8)
   const [mode, setMode] = useState('ml') // 'ml' | 'cost'
@@ -25,9 +27,11 @@ export default function UsageTrends() {
         location={location}
         sub="Per-product usage across visits — latest first, color-coded against target"
         actions={
-          <Link to={`/location/${locationId}/new`} className="btn-primary">
-            + New site visit
-          </Link>
+          canSubmit && (
+            <Link to={`/location/${locationId}/new`} className="btn-primary">
+              + New site visit
+            </Link>
+          )
         }
       />
       <LocationTabs locationId={locationId} />

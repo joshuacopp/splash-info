@@ -26,6 +26,7 @@
 
 import { useState, type ChangeEvent } from "react";
 import { FieldLabel, inputClass } from "./OperationCard";
+import { TOOL_HELP } from "./tools";
 
 type DcRoleValue = "" | "gm" | "rm" | "admin" | "super_admin";
 
@@ -76,11 +77,35 @@ export function CreateUserToolsAndDcRole() {
             <input type="checkbox" name="tools" value="schedule" />
             schedule
           </label>
-          <label className="inline-flex items-center gap-2 text-sm text-splash-navy">
+          {/* Chemical inventory is three nested tiers — tick ONE. `claims` is
+              still hand-written above because it owns the DC-role state; the
+              rest stay literal to match. */}
+          <label
+            className="inline-flex items-center gap-2 text-sm text-splash-navy"
+            title={TOOL_HELP.inventory_view}
+          >
+            <input type="checkbox" name="tools" value="inventory_view" />
+            inventory_view
+          </label>
+          <label
+            className="inline-flex items-center gap-2 text-sm text-splash-navy"
+            title={TOOL_HELP.inventory}
+          >
             <input type="checkbox" name="tools" value="inventory" />
             inventory
           </label>
+          <label
+            className="inline-flex items-center gap-2 text-sm text-splash-navy"
+            title={TOOL_HELP.inventory_admin}
+          >
+            <input type="checkbox" name="tools" value="inventory_admin" />
+            inventory_admin
+          </label>
         </div>
+        <p className="mt-1.5 text-[0.6875rem] text-splash-navy/60">
+          Chemical inventory has three tiers — view is read-only, inventory can
+          submit visits, admin can also edit products and recipients. Tick one.
+        </p>
         {claimsChecked ? (
           <p className="mt-1.5 text-[0.6875rem] text-splash-navy/60">
             Claims access also requires a DC role — pick one below.

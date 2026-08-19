@@ -80,9 +80,16 @@ export function AuthProvider({ children }) {
     const isAdmin = !!me?.isAdmin
     const canSubmit = me?.canSubmit !== false && authed
     const assignedIds = me?.locations || []
-    const allLocations = isAdmin
+    // Was `allLocations = isAdmin`, which held only while inventory admin WAS
+    // super_admin. Since the grant tiers split (2026-08-19) an inventory_admin
+    // can be scoped to two sites, so global visibility has to be told to us by
+    // the worker rather than inferred from the admin flag. `??` keeps a browser
+    // tab still running the pre-split client behaving exactly as before.
+    const allLocations = me?.allLocations ?? isAdmin
     // null = unrestricted (sees every location); otherwise a Set of codes.
-    const visibleLocationIds = isAdmin ? null : new Set(assignedIds)
+    // Client-side narrowing only — /api/data is already scoped server-side, so
+    // this never widens anything, it just avoids showing empty pickers.
+    const visibleLocationIds = allLocations ? null : new Set(assignedIds)
 
     return {
       isDemo: false,
