@@ -13,7 +13,10 @@
 
 import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
-import { performancePostJson } from "../performance/_lib/worker-fetch";
+import {
+  performancePostJson,
+  transportTag
+} from "../performance/_lib/worker-fetch";
 
 const LIST_PATH = "/admin/greeters";
 
@@ -108,7 +111,10 @@ export async function submitGreeterDayAction(formData: FormData): Promise<void> 
   if (!result.ok) fail(result.error);
 
   revalidatePath(LIST_PATH);
-  redirect(`${LIST_PATH}?success=day`);
+  // `t=<transport>-<ms>` is a temporary diagnostic (2026-08-20) for the ~20s
+  // save; see transportTag() in performance/_lib/worker-fetch. Remove from
+  // both day actions and from expenses/actions.ts together.
+  redirect(`${LIST_PATH}?success=day&t=${transportTag(result)}`);
 }
 
 export async function submitLocationDayAction(formData: FormData): Promise<void> {
@@ -133,7 +139,7 @@ export async function submitLocationDayAction(formData: FormData): Promise<void>
   if (!result.ok) fail(result.error);
 
   revalidatePath(LIST_PATH);
-  redirect(`${LIST_PATH}?success=location`);
+  redirect(`${LIST_PATH}?success=location&t=${transportTag(result)}`);
 }
 
 /**

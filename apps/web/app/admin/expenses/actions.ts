@@ -28,7 +28,10 @@
 
 import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
-import { performancePostJson } from "../performance/_lib/worker-fetch";
+import {
+  performancePostJson,
+  transportTag
+} from "../performance/_lib/worker-fetch";
 
 const LIST_PATH = "/admin/expenses";
 
@@ -44,7 +47,17 @@ function strOrNull(formData: FormData, name: string): string | null {
 
 /** Banner params. Stripped from `return_qs` on every redirect so a stale error
  *  from the previous attempt can't ride along beside a fresh success. */
-const BANNER_PARAMS = ["action_error", "success", "po", "created", "corrected"];
+const BANNER_PARAMS = [
+  "action_error",
+  "success",
+  "po",
+  "created",
+  "corrected",
+  // DIAGNOSTIC (2026-08-20, temporary) — `t=<transport>-<ms>` for the ~20s
+  // save. Listed here so it's stripped from `return_qs` like the rest and a
+  // reading from the previous save can't ride along beside a fresh one.
+  "t"
+];
 
 /**
  * Rebuild the page URL the form was submitted from, with `extra` layered on.
@@ -176,7 +189,11 @@ export async function submitExpenseAction(formData: FormData): Promise<void> {
 
   revalidatePath(LIST_PATH);
   redirect(
-    backTo(formData, po ? { success: "entry", po } : { success: "entry" })
+    backTo(formData, {
+      success: "entry",
+      ...(po ? { po } : {}),
+      t: transportTag(result)
+    })
   );
 }
 

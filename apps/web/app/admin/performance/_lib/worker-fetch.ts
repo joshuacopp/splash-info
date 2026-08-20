@@ -87,9 +87,38 @@ export async function performanceGetJson<T>(path: string): Promise<T | null> {
   return (await resp.json()) as T;
 }
 
+/**
+ * Which branch of the dual-mode transport actually ran.
+ *
+ *   "binding"  — env.PERFORMANCE_WORKER.fetch(). The intended production path.
+ *   "url"      — getCloudflareContext() resolved but the binding was missing.
+ *   "url-throw" — getCloudflareContext() itself threw (expected only in dev).
+ *
+ * The two URL values are kept apart because they mean different things in a
+ * deployed Worker: "url" says the service binding didn't make it into the
+ * deploy, "url-throw" says we're not in the Workers runtime at all.
+ */
+export type PostTransport = "binding" | "url" | "url-throw";
+
 export type PerformancePostResult =
-  | { ok: true; body: unknown }
-  | { ok: false; status: number; error: string };
+  | { ok: true; body: unknown; via: PostTransport; ms: number }
+  | { ok: false; status: number; error: string; via: PostTransport; ms: number };
+
+/**
+ * DIAGNOSTIC (2026-08-20), and meant to be removed once the answer is in.
+ *
+ * Saves on /admin/expenses and /admin/greeters take ~20s. Both pages run
+ * entirely different SQL, so the shared cost is this transport, not the
+ * database. `${via}-${ms}` is appended to the post-save redirect so one
+ * ordinary save reports which branch ran and how long the worker call took —
+ * no tail, no log scraping, it lands in the address bar.
+ *
+ * If this ever reads "url-<something near 20000>", the fallback is taking the
+ * same-zone edge loop the header comment above was written to avoid.
+ */
+export function transportTag(result: PerformancePostResult): string {
+  return `${result.via}-${result.ms}`;
+}
 
 /**
  * POST a JSON body to a performance-worker endpoint. Forwards the auth
@@ -112,6 +141,8 @@ export async function performancePostJson<T>(
   const stringified = JSON.stringify(body);
 
   let resp: Response;
+  let via: PostTransport = "binding";
+  const startedAt = Date.now();
   try {
     const { env } = await getCloudflareContext({ async: true });
     if (env.PERFORMANCE_WORKER) {
@@ -128,6 +159,7 @@ export async function performancePostJson<T>(
       });
       resp = await env.PERFORMANCE_WORKER.fetch(req);
     } else {
+      via = "url";
       const url = await workerUrl(path);
       resp = await fetch(url, {
         method: "POST",
@@ -141,6 +173,7 @@ export async function performancePostJson<T>(
       });
     }
   } catch {
+    via = "url-throw";
     const url = await workerUrl(path);
     resp = await fetch(url, {
       method: "POST",
@@ -154,6 +187,11 @@ export async function performancePostJson<T>(
     });
   }
 
+  // Measured around the worker call only, deliberately: it has to be possible
+  // to say "the transport was 19s and everything else was 300ms" rather than
+  // "the save was 20s", which is what we already knew.
+  const ms = Date.now() - startedAt;
+
   const ct = resp.headers.get("content-type") ?? "";
   let parsed: unknown = null;
   let rawText: string | null = null;
@@ -164,7 +202,7 @@ export async function performancePostJson<T>(
   }
 
   if (resp.ok) {
-    return { ok: true, body: parsed ?? rawText };
+    return { ok: true, body: parsed ?? rawText, via, ms };
   }
 
   let error: string;
@@ -180,5 +218,5 @@ export async function performancePostJson<T>(
   } else {
     error = `Worker POST failed: ${resp.status}`;
   }
-  return { ok: false, status: resp.status, error };
+  return { ok: false, status: resp.status, error, via, ms };
 }
