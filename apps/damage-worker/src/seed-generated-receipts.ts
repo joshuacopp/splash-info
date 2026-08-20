@@ -5,8 +5,10 @@
 // cost figures sum `claim_photos.amount` for photo_type IN ('Quote','Receipt').
 // They never read `claims.approved_amount`. So a claim can be Closed — Paid
 // with a correct amount on the claim row and still contribute nothing to
-// reported cost, because no document carries the money. ~105 paid 2026 claims
-// were in exactly that state after the workbook backfill.
+// reported cost, because no document carries the money. 105 paid 2026 claims
+// were in exactly that state after the workbook backfill — 104 migrated from
+// JotForm, and 1 raised in the damage worker itself, which is deliberately out
+// of scope (see fetchClaimsNeedingReceipts).
 //
 // These are historic records. Nothing is paid from the documents this endpoint
 // writes — the cheques cleared months ago, and the real paperwork sits in Box.
@@ -63,6 +65,14 @@ interface ClaimOutcome {
  * The NOT EXISTS covers every document type on purpose. A claim that already
  * has a check request is handled by the retype SQL, not here — generating a
  * second document for the same payment would leave two records of one cheque.
+ *
+ * MIGRATED CLAIMS ONLY (operator decision, 2026-08-20). `idempotency_key LIKE
+ * 'jotform:%'` is the marker for a claim that came out of the old JotForm
+ * process. A claim raised directly in the damage worker that is paid with no
+ * document is a different problem entirely: its paperwork is missing from a
+ * live workflow, and someone should go find it. Reconstructing a document for
+ * it would paper over a gap that is still fixable for real. Exactly one paid
+ * 2026 claim is in that state today, and it stays out.
  */
 async function fetchClaimsNeedingReceipts(
   db: D1Database,
@@ -75,6 +85,7 @@ async function fetchClaimsNeedingReceipts(
           AND c.claim_status = 'Closed — Paid'
           AND c.submitted_at >= ?1
           AND c.submitted_at < ?2
+          AND c.idempotency_key LIKE 'jotform:%'
           AND NOT EXISTS (
             SELECT 1 FROM claim_photos p
              WHERE p.claim_id = c.claim_id
