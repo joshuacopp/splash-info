@@ -522,9 +522,12 @@ async function dispatchManageApi(
 
   // POST /manage/api/seed/generated-receipts — task #15. Paid 2026 claims with
   // no document at all report $0 cost, because the cost sums read
-  // claim_photos.amount and never claims.approved_amount. This reconstructs a
-  // receipt from the claim record so the year reports accurately. `?dry_run=1`
-  // lists what it would build without writing.
+  // claim_photos.amount and never claims.approved_amount. This writes a one-page
+  // placeholder per claim — same blunt style as the paper-claim imports, Box
+  // link printed on its face — carrying approved_amount so the year reports
+  // accurately. Migrated claims only — both the jotform: seed rows and the
+  // NULL-key hand-migrated Copp ones. `?dry_run=1` lists what it would build
+  // without writing.
   if (
     subParts.length === 2 &&
     subParts[0] === "seed" &&
