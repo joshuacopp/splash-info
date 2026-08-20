@@ -589,6 +589,17 @@ async function resolveClaimId(
     const migrated =
       jotToClaimId.get(incidentKey) ?? jotToClaimId.get(incidentKey.replace(/^0+/, ""));
     if (migrated) return { claimId: migrated, via: "staff_notes JOT#" };
+
+    // A typed extra zero after the year prefix: "DC202000807" for what is
+    // really JOT# 20200807. The 2020-series numbers are eight digits, the
+    // 2025/2026 ones nine, so a padded 2020 number is indistinguishable from a
+    // valid nine-digit key by shape alone. Retrying the de-padded form is safe
+    // because it only counts if it actually resolves to a claim.
+    const depadded = incidentKey.replace(/^(20\d{2})0+(\d+)$/, "$1$2");
+    if (depadded !== incidentKey && /^\d{6,12}$/.test(depadded)) {
+      const retry = await resolveClaimId(db, depadded, jotToClaimId);
+      if (retry) return { claimId: retry.claimId, via: `${retry.via} (zero-padded)` };
+    }
   }
 
   const byPayee = await resolveByPayee(db, payee, amount);
@@ -600,10 +611,15 @@ async function resolveClaimId(
 /**
  * Last-resort join for submissions with no usable incident number.
  *
- * Requires a unique hit, so a customer with two claims in 2026 falls through
+ * Requires a unique hit, so a customer with two paid claims falls through
  * rather than getting the wrong one attached. The cent tolerance is there
  * because the workbook and the submission disagree by a penny in at least one
  * case (249.20 vs 249.21) — rounding somewhere upstream, not a different claim.
+ *
+ * Deliberately NOT scoped to 2026 claims. A cheque cut in 2026 against a 2025
+ * claim still belongs on that claim, and some 2025 claims are already in D1
+ * from the paper seed — Matt Clark's 1352025008 is one, and scoping to 2026
+ * was the only reason it did not join.
  */
 async function resolveByPayee(
   db: D1Database,
@@ -617,7 +633,6 @@ async function resolveByPayee(
     .prepare(
       `SELECT claim_id, approved_amount FROM claims
         WHERE deleted_at IS NULL
-          AND submitted_at >= '2026-01-01'
           AND claim_status = 'Closed — Paid'
           AND LOWER(TRIM(REPLACE(REPLACE(customer_name, '  ', ' '), '  ', ' '))) = ?1
         LIMIT 5`
