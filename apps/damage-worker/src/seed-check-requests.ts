@@ -595,7 +595,9 @@ async function resolveClaimId(
     // 2025/2026 ones nine, so a padded 2020 number is indistinguishable from a
     // valid nine-digit key by shape alone. Retrying the de-padded form is safe
     // because it only counts if it actually resolves to a claim.
-    const depadded = incidentKey.replace(/^(20\d{2})0+(\d+)$/, "$1$2");
+    // Exactly one zero, not `0+` — greedy would turn 202000807 into 2020807
+    // rather than the 20200807 that actually exists.
+    const depadded = incidentKey.replace(/^(20\d{2})0(\d+)$/, "$1$2");
     if (depadded !== incidentKey && /^\d{6,12}$/.test(depadded)) {
       const retry = await resolveClaimId(db, depadded, jotToClaimId);
       if (retry) return { claimId: retry.claimId, via: `${retry.via} (zero-padded)` };
