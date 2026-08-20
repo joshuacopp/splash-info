@@ -429,6 +429,23 @@ export const TILES: ReadonlyArray<Tile> = [
     icon: barChartIcon,
     visibleTo: hasPerformanceAccess
   },
+  {
+    // Third tile on the same `pertrack` grant, and separate for the same reason
+    // the Greeter Scorecard is: this is the CPM workbook's Expense Log tab
+    // (money going out, per site, per month, against a budget), not a
+    // performance metric and not a greeter's day. Same permission, different
+    // job. The page re-checks worker-side and a location admin only sees their
+    // own sites' entries.
+    id: "expenses",
+    group: "operations",
+    eyebrow: "Costs",
+    title: "Expense Log",
+    description:
+      "Log purchases by PO number and track monthly spend against budget by category.",
+    href: "/admin/expenses",
+    icon: creditCardIcon,
+    visibleTo: hasPerformanceAccess
+  },
   // Brief 158a — Promotions feature. Visible to any user with a promo_role
   // (super_admin / it / marketing / ops); page-level gate re-checks at the
   // destination. IT Queue is the work-queue surface for super_admin / it

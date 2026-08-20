@@ -19,6 +19,11 @@
 //   /api/greeter/*          — greeter scorecard (roster, daily rows, rollup,
 //                             site-wide days, goals). Owned by ./greeter.ts;
 //                             see that file's header for the route list.
+//   /api/expenses/*         — expense log (categories, entries + void,
+//                             budgets + month copy, month rollup). Owned by
+//                             ./expense.ts; see that file's header for the
+//                             route list. Same "pertrack" grant as the other
+//                             two features, same single auth gate below.
 //
 // AUTH GATE POSITION:
 //   /api/login    — no gate (this IS the auth flow).
@@ -54,6 +59,7 @@ import {
 } from "@splash/db-supabase";
 import { isOriginAllowed, json as jsonResponse } from "@splash/http";
 import type { PerformanceTrackingInsert } from "@splash/types/performance";
+import { handleExpenseRoute, isExpenseRoute } from "./expense.js";
 import { handleGreeterRoute, isGreeterRoute } from "./greeter.js";
 
 type Env = SupabaseEnv;
@@ -98,7 +104,8 @@ export default {
       if (
         (pathname === "/api/locations" && method === "GET") ||
         (pathname === "/api/submissions" && (method === "GET" || method === "POST")) ||
-        isGreeterRoute(pathname, method)
+        isGreeterRoute(pathname, method) ||
+        isExpenseRoute(pathname, method)
       ) {
         // Two-step gate: authenticate, then check tool access.
         const auth = await authenticate(request, env);
@@ -131,6 +138,20 @@ export default {
           session
         );
         if (greeter) return greeter;
+
+        // Expense log — same grant, same session scope, separate module. Sits
+        // after greeter only because the path prefixes are disjoint, so the
+        // order can't matter; keeping one dispatch per feature here is what
+        // keeps this from growing a second auth path.
+        const expense = await handleExpenseRoute(
+          pathname,
+          method,
+          request,
+          url,
+          env,
+          session
+        );
+        if (expense) return expense;
       }
 
       return jsonResponse({ error: "not found" }, 404);

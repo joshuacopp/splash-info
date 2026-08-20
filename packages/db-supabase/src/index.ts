@@ -20,6 +20,7 @@ export * from "./locations.js";
 export * from "./maintainx-users.js";
 export * from "./performance.js";
 export * from "./greeter.js";
+export * from "./expense.js";
 export * from "./audit.js";
 export * from "./summary.js";
 export * from "./lookup.js";
