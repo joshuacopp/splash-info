@@ -195,6 +195,7 @@ import { handleJotformSeed } from "./seed-jotform.js";
 import { handleJotformPhotoSeed } from "./seed-jotform-photos.js";
 import { handleCheckRequestSeed } from "./seed-check-requests.js";
 import { handlePaperClaimSeed } from "./seed-paper-claims.js";
+import { handleGeneratedReceiptSeed } from "./seed-generated-receipts.js";
 import { expandGrantedCodes, loadOverlay } from "./overlay.js";
 
 interface Env extends SupabaseEnv {
@@ -517,6 +518,20 @@ async function dispatchManageApi(
     method === "POST"
   ) {
     return handleCheckRequestSeed(request, env, session.dcRole ?? null);
+  }
+
+  // POST /manage/api/seed/generated-receipts — task #15. Paid 2026 claims with
+  // no document at all report $0 cost, because the cost sums read
+  // claim_photos.amount and never claims.approved_amount. This reconstructs a
+  // receipt from the claim record so the year reports accurately. `?dry_run=1`
+  // lists what it would build without writing.
+  if (
+    subParts.length === 2 &&
+    subParts[0] === "seed" &&
+    subParts[1] === "generated-receipts" &&
+    method === "POST"
+  ) {
+    return handleGeneratedReceiptSeed(request, env, session.dcRole ?? null);
   }
 
   // Brief 172 — GET /manage/api/claims.csv — CSV export of the same
