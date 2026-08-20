@@ -22,6 +22,11 @@
 // getClaimByIdempotencyKey, so the endpoint is safe to re-run and safe to
 // page through in any order.
 //
+// SCOPE: `from`/`to` bound the range (defaulting to calendar 2026), and
+// `only=DC202500539,DC...` narrows a run to named submissions. Use `only` for
+// back-imports outside 2026 — see the comment on the param for why a whole-year
+// 2025 import is the wrong move.
+//
 // PHOTOS ARE NOT SEEDED HERE. Fields 15 / 39 / 48 are fileupload arrays;
 // ~1,100 claims x 4-8 files each is far past one request's budget. That gets
 // its own paged endpoint (task #7) writing via uploadClaimPhoto.
@@ -642,6 +647,25 @@ export async function handleJotformSeed(
     Number.isFinite(requested) && requested > 0 ? requested : DEFAULT_LIMIT
   );
 
+  // `only=DC202500539,DC202500629` — import just these submissions and pass
+  // over everything else in the range.
+  //
+  // Added for the 2025 back-import (task #17). A handful of cheques cut in
+  // 2026 were raised against 2025 claims, and the 2026 books are wrong without
+  // them. But a whole-year 2025 import is NOT the answer: phase 2 (the
+  // workbook pass that closes claims) and the cost backfill both key off the
+  // 2026 master workbook, and no 2025 equivalent exists — so every 2025 claim
+  // would land at its initial status with no amount and sit in the open queues
+  // looking live. This filter imports the named parents and nothing else.
+  // Drop the whole-year import in only when a 2025 workbook turns up.
+  const onlyRaw = url.searchParams.get("only") ?? "";
+  const only = new Set(
+    onlyRaw
+      .split(",")
+      .map((s) => normalizeUniqueId(s.trim()) ?? "")
+      .filter(Boolean)
+  );
+
   let rows: SubmissionRow[];
   let siteMap: Map<string, { code: string; pretty: string }>;
   let migratedJotNumbers: Set<string>;
@@ -665,11 +689,24 @@ export async function handleJotformSeed(
   let alreadySeeded = 0;
   let alreadyMigrated = 0;
   let skipped = 0;
+  // Passed over because `only` was supplied and did not name them. Counted
+  // apart from `skipped`, which means "wanted but unusable".
+  let filtered = 0;
 
   for (const row of rows) {
     const answers = (row.answers ?? {}) as AnswerMap;
     const byName = indexByName(answers);
     const uniqueId = normalizeUniqueId(str(byName, FIELD.uniqueId));
+
+    // Cheap and silent: a filtered row is not a problem to report, and with a
+    // 13-name list against 800 submissions it would drown the outcomes array.
+    // Ordered ahead of the uniqueId guard on purpose — a row with no uniqueId
+    // can never be one of the names asked for, so on a targeted run it is not a
+    // problem, it is just another row we are passing over.
+    if (only.size > 0 && (!uniqueId || !only.has(uniqueId))) {
+      filtered += 1;
+      continue;
+    }
 
     if (!uniqueId) {
       skipped += 1;
@@ -858,10 +895,18 @@ export async function handleJotformSeed(
     already_migrated: alreadyMigrated,
     migrated_jot_numbers_known: migratedJotNumbers.size,
     skipped,
+    // Passed over because `only` was supplied and did not name them. On a
+    // targeted run this is the bulk of the page, and seeing it move page to
+    // page is the only confirmation the filter engaged at all.
+    filtered,
+    only: only.size > 0 ? [...only] : undefined,
     // Only the non-clean rows are enumerated — a 200-row page of "inserted"
     // outcomes is noise the operator has to scroll past to find the one that
-    // failed.
-    problems: outcomes.filter((o) => o.outcome === "skipped"),
+    // failed. A targeted run is the exception: `only` names a handful, and the
+    // whole point of the dry run is to see which of those names the range
+    // actually contains *before* anything is written, rather than finding the
+    // gaps one page at a time.
+    problems: only.size > 0 ? outcomes : outcomes.filter((o) => o.outcome === "skipped"),
     ...(dryRun ? { samples } : {})
   });
 }

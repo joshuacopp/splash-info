@@ -48,10 +48,15 @@
 //                                                            imports the 2026
 //                                                            check-request form
 //                                                            and rebuilds PDFs
-//   POST /manage/api/seed/jotform?from=&to=&limit=&offset=   — historic JotForm
-//                                                            claim seed; re-gated
-//                                                            to super_admin inside
-//                                                            the handler
+//   POST /manage/api/seed/jotform?from=&to=&limit=&offset=&only= — historic
+//                                                            JotForm claim seed;
+//                                                            re-gated to
+//                                                            super_admin inside
+//                                                            the handler. `only`
+//                                                            is a comma list of
+//                                                            unique ids, for
+//                                                            back-importing named
+//                                                            pre-2026 parents
 //
 // READ ENDPOINTS for apps/web SSR (added in Chunk 2):
 //   GET  /manage/api/claims                                 — list claims (filtered)
