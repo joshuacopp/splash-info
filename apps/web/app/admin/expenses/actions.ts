@@ -53,10 +53,12 @@ const BANNER_PARAMS = [
   "po",
   "created",
   "corrected",
-  // DIAGNOSTIC (2026-08-20, temporary) — `t=<transport>-<ms>` for the ~20s
-  // save. Listed here so it's stripped from `return_qs` like the rest and a
-  // reading from the previous save can't ride along beside a fresh one.
-  "t"
+  // DIAGNOSTIC (2026-08-20, temporary) — `t=<transport>-<ms>` for the worker
+  // call and `a=<ms>` for the whole action. Listed here so they're stripped
+  // from `return_qs` like the rest and a reading from the previous save can't
+  // ride along beside a fresh one.
+  "t",
+  "a"
 ];
 
 /**
@@ -131,6 +133,14 @@ function wasCorrected(body: unknown): boolean {
  * the caller's scope so a hand-typed one could otherwise claim another site.
  */
 export async function submitExpenseAction(formData: FormData): Promise<void> {
+  // DIAGNOSTIC (2026-08-20, temporary — see transportTag in
+  // performance/_lib/worker-fetch). `t` already proved the worker call itself
+  // is ~300ms, so this brackets everything ELSE the action does: reading the
+  // cookie jar, and revalidatePath. If `a` also comes back in the hundreds,
+  // the server action is not where the 20s lives and the remaining suspect is
+  // the RSC re-render Next performs on the way to the redirect.
+  const actionStart = Date.now();
+
   const businessDate = strField(formData, "business_date");
   if (!businessDate) fail(formData, "Pick a purchase date before saving.");
 
@@ -192,7 +202,8 @@ export async function submitExpenseAction(formData: FormData): Promise<void> {
     backTo(formData, {
       success: "entry",
       ...(po ? { po } : {}),
-      t: transportTag(result)
+      t: transportTag(result),
+      a: String(Date.now() - actionStart)
     })
   );
 }

@@ -170,6 +170,11 @@ export default async function ExpensesPage({ searchParams }: PageProps) {
   let budgetsRes: { budgets: BudgetListRow[] } | null = null;
   let fetchError: string | null = null;
 
+  // DIAGNOSTIC (2026-08-20, temporary). Brackets the page's own reads so the
+  // render cost can be told apart from the write cost. Rendered in a muted
+  // line at the foot of the page — see the `renderMs` note near the bottom.
+  const fetchStart = Date.now();
+
   try {
     // Parallel: four independent reads. Sequential awaits would multiply the
     // page's time-to-first-byte for no benefit.
@@ -191,6 +196,8 @@ export default async function ExpensesPage({ searchParams }: PageProps) {
     fetchError =
       err instanceof Error ? err.message : "Unknown error loading the expense log.";
   }
+
+  const renderMs = Date.now() - fetchStart;
 
   const returnPath = `/admin/expenses${listQs}`;
 
@@ -637,6 +644,13 @@ export default async function ExpensesPage({ searchParams }: PageProps) {
           </TableWrap>
         )}
       </Card>
+
+      {/* DIAGNOSTIC (2026-08-20, temporary). How long this page's own four
+          reads took, so the render can be told apart from the write. Remove
+          together with the `t`/`a` params in actions.ts. */}
+      <p className="mt-4 text-right text-[10px] text-splash-navy/30">
+        reads {renderMs}ms
+      </p>
     </section>
   );
 }
