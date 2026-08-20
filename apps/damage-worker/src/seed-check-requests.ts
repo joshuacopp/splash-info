@@ -645,7 +645,7 @@ interface RequestOutcome {
   amount: number | null;
   amount_source: string;
   payee: string;
-  outcome: "imported" | "skipped" | "failed" | "dry_run";
+  outcome: "imported" | "unchanged" | "skipped" | "failed" | "dry_run";
   attachment?: { filename: string; r2_key: string; outcome: string; reason?: string };
   pdf?: { filename: string; r2_key: string; outcome: string; reason?: string };
   reason?: string;
@@ -714,6 +714,10 @@ export async function handleCheckRequestSeed(
   const incidentShapes = new Map<string, number>();
 
   let imported = 0;
+  // Resolved, but everything it would have written was already there. Kept
+  // separate from `imported` so a re-run reads as a no-op instead of looking
+  // like a second full pass.
+  let unchanged = 0;
   let skipped = 0;
   let failed = 0;
 
@@ -785,8 +789,13 @@ export async function handleCheckRequestSeed(
       const result = await importOne(env, claim, row, existingKeys);
       base.attachment = result.attachment;
       base.pdf = result.pdf;
-      imported += 1;
-      outcomes.push({ ...base, outcome: "imported" });
+      if (result.changed) {
+        imported += 1;
+        outcomes.push({ ...base, outcome: "imported" });
+      } else {
+        unchanged += 1;
+        outcomes.push({ ...base, outcome: "unchanged" });
+      }
     } catch (err) {
       failed += 1;
       outcomes.push({
@@ -809,6 +818,7 @@ export async function handleCheckRequestSeed(
     has_more: subs.length === limit,
     kept: kept.length,
     imported,
+    unchanged,
     skipped,
     failed,
     // Earlier duplicates of the same (incident, amount) pair, dropped in
@@ -837,8 +847,16 @@ async function importOne(
 ): Promise<{
   attachment?: RequestOutcome["attachment"];
   pdf?: RequestOutcome["pdf"];
+  /**
+   * True only when this call actually wrote something. A re-run resolves every
+   * row again but writes nothing, and counting those as "imported" made the
+   * second pass look identical to the first — which is exactly the signal you
+   * need to be able to trust.
+   */
+  changed: boolean;
 }> {
   const apiKey = env.JOTFORM_API_KEY as string;
+  let changed = false;
 
   // The supporting document (estimate, or the Divvy receipt) becomes the
   // Quote/Receipt row: it carries the amount and the payee, which is what the
@@ -920,6 +938,7 @@ async function importOne(
       .first<ClaimPhotoRow>();
 
     existingKeys.add(r2Key);
+    changed = true;
     if (index === 0) {
       quoteRow = inserted;
       attachment = { filename, r2_key: r2Key, outcome: "uploaded" };
@@ -928,7 +947,7 @@ async function importOne(
 
   // A Divvy receipt is a record of a payment already made — there was never a
   // check request behind it, so generating one would invent a document.
-  if (row.isReceipt) return { attachment };
+  if (row.isReceipt) return { attachment, changed };
 
   // No attachment at all still deserves a check request: the amount, payee and
   // signatures are on the submission regardless of whether a file came with it.
@@ -956,7 +975,8 @@ async function importOne(
   if (existingKeys.has(pdfKey)) {
     return {
       attachment,
-      pdf: { filename: `${pdfFilenameStem}.pdf`, r2_key: pdfKey, outcome: "already_present" }
+      pdf: { filename: `${pdfFilenameStem}.pdf`, r2_key: pdfKey, outcome: "already_present" },
+      changed
     };
   }
 
@@ -993,6 +1013,7 @@ async function importOne(
 
   return {
     attachment,
+    changed: true,
     pdf: { filename: stored.filename, r2_key: stored.r2Key, outcome: "generated" }
   };
 }
