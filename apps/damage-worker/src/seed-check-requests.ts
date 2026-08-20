@@ -37,12 +37,16 @@
 // CLAIM RESOLUTION is the weak point and is treated as such. Field 11
 // (`incidentNumber`) is free text and shows real drift: mixed case ("Dc..."
 // vs "DC..."), stray whitespace, "n/a" where the submitter had no number to
-// hand. Roughly a fifth do not join to anything. Those are NOT dropped
-// silently and NOT guessed at — they come back in `unresolved` with the raw
-// string, for Josh to eyeball. Three paths are tried, cheapest first:
-//   1. the normalised digits as a literal claim_id
+// hand. Measured on the real form, about an eighth still do not join. Those
+// are NOT dropped silently and NOT guessed at — they come back in `unresolved`
+// with the raw string, for Josh to eyeball. Four paths, cheapest first:
+//   1. the normalised digits as a literal claim_id — this covers the
+//      site/year/sequence numbers used outside JotForm (e.g. 1342026010),
+//      which are stored as claim_id on the seeded paper claims
 //   2. idempotency_key = `jotform:DC{digits}` — anything the claim seed wrote
 //   3. staff_notes `JOT# {digits}` — the hand-migrated Copp claims
+//   4. payee name + amount against paid 2026 claims, unique match only —
+//      the only way to place the submissions that left field 11 blank
 //
 // RESUBMITS: the same request was sometimes filed twice, typically to fix a
 // typo in the payee name minutes later. Collapsing on
@@ -429,10 +433,17 @@ function contentTypeFor(filename: string, headerValue: string | null): string {
 /**
  * `Dc 2020 1087 ` → `20201087`. Case and whitespace drift are the two
  * failure modes actually present in the data; a leading DC prefix is stripped
- * so the digits can be tried against every id scheme in turn.
+ * so the digits can be tried against every id scheme in turn. A leading `#`
+ * goes too — `#772024025` is a site/year/sequence number someone hash-prefixed,
+ * and left in place it fails the digits test and loses an otherwise good join.
  */
 function normaliseIncident(raw: string): string {
-  return raw.trim().toUpperCase().replace(/^DC[\s-]*/, "").replace(/[\s-]+/g, "");
+  return raw
+    .trim()
+    .toUpperCase()
+    .replace(/^#\s*/, "")
+    .replace(/^DC[\s-]*/, "")
+    .replace(/[\s-]+/g, "");
 }
 
 /** Divvy receipts are recorded, but no cheque was raised, so no PDF is built. */
@@ -550,28 +561,74 @@ function collapseResubmits(rows: ParsedRequest[]): {
  * ============================================================ */
 
 /**
- * Three paths, cheapest first. Returns the claim_id and which path found it,
+ * Four paths, cheapest first. Returns the claim_id and which path found it,
  * so the dry run can show how the join actually behaves rather than just how
  * many succeeded.
+ *
+ * Paths 1-3 all key off the incident number. Path 4 exists because a sixth of
+ * the submissions have no incident number at all — the field was left blank or
+ * filled in as "n/a" — and those are not junk rows, they are real payments.
+ * The check is deliberately narrow: the payee has to be the exact customer name
+ * on exactly one paid 2026 claim, and the amount has to agree to the cent.
+ * Measured against the live data it recovered 8 of 13 blanks with no ambiguity.
  */
 async function resolveClaimId(
   db: D1Database,
   incidentKey: string,
-  jotToClaimId: Map<string, string>
+  jotToClaimId: Map<string, string>,
+  payee?: string,
+  amount?: number | null
 ): Promise<{ claimId: string; via: string } | null> {
-  if (!incidentKey || !/^\d{6,12}$/.test(incidentKey)) return null;
+  if (incidentKey && /^\d{6,12}$/.test(incidentKey)) {
+    const direct = await getClaimById(db, incidentKey);
+    if (direct) return { claimId: direct.claim_id, via: "claim_id" };
 
-  const direct = await getClaimById(db, incidentKey);
-  if (direct) return { claimId: direct.claim_id, via: "claim_id" };
+    const seeded = await getClaimByIdempotencyKey(db, `jotform:DC${incidentKey}`);
+    if (seeded) return { claimId: seeded.claim_id, via: "idempotency_key" };
 
-  const seeded = await getClaimByIdempotencyKey(db, `jotform:DC${incidentKey}`);
-  if (seeded) return { claimId: seeded.claim_id, via: "idempotency_key" };
+    const migrated =
+      jotToClaimId.get(incidentKey) ?? jotToClaimId.get(incidentKey.replace(/^0+/, ""));
+    if (migrated) return { claimId: migrated, via: "staff_notes JOT#" };
+  }
 
-  const migrated =
-    jotToClaimId.get(incidentKey) ?? jotToClaimId.get(incidentKey.replace(/^0+/, ""));
-  if (migrated) return { claimId: migrated, via: "staff_notes JOT#" };
+  const byPayee = await resolveByPayee(db, payee, amount);
+  if (byPayee) return { claimId: byPayee, via: "payee + amount" };
 
   return null;
+}
+
+/**
+ * Last-resort join for submissions with no usable incident number.
+ *
+ * Requires a unique hit, so a customer with two claims in 2026 falls through
+ * rather than getting the wrong one attached. The cent tolerance is there
+ * because the workbook and the submission disagree by a penny in at least one
+ * case (249.20 vs 249.21) — rounding somewhere upstream, not a different claim.
+ */
+async function resolveByPayee(
+  db: D1Database,
+  payee: string | undefined,
+  amount: number | null | undefined
+): Promise<string | null> {
+  const name = (payee ?? "").trim().replace(/\s+/g, " ").toLowerCase();
+  if (!name || amount === null || amount === undefined || !(amount > 0)) return null;
+
+  const rows = await db
+    .prepare(
+      `SELECT claim_id, approved_amount FROM claims
+        WHERE deleted_at IS NULL
+          AND submitted_at >= '2026-01-01'
+          AND claim_status = 'Closed — Paid'
+          AND LOWER(TRIM(REPLACE(REPLACE(customer_name, '  ', ' '), '  ', ' '))) = ?1
+        LIMIT 5`
+    )
+    .bind(name)
+    .all<{ claim_id: string; approved_amount: number | null }>();
+
+  const hits = (rows.results ?? []).filter(
+    (r) => r.approved_amount !== null && Math.abs(r.approved_amount - amount) <= 0.02
+  );
+  return hits.length === 1 ? (hits[0]?.claim_id ?? null) : null;
 }
 
 /* ============================================================
@@ -675,7 +732,13 @@ export async function handleCheckRequestSeed(
       outcome: "skipped"
     };
 
-    const resolution = await resolveClaimId(env.DB, row.incidentKey, jotToClaimId);
+    const resolution = await resolveClaimId(
+      env.DB,
+      row.incidentKey,
+      jotToClaimId,
+      row.payee,
+      row.amount
+    );
     if (!resolution) {
       skipped += 1;
       unresolved.push({
@@ -687,8 +750,8 @@ export async function handleCheckRequestSeed(
       outcomes.push({
         ...base,
         reason:
-          "incident number does not match any claim — tried claim_id, " +
-          "jotform: idempotency key and staff_notes JOT#"
+          "no claim matched — tried claim_id, jotform: idempotency key, " +
+          "staff_notes JOT# and payee + amount"
       });
       continue;
     }
