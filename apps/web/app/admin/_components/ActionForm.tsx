@@ -23,6 +23,23 @@
 // Use this on every new server-action write surface in apps/web. Don't
 // reach for redirect()-based feedback — same OpenNext/CF edge case will
 // bite again.
+//
+// 2026-08-21 UPDATE — THE COST OF redirect() IS NOW MEASURED, AND IT IS ~20s.
+// The original note above ("does not trigger a visible client-side
+// navigation") described the symptom; the cause is that calling redirect()
+// inside a server action under OpenNext on Cloudflare costs 19.7–20.3s of wall
+// time against ~18ms of CPU. The page "sits unchanged" because the POST is
+// still open. Confirmed on three unrelated features and fixed by returning
+// instead of throwing.
+//
+// So an ok result may now carry an optional `redirectTo`, which this component
+// pushes client-side. That covers the create-and-jump-to-detail shape (form
+// creation), which genuinely needs to navigate and previously had no way to do
+// it here except redirect(). Actions that stay on the page keep returning a
+// bare ok and still get router.refresh() — nothing existing changes.
+//
+// See also RedirectForm in this folder: same fix, for forms whose action ALWAYS
+// navigates and never reports inline, so it doesn't need useActionState.
 
 "use client";
 
@@ -30,7 +47,21 @@ import { useActionState, useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
 
 export type ActionResult =
-  | { ok: true; message?: string; data?: unknown }
+  | {
+      ok: true;
+      message?: string;
+      data?: unknown;
+      /**
+       * Navigate here instead of refreshing in place. Optional, so every
+       * existing action that returns a bare `{ ok: true }` is unaffected.
+       *
+       * Exists because redirect() inside a server action costs ~20s under
+       * OpenNext on Cloudflare (see the header). An action that needs to land
+       * the user somewhere else returns the path and lets this component push
+       * it.
+       */
+      redirectTo?: string;
+    }
   | { ok: false; error: string; fields?: Record<string, string> };
 
 interface ActionFormProps {
@@ -86,8 +117,15 @@ export function ActionForm({
   // Refresh server-component data on every fresh ok result. Pairs with the
   // action's revalidatePath() call: revalidate invalidates the cache,
   // refresh re-fetches and re-renders.
+  //
+  // Unless the action asked to navigate, in which case push instead — a
+  // refresh of a page we're leaving is wasted work, and push already renders
+  // the destination fresh.
   useEffect(() => {
-    if (result?.ok) {
+    if (!result?.ok) return;
+    if (result.redirectTo) {
+      router.push(result.redirectTo);
+    } else {
       router.refresh();
     }
   }, [result, router]);
@@ -102,8 +140,13 @@ export function ActionForm({
   // Remount the form on success so uncontrolled inputs (the common case
   // for these forms — name + textarea + select with defaultValue) clear.
   // Keying off the message keeps consecutive successes distinguishable.
+  //
+  // Not when we're navigating away: clearing the fields of a form the user is
+  // about to stop looking at just makes it flash empty mid-push.
   const formKey =
-    resetOnSuccess && result?.ok ? `ok:${result.message ?? ""}` : "form";
+    resetOnSuccess && result?.ok && !result.redirectTo
+      ? `ok:${result.message ?? ""}`
+      : "form";
 
   return (
     <form

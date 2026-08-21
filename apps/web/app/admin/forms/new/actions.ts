@@ -1,14 +1,20 @@
 // Brief 95 — server action for creating a new form.
 //
-// On success, redirects directly to the builder page (`/admin/forms/{id}`)
-// instead of returning ok=true. The Brief 19 redirect-vs-result caveat
-// applies to actions that should give in-page feedback while staying on the
-// same route — create-and-jump-to-detail is a different use case (similar to
-// /admin/sysadmin Add Location's flow, which does redirect on success).
+// On success this lands the operator on the builder page (`/admin/forms/{id}`)
+// rather than reporting inline, because the form they just created has no
+// fields yet and the next thing they need is the field editor.
+//
+// IT DOES NOT CALL redirect() TO GET THERE, AND MUST NOT. Doing so cost ~20
+// SECONDS: measured 2026-08-21 on this very page — 20.31s then 19.78s, status
+// 303, against ~18ms of CPU. The form row was committed almost immediately;
+// the wait was entirely Next.js answering the POST after a redirect throw.
+// Returning `redirectTo` on the ok result instead lets <ActionForm> push it
+// client-side, which is the same destination at normal speed.
+//
+// Validation failures still return `{ ok: false, error }` and render inline —
+// that half was already correct and is untouched.
 
 "use server";
-
-import { redirect } from "next/navigation";
 
 import { createFormAdmin } from "../_lib/worker-fetch";
 import type { ActionResult } from "../../_components/ActionForm";
@@ -55,6 +61,11 @@ export async function createFormAction(
     return { ok: false, error: msg };
   }
 
-  // Redirect after the try/catch so Next.js's redirect throw isn't swallowed.
-  redirect(`/admin/forms/${encodeURIComponent(formId)}`);
+  // Returned, not thrown — so unlike the old redirect() this is safe to sit
+  // inside or after the try/catch without the catch swallowing it.
+  return {
+    ok: true,
+    message: "Form created.",
+    redirectTo: `/admin/forms/${encodeURIComponent(formId)}`
+  };
 }

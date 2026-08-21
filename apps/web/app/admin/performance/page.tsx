@@ -29,6 +29,7 @@ import Link from "next/link";
 import { performanceGetJson } from "./_lib/worker-fetch";
 import { LocationPicker } from "./_components/LocationPicker";
 import { createSubmissionAction } from "./actions";
+import { RedirectForm } from "../_components/RedirectForm";
 
 interface EmbeddedLocation {
   id: number;
@@ -558,7 +559,7 @@ function NewSubmissionCard() {
         and location are required; everything else is optional.
       </p>
 
-      <form action={createSubmissionAction} className="flex flex-col gap-2">
+      <RedirectForm action={createSubmissionAction} className="flex flex-col gap-2">
         <h3 className={sectionLabelCls}>Visit</h3>
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <label className="flex flex-col gap-1">
@@ -712,7 +713,7 @@ function NewSubmissionCard() {
             Save submission
           </button>
         </div>
-      </form>
+      </RedirectForm>
     </div>
   );
 }

@@ -10,15 +10,23 @@
 //      and pass numerics through as strings (the worker's
 //      apiCreateSubmission re-coerces via toNumOrNull / toIntOrNull).
 //   2. Forward as JSON to performancePostJson.
-//   3. On worker error: redirect with ?action_error=<encoded>.
-//   4. On success: revalidatePath the list, then redirect with ?success=1
-//      so the page renders the success banner once.
+//   3. On worker error: return ?action_error=<encoded>.
+//   4. On success: revalidatePath the list, then return ?success=1 so the
+//      page renders the success banner once.
+//
+// NOTHING HERE CALLS redirect(), AND NOTHING HERE MAY. It returns
+// `{ redirectTo }` and <RedirectForm> pushes it from the client. A redirect()
+// inside a server action costs ~20 seconds of wall time under OpenNext on
+// Cloudflare against ~18ms of CPU — measured 2026-08-21 across three unrelated
+// features. The URLs below are byte-for-byte the ones redirect() used to be
+// handed, so the page's banner handling is untouched; only the transport
+// changed.
 
 "use server";
 
-import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import { performancePostJson } from "./_lib/worker-fetch";
+import type { RedirectResult } from "../_components/RedirectForm";
 
 const LIST_PATH = "/admin/performance";
 
@@ -39,14 +47,17 @@ function checkboxBool(formData: FormData, name: string): boolean {
 
 export async function createSubmissionAction(
   formData: FormData
-): Promise<void> {
+): Promise<RedirectResult> {
   const locationId = strField(formData, "location_id");
   if (!locationId) {
-    redirect(
-      `${LIST_PATH}?action_error=${encodeURIComponent(
+    // `return`, not a bare call. The old redirect() threw, so control never
+    // reached the write; a returning bail-out only works if the caller
+    // actually returns it.
+    return {
+      redirectTo: `${LIST_PATH}?action_error=${encodeURIComponent(
         "Pick a location before saving."
       )}`
-    );
+    };
   }
 
   // Coerce visit_at: <input type="datetime-local"> emits "YYYY-MM-DDTHH:mm"
@@ -82,11 +93,11 @@ export async function createSubmissionAction(
   const result = await performancePostJson("/pertrack/api/submissions", body);
 
   if (!result.ok) {
-    redirect(
-      `${LIST_PATH}?action_error=${encodeURIComponent(result.error)}`
-    );
+    return {
+      redirectTo: `${LIST_PATH}?action_error=${encodeURIComponent(result.error)}`
+    };
   }
 
   revalidatePath(LIST_PATH);
-  redirect(`${LIST_PATH}?success=1`);
+  return { redirectTo: `${LIST_PATH}?success=1` };
 }
