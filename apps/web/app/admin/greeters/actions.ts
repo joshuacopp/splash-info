@@ -1,9 +1,16 @@
 // Server actions for /admin/greeters.
 //
 // Same shape as the performance tracker's actions (FormData -> JSON body ->
-// performancePostJson -> redirect with ?action_error= or ?success=): the two
-// pages talk to the same worker over the same transport, so they should fail
-// the same way.
+// performancePostJson -> a URL with ?action_error= or ?success=): the two pages
+// talk to the same worker over the same transport, so they should fail the same
+// way.
+//
+// NOTHING HERE CALLS redirect(), AND NOTHING HERE MAY. Every action returns
+// `{ redirectTo }` and <RedirectForm> pushes it from the client. A redirect()
+// throw inside a server action costs ~20 seconds under OpenNext on Cloudflare
+// Workers, with the row already committed the whole time; returning a value
+// answers immediately. Same URLs as before, so the banners are unchanged. See
+// app/admin/_components/RedirectForm.tsx for the measurements.
 //
 // Numerics are forwarded as strings. performance-worker re-coerces every field
 // with toIntOrNull / toNumOrNull, so parsing here would just be a second place
@@ -11,12 +18,9 @@
 
 "use server";
 
-import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
-import {
-  performancePostJson,
-  transportTag
-} from "../performance/_lib/worker-fetch";
+import { performancePostJson } from "../performance/_lib/worker-fetch";
+import type { RedirectResult } from "../_components/RedirectForm";
 
 const LIST_PATH = "/admin/greeters";
 
@@ -56,8 +60,18 @@ function sharedMetricFields(formData: FormData): Record<string, unknown> {
   };
 }
 
-function fail(message: string): never {
-  redirect(`${LIST_PATH}?action_error=${encodeURIComponent(message)}`);
+/**
+ * RETURNS, IT DOES NOT THROW — so every call site needs its own `return`.
+ *
+ * This used to be typed `never` and call redirect(), which meant `if (!x)
+ * fail(...)` terminated the action on its own. It doesn't any more, so a
+ * `fail()` without a `return` in front of it falls through and posts the
+ * invalid body to the worker.
+ */
+function fail(message: string): RedirectResult {
+  return {
+    redirectTo: `${LIST_PATH}?action_error=${encodeURIComponent(message)}`
+  };
 }
 
 /**
@@ -78,15 +92,17 @@ function manualGreeterId(name: string): string {
   return `manual:${slug || "unnamed"}`;
 }
 
-export async function submitGreeterDayAction(formData: FormData): Promise<void> {
+export async function submitGreeterDayAction(
+  formData: FormData
+): Promise<RedirectResult> {
   const businessDate = strField(formData, "business_date");
-  if (!businessDate) fail("Pick a date before saving.");
+  if (!businessDate) return fail("Pick a date before saving.");
 
   const locationId = strField(formData, "location_id");
-  if (!locationId) fail("Pick a location before saving.");
+  if (!locationId) return fail("Pick a location before saving.");
 
   const greeterName = strField(formData, "greeter_name");
-  if (!greeterName) fail("Pick or type a greeter before saving.");
+  if (!greeterName) return fail("Pick or type a greeter before saving.");
 
   const pickedId = strField(formData, "beekeeper_user_id");
 
@@ -95,7 +111,9 @@ export async function submitGreeterDayAction(formData: FormData): Promise<void> 
   const shiftStart = strOrNull(formData, "shift_start");
   const shiftEnd = strOrNull(formData, "shift_end");
   if ((shiftStart === null) !== (shiftEnd === null)) {
-    fail("Enter both a shift start and a shift end, or leave both blank.");
+    return fail(
+      "Enter both a shift start and a shift end, or leave both blank."
+    );
   }
 
   const result = await performancePostJson("/pertrack/api/greeter/days", {
@@ -108,21 +126,20 @@ export async function submitGreeterDayAction(formData: FormData): Promise<void> 
     ...sharedMetricFields(formData)
   });
 
-  if (!result.ok) fail(result.error);
+  if (!result.ok) return fail(result.error);
 
   revalidatePath(LIST_PATH);
-  // `t=<transport>-<ms>` is a temporary diagnostic (2026-08-20) for the ~20s
-  // save; see transportTag() in performance/_lib/worker-fetch. Remove from
-  // both day actions and from expenses/actions.ts together.
-  redirect(`${LIST_PATH}?success=day&t=${transportTag(result)}`);
+  return { redirectTo: `${LIST_PATH}?success=day` };
 }
 
-export async function submitLocationDayAction(formData: FormData): Promise<void> {
+export async function submitLocationDayAction(
+  formData: FormData
+): Promise<RedirectResult> {
   const businessDate = strField(formData, "business_date");
-  if (!businessDate) fail("Pick a date before saving.");
+  if (!businessDate) return fail("Pick a date before saving.");
 
   const locationId = strField(formData, "location_id");
-  if (!locationId) fail("Pick a location before saving.");
+  if (!locationId) return fail("Pick a location before saving.");
 
   const result = await performancePostJson("/pertrack/api/greeter/location-days", {
     business_date: businessDate,
@@ -136,10 +153,10 @@ export async function submitLocationDayAction(formData: FormData): Promise<void>
     ...sharedMetricFields(formData)
   });
 
-  if (!result.ok) fail(result.error);
+  if (!result.ok) return fail(result.error);
 
   revalidatePath(LIST_PATH);
-  redirect(`${LIST_PATH}?success=location&t=${transportTag(result)}`);
+  return { redirectTo: `${LIST_PATH}?success=location` };
 }
 
 /**
@@ -150,17 +167,19 @@ export async function submitLocationDayAction(formData: FormData): Promise<void>
  * business date. Overlapping windows come back from the worker as a 409 with an
  * explanatory message, which lands in the action-error banner unchanged.
  */
-export async function createGoalAction(formData: FormData): Promise<void> {
+export async function createGoalAction(
+  formData: FormData
+): Promise<RedirectResult> {
   const locationId = strField(formData, "location_id");
-  if (!locationId) fail("Pick a location before saving the goal.");
+  if (!locationId) return fail("Pick a location before saving the goal.");
 
   const effectiveFrom = strField(formData, "effective_from");
-  if (!effectiveFrom) fail("A goal needs a start date.");
+  if (!effectiveFrom) return fail("A goal needs a start date.");
 
   const captureGoal = strField(formData, "capture_goal_pct");
   const dobGoal = strField(formData, "dob_goal");
   if (!captureGoal || !dobGoal) {
-    fail("Enter both a capture % goal and a D.O.B. goal.");
+    return fail("Enter both a capture % goal and a D.O.B. goal.");
   }
 
   const result = await performancePostJson("/pertrack/api/greeter/goals", {
@@ -174,8 +193,8 @@ export async function createGoalAction(formData: FormData): Promise<void> {
     note: strOrNull(formData, "note")
   });
 
-  if (!result.ok) fail(result.error);
+  if (!result.ok) return fail(result.error);
 
   revalidatePath(LIST_PATH);
-  redirect(`${LIST_PATH}?success=goal`);
+  return { redirectTo: `${LIST_PATH}?success=goal` };
 }

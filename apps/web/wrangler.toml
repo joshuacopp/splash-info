@@ -50,24 +50,6 @@ routes = [
 # names match the `name = "..."` in each sibling worker's wrangler.toml.
 # `[[services]]` are top-level array-of-tables and MUST appear before any
 # `[table]` header (e.g. `[assets]`).
-
-# Self-reference. Same gotcha as above, but pointed at ourselves.
-#
-# A server action that ends in redirect() makes Next fetch its own redirect
-# target to build the action response. Without this binding that self-fetch
-# goes out by URL to splashcarwashes.info, which is the same zone — so it
-# takes the edge loop described above, hangs ~19s, and only then does Next
-# give up and emit a bare 303 for the browser to follow. The save itself
-# always succeeded; it was the redirect that sat there.
-#
-# Measured 2026-08-21 before adding this: POST /admin/expenses wallTime
-# 20194ms / cpuTime 18ms, and POST /admin/forms/new 20.31s — two unrelated
-# features, same fixed ceiling. Server actions that return a result instead
-# of redirecting were instant, which is the bisect that identified it.
-[[services]]
-binding = "WORKER_SELF_REFERENCE"
-service = "splash-web"
-
 [[services]]
 binding = "DASHBOARD_WORKER"
 service = "splash-dashboard"

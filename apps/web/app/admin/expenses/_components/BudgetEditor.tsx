@@ -24,6 +24,10 @@
 // pretend otherwise.
 
 import { SavingButton } from "../../greeters/_components/SavingButton";
+import {
+  RedirectForm,
+  type RedirectResult
+} from "../../_components/RedirectForm";
 import { HINT_CLS, INPUT_CLS, LABEL_CLS } from "../_lib/ui";
 import { monthLabel } from "../_lib/format";
 import type { CategoryOption } from "./ExpenseEntryForm";
@@ -46,8 +50,8 @@ export function BudgetEditor({
   locationLabel,
   returnQs
 }: {
-  saveAction: (formData: FormData) => void | Promise<void>;
-  copyAction: (formData: FormData) => void | Promise<void>;
+  saveAction: (formData: FormData) => Promise<RedirectResult>;
+  copyAction: (formData: FormData) => Promise<RedirectResult>;
   categories: CategoryOption[];
   budgets: BudgetValue[];
   /** YYYY-MM-01, already normalised by the page. */
@@ -80,7 +84,7 @@ export function BudgetEditor({
       {/* Carry forward. Sits above the grid because it is the thing most people
           want on the first of the month, and typing thirteen numbers again is
           how a budget row quietly stops being maintained. */}
-      <form
+      <RedirectForm
         action={copyAction}
         className="flex flex-wrap items-center gap-3 rounded-splash-md border border-gray-light bg-splash-navy/5 p-4"
       >
@@ -102,7 +106,7 @@ export function BudgetEditor({
           </p>
         </div>
         <SavingButton savingLabel="Copying…">Copy last month</SavingButton>
-      </form>
+      </RedirectForm>
 
       <p className={HINT_CLS}>
         {setCount === 0
@@ -117,7 +121,7 @@ export function BudgetEditor({
             ? `${c.group_label} · ${c.label}`
             : c.label;
           return (
-            <form
+            <RedirectForm
               key={c.key}
               action={saveAction}
               className="grid grid-cols-1 items-end gap-3 py-3 sm:grid-cols-[minmax(0,12rem)_9rem_minmax(0,1fr)_auto]"
@@ -172,7 +176,7 @@ export function BudgetEditor({
               </label>
 
               <SavingButton>{existing ? "Update" : "Set"}</SavingButton>
-            </form>
+            </RedirectForm>
           );
         })}
       </div>

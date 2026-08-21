@@ -71,6 +71,7 @@ import {
   SCAN_TARGET_PCT,
   scanTier
 } from "./_lib/grading";
+import { RedirectForm } from "../_components/RedirectForm";
 import { GreeterDayForm } from "./_components/GreeterDayForm";
 import { LocationMetricFields } from "./_components/MetricFields";
 import { SavingButton } from "./_components/SavingButton";
@@ -514,7 +515,7 @@ export default async function GreetersPage({ searchParams }: PageProps) {
             description:
               "The whole location's day, not attributed to anyone. Total cars, cancellations and the member count live here only — they belong to the site, not to a person.",
             form: (
-              <form
+              <RedirectForm
                 action={submitLocationDayAction}
                 className="flex flex-col gap-4"
               >
@@ -542,7 +543,7 @@ export default async function GreetersPage({ searchParams }: PageProps) {
                 <div className="mt-1">
                   <SavingButton>Save site-wide day</SavingButton>
                 </div>
-              </form>
+              </RedirectForm>
             )
           },
           {
@@ -552,7 +553,10 @@ export default async function GreetersPage({ searchParams }: PageProps) {
             description:
               "Goals apply to a location for a date range and are copied onto each day as it's logged — changing them later won't re-grade days already submitted. Leave the end date blank for an open-ended goal. Ranges for one site can't overlap.",
             form: (
-              <form action={createGoalAction} className="flex flex-col gap-4">
+              <RedirectForm
+                action={createGoalAction}
+                className="flex flex-col gap-4"
+              >
                 <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
                   <div className="flex flex-col gap-1">
                     <span className={LABEL_CLS}>Location *</span>
@@ -641,7 +645,7 @@ export default async function GreetersPage({ searchParams }: PageProps) {
                 <div className="mt-1">
                   <SavingButton>Save goal</SavingButton>
                 </div>
-              </form>
+              </RedirectForm>
             )
           }
         ]}

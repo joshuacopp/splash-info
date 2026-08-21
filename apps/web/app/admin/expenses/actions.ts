@@ -1,8 +1,16 @@
 // Server actions for /admin/expenses.
 //
 // Same shape as greeters/actions.ts (FormData -> JSON body -> performancePostJson
-// -> redirect with ?action_error= or ?success=), because the two pages talk to
-// the same worker over the same transport and should fail the same way.
+// -> a URL with ?action_error= or ?success=), because the two pages talk to the
+// same worker over the same transport and should fail the same way.
+//
+// NOTHING HERE CALLS redirect(), AND NOTHING HERE MAY. Every action returns
+// `{ redirectTo }` and <RedirectForm> pushes it from the client. A redirect()
+// throw inside a server action costs ~20 seconds under OpenNext on Cloudflare
+// Workers — 19.7s wall against 18ms of CPU, with the row already committed —
+// while an action that returns a value answers immediately. The URLs are
+// unchanged, so the banner and filter behaviour downstream is unchanged too.
+// See app/admin/_components/RedirectForm.tsx for the measurements.
 //
 // NUMERICS ARE FORWARDED AS STRINGS. performance-worker re-coerces every field
 // on the way in and the database has the actual constraints, so parsing here
@@ -26,12 +34,9 @@
 
 "use server";
 
-import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
-import {
-  performancePostJson,
-  transportTag
-} from "../performance/_lib/worker-fetch";
+import { performancePostJson } from "../performance/_lib/worker-fetch";
+import type { RedirectResult } from "../_components/RedirectForm";
 
 const LIST_PATH = "/admin/expenses";
 
@@ -45,20 +50,14 @@ function strOrNull(formData: FormData, name: string): string | null {
   return s ? s : null;
 }
 
-/** Banner params. Stripped from `return_qs` on every redirect so a stale error
- *  from the previous attempt can't ride along beside a fresh success. */
+/** Banner params. Stripped from `return_qs` on every navigation so a stale
+ *  error from the previous attempt can't ride along beside a fresh success. */
 const BANNER_PARAMS = [
   "action_error",
   "success",
   "po",
   "created",
-  "corrected",
-  // DIAGNOSTIC (2026-08-20, temporary) — `t=<transport>-<ms>` for the worker
-  // call and `a=<ms>` for the whole action. Listed here so they're stripped
-  // from `return_qs` like the rest and a reading from the previous save can't
-  // ride along beside a fresh one.
-  "t",
-  "a"
+  "corrected"
 ];
 
 /**
@@ -66,7 +65,7 @@ const BANNER_PARAMS = [
  *
  * Reads the hidden `return_qs` field rather than referer: referer is absent
  * under some privacy settings and is not something an action should trust for
- * building a redirect target. `return_qs` is rendered by the page itself and
+ * building a navigation target. `return_qs` is rendered by the page itself and
  * only ever contains this page's own filters.
  */
 function backTo(formData: FormData, extra: Record<string, string>): string {
@@ -78,8 +77,17 @@ function backTo(formData: FormData, extra: Record<string, string>): string {
   return s ? `${LIST_PATH}?${s}` : LIST_PATH;
 }
 
-function fail(formData: FormData, message: string): never {
-  redirect(backTo(formData, { action_error: message }));
+/**
+ * RETURNS, IT DOES NOT THROW — so every call site needs its own `return`.
+ *
+ * This used to be typed `never` and call redirect(), which meant `if (!x)
+ * fail(...)` terminated the action on its own. It doesn't any more. A `fail()`
+ * without a `return` in front of it now falls through and posts the invalid
+ * body to the worker, so the pattern is `if (!x) return fail(...)` everywhere,
+ * without exception.
+ */
+function fail(formData: FormData, message: string): RedirectResult {
+  return { redirectTo: backTo(formData, { action_error: message }) };
 }
 
 /**
@@ -132,32 +140,26 @@ function wasCorrected(body: unknown): boolean {
  * ignored by the worker, and site_number is resolved from the location against
  * the caller's scope so a hand-typed one could otherwise claim another site.
  */
-export async function submitExpenseAction(formData: FormData): Promise<void> {
-  // DIAGNOSTIC (2026-08-20, temporary — see transportTag in
-  // performance/_lib/worker-fetch). `t` already proved the worker call itself
-  // is ~300ms, so this brackets everything ELSE the action does: reading the
-  // cookie jar, and revalidatePath. If `a` also comes back in the hundreds,
-  // the server action is not where the 20s lives and the remaining suspect is
-  // the RSC re-render Next performs on the way to the redirect.
-  const actionStart = Date.now();
-
+export async function submitExpenseAction(
+  formData: FormData
+): Promise<RedirectResult> {
   const businessDate = strField(formData, "business_date");
-  if (!businessDate) fail(formData, "Pick a purchase date before saving.");
+  if (!businessDate) return fail(formData, "Pick a purchase date before saving.");
 
   const locationId = strField(formData, "location_id");
-  if (!locationId) fail(formData, "Pick a location before saving.");
+  if (!locationId) return fail(formData, "Pick a location before saving.");
 
   // The PO can't be built without these, so a blank here fails at the database
   // with SQLSTATE 22023 rather than anything a user could act on.
   const initials = strField(formData, "po_initials");
   if (!initials) {
-    fail(
+    return fail(
       formData,
       "Enter your initials — the PO number is built from them and can't be assigned without them."
     );
   }
   if (!/^[A-Za-z]{1,4}$/.test(initials)) {
-    fail(
+    return fail(
       formData,
       "Initials must be 1–4 letters: no spaces, digits or punctuation."
     );
@@ -167,7 +169,7 @@ export async function submitExpenseAction(formData: FormData): Promise<void> {
   // eventually disagree.
 
   const categoryKey = strField(formData, "category_key");
-  if (!categoryKey) fail(formData, "Pick a category before saving.");
+  if (!categoryKey) return fail(formData, "Pick a category before saving.");
 
   // Presence only. The sign is deliberately not checked — a refund or credit
   // memo is negative and the schema has no >= 0 constraint on `amount`. Blank
@@ -175,7 +177,7 @@ export async function submitExpenseAction(formData: FormData): Promise<void> {
   // silently take a PO number with it.
   const amount = strField(formData, "amount");
   if (!amount) {
-    fail(
+    return fail(
       formData,
       "Enter an amount. Refunds and credits go in as a negative number."
     );
@@ -193,19 +195,17 @@ export async function submitExpenseAction(formData: FormData): Promise<void> {
     amount
   });
 
-  if (!result.ok) fail(formData, result.error);
+  if (!result.ok) return fail(formData, result.error);
 
   const po = poNumberOf(result.body);
 
   revalidatePath(LIST_PATH);
-  redirect(
-    backTo(formData, {
+  return {
+    redirectTo: backTo(formData, {
       success: "entry",
-      ...(po ? { po } : {}),
-      t: transportTag(result),
-      a: String(Date.now() - actionStart)
+      ...(po ? { po } : {})
     })
-  );
+  };
 }
 
 /**
@@ -222,13 +222,15 @@ export async function submitExpenseAction(formData: FormData): Promise<void> {
  * requires it because a void with no explanation is exactly the hole that soft
  * delete exists to avoid.
  */
-export async function voidExpenseAction(formData: FormData): Promise<void> {
+export async function voidExpenseAction(
+  formData: FormData
+): Promise<RedirectResult> {
   const id = strField(formData, "id");
-  if (!id) fail(formData, "Nothing to void — no entry was identified.");
+  if (!id) return fail(formData, "Nothing to void — no entry was identified.");
 
   const reason = strField(formData, "reason");
   if (!reason) {
-    fail(
+    return fail(
       formData,
       "A void needs a reason. It stays on the record next to the PO number, which is not reissued."
     );
@@ -239,10 +241,10 @@ export async function voidExpenseAction(formData: FormData): Promise<void> {
     { id, reason }
   );
 
-  if (!result.ok) fail(formData, result.error);
+  if (!result.ok) return fail(formData, result.error);
 
   revalidatePath(LIST_PATH);
-  redirect(backTo(formData, { success: "void" }));
+  return { redirectTo: backTo(formData, { success: "void" }) };
 }
 
 /**
@@ -258,19 +260,27 @@ export async function voidExpenseAction(formData: FormData): Promise<void> {
  * zero" are different states on the grid and posting one as the other would
  * erase the distinction the whole rollup is careful to preserve.
  */
-export async function saveBudgetAction(formData: FormData): Promise<void> {
+export async function saveBudgetAction(
+  formData: FormData
+): Promise<RedirectResult> {
   const periodMonth = strField(formData, "period_month");
-  if (!periodMonth) fail(formData, "No month was submitted with the budget.");
+  if (!periodMonth) {
+    return fail(formData, "No month was submitted with the budget.");
+  }
 
   const locationId = strField(formData, "location_id");
-  if (!locationId) fail(formData, "Pick a location before setting a budget.");
+  if (!locationId) {
+    return fail(formData, "Pick a location before setting a budget.");
+  }
 
   const categoryKey = strField(formData, "category_key");
-  if (!categoryKey) fail(formData, "No category was submitted with the budget.");
+  if (!categoryKey) {
+    return fail(formData, "No category was submitted with the budget.");
+  }
 
   const budgetAmount = strField(formData, "budget_amount");
   if (!budgetAmount) {
-    fail(
+    return fail(
       formData,
       "Enter a budget amount. Leaving it blank does not clear an existing budget — there is no way to unset one."
     );
@@ -280,7 +290,7 @@ export async function saveBudgetAction(formData: FormData): Promise<void> {
   // ceiling; a negative ceiling makes the variance arithmetic meaningless, and
   // the database CHECK would otherwise reject this with a constraint name.
   if (budgetAmount.startsWith("-")) {
-    fail(
+    return fail(
       formData,
       "A budget is a ceiling and can't be negative. (Entry amounts can be — a refund is negative — but budgets can't.)"
     );
@@ -294,17 +304,17 @@ export async function saveBudgetAction(formData: FormData): Promise<void> {
     note: strOrNull(formData, "note")
   });
 
-  if (!result.ok) fail(formData, result.error);
+  if (!result.ok) return fail(formData, result.error);
 
   revalidatePath(LIST_PATH);
-  redirect(
-    backTo(
+  return {
+    redirectTo: backTo(
       formData,
       wasCorrected(result.body)
         ? { success: "budget", corrected: "1" }
         : { success: "budget" }
     )
-  );
+  };
 }
 
 /**
@@ -317,19 +327,26 @@ export async function saveBudgetAction(formData: FormData): Promise<void> {
  * ACTUALLY inserted, not the number in the source month — surfaced in the
  * banner so a copy that did nothing says so instead of claiming success.
  */
-export async function copyBudgetMonthAction(formData: FormData): Promise<void> {
+export async function copyBudgetMonthAction(
+  formData: FormData
+): Promise<RedirectResult> {
   const locationId = strField(formData, "location_id");
-  if (!locationId) fail(formData, "Pick a location before copying a budget.");
+  if (!locationId) {
+    return fail(formData, "Pick a location before copying a budget.");
+  }
 
   const fromMonth = strField(formData, "from_month");
   const toMonth = strField(formData, "to_month");
   if (!fromMonth || !toMonth) {
-    fail(formData, "A copy needs both a source month and a target month.");
+    return fail(formData, "A copy needs both a source month and a target month.");
   }
   // The function raises 22023 for this, but the message it produces reads like
   // a database error rather than the plain mistake it is.
   if (fromMonth === toMonth) {
-    fail(formData, "Source and target month are the same — nothing to copy.");
+    return fail(
+      formData,
+      "Source and target month are the same — nothing to copy."
+    );
   }
 
   const result = await performancePostJson(
@@ -337,17 +354,17 @@ export async function copyBudgetMonthAction(formData: FormData): Promise<void> {
     { location_id: locationId, from_month: fromMonth, to_month: toMonth }
   );
 
-  if (!result.ok) fail(formData, result.error);
+  if (!result.ok) return fail(formData, result.error);
 
   const created = createdCountOf(result.body);
 
   revalidatePath(LIST_PATH);
-  redirect(
-    backTo(
+  return {
+    redirectTo: backTo(
       formData,
       created === null
         ? { success: "copy" }
         : { success: "copy", created }
     )
-  );
+  };
 }

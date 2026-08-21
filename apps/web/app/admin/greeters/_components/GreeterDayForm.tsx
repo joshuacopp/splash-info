@@ -21,6 +21,10 @@
 // logged — beekeeper_user_id then falls back to a stable synthetic key.
 
 import { useEffect, useRef, useState } from "react";
+import {
+  RedirectForm,
+  type RedirectResult
+} from "../../_components/RedirectForm";
 import { LocationPicker } from "../../performance/_components/LocationPicker";
 import { GreeterMetricFields } from "./MetricFields";
 import { SavingButton } from "./SavingButton";
@@ -53,7 +57,7 @@ export function GreeterDayForm({
   action,
   defaultDate
 }: {
-  action: (formData: FormData) => void | Promise<void>;
+  action: (formData: FormData) => Promise<RedirectResult>;
   defaultDate: string;
 }) {
   const [locationId, setLocationId] = useState<number | null>(null);
@@ -118,7 +122,7 @@ export function GreeterDayForm({
     members.find((m) => m.id === selectedId)?.name ?? "";
 
   return (
-    <form action={action} className="flex flex-col gap-4">
+    <RedirectForm action={action} className="flex flex-col gap-4">
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
         <label className="flex flex-col gap-1">
           <span className={labelCls}>Date *</span>
@@ -227,6 +231,6 @@ export function GreeterDayForm({
       <div className="mt-1">
         <SavingButton>Save day</SavingButton>
       </div>
-    </form>
+    </RedirectForm>
   );
 }

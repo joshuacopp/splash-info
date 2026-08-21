@@ -17,6 +17,10 @@
 import type { ReactNode } from "react";
 import { LocationPicker } from "../../performance/_components/LocationPicker";
 import { SavingButton } from "../../greeters/_components/SavingButton";
+import {
+  RedirectForm,
+  type RedirectResult
+} from "../../_components/RedirectForm";
 import { HINT_CLS, INPUT_CLS, LABEL_CLS } from "../_lib/ui";
 
 /** The subset of expense_categories the form needs. The worker's /categories
@@ -83,9 +87,9 @@ export function ExpenseEntryForm({
   defaultLocationLabel,
   dateNote
 }: {
-  action: (formData: FormData) => void | Promise<void>;
+  action: (formData: FormData) => Promise<RedirectResult>;
   categories: CategoryOption[];
-  /** The page's current query string, so the redirect lands back on this view. */
+  /** The page's current query string, so the navigation lands back on this view. */
   returnQs: string;
   /** "" when the viewed month isn't the current one — see the page. */
   defaultDate: string;
@@ -97,7 +101,7 @@ export function ExpenseEntryForm({
   const groups = groupCategories(categories);
 
   return (
-    <form action={action} className="flex flex-col gap-4 px-5 py-5">
+    <RedirectForm action={action} className="flex flex-col gap-4 px-5 py-5">
       <input type="hidden" name="return_qs" value={returnQs} />
 
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
@@ -267,6 +271,6 @@ export function ExpenseEntryForm({
       <div className="mt-1">
         <SavingButton>Save expense</SavingButton>
       </div>
-    </form>
+    </RedirectForm>
   );
 }
