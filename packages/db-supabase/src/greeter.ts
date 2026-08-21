@@ -430,9 +430,12 @@ export async function listGreeterDays(
   return (data ?? []) as unknown as GreeterDailyRow[];
 }
 
+// house_accounts is here and deliberately absent from DAY_COLS above: it is a
+// site fact, like total_cars and cancellations, and greeter_daily has no such
+// column to select.
 const LOCATION_DAY_COLS =
   "id,business_date,location_id,site_number,location_code," +
-  "total_cars,wash_sales,rewashes,package_dollars,extras_dollars," +
+  "total_cars,wash_sales,house_accounts,rewashes,package_dollars,extras_dollars," +
   "sign_ups,reactivations,cancellations,total_members,net_members," +
   "churn_pct,google_reviews," +
   "capture_goal_pct,dob_goal,member_goal_month_end,capture_pct,dob," +
@@ -498,8 +501,18 @@ export async function listGreeterRollup(
 }
 
 /**
- * Per site-day scan rates: what share of a location's a-la-carte cars its
- * greeters actually scanned for.
+ * Per site-day scan rates: what share of a location's SCANNABLE a-la-carte cars
+ * its greeters actually scanned for.
+ *
+ * "Scannable" is the site's wash sales less its house accounts and its
+ * rewashes, floored at 0. Both deductions are real wash sales that no customer
+ * could scan a card against, so counting them would mark a site down for cars
+ * that were never in play. The function returns the deduction's inputs
+ * (site_wash_sales, house_accounts, rewashes) alongside scannable_wash_sales so
+ * the UI can show its work rather than asserting a number.
+ *
+ * capture_pct and dob are NOT computed here and stay on gross wash sales by
+ * company policy — they're generated columns on location_daily.
  *
  * A function again, for the same reason as the rollup — and additionally
  * because the numerator lives in a different table from the denominator, so it

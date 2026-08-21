@@ -38,9 +38,9 @@ function strOrNull(formData: FormData, name: string): string | null {
  * The metrics both day forms collect.
  *
  * The two forms diverge beyond this — the site's day adds total_cars,
- * cancellations, total_members and churn_pct (facts a single greeter can't
- * own), and the greeter's day adds a shift window (a fact a site doesn't have)
- * — so each action spreads this and then names its own extras.
+ * cancellations, total_members, house_accounts and churn_pct (facts a single
+ * greeter can't own), and the greeter's day adds a shift window (a fact a site
+ * doesn't have) — so each action spreads this and then names its own extras.
  *
  * `reactivations` is shared as a FIELD but not as a metric: the site's copy
  * feeds net_members, the greeter's copy is informational only. That asymmetry
@@ -147,6 +147,10 @@ export async function submitLocationDayAction(
     total_cars: strOrNull(formData, "total_cars"),
     cancellations: strOrNull(formData, "cancellations"),
     total_members: strOrNull(formData, "total_members"),
+    // Site only, and NOT in sharedMetricFields even though its partner
+    // `rewashes` is: nobody hands a greeter a house account to log under their
+    // own name. Both are deducted from the scan-rate denominator downstream.
+    house_accounts: strOrNull(formData, "house_accounts"),
     // Site only — a greeter has no member base to churn. The worker range-checks
     // it and returns a readable 400, so nothing is validated here.
     churn_pct: strOrNull(formData, "churn_pct"),

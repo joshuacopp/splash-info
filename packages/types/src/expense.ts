@@ -96,6 +96,31 @@ export interface ExpenseCategory {
    * rollup still returns it wherever it carries money.
    */
   active: boolean;
+  /**
+   * The key this category's money is REPORTED under, or null when it is its own
+   * grid column. `maintenance_labor` rolls into `repair_equipment`.
+   *
+   * The fold happens entirely inside expense_month_rollup(): a child never
+   * appears as a column and its spend is already inside its parent's
+   * `actual_amount`. The entry LIST is deliberately not folded — each row still
+   * shows its own category, because "where did the money go" and "what did we
+   * buy" are different questions.
+   *
+   * One level only, enforced by a CHECK. A chain would silently drop the
+   * grandchild's money from the rollup's single join.
+   */
+  rolls_up_to: string | null;
+  /**
+   * True when the entry form should ask for HOURS instead of a dollar amount,
+   * and drop the payment-method field entirely.
+   *
+   * This is data rather than `key === "maintenance_labor"` because the form,
+   * the worker and insert_expense_entry() all have to agree, and three copies
+   * of a hard-coded key is three places to forget. The amount for such an entry
+   * is computed IN THE DATABASE from hours times the rate in force — the client
+   * never sends the dollar figure, or the admin-set rate would be advisory.
+   */
+  billed_by_hours: boolean;
   created_at: string;
 }
 
@@ -144,8 +169,37 @@ export interface ExpenseEntryInsert extends ExpenseLocationKey {
    * SIGNED. numeric(12,2) in Postgres. Negative is a refund or credit memo and
    * is expected; there is no >= 0 CHECK and there must not be one here either,
    * or a returned pump becomes impossible to record.
+   *
+   * IGNORED for a `billed_by_hours` category — see `labor_hours`. Pass 0 there;
+   * the RPC overwrites it and does not complain.
    */
   amount: number;
+  /**
+   * Hours billed to the site, for a `billed_by_hours` category only. Null for
+   * everything else, and the RPC RAISES if it is set on a category that isn't
+   * hourly.
+   *
+   * THIS IS THE ONLY THING THE CLIENT SENDS ON THAT PATH. The database looks up
+   * the rate in force on `business_date`, multiplies, and writes both the
+   * amount and the rate it used. If the client sent the dollar figure instead,
+   * a stale page or a hand-rolled request could price labor at anything it
+   * liked and the admin-set rate would mean nothing.
+   *
+   * Raises SQLSTATE 22023 when the category is hourly and this is missing, or
+   * when no rate has ever been set for that date. "No rate configured" is
+   * deliberately an error rather than a $0.00 entry that looks intentional.
+   */
+  labor_hours: number | null;
+  /**
+   * Who did the work. Free text, v1, not FK'd — there is no mechanic table yet.
+   * Nulled by the RPC on any non-hourly category, so it stays reliable as "who
+   * did the work" for anything that reads it.
+   *
+   * It is also the key expense_labor_rate.mechanic_key will match against if
+   * per-mechanic rates ever get turned on; that resolution already works, the
+   * UI just never writes a non-null value today.
+   */
+  mechanic_key: string | null;
   created_by: string;
   created_by_email: string;
 }
@@ -166,6 +220,17 @@ export interface ExpenseEntryRow extends ExpenseEntryInsert {
   /** Nth order entered for this location on this date, starting at 1. Unique
    *  per (location_id, business_date). Voided rows still hold their number. */
   po_seq: number;
+
+  /**
+   * The rate the row was PRICED AT, stamped at insert. Null on any non-hourly
+   * entry.
+   *
+   * Stored rather than looked up so a rate change in November cannot restate
+   * August. A CHECK enforces `amount = round(labor_hours * labor_rate, 2)`, so
+   * the row can always explain its own dollar figure and the three can never
+   * drift apart.
+   */
+  labor_rate: number | null;
 
   /**
    * Soft-delete quad. `voided_at` and `voided_by` are both-or-neither, enforced
@@ -278,7 +343,60 @@ export interface ExpenseMonthRollupRow extends ExpenseLocationKey {
   variance: number | null;
   /** Live (non-voided) entries behind `actual_amount`. `bigint` in Postgres,
    *  a JS number here — one site-month-category will never approach 2^53. */
+  /**
+   * Live (non-voided) entries behind `actual_amount`, INCLUDING any that were
+   * folded in from a child category. An Equipment Repair cell reading 4 entries
+   * may include maintenance-labor rows that a filter on `repair_equipment`
+   * alone will not return — the list is unfolded, the rollup is not.
+   */
   entry_count: number;
+}
+
+/* ============================================================
+ * expense_labor_rate — the admin-set hourly rate
+ * ============================================================ */
+
+/**
+ * One hourly rate, in force from a date until the next row supersedes it.
+ *
+ * COMPANY-WIDE IN V1: `mechanic_key` is always null. Josh, 2026-08-21, on
+ * whether the rate is per site: "as a whole. not on a per site basis" — and on
+ * the column existing anyway: "this is v1 - if this catches on, may set by
+ * mechanic and have a rate for each mechanic. may be worth building the table
+ * to account for that even if it's not currently utilized". Per-mechanic
+ * resolution already works in `expense_labor_rate_for()`; the UI just never
+ * writes a non-null key today.
+ *
+ * NO `effective_to`, and no update path. A window is closed by the NEXT row's
+ * `effective_from`, which makes overlaps and gaps unrepresentable rather than
+ * merely invalid; and a rate is superseded, never edited, because correcting
+ * one in place would restate the price of work already logged against it.
+ *
+ * Setting one is super_admin only, enforced in the worker.
+ */
+export interface ExpenseLaborRateRow {
+  id: string;
+  /** Null IS the company-wide rate — the only kind v1 writes. */
+  mechanic_key: string | null;
+  /** YYYY-MM-DD, inclusive. */
+  effective_from: string;
+  /** numeric(10,2), CHECKed strictly positive. Zero is not a rate. */
+  rate_per_hour: number;
+  note: string | null;
+  created_at: string;
+  created_by: string;
+  created_by_email: string;
+}
+
+/** What the caller supplies to set a new rate. The id and created_at are the
+ *  database's. */
+export interface ExpenseLaborRateInsert {
+  mechanic_key: string | null;
+  effective_from: string;
+  rate_per_hour: number;
+  note: string | null;
+  created_by: string;
+  created_by_email: string;
 }
 
 /* ============================================================

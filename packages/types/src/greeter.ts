@@ -84,6 +84,17 @@ export interface LocationMetricInputs extends GreeterSharedMetrics {
   cancellations: number | null;
   total_members: number | null;
   /**
+   * Cars washed on a house account. Deliberately NOT on GreeterSharedMetrics:
+   * nobody hands a greeter a house account to log under their own name, so it
+   * is a site fact in the same way total_cars and cancellations are.
+   *
+   * A house-account car IS a wash sale and CANNOT be scanned, so it comes out
+   * of the scan-rate denominator alongside rewashes. It does NOT come out of
+   * capture_pct or dob — company policy keeps those gross. See
+   * supabase/greeter-house-accounts-10.sql.
+   */
+  house_accounts: number | null;
+  /**
    * Self-reported daily churn, percent (0-100), site only. Deliberately NOT on
    * GreeterSharedMetrics: a greeter has no member base to churn.
    *
@@ -317,10 +328,18 @@ export interface GreeterRollupRow extends GreeterDerivedMetrics {
  * is a DATA-QUALITY signal, not a sales one — a low number means cars went
  * unattributed, so every per-greeter figure for that day is understated.
  *
+ * THE RATIO'S DENOMINATOR IS `scannable_wash_sales`, NOT `site_wash_sales`.
+ * House-account cars and rewashes are both wash sales that no customer can
+ * scan a card for, so counting them would mark a site down for business it did
+ * correctly. `site_wash_sales` is still returned because it is the number the
+ * site recognises off its own report; the two deductions are returned
+ * individually so the gap is explainable without opening the database.
+ *
  * Two nullables that mean different things and must not be collapsed:
- *   scanned_pct === null      The site sold no ALC cars that day. No
- *                             denominator, so no rate — not the same as
- *                             having scanned nothing.
+ *   scanned_pct === null      The site sold no SCANNABLE cars that day — it
+ *                             sold nothing, or everything it sold was a house
+ *                             account or a rewash. No denominator, so no rate;
+ *                             not the same as having scanned nothing.
  *   ever_submitted === false  The location has never logged a single greeter
  *                             day: not onboarded, rather than slipping. Render
  *                             blank instead of flagging it at 0%.
@@ -333,6 +352,10 @@ export interface GreeterScanRateRow {
   site_number: number;
   location_code: string;
   site_wash_sales: number | null;
+  house_accounts: number | null;
+  rewashes: number | null;
+  /** site_wash_sales - house_accounts - rewashes, floored at 0. The denominator. */
+  scannable_wash_sales: number;
   scanned_wash_sales: number;
   greeters_logged: number;
   scanned_pct: number | null;
@@ -477,6 +500,13 @@ export interface LocationPeriodRow {
   location_code: string;
   total_cars: number | null;
   wash_sales: number | null;
+  /**
+   * Subtracted from wash_sales together with rewashes to get the scannable
+   * denominator. The division happens in the report aggregator, not here — a
+   * period scan rate is summed numerator over summed denominator, never an
+   * average of daily percentages.
+   */
+  house_accounts: number | null;
   rewashes: number | null;
   package_dollars: number | null;
   extras_dollars: number | null;

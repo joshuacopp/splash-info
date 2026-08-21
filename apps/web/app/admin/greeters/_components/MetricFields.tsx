@@ -145,7 +145,20 @@ export function LocationMetricFields() {
         label="Wash sales (ALC)"
         hint="A-la-carte, non-unlimited cars. Drives D.O.B. and capture %."
       />
-      <NumberField name="rewashes" label="Rewashes" />
+      {/* The two unscannable-car boxes, adjacent because they do the same job:
+          each is a real wash sale that no customer could have scanned a card
+          for, and the scan rate subtracts both before dividing. Neither one
+          changes capture % or D.O.B. — those stay on gross wash sales. */}
+      <NumberField
+        name="house_accounts"
+        label="House accounts"
+        hint="Cars washed on a house account. Counts as a wash sale, but can't be scanned — so it comes out of the scan-rate denominator."
+      />
+      <NumberField
+        name="rewashes"
+        label="Rewashes"
+        hint="Also unscannable, and also deducted from the scan rate."
+      />
       <NumberField name="package_dollars" label="Package $" money />
       <NumberField name="extras_dollars" label="Extras $" money />
       <NumberField name="sign_ups" label="Sign ups" />

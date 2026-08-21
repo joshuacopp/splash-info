@@ -818,6 +818,11 @@ async function apiSubmitLocationDay(
     ...resolved.key,
     total_cars: toIntOrNull(body.total_cars),
     wash_sales: toIntOrNull(body.wash_sales),
+    // Site-only, and absent from the greeter handler above on purpose. Both of
+    // these come OUT of the scan-rate denominator (a customer can't scan a card
+    // for a house-account car or a rewash) and stay IN the capture_pct and dob
+    // denominators, which are generated columns computed from gross wash_sales.
+    house_accounts: toIntOrNull(body.house_accounts),
     rewashes: toIntOrNull(body.rewashes),
     package_dollars: toNumOrNull(body.package_dollars),
     extras_dollars: toNumOrNull(body.extras_dollars),

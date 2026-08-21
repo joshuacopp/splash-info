@@ -1337,11 +1337,26 @@ const THEAD_CLS =
   "bg-splash-navy/5 text-left text-xs font-semibold uppercase tracking-wider text-splash-navy/70";
 const TBODY_CLS = "divide-y divide-gray-light text-splash-navy";
 
-/** Site-day scanned share. Null when the site sold nothing to scan. */
+/**
+ * Site-day scanned share. Null when the site sold nothing a card could be
+ * scanned for.
+ *
+ * The denominator is wash sales LESS house accounts and rewashes, floored at 0
+ * — the same expression greeter_scan_rates() uses in SQL and totals() uses for
+ * the window figure. Both of those deductions are genuine wash sales that no
+ * customer could scan for, so leaving them in would mark a greeter down for
+ * cars that were never scannable.
+ *
+ * capture_pct and dob on this same row stay on GROSS wash sales, by company
+ * policy. Do not "make them consistent".
+ */
 function dayScanPct(row: LocationPeriodRow): number | null {
-  const site = row.wash_sales ?? 0;
-  if (site <= 0) return null;
-  return Math.round((row.scanned_wash_sales * 1000) / site) / 10;
+  const scannable = Math.max(
+    0,
+    (row.wash_sales ?? 0) - (row.house_accounts ?? 0) - (row.rewashes ?? 0)
+  );
+  if (scannable <= 0) return null;
+  return Math.round((row.scanned_wash_sales * 1000) / scannable) / 10;
 }
 
 function ScanPill({ value }: { value: number | null }) {
@@ -1349,7 +1364,7 @@ function ScanPill({ value }: { value: number | null }) {
     return (
       <span
         className="text-splash-navy/40"
-        title="No wash sales in this window, so there was nothing to scan."
+        title="No scannable cars in this window — either nothing was sold, or every wash sale was a house account or a rewash."
       >
         —
       </span>

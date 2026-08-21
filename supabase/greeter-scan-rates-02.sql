@@ -1,6 +1,13 @@
 -- Greeter scorecard, migration 02: scan-rate insight.
 --
--- Run in the Supabase SQL editor. Safe to re-run (CREATE OR REPLACE only).
+-- SUPERSEDED — HISTORICAL. DO NOT RUN, DO NOT EDIT.
+--
+-- greeter-house-accounts-10.sql replaced greeter_scan_rates() with a version
+-- whose denominator is wash_sales minus house_accounts minus rewashes, and
+-- whose RETURNS TABLE has four more columns. Running this file would silently
+-- roll the scan rate back to the gross denominator. The live definition lives
+-- in greeter-scorecard-tables.sql and 10; this file is kept only so the
+-- migration history reads in order.
 --
 -- INDEPENDENT OF greeter-scorecard-alter-01.sql. This function reads only
 -- business_date, location_id, site_number, location_code and wash_sales, none

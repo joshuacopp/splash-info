@@ -128,7 +128,10 @@ function wasCorrected(body: unknown): boolean {
 /**
  * Log one purchase.
  *
- * ONE ROW IS ONE CATEGORY AND ONE AMOUNT. A purchase that genuinely splits
+ * ONE ROW IS ONE CATEGORY AND ONE AMOUNT — or, on an hourly category, one
+ * category and a number of HOURS, which the database turns into the amount. Two
+ * body shapes, one row shape; see the branch note further down. A purchase that
+ * genuinely splits
  * across two categories is submitted twice; the two rows share a PO number,
  * which is why po_number is not unique in the schema. Do not add a
  * multi-category mode here without reading the uniqueness note in
@@ -171,12 +174,26 @@ export async function submitExpenseAction(
   const categoryKey = strField(formData, "category_key");
   if (!categoryKey) return fail(formData, "Pick a category before saving.");
 
+  // WHICH FIELD IS PRESENT IS THE BRANCH, and it is decided by the form: an
+  // hourly category renders `labor_hours` and UNMOUNTS `amount`, so only one of
+  // the two is ever in the FormData. This action does not know which categories
+  // are hourly and deliberately does not look it up — `billed_by_hours` lives in
+  // expense_categories and insert_expense_entry() reads it there. A copy of that
+  // rule here would be a third place for it to drift, and it would be the copy
+  // nobody remembers to update.
+  //
+  // NO DOLLAR FIGURE IS SENT ON THE HOURLY PATH, not even the one the form
+  // previewed. The database multiplies hours by the rate in force and writes
+  // both; if the client could send the amount, the admin-set rate would be a
+  // suggestion. See _components/ExpenseEntryForm.tsx.
+  const laborHours = strField(formData, "labor_hours");
+
   // Presence only. The sign is deliberately not checked — a refund or credit
   // memo is negative and the schema has no >= 0 constraint on `amount`. Blank
   // is rejected because a coerced blank would land as a real 0.00 entry and
   // silently take a PO number with it.
   const amount = strField(formData, "amount");
-  if (!amount) {
+  if (!laborHours && !amount) {
     return fail(
       formData,
       "Enter an amount. Refunds and credits go in as a negative number."
@@ -188,11 +205,17 @@ export async function submitExpenseAction(
     location_id: locationId,
     po_initials: initials,
     // Free text by design — the workbook's METHOD column has no fixed
-    // vocabulary. The form offers a datalist, not a closed select.
+    // vocabulary. The form offers a datalist, not a closed select. Absent
+    // entirely on the hourly path — the field isn't rendered, and the RPC nulls
+    // it regardless (Josh: "payment method should not be needed").
     method: strOrNull(formData, "method"),
     description: strOrNull(formData, "description"),
     category_key: categoryKey,
-    amount
+    // Both keys are always present in the body and exactly one of them is ever
+    // non-null. The worker branches on `labor_hours != null`, so sending "" here
+    // instead of null would put an ordinary purchase down the labor path.
+    amount: amount || null,
+    labor_hours: laborHours || null
   });
 
   if (!result.ok) return fail(formData, result.error);

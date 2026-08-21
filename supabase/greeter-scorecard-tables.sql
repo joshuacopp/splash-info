@@ -312,6 +312,14 @@ CREATE TABLE IF NOT EXISTS location_daily (
   total_cars          integer,
   wash_sales          integer       CHECK (wash_sales IS NULL OR wash_sales >= 0),
   rewashes            integer       CHECK (rewashes IS NULL OR rewashes >= 0),
+  -- Site-only, and next to rewashes because the two are always subtracted
+  -- together: both are real wash sales that no customer can scan a card for,
+  -- so both come out of the scan-rate denominator and NEITHER comes out of
+  -- capture_pct or dob (company policy — see greeter-house-accounts-10.sql).
+  -- Named CHECK because that file verifies it by name.
+  house_accounts      integer,
+  CONSTRAINT location_daily_house_accounts_nonneg
+    CHECK (house_accounts IS NULL OR house_accounts >= 0),
   package_dollars     numeric(12,2),
   extras_dollars      numeric(12,2),
   sign_ups            integer       CHECK (sign_ups IS NULL OR sign_ups >= 0),
@@ -525,7 +533,15 @@ GRANT EXECUTE ON FUNCTION greeter_rollup(date, date, integer, integer, text, tex
 -- table and moves every time a greeter submits or corrects a day, so a stored
 -- value would be stale as soon as a late row landed.
 --
--- Kept in lockstep with supabase/greeter-scan-rates-02.sql. Change both.
+-- greeter-scan-rates-02.sql is a SUPERSEDED copy of this function and is no
+-- longer kept in lockstep — do not edit it. The live arithmetic (the scannable
+-- denominator) is defined here and in greeter-house-accounts-10.sql.
+--
+-- THE DENOMINATOR IS NOT wash_sales. It is wash_sales minus house_accounts
+-- minus rewashes: both are real wash sales that no customer can scan a card
+-- for, so counting them punishes a site for business it did correctly. See
+-- greeter-house-accounts-10.sql for the full reasoning, including why
+-- capture_pct and dob deliberately keep the gross denominator.
 CREATE OR REPLACE FUNCTION greeter_scan_rates(
   p_date_from      date    DEFAULT NULL,
   p_date_to        date    DEFAULT NULL,
@@ -534,15 +550,21 @@ CREATE OR REPLACE FUNCTION greeter_scan_rates(
   p_location_codes text[]  DEFAULT NULL
 )
 RETURNS TABLE (
-  business_date      date,
-  location_id        integer,
-  site_number        integer,
-  location_code      text,
-  site_wash_sales    integer,
-  scanned_wash_sales bigint,
-  greeters_logged    bigint,
-  scanned_pct        numeric,
-  ever_submitted     boolean
+  business_date        date,
+  location_id          integer,
+  site_number          integer,
+  location_code        text,
+  site_wash_sales      integer,
+  -- The two deductions are returned individually as well as netted, because
+  -- "why is my denominator 380 and not 400" is the first question this column
+  -- will be asked.
+  house_accounts       integer,
+  rewashes             integer,
+  scannable_wash_sales integer,
+  scanned_wash_sales   bigint,
+  greeters_logged      bigint,
+  scanned_pct          numeric,
+  ever_submitted       boolean
 )
 LANGUAGE sql
 STABLE
@@ -555,7 +577,19 @@ AS $$
       l.location_id,
       l.site_number,
       l.location_code,
-      l.wash_sales
+      l.wash_sales,
+      l.house_accounts,
+      l.rewashes,
+      -- GREATEST(..., 0) because nothing stops a site from typing more
+      -- rewashes than wash sales at 11pm, and a negative denominator would
+      -- produce a negative percentage that looks like a code bug rather than
+      -- like the typo it is.
+      GREATEST(
+        COALESCE(l.wash_sales, 0)
+        - COALESCE(l.house_accounts, 0)
+        - COALESCE(l.rewashes, 0),
+        0
+      ) AS scannable
     FROM location_daily l
     WHERE (p_date_from      IS NULL OR l.business_date >= p_date_from)
       AND (p_date_to        IS NULL OR l.business_date <= p_date_to)
@@ -590,12 +624,17 @@ AS $$
     s.site_number,
     s.location_code,
     s.wash_sales,
+    s.house_accounts,
+    s.rewashes,
+    s.scannable::integer,
     COALESCE(sc.scanned, 0)::bigint,
     COALESCE(sc.greeters, 0)::bigint,
-    -- NULL, not 0, when the site sold no ALC cars: no denominator, no rate.
+    -- NULL, not 0, when there were no SCANNABLE cars. That now covers two
+    -- cases: the site sold nothing, and the site sold nothing a customer could
+    -- have scanned for. Neither has a meaningful scan rate.
     CASE
-      WHEN COALESCE(s.wash_sales, 0) > 0
-      THEN ROUND(COALESCE(sc.scanned, 0)::numeric * 100 / s.wash_sales, 1)
+      WHEN s.scannable > 0
+      THEN ROUND(COALESCE(sc.scanned, 0)::numeric * 100 / s.scannable, 1)
     END,
     (e.location_id IS NOT NULL)
   FROM site s
@@ -931,7 +970,14 @@ GRANT EXECUTE ON FUNCTION greeter_period_report(date, date, integer, integer, te
 -- flat average of daily percentages — the exact thing section 5 forbids. Day rows
 -- only; do not add it to a rollup function.
 --
--- Kept in lockstep with supabase/greeter-churn-reviews-09.sql. Change both.
+-- greeter-churn-reviews-09.sql holds an EARLIER copy of this function and is no
+-- longer kept in lockstep — do not edit it. The current shape is defined here
+-- and in greeter-house-accounts-10.sql, which added house_accounts.
+--
+-- This function does no dividing. It hands out day rows, including both
+-- unscannable-car columns, and the report page sums them and divides once —
+-- because a period scan rate must be summed numerator over summed denominator,
+-- never an average of daily percentages (section 5).
 CREATE OR REPLACE FUNCTION location_period_rows(
   p_date_from      date,
   p_date_to        date,
@@ -946,6 +992,9 @@ RETURNS TABLE (
   location_code      text,
   total_cars         integer,
   wash_sales         integer,
+  -- Adjacent to rewashes because they are the same kind of fact and are
+  -- subtracted together; a reader who finds one should trip over the other.
+  house_accounts     integer,
   rewashes           integer,
   package_dollars    numeric,
   extras_dollars     numeric,
@@ -976,6 +1025,7 @@ AS $$
       l.location_code,
       l.total_cars,
       l.wash_sales,
+      l.house_accounts,
       l.rewashes,
       l.package_dollars,
       l.extras_dollars,
@@ -1017,6 +1067,7 @@ AS $$
     s.location_code,
     s.total_cars,
     s.wash_sales,
+    s.house_accounts,
     s.rewashes,
     s.package_dollars,
     s.extras_dollars,

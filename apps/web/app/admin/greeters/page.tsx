@@ -126,6 +126,8 @@ interface LocationDayRow extends GoalSnapshot {
   location_code: string;
   total_cars: number | null;
   wash_sales: number | null;
+  /** Unscannable, like rewashes. Out of the scan rate, in capture % and D.O.B. */
+  house_accounts: number | null;
   rewashes: number | null;
   package_dollars: number | null;
   extras_dollars: number | null;
@@ -190,6 +192,14 @@ interface ScanRateRow {
   site_number: number;
   location_code: string;
   site_wash_sales: number | null;
+  house_accounts: number | null;
+  rewashes: number | null;
+  /**
+   * site_wash_sales minus house accounts and rewashes, floored at 0 — and the
+   * denominator scanned_pct is actually built from. site_wash_sales is still
+   * returned because it's the figure a site recognises off its own report.
+   */
+  scannable_wash_sales: number;
   scanned_wash_sales: number;
   greeters_logged: number;
   scanned_pct: number | null;
@@ -867,6 +877,10 @@ export default async function GreetersPage({ searchParams }: PageProps) {
                 <th className="px-4 py-3">Total cars</th>
                 <th className="px-4 py-3">Wash sales</th>
                 <th className="px-4 py-3">Scanned %</th>
+                {/* Both unscannable-car columns sit immediately right of the
+                    rate they reduce, so the arithmetic is legible across the
+                    row instead of needing an explanation. */}
+                <th className="px-4 py-3">House acct</th>
                 <th className="px-4 py-3">Rewashes</th>
                 <th className="px-4 py-3">Package $</th>
                 <th className="px-4 py-3">Extras $</th>
@@ -906,6 +920,9 @@ export default async function GreetersPage({ searchParams }: PageProps) {
                     <ScanCell
                       row={scanByDay.get(`${r.business_date}|${r.location_id}`)}
                     />
+                  </td>
+                  <td className="px-4 py-3 text-splash-navy/80">
+                    {num(r.house_accounts)}
                   </td>
                   <td className="px-4 py-3 text-splash-navy/80">
                     {num(r.rewashes)}
@@ -1059,7 +1076,7 @@ function ScanCell({ row }: { row: ScanRateRow | undefined }) {
   return (
     <span
       className={`inline-flex items-center whitespace-nowrap rounded-full px-2 py-0.5 text-xs font-bold ${CAPTURE_TIER_CLASSES[tier]}`}
-      title={`${row.scanned_wash_sales.toLocaleString()} of ${(row.site_wash_sales ?? 0).toLocaleString()} wash sales scanned · ${greeters}`}
+      title={`${row.scanned_wash_sales.toLocaleString()} of ${row.scannable_wash_sales.toLocaleString()} scannable cars · ${(row.site_wash_sales ?? 0).toLocaleString()} wash sales less ${(row.house_accounts ?? 0).toLocaleString()} house / ${(row.rewashes ?? 0).toLocaleString()} rewash · ${greeters}`}
     >
       {pct(row.scanned_pct)}
     </span>
@@ -1070,7 +1087,13 @@ interface UnderreportedRow {
   location_id: number;
   site_number: number;
   location_code: string;
-  site_wash_sales: number;
+  /**
+   * The DENOMINATOR: wash sales less house accounts less rewashes, already
+   * floored at 0 by greeter_scan_rates(). Gross wash sales is deliberately not
+   * carried here — nothing in this panel divides by it, and keeping a second,
+   * larger total in the row is how the wrong one ends up in the division.
+   */
+  scannable_wash_sales: number;
   scanned_wash_sales: number;
   days: number;
   scanned_pct: number;
@@ -1088,13 +1111,18 @@ interface UnderreportedRow {
  * different question, and mixing them in would bury the sites that are actually
  * scanning badly:
  *
- *   greeters_logged === 0   Nobody logged a greeter day. That is a missing
- *                           submission, not a scanning failure, and it belongs
- *                           to the "No submissions" panel above.
- *   !ever_submitted         The location has never logged a greeter day at all
- *                           — not onboarded rather than slipping.
- *   site_wash_sales <= 0    No a-a-la-carte cars sold, so neither side of the
- *                           ratio has anything to contribute.
+ *   greeters_logged === 0        Nobody logged a greeter day. That is a missing
+ *                                submission, not a scanning failure, and it
+ *                                belongs to the "No submissions" panel above.
+ *   !ever_submitted              The location has never logged a greeter day at
+ *                                all — not onboarded rather than slipping.
+ *   scannable_wash_sales <= 0    Nothing was sold that a card COULD have been
+ *                                scanned for, so neither side of the ratio has
+ *                                anything to contribute. Note this now also
+ *                                drops a day whose entire wash-sale count was
+ *                                house accounts and rewashes — correctly, since
+ *                                grading a greeter on cars nobody could scan is
+ *                                the exact failure this deduction exists to fix.
  */
 function summarizeUnderreported(rows: ScanRateRow[]): UnderreportedRow[] {
   const byLocation = new Map<number, UnderreportedRow>();
@@ -1102,12 +1130,12 @@ function summarizeUnderreported(rows: ScanRateRow[]): UnderreportedRow[] {
   for (const r of rows) {
     if (!r.ever_submitted) continue;
     if (r.greeters_logged === 0) continue;
-    const site = r.site_wash_sales ?? 0;
-    if (site <= 0) continue;
+    const scannable = r.scannable_wash_sales;
+    if (scannable <= 0) continue;
 
     const existing = byLocation.get(r.location_id);
     if (existing) {
-      existing.site_wash_sales += site;
+      existing.scannable_wash_sales += scannable;
       existing.scanned_wash_sales += r.scanned_wash_sales;
       existing.days += 1;
     } else {
@@ -1115,7 +1143,7 @@ function summarizeUnderreported(rows: ScanRateRow[]): UnderreportedRow[] {
         location_id: r.location_id,
         site_number: r.site_number,
         location_code: r.location_code,
-        site_wash_sales: site,
+        scannable_wash_sales: scannable,
         scanned_wash_sales: r.scanned_wash_sales,
         days: 1,
         scanned_pct: 0
@@ -1126,7 +1154,8 @@ function summarizeUnderreported(rows: ScanRateRow[]): UnderreportedRow[] {
   const out: UnderreportedRow[] = [];
   for (const row of byLocation.values()) {
     row.scanned_pct =
-      Math.round((row.scanned_wash_sales * 1000) / row.site_wash_sales) / 10;
+      Math.round((row.scanned_wash_sales * 1000) / row.scannable_wash_sales) /
+      10;
     if (row.scanned_pct < SCAN_TARGET_PCT) out.push(row);
   }
   // Worst first — the point of the panel is what to chase today.
@@ -1158,7 +1187,7 @@ function UnderreportedPanel({
         </h2>
         <p className="mt-1 text-xs text-splash-navy/70">
           Every location that logged greeter days scanned at least{" "}
-          {SCAN_TARGET_PCT}% of its wash sales over {range}. Days with no
+          {SCAN_TARGET_PCT}% of its scannable cars over {range}. Days with no
           submission at all are counted in the panel above, not here.
         </p>
       </div>
@@ -1173,11 +1202,12 @@ function UnderreportedPanel({
           under {SCAN_TARGET_PCT}%
         </h2>
         <p className="mt-1 text-xs text-splash-navy/70">
-          Last 7 days ({range}). Share of each site&rsquo;s wash sales that a
-          greeter scanned for, counting only days somebody actually logged. A low
-          number means cars went unattributed, so every per-greeter figure for
-          those days is understated. Days with no submission are a different
-          problem and are listed separately above.
+          Last 7 days ({range}). Share of each site&rsquo;s SCANNABLE cars that a
+          greeter scanned for &mdash; wash sales less house accounts and rewashes,
+          neither of which anyone can scan a card for &mdash; counting only days
+          somebody actually logged. A low number means cars went unattributed, so
+          every per-greeter figure for those days is understated. Days with no
+          submission are a different problem and are listed separately above.
         </p>
       </div>
       <div className="overflow-x-auto">
@@ -1187,7 +1217,7 @@ function UnderreportedPanel({
               <th className="px-4 py-2.5">Site</th>
               <th className="px-4 py-2.5">Scanned %</th>
               <th className="px-4 py-2.5">Scanned</th>
-              <th className="px-4 py-2.5">Site wash sales</th>
+              <th className="px-4 py-2.5">Scannable</th>
               <th className="px-4 py-2.5">Days</th>
             </tr>
           </thead>
@@ -1211,7 +1241,7 @@ function UnderreportedPanel({
                   {num(r.scanned_wash_sales)}
                 </td>
                 <td className="px-4 py-2.5 text-splash-navy/80">
-                  {num(r.site_wash_sales)}
+                  {num(r.scannable_wash_sales)}
                 </td>
                 <td className="px-4 py-2.5 text-splash-navy/80">{r.days}</td>
               </tr>

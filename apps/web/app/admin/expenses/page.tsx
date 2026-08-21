@@ -90,8 +90,10 @@ import {
 } from "./_lib/ui";
 import {
   ExpenseEntryForm,
-  type CategoryOption
+  type CategoryOption,
+  type LaborRateOption
 } from "./_components/ExpenseEntryForm";
+import { getMe } from "../../_lib/me";
 import { BudgetEditor, type BudgetValue } from "./_components/BudgetEditor";
 import { RedirectForm } from "../_components/RedirectForm";
 import {
@@ -169,25 +171,35 @@ export default async function ExpensesPage({ searchParams }: PageProps) {
   let entriesRes: { entries: ExpenseEntryRow[] } | null = null;
   let rollupRes: { rows: ExpenseMonthRollupRow[] } | null = null;
   let budgetsRes: { budgets: BudgetListRow[] } | null = null;
+  let ratesRes: { rates: LaborRateOption[] } | null = null;
   let fetchError: string | null = null;
 
   try {
-    // Parallel: four independent reads. Sequential awaits would multiply the
+    // Parallel: five independent reads. Sequential awaits would multiply the
     // page's time-to-first-byte for no benefit.
-    [categoriesRes, entriesRes, rollupRes, budgetsRes] = await Promise.all([
-      performanceGetJson<{ categories: CategoryOption[] }>(
-        "/pertrack/api/expenses/categories"
-      ),
-      performanceGetJson<{ entries: ExpenseEntryRow[] }>(
-        `/pertrack/api/expenses/entries${listQs}`
-      ),
-      performanceGetJson<{ rows: ExpenseMonthRollupRow[] }>(
-        `/pertrack/api/expenses/rollup${scopeQs}`
-      ),
-      performanceGetJson<{ budgets: BudgetListRow[] }>(
-        `/pertrack/api/expenses/budgets${scopeQs}`
-      )
-    ]);
+    //
+    // The rate history is fetched for EVERY visitor, not just the super admins
+    // who can change it: the entry form needs it to price the hours preview,
+    // and reading it is not gated (see apiListLaborRates). Anyone entering
+    // hours has to be able to see what they cost.
+    [categoriesRes, entriesRes, rollupRes, budgetsRes, ratesRes] =
+      await Promise.all([
+        performanceGetJson<{ categories: CategoryOption[] }>(
+          "/pertrack/api/expenses/categories"
+        ),
+        performanceGetJson<{ entries: ExpenseEntryRow[] }>(
+          `/pertrack/api/expenses/entries${listQs}`
+        ),
+        performanceGetJson<{ rows: ExpenseMonthRollupRow[] }>(
+          `/pertrack/api/expenses/rollup${scopeQs}`
+        ),
+        performanceGetJson<{ budgets: BudgetListRow[] }>(
+          `/pertrack/api/expenses/budgets${scopeQs}`
+        ),
+        performanceGetJson<{ rates: LaborRateOption[] }>(
+          "/pertrack/api/expenses/labor-rates"
+        )
+      ]);
   } catch (err) {
     fetchError =
       err instanceof Error ? err.message : "Unknown error loading the expense log.";
@@ -238,6 +250,17 @@ export default async function ExpensesPage({ searchParams }: PageProps) {
   const entries = entriesRes?.entries ?? [];
   const rollupRows = rollupRes?.rows ?? [];
   const budgets = budgetsRes?.budgets ?? [];
+  // Empty is a REAL STATE, not a failure: no administrator has set a rate yet.
+  // The entry form says so in place of a price rather than guessing one, and
+  // the insert would refuse anyway (insert_expense_entry raises rather than
+  // pricing an hour of work at zero).
+  const laborRates = ratesRes?.rates ?? [];
+
+  // Only for deciding whether to offer the Labor rate link. The gate that
+  // matters is the worker's — apiCreateLaborRate 403s anyone who isn't a super
+  // admin — and this is just about not showing a door most people can't open.
+  const me = await getMe().catch(() => null);
+  const canSetLaborRate = me?.role === "super_admin";
 
   const columns = gridColumns(rollupRows);
   const groups = headerGroups(columns);
@@ -279,7 +302,7 @@ export default async function ExpensesPage({ searchParams }: PageProps) {
     <section className="mx-auto w-full max-w-[1200px] px-5 py-9">
       <ActionAlert message={actionError} />
       {successMessage ? <SuccessBanner message={successMessage} /> : null}
-      <PageBanner />
+      <PageBanner showLaborRate={canSetLaborRate} />
 
       {/* Filter bar */}
       <form
@@ -525,11 +548,12 @@ export default async function ExpensesPage({ searchParams }: PageProps) {
       {/* Entry form */}
       <Card
         title="Log an expense"
-        subtitle="One purchase, one category, one amount. The PO number is assigned when you save."
+        subtitle="One purchase, one category, one amount — or, for maintenance labor, the hours billed. The PO number is assigned when you save."
       >
         <ExpenseEntryForm
           action={submitExpenseAction}
           categories={categories}
+          laborRates={laborRates}
           returnQs={returnQs}
           defaultDate={todayIsInMonth ? today : ""}
           defaultLocationId={locationIdNum}
@@ -628,6 +652,26 @@ export default async function ExpensesPage({ searchParams }: PageProps) {
                     title={e.amount < 0 ? "Refund or credit — nets against the month." : undefined}
                   >
                     {signedMoney(e.amount)}
+                    {/*
+                      HOW THE NUMBER WAS ARRIVED AT, for hourly entries only.
+
+                      Both figures come off the ROW, not off the current rate:
+                      labor_rate is stamped at insert precisely so a raise in
+                      November can't restate August, and a CHECK guarantees the
+                      three agree. Recomputing from today's rate here would be
+                      the one place on the page where that guarantee is thrown
+                      away.
+
+                      Rendered only when BOTH are present. They are constrained
+                      to arrive together, so a half-populated pair means
+                      something wrote around the RPC and a "× undefined" is a
+                      better thing to not print than to print.
+                    */}
+                    {e.labor_hours != null && e.labor_rate != null ? (
+                      <div className="font-mono text-[11px] font-normal text-splash-navy/60">
+                        {e.labor_hours} hr × {signedMoney(e.labor_rate)}
+                      </div>
+                    ) : null}
                   </td>
                   <td className="px-4 py-3">
                     <VoidCell id={e.id} po={e.po_number} returnQs={returnQs} />
@@ -914,7 +958,15 @@ function SuccessBanner({ message }: { message: string }) {
   );
 }
 
-function PageBanner() {
+/**
+ * `showLaborRate` is a VISIBILITY decision and nothing more. The worker 403s a
+ * non-super-admin POST to /labor-rates and the destination page re-checks; this
+ * only keeps a door most people can't open out of the header. The two error
+ * banners render it without the link because they run before the session is
+ * read — there is nothing to gate on at that point, and a header link is not
+ * what either of those pages is for.
+ */
+function PageBanner({ showLaborRate = false }: { showLaborRate?: boolean }) {
   return (
     <div className="mb-6 flex flex-wrap items-end justify-between gap-3">
       <div>
@@ -923,6 +975,14 @@ function PageBanner() {
         </p>
         <h1 className="text-2xl font-bold text-splash-navy">Expense Log</h1>
       </div>
+      {showLaborRate ? (
+        <Link
+          href="/admin/expenses/labor-rate"
+          className="text-sm font-semibold text-splash-blue hover:text-splash-blue-dark"
+        >
+          Labor rate →
+        </Link>
+      ) : null}
     </div>
   );
 }

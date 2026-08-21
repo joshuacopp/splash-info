@@ -15,12 +15,21 @@
 //   POST /api/expenses/budgets                    -> { budget, corrected }
 //   POST /api/expenses/budgets/copy               -> { created }
 //   GET  /api/expenses/rollup        month req.   -> { rows }
+//   GET  /api/expenses/labor-rates                -> { rates }
+//   POST /api/expenses/labor-rates                -> { rate }    201
+//
+// NO wrangler.toml CHANGE IS NEEDED FOR A NEW PATH HERE, unlike dashboard-worker
+// where prod binds individual /api/* paths and a new endpoint 404s in prod while
+// working in dev. This worker is bound by the wildcard `/pertrack/*` and reached
+// from apps/web over a service binding, so adding a route is enough. Checked
+// 2026-08-21 against apps/performance-worker/wrangler.toml — re-check if that
+// routes array ever gains a per-path entry.
 //
 // RESPONSES ARE ENVELOPED ({ entries: [...] }), unlike greeter.ts which returns
 // bare arrays. Not an inconsistency for its own sake: two of these endpoints
 // have to return a scalar alongside the payload (`corrected`, `created`), and a
 // route table where half the shapes are arrays and half are objects is the kind
-// of thing a caller gets wrong once per endpoint. One shape for all eight.
+// of thing a caller gets wrong once per endpoint. One shape for all ten.
 //
 // SCOPING RULE, identical to greeter.ts and applied to reads and writes alike:
 //   Full admin tier (super_admin / dcRole admin|super_admin) -> undefined scope,
@@ -48,14 +57,32 @@
 // carries one is ignored silently — not 400'd. A stale form field or a caller
 // echoing a row back is not an attack worth failing a purchase over, and
 // nothing downstream can act on the value: it is never read out of the body.
+//
+// AND THE CLIENT NEVER SENDS A LABOR DOLLAR AMOUNT. Maintenance labor is
+// entered as HOURS; insert_expense_entry() looks the rate up and multiplies,
+// inside the same transaction that mints the PO. This module does not do that
+// arithmetic — not even "to show the user a preview and send it along" — because
+// an admin-settable rate that the client is trusted to apply is an advisory
+// rate, and a CHECK constraint (expense_entry_labor_amount_matches) would reject
+// the row anyway the moment the two copies disagreed. Hours in, priced row out.
+//
+// SETTING THE RATE IS super_admin ONLY (Josh, 2026-08-21). Note that is a
+// STRICTER test than locationScopeFor()'s full-admin tier, which also lets a
+// dcRole admin through: the rate is one company-wide number that reprices every
+// future labor entry at every site, so it is not a location-scoped write at all
+// and the location-scoping helper is the wrong instrument for it. READING the
+// rates is not gated beyond the "pertrack" grant index.ts already checked —
+// anyone entering hours needs to see what they cost.
 
 import type { Session } from "@splash/auth";
 import {
   copyExpenseBudgetMonth,
   createServiceClient,
   insertExpenseEntry,
+  insertExpenseLaborRate,
   listExpenseBudgets,
   listExpenseCategories,
+  listExpenseLaborRates,
   listExpenseMonthRollup,
   listExpenses,
   resolveExpenseLocationKey,
@@ -67,6 +94,7 @@ import { json as jsonResponse } from "@splash/http";
 import type {
   ExpenseBudgetInsert,
   ExpenseEntryInsert,
+  ExpenseLaborRateInsert,
   ExpenseListFilters,
   ExpenseLocationKey
 } from "@splash/types/expense";
@@ -81,6 +109,10 @@ export function isExpenseRoute(pathname: string, method: string): boolean {
       return method === "GET";
     case "/api/expenses/entries":
     case "/api/expenses/budgets":
+    // Hyphenated, not `labor_rates`, matching /api/expenses/budgets/copy and
+    // every other path on this worker: URLs are hyphenated, columns are
+    // underscored, and the two are not the same namespace.
+    case "/api/expenses/labor-rates":
       return method === "GET" || method === "POST";
     // Sub-paths rather than a `?action=void` flag or a DELETE: the void is a
     // state transition with a body (the reason), and DELETE would read as the
@@ -127,6 +159,12 @@ export async function handleExpenseRoute(
   if (pathname === "/api/expenses/budgets/copy" && method === "POST") {
     return apiCopyBudgetMonth(request, env, session, scope);
   }
+  // Takes no scope, and is the one write on this module that doesn't: the rate
+  // is company-wide, so there is no location to resolve or check. Its gate is
+  // the super_admin test inside the handler instead.
+  if (pathname === "/api/expenses/labor-rates" && method === "POST") {
+    return apiCreateLaborRate(request, env, session);
+  }
 
   if (!isExpenseRoute(pathname, method)) return null;
 
@@ -144,6 +182,9 @@ export async function handleExpenseRoute(
   }
   if (pathname === "/api/expenses/rollup" && method === "GET") {
     return apiRollup(url, env, readScope);
+  }
+  if (pathname === "/api/expenses/labor-rates" && method === "GET") {
+    return apiListLaborRates(env);
   }
   return null;
 }
@@ -408,6 +449,20 @@ async function apiRollup(
  *
  * The three location columns come from resolveWritableLocation() and can come
  * from nowhere else.
+ *
+ * TWO SHAPES OF BODY, TOLD APART BY `labor_hours` ALONE:
+ *   amount + method            -> an ordinary purchase
+ *   labor_hours (+ mechanic)   -> hours, priced by the database
+ *
+ * Which one a given category ACCEPTS is `expense_categories.billed_by_hours`,
+ * and this function deliberately does not look that up. The RPC already reads
+ * that column and raises 22023 on either mismatch ("hours on a category that
+ * isn't billed by hours", "no hours for one that is"), so fetching it here would
+ * be a second round trip whose only product is a second copy of a rule that can
+ * then disagree with the first. What the branch below decides is narrower: which
+ * of amount and labor_hours to validate as present, so the caller gets "enter
+ * hours" rather than "amount is required" on a labor line. The database remains
+ * the authority on whether that was the right field for the category.
  */
 async function apiCreateEntry(
   request: Request,
@@ -458,22 +513,50 @@ async function apiCreateEntry(
     return jsonResponse({ error: "category_key is required" }, 400);
   }
 
-  // SIGNED — a refund or credit memo is negative and there is deliberately no
-  // >= 0 check here or in the database. Zero IS rejected, though: it is never a
-  // real purchase, and it is what an empty or unparseable amount box looks like
-  // once Number("") has had its way with it. Naming that beats filing a
-  // zero-dollar row nobody can reconcile.
-  const amount = toNumOrNull(body.amount);
-  if (amount == null || amount === 0) {
-    return jsonResponse(
-      {
-        error: "amount is required and cannot be zero",
-        reason:
-          "Enter the purchase amount. Refunds and credit memos are entered as " +
-          "negative numbers."
-      },
-      400
-    );
+  // PRESENCE of labor_hours picks the branch, not its value — `"0"` and `"-2"`
+  // are wrong hours rather than an ordinary purchase, and routing them to the
+  // amount validator would answer a bad hours box with a complaint about a field
+  // the labor form doesn't render.
+  const laborHours = toNumOrNull(body.labor_hours);
+  const isLaborBody = body.labor_hours != null && body.labor_hours !== "";
+
+  let amount: number;
+  if (isLaborBody) {
+    if (laborHours == null || laborHours <= 0) {
+      return jsonResponse(
+        {
+          error: "hours billed to site must be greater than zero",
+          reason:
+            "Maintenance labor is entered as hours; the dollar cost is worked " +
+            "out from the current hourly rate when the entry is saved."
+        },
+        400
+      );
+    }
+    // The RPC IGNORES this and computes round(hours * rate, 2) itself — see the
+    // file header. Zero rather than a client-side product on purpose: if this
+    // ever reached the row, a zero-dollar labor line is obviously broken,
+    // whereas a plausible-looking wrong number is not.
+    amount = 0;
+  } else {
+    // SIGNED — a refund or credit memo is negative and there is deliberately no
+    // >= 0 check here or in the database. Zero IS rejected, though: it is never
+    // a real purchase, and it is what an empty or unparseable amount box looks
+    // like once Number("") has had its way with it. Naming that beats filing a
+    // zero-dollar row nobody can reconcile.
+    const parsed = toNumOrNull(body.amount);
+    if (parsed == null || parsed === 0) {
+      return jsonResponse(
+        {
+          error: "amount is required and cannot be zero",
+          reason:
+            "Enter the purchase amount. Refunds and credit memos are entered as " +
+            "negative numbers."
+        },
+        400
+      );
+    }
+    amount = parsed;
   }
 
   const resolved = await resolveWritableLocation(env, locationId, scope);
@@ -484,11 +567,19 @@ async function apiCreateEntry(
     ...resolved.key,
     po_initials: initials,
     // Blank method/description are collapsed to NULL by the RPC; trimOrNull
-    // already produces the null, so the two agree either way.
+    // already produces the null, so the two agree either way. On the labor path
+    // the RPC also NULLs the method outright — Josh: "if that is chosen, payment
+    // method should not be needed" — so a form that leaves the field mounted
+    // doesn't file a payment method against hours that weren't paid for at a
+    // register.
     method: trimOrNull(body.method),
     description: trimOrNull(body.description),
     category_key: categoryKey,
     amount,
+    labor_hours: isLaborBody ? laborHours : null,
+    // Always null in v1: nothing writes a per-mechanic rate yet. Read from the
+    // body regardless so the column is wired end to end the day one is.
+    mechanic_key: isLaborBody ? trimOrNull(body.mechanic_key) : null,
     created_by: session.userId,
     created_by_email: session.email
   };
@@ -705,6 +796,133 @@ async function apiCopyBudgetMonth(
 }
 
 /* ============================================================
+ * Labor rate
+ * ============================================================ */
+
+/**
+ * Every rate ever set, newest first — the admin screen's history, and the
+ * entry form's "hours × $X" preview.
+ *
+ * NOT SCOPED, and it doesn't need to be: one company-wide number, identical for
+ * every site, that anyone entering hours has to be able to see before they
+ * enter them. The "pertrack" grant index.ts already checked is the whole gate.
+ *
+ * RETURNS THE HISTORY, NOT THE CURRENT RATE. Which row is in force on a given
+ * date is expense_labor_rate_for()'s answer, and the entry path gets it from
+ * there rather than from this list — a UI that takes rates[0] as "current" is
+ * right until somebody schedules a raise for next month, at which point it
+ * prices today's work at next month's rate. If a caller genuinely needs the
+ * scalar, add a `?date=` endpoint over getExpenseLaborRate(); don't infer it.
+ */
+async function apiListLaborRates(env: Env): Promise<Response> {
+  const sb = createServiceClient(env);
+  const rates = await listExpenseLaborRates(sb);
+  return jsonResponse({ rates });
+}
+
+/**
+ * Set a new hourly rate, effective from a date.
+ *
+ * SUPER_ADMIN ONLY (Josh, 2026-08-21), tested on session.role directly rather
+ * than through locationScopeFor(): that helper's full-admin tier also admits a
+ * dcRole admin, which is the right rule for "may write an expense at any site"
+ * and the wrong one for "may reprice labor company-wide".
+ *
+ * INSERT ONLY — no edit, no delete, no upsert. A rate is superseded by a newer
+ * row, never corrected in place, because entries already logged stamped the old
+ * value onto themselves (expense_entry.labor_rate) and editing the source row
+ * would leave the history saying one thing and the entries another. Setting a
+ * wrong rate is fixed by setting the right one from the same effective date —
+ * which is exactly what the unique index turns into a 409, on purpose: it forces
+ * that to be a deliberate act rather than a silent overwrite of a number that
+ * has already priced somebody's work.
+ *
+ * BACKDATING IS ALLOWED and does not reprice anything. `effective_from` may be
+ * any date; existing entries keep the rate stamped on them at insert time, so a
+ * backdated rate only affects entries created after it. That is a feature — a
+ * raise agreed in June and entered in August prices June's future entries
+ * correctly without rewriting July's paperwork.
+ */
+async function apiCreateLaborRate(
+  request: Request,
+  env: Env,
+  session: Session
+): Promise<Response> {
+  if (session.role !== "super_admin") {
+    return jsonResponse(
+      {
+        // A SENTENCE AND NOT "forbidden", unlike the bare status words used
+        // elsewhere. apps/web's performancePostJson surfaces `error` and drops
+        // `reason`, so whatever is in this field is the entire banner the user
+        // reads. Every other error on this module already reads as a sentence
+        // for that reason; this one is the only 403 a form can provoke.
+        error:
+          "Only a super admin can change the maintenance labor rate — it is " +
+          "company-wide and applies to every site.",
+        reason:
+          "The expense log itself is open to anyone with the pertrack grant; " +
+          "this one setting is not, because changing it changes every " +
+          "location's numbers at once."
+      },
+      403
+    );
+  }
+
+  const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
+
+  const effectiveFrom = isoDateOrNull(body.effective_from);
+  if (!effectiveFrom) {
+    return jsonResponse(
+      {
+        error: "effective_from (YYYY-MM-DD) is required",
+        reason:
+          "The rate applies to entries dated on or after this day, until a later " +
+          "rate supersedes it."
+      },
+      400
+    );
+  }
+
+  // Strictly positive, matching expense_labor_rate_positive. Checked here too
+  // because the constraint's message wouldn't explain why zero is different from
+  // a zero BUDGET, which is legitimate: a budget of nothing is a real ceiling,
+  // an hourly rate of nothing prices a day's work at nothing and passes every
+  // other check silently.
+  const ratePerHour = toNumOrNull(body.rate_per_hour);
+  if (ratePerHour == null || ratePerHour <= 0) {
+    return jsonResponse(
+      {
+        error: "rate_per_hour must be greater than zero",
+        reason: "Enter the hourly rate maintenance labor is billed to sites at."
+      },
+      400
+    );
+  }
+
+  const input: ExpenseLaborRateInsert = {
+    // Read from the body but always null from today's UI — see the type. Wiring
+    // it now costs nothing and means turning per-mechanic rates on is a form
+    // field rather than a trip back through four layers.
+    mechanic_key: trimOrNull(body.mechanic_key),
+    effective_from: effectiveFrom,
+    rate_per_hour: ratePerHour,
+    note: trimOrNull(body.note),
+    created_by: session.userId,
+    created_by_email: session.email
+  };
+
+  const sb = createServiceClient(env);
+  try {
+    const rate = await insertExpenseLaborRate(sb, input);
+    return jsonResponse({ rate }, 201);
+  } catch (err) {
+    const translated = translatePgError(err);
+    if (translated) return translated;
+    throw err;
+  }
+}
+
+/* ============================================================
  * Postgres error translation
  * ============================================================ */
 
@@ -726,9 +944,18 @@ function translatePgError(err: unknown): Response | null {
   const text = `${e.message ?? ""} ${e.details ?? ""}`;
 
   // 22023 invalid_parameter_value — raised by next_expense_po() for bad
-  // initials and by copy_expense_budget_month() for from == to. Both are
-  // pre-checked above, so reaching here means the two copies of the rule
-  // disagreed; still worth a 400 rather than a 500, since the caller can fix it.
+  // initials, by copy_expense_budget_month() for from == to, and by
+  // insert_expense_entry() for all four labor mismatches. The first two are
+  // pre-checked above, so reaching here on those means the two copies of the
+  // rule disagreed; the labor ones are NOT pre-checked and this is their
+  // intended exit — see apiCreateEntry, which deliberately leaves the database
+  // as the authority on what a category accepts.
+  //
+  // The RPC's messages are written to be read by the person who filled the form
+  // ("no labor rate is in effect on 2026-08-21 — an administrator must set one
+  // before hourly work can be logged"), so `reason` passes them through
+  // verbatim. Don't replace them with a generic string; the actionable half of
+  // that sentence is the half a generic string throws away.
   if (e.code === "22023") {
     return jsonResponse({ error: "invalid value", reason: e.message ?? "" }, 400);
   }
@@ -765,6 +992,22 @@ function translatePgError(err: unknown): Response | null {
     if (text.includes("expense_entry_initials_shape")) {
       return jsonResponse({ error: "po_initials must be 1-4 letters" }, 400);
     }
+    // The one check on either table that a CORRECT caller can never trip: the
+    // amount is computed by the RPC from the hours and the rate it looked up, so
+    // for the three of them to disagree, either that arithmetic changed or
+    // something wrote the row around insert_expense_entry(). Neither is a
+    // request the user can fix, so this stays a 500 by returning null — the
+    // whole point of the fall-through — instead of blaming the form.
+    if (text.includes("expense_entry_labor_amount_matches")) return null;
+    if (text.includes("expense_entry_labor_hours_positive")) {
+      return jsonResponse(
+        { error: "hours billed to site must be greater than zero" },
+        400
+      );
+    }
+    if (text.includes("expense_labor_rate_positive")) {
+      return jsonResponse({ error: "rate_per_hour must be greater than zero" }, 400);
+    }
     return jsonResponse({ error: "invalid value", reason: e.message ?? "" }, 400);
   }
 
@@ -778,6 +1021,24 @@ function translatePgError(err: unknown): Response | null {
       {
         error: "PO number collision",
         reason: "Two entries were saved for this site and date at once. Try again."
+      },
+      409
+    );
+  }
+
+  // 23505 on idx_expense_labor_rate_unique — a second rate for the same
+  // effective date. REACHABLE and not a race: it is what "fix the rate I just
+  // set" looks like, and refusing it is the point. There is no update path (see
+  // apiCreateLaborRate), so the fix is a new row from a later date; silently
+  // overwriting would restate the price of work already logged.
+  if (e.code === "23505" && text.includes("expense_labor_rate")) {
+    return jsonResponse(
+      {
+        error: "a rate is already set for that date",
+        reason:
+          "Rates are never edited, only superseded — entries already logged " +
+          "carry the rate they were priced at. Set the new rate from a later " +
+          "date instead."
       },
       409
     );

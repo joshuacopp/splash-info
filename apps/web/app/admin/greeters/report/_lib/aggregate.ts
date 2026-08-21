@@ -39,7 +39,13 @@ export interface Totals {
   days: number;
   total_cars: number;
   wash_sales: number;
+  /**
+   * Summed and reported, and ALSO subtracted from scanned_pct's denominator
+   * alongside house_accounts. Nobody can scan a card for a rewash.
+   */
   rewashes: number;
+  /** Site-only. Same deal as rewashes: a real wash sale, but unscannable. */
+  house_accounts: number;
   package_dollars: number;
   extras_dollars: number;
   sign_ups: number;
@@ -55,6 +61,10 @@ export interface Totals {
   /** Null when the window sold no wash sales: no denominator, not zero. */
   capture_pct: number | null;
   dob: number | null;
+  /**
+   * Scanned over SCANNABLE — a different denominator from the two above, which
+   * is the whole point. See the divisions in totals().
+   */
   scanned_pct: number | null;
   capture_goal_pct: number | null;
   dob_goal: number | null;
@@ -118,6 +128,7 @@ export function totals(rows: LocationPeriodRow[]): Totals {
     total_cars: 0,
     wash_sales: 0,
     rewashes: 0,
+    house_accounts: 0,
     package_dollars: 0,
     extras_dollars: 0,
     sign_ups: 0,
@@ -134,10 +145,25 @@ export function totals(rows: LocationPeriodRow[]): Totals {
     dob_goal: null
   };
 
+  // scanned_pct's denominator, accumulated PER DAY and floored per day, exactly
+  // as greeter_scan_rates() does it in SQL. Deriving it afterwards from the
+  // three totals (wash_sales - house_accounts - rewashes) would be off whenever
+  // a single day's unscannable cars exceeded its wash sales — that day floors
+  // to zero in SQL but would go negative here and silently credit the window
+  // with denominator it never had. Not on Totals: nothing outside this division
+  // wants it, and a second wash-sale-ish number on the interface is an
+  // invitation to divide by the wrong one.
+  let scannable = 0;
+
   for (const r of rows) {
+    scannable += Math.max(
+      0,
+      n(r.wash_sales) - n(r.house_accounts) - n(r.rewashes)
+    );
     t.total_cars += n(r.total_cars);
     t.wash_sales += n(r.wash_sales);
     t.rewashes += n(r.rewashes);
+    t.house_accounts += n(r.house_accounts);
     t.package_dollars += n(r.package_dollars);
     t.extras_dollars += n(r.extras_dollars);
     t.sign_ups += n(r.sign_ups);
@@ -148,10 +174,23 @@ export function totals(rows: LocationPeriodRow[]): Totals {
     t.scanned_wash_sales += r.scanned_wash_sales;
   }
 
+  // THREE RATES, TWO DENOMINATORS, ON PURPOSE.
+  //
+  // capture_pct and dob divide by GROSS wash sales. House accounts and rewashes
+  // are real wash sales and company policy counts them in capture rate, even
+  // though nobody could buy a membership against one. That policy also matches
+  // the GENERATED columns on location_daily/greeter_daily, so changing it here
+  // would make this report disagree with the day rows it's built from.
+  //
+  // scanned_pct divides by SCANNABLE. It asks a different question: of the cars
+  // a greeter COULD have scanned a card for, how many got attributed? Grading
+  // that against gross would penalise a site for cars no card exists for.
   if (t.wash_sales > 0) {
     t.capture_pct = round((t.sign_ups * 100) / t.wash_sales, 1);
     t.dob = round((t.package_dollars + t.extras_dollars) / t.wash_sales, 2);
-    t.scanned_pct = round((t.scanned_wash_sales * 100) / t.wash_sales, 1);
+  }
+  if (scannable > 0) {
+    t.scanned_pct = round((t.scanned_wash_sales * 100) / scannable, 1);
   }
 
   const cg = weightedGoal(rows, (r) => r.capture_goal_pct);

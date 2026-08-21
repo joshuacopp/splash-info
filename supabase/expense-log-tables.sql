@@ -57,6 +57,27 @@
 -- MONEY IS numeric(12,2), NEVER float. Rounding drift in a column that is
 -- summed into a variance against a budget is not acceptable, and Postgres
 -- `numeric` sums exactly. Do not "optimise" these to double precision.
+--
+--
+-- ============================================================================
+-- PARTIALLY SUPERSEDED BY expense-maintenance-labor-01.sql (2026-08-21).
+-- ============================================================================
+-- This file is still the schema's origin and is safe to run on a fresh database
+-- — but running it against a database that already has the labor migration will
+-- ROLL TWO FUNCTIONS BACK, silently:
+--
+--   insert_expense_entry()   would lose its p_labor_hours / p_mechanic_key
+--                            parameters, so every hourly entry starts failing
+--                            with "function does not exist" AND the 11-arg form
+--                            would be left as a second overload.
+--   expense_month_rollup()   would lose the roll-up fold, so maintenance labor
+--                            would reappear as its own grid column and stop
+--                            being counted inside Equipment Repair.
+--
+-- Neither table DDL below is affected (all of it is IF NOT EXISTS / ON
+-- CONFLICT), and the labor migration is itself idempotent — so the recovery, if
+-- this file does get re-run, is simply to run expense-maintenance-labor-01.sql
+-- again afterwards. Prefer not needing to.
 
 
 -- ===========================================================================

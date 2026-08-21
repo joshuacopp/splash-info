@@ -1,5 +1,10 @@
 -- Greeter scorecard, migration 09: churn % (site only) and Google reviews (both).
 --
+-- APPLIED AND FROZEN. Its copy of location_period_rows() is now one version
+-- behind: greeter-house-accounts-10.sql added house_accounts to that function's
+-- output. Re-running 09 after 10 would drop that column and break the report
+-- page's scan-rate denominator. Edit greeter-scorecard-tables.sql instead.
+--
 -- Run the WHOLE file — select all (Ctrl+A) first. Running a highlighted fragment
 -- fails with "syntax error at end of input", because most of this file is
 -- comments and a comment-only selection parses to nothing.

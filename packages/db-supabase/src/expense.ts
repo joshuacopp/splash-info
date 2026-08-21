@@ -36,6 +36,8 @@ import type {
   ExpenseCategory,
   ExpenseEntryInsert,
   ExpenseEntryRow,
+  ExpenseLaborRateInsert,
+  ExpenseLaborRateRow,
   ExpenseListFilters,
   ExpenseLocationKey,
   ExpenseMonthRollupRow,
@@ -229,7 +231,14 @@ export async function listExpenseCategories(
 ): Promise<ExpenseCategory[]> {
   const { data, error } = await client
     .from("expense_categories")
-    .select("key,group_label,label,sort_order,active,created_at")
+    // rolls_up_to and billed_by_hours come back so the FORM can drive off them:
+    // an hourly category swaps its dollar box for an hours box and drops the
+    // payment-method field, and neither decision should be a hard-coded key in
+    // the UI. Note this list is not filtered by rolls_up_to — a child category
+    // IS selectable when entering, it just isn't a column in the rollup grid.
+    .select(
+      "key,group_label,label,sort_order,active,rolls_up_to,billed_by_hours,created_at"
+    )
     .eq("active", true)
     .order("sort_order", { ascending: true });
   if (error) throw error;
@@ -248,6 +257,11 @@ const ENTRY_COLS =
   "id,business_date,location_id,site_number,location_code," +
   "po_number,po_initials,po_seq," +
   "method,description,category_key,amount," +
+  // The hourly trio. Null on every non-labor row, and always null together
+  // except mechanic_key, which is only meaningful when the other two are set.
+  // Selected unconditionally for the same reason the void quad is: one row type
+  // per table beats a conditional column list.
+  "labor_hours,labor_rate,mechanic_key," +
   "voided_at,voided_by,voided_by_email,void_reason," +
   "created_at,created_by,created_by_email,updated_at,updated_by,updated_by_email";
 
@@ -338,6 +352,19 @@ export async function listExpenses(
  * and the column type. A second copy of a rule the database already enforces is
  * a second place for it to drift.
  *
+ * HOURLY CATEGORIES ARE PRICED BY THE DATABASE, NOT HERE. For a category with
+ * `billed_by_hours`, the caller sends `labor_hours` and the RPC looks up the
+ * rate in force on `business_date`, multiplies, and writes both the amount and
+ * the rate it used. `input.amount` is IGNORED on that path — pass 0. Do not
+ * "helpfully" compute the amount in TS and send it: the client being able to
+ * name the dollar figure is exactly what makes an admin-set rate advisory
+ * rather than binding, and a stale page would then post yesterday's price.
+ *
+ * The RPC raises 22023 (surfacing as a readable 400) when an hourly category
+ * arrives with no hours, when hours arrive on a category that isn't hourly, or
+ * when no rate has ever been set for that date. That last one is deliberately
+ * an error and not a $0.00 entry.
+ *
  * The three location columns must come from resolveExpenseLocationKey(), never
  * from the request body — read that function's note on why.
  *
@@ -362,7 +389,9 @@ export async function insertExpenseEntry(
     p_category_key: input.category_key,
     p_amount: input.amount,
     p_created_by: input.created_by,
-    p_created_by_email: input.created_by_email
+    p_created_by_email: input.created_by_email,
+    p_labor_hours: input.labor_hours ?? null,
+    p_mechanic_key: input.mechanic_key ?? null
   });
   if (error) throw error;
 
@@ -438,6 +467,104 @@ export async function voidExpenseEntry(
     `expense entry ${id} (PO ${already.po_number}) was already voided at ` +
       `${already.voided_at} by ${already.voided_by_email ?? "unknown"}`
   );
+}
+
+/* ============================================================
+ * Labor rate — the admin-set hourly price of maintenance labor
+ * ============================================================ */
+
+const LABOR_RATE_COLS =
+  "id,mechanic_key,effective_from,rate_per_hour,note," +
+  "created_at,created_by,created_by_email";
+
+/**
+ * Every rate ever set, newest first — the history screen and the audit trail in
+ * one list.
+ *
+ * NOT filtered to "the current one". A rate table with no history is a number
+ * in a settings box, and the whole reason this is row-per-effective-date is so
+ * an August entry priced at the August rate can still be explained in November.
+ * The current rate is the first element on the company-wide path; ask
+ * `expense_labor_rate_for()` if you want the database's own answer.
+ *
+ * Ordered by effective_from DESC, then mechanic-specific rows after the
+ * company-wide one for the same date, matching the resolution order in
+ * expense_labor_rate_for(): the row that would WIN sorts first.
+ *
+ * No scope filter and no location columns — the rate is company-wide. Josh,
+ * 2026-08-21: "as a whole. not on a per site basis".
+ */
+export async function listExpenseLaborRates(
+  client: SupabaseClient,
+  limit = 100
+): Promise<ExpenseLaborRateRow[]> {
+  const { data, error } = await client
+    .from("expense_labor_rate")
+    .select(LABOR_RATE_COLS)
+    .order("effective_from", { ascending: false })
+    .order("mechanic_key", { ascending: false, nullsFirst: false })
+    .limit(limit);
+  if (error) throw error;
+  return (data ?? []) as unknown as ExpenseLaborRateRow[];
+}
+
+/**
+ * The rate in force on a date, as the DATABASE resolves it.
+ *
+ * An RPC rather than a client-side scan of listExpenseLaborRates(), because
+ * this is the same function insert_expense_entry() calls to price a row. Two
+ * implementations of "which rate applies" is two answers the day somebody adds
+ * a mechanic-specific row, and the one that matters is the one that already ran
+ * inside the insert.
+ *
+ * NULL means no rate has ever been set for a date that early. Callers must
+ * treat that as "cannot price labor yet" and say so — never as zero.
+ */
+export async function getExpenseLaborRate(
+  client: SupabaseClient,
+  businessDate: string,
+  mechanicKey: string | null = null
+): Promise<number | null> {
+  const { data, error } = await client.rpc("expense_labor_rate_for", {
+    p_business_date: businessDate,
+    p_mechanic_key: mechanicKey
+  });
+  if (error) throw error;
+  return data == null ? null : Number(data);
+}
+
+/**
+ * Add a rate window. Super_admin only — enforced in performance-worker, not
+ * here, matching every other authorisation in this module.
+ *
+ * A PLAIN INSERT, AND DELIBERATELY NOT AN UPSERT. Setting a rate for a date
+ * that already has one is a conflict the operator needs to see, not something
+ * to silently overwrite: the existing row may already have priced entries, and
+ * replacing it would restate them. The unique index on
+ * (COALESCE(mechanic_key,''), effective_from) is what raises, and 23505 here
+ * can only be that index.
+ *
+ * There is no update and no delete path on purpose. A rate is superseded by a
+ * later row, never edited — see the type's doc comment.
+ */
+export async function insertExpenseLaborRate(
+  client: SupabaseClient,
+  input: ExpenseLaborRateInsert
+): Promise<ExpenseLaborRateRow> {
+  const { data, error } = await client
+    .from("expense_labor_rate")
+    .insert({
+      mechanic_key: input.mechanic_key?.trim() ? input.mechanic_key.trim() : null,
+      effective_from: input.effective_from,
+      rate_per_hour: input.rate_per_hour,
+      note: input.note?.trim() ? input.note.trim() : null,
+      created_by: input.created_by,
+      created_by_email: input.created_by_email
+    })
+    .select(LABOR_RATE_COLS)
+    .single();
+  if (error) throw error;
+  return data as unknown as ExpenseLaborRateRow;
 }
 
 /* ============================================================
