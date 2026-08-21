@@ -406,17 +406,14 @@ export const TILES: ReadonlyArray<Tile> = [
     visibleTo: hasInventoryAccess
   },
   {
-    id: "performance",
-    group: "operations",
-    eyebrow: "Insights",
-    title: "Performance Tracking",
-    description: "Location performance metrics and operational insights.",
-    href: "/admin/performance",
-    icon: barChartIcon,
-    visibleTo: hasPerformanceAccess
-  },
-  {
-    // Same `pertrack` grant as Performance Tracking — a separate tile because
+    // The Performance Tracking tile (/admin/performance — the visit-based
+    // manager check-in) was removed 2026-08-21: the feature isn't in use, and
+    // the two tiles below are what the `pertrack` grant is actually for. The
+    // route and its worker endpoints still exist and still answer; only the way
+    // in from the dashboard is gone. Restore the tile rather than rebuilding it
+    // if visit tracking comes back.
+    //
+    // Same `pertrack` grant as the Greeter Scorecard — a separate tile because
     // it's a different job (one greeter's whole day of sales numbers, not a
     // manager's site visit), not a different permission.
     id: "greeters",

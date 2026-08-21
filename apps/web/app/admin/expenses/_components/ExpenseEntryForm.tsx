@@ -7,12 +7,18 @@
 // "preview your PO number" affordance was considered and rejected — see the
 // hint copy below.
 //
-// FIELD ORDER MIRRORS THE WORKBOOK'S ROW 7+ (DATE | PO | METHOD | DESCRIPTION |
-// amount) so somebody transcribing a stack of invoices reads left to right down
-// the paper and top to bottom down the form. The two fields that aren't on the
-// paper — location and category — sit at the top and bottom respectively: the
-// location is chosen once for a whole stack, and the category is the decision
-// that used to be "which of thirteen columns do I put this in".
+// FIELD ORDER *USED* TO MIRROR THE WORKBOOK'S ROW 7+ (DATE | PO | METHOD |
+// DESCRIPTION | amount), with category last. As of 2026-08-21 CATEGORY SITS
+// ABOVE METHOD, deliberately breaking that mirror.
+//
+// The reason is that category is no longer just a filing decision made after
+// the fact — it now GOVERNS THE REST OF THE FORM. Maintenance labor is billed
+// in hours, not dollars, and has no payment method at all, so method and amount
+// only make sense once the category is known. Asking for method first would be
+// asking a question that the next answer can retract.
+//
+// Location still leads (chosen once for a whole stack) and date still leads
+// with it (it's inside the PO number).
 
 import type { ReactNode } from "react";
 import { LocationPicker } from "../../performance/_components/LocationPicker";
@@ -176,39 +182,6 @@ export function ExpenseEntryForm({
         </label>
 
         <label className="flex flex-col gap-1">
-          <span className={LABEL_CLS}>Method</span>
-          <input
-            type="text"
-            name="method"
-            list="expense-method-suggestions"
-            placeholder="Company Card"
-            autoComplete="off"
-            className={INPUT_CLS}
-          />
-          <datalist id="expense-method-suggestions">
-            {METHOD_SUGGESTIONS.map((m) => (
-              <option key={m} value={m} />
-            ))}
-          </datalist>
-          <span className={HINT_CLS}>
-            Suggestions only — type whatever the site actually calls it.
-          </span>
-        </label>
-
-        <label className="flex flex-col gap-1 sm:col-span-2">
-          <span className={LABEL_CLS}>Description</span>
-          <input
-            type="text"
-            name="description"
-            placeholder="Vendor and what was bought"
-            className={INPUT_CLS}
-          />
-          <span className={HINT_CLS}>
-            Searchable from the filter bar above.
-          </span>
-        </label>
-
-        <label className="flex flex-col gap-1">
           <span className={LABEL_CLS}>Category *</span>
           <select
             name="category_key"
@@ -244,6 +217,39 @@ export function ExpenseEntryForm({
           <span className={HINT_CLS}>
             One category per entry. An invoice that splits across two categories
             is submitted twice — both entries get the same PO number.
+          </span>
+        </label>
+
+        <label className="flex flex-col gap-1">
+          <span className={LABEL_CLS}>Method</span>
+          <input
+            type="text"
+            name="method"
+            list="expense-method-suggestions"
+            placeholder="Company Card"
+            autoComplete="off"
+            className={INPUT_CLS}
+          />
+          <datalist id="expense-method-suggestions">
+            {METHOD_SUGGESTIONS.map((m) => (
+              <option key={m} value={m} />
+            ))}
+          </datalist>
+          <span className={HINT_CLS}>
+            Suggestions only — type whatever the site actually calls it.
+          </span>
+        </label>
+
+        <label className="flex flex-col gap-1 sm:col-span-2">
+          <span className={LABEL_CLS}>Description</span>
+          <input
+            type="text"
+            name="description"
+            placeholder="Vendor and what was bought"
+            className={INPUT_CLS}
+          />
+          <span className={HINT_CLS}>
+            Searchable from the filter bar above.
           </span>
         </label>
 
