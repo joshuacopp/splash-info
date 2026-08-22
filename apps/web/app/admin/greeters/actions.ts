@@ -164,12 +164,61 @@ export async function submitLocationDayAction(
 }
 
 /**
+ * How many already-submitted days a goal change re-graded, pulled out of the
+ * worker's response so the success banner can say so.
+ *
+ * Goals are snapshotted onto each submission at submit time, so adding or
+ * deleting a window that is even partly in the past silently changes how days
+ * already entered are graded. Reporting the count is what turns that from a
+ * surprise into a confirmation — and a zero is just as informative, because it
+ * is what a goal set entirely in the future should produce.
+ *
+ * DEFENSIVE TO THE POINT OF PARANOIA about the body's shape, because
+ * performancePostJson types it as `unknown` and a missing count must degrade to
+ * "no re-grading mentioned" rather than to "NaN days re-graded".
+ */
+function restampCounts(body: unknown): { greeter: number; location: number } {
+  const r =
+    body && typeof body === "object" && "restamped" in body
+      ? (body as { restamped?: unknown }).restamped
+      : null;
+  if (!r || typeof r !== "object") return { greeter: 0, location: 0 };
+  const g = (r as { greeter_rows?: unknown }).greeter_rows;
+  const l = (r as { location_rows?: unknown }).location_rows;
+  return {
+    greeter: typeof g === "number" && Number.isFinite(g) ? g : 0,
+    location: typeof l === "number" && Number.isFinite(l) ? l : 0
+  };
+}
+
+/**
+ * The two counts as query params, omitted entirely when both are zero.
+ *
+ * Omitted rather than sent as zeros so the page can tell "nothing needed
+ * re-grading" apart from "this redirect predates the feature" without either
+ * one having to be a magic value.
+ */
+function restampQs(body: unknown): string {
+  const { greeter, location } = restampCounts(body);
+  if (greeter === 0 && location === 0) return "";
+  return `&rg=${greeter}&rl=${location}`;
+}
+
+/**
  * Add a goal window for a site.
  *
  * Goals are per location + date range, not per submission: the numbers a
  * submission is graded against are snapshotted from the window covering its
- * business date. Overlapping windows come back from the worker as a 409 with an
- * explanatory message, which lands in the action-error banner unchanged.
+ * business date.
+ *
+ * OVERLAPPING WINDOWS ARE FINE AND ARE THE POINT — a promo week laid over a
+ * standing monthly baseline, with the shorter window winning for its days. Only
+ * an exact duplicate window comes back as a 409, and its message (which lands
+ * in the action-error banner unchanged) points at the delete button.
+ *
+ * Nothing here validates the date ORDER. `effective_to` before `effective_from`
+ * is caught by the worker and again by greeter_goals_window_valid, and a third
+ * copy of the rule in this file is a third place for it to drift.
  */
 export async function createGoalAction(
   formData: FormData
@@ -200,5 +249,37 @@ export async function createGoalAction(
   if (!result.ok) return fail(result.error);
 
   revalidatePath(LIST_PATH);
-  return { redirectTo: `${LIST_PATH}?success=goal` };
+  return { redirectTo: `${LIST_PATH}?success=goal${restampQs(result.body)}` };
+}
+
+/**
+ * Remove a goal window, and re-grade whatever it was grading.
+ *
+ * NO CONFIRMATION STEP HERE. The button that posts this is wrapped in one on
+ * the page; an action can't prompt, and adding a second "are you sure" round
+ * trip on the server would cost ~20 seconds under OpenNext for a question the
+ * client already asked.
+ *
+ * A goal is deleted, never edited — there is no updateGoalAction and there
+ * should not be one. Editing a window in place would have to re-stamp under
+ * both the old and the new shape, and the delete already does exactly half of
+ * that correctly.
+ */
+export async function deleteGoalAction(
+  formData: FormData
+): Promise<RedirectResult> {
+  const id = strField(formData, "goal_id");
+  if (!id) return fail("That goal could not be identified. Reload the page.");
+
+  const result = await performancePostJson(
+    "/pertrack/api/greeter/goals/delete",
+    { id }
+  );
+
+  if (!result.ok) return fail(result.error);
+
+  revalidatePath(LIST_PATH);
+  return {
+    redirectTo: `${LIST_PATH}?success=goal_deleted${restampQs(result.body)}`
+  };
 }

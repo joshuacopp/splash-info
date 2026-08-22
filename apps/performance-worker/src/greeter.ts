@@ -18,6 +18,13 @@
 //   POST /api/greeter/location-days                  -> submit/correct a day
 //   GET  /api/greeter/goals          ?site_number=   -> goal windows
 //   POST /api/greeter/goals                          -> add a goal window
+//   POST /api/greeter/goals/delete   { id }          -> remove a goal window
+//
+// THE DELETE IS A POST, not a DELETE verb. apps/web reaches this worker through
+// performancePostJson only (app/admin/performance/_lib/worker-fetch.ts), which
+// speaks POST; adding a verb would mean a second transport helper, a second
+// CSRF-origin path and a second thing to get wrong, to express something the
+// path already says.
 //
 // SCOPING RULE, applied identically to reads and writes:
 //   Full admin tier (super_admin / dcRole admin|super_admin) -> undefined scope,
@@ -50,6 +57,7 @@
 import type { Session } from "@splash/auth";
 import {
   createServiceClient,
+  deleteGreeterGoal,
   getGoalSnapshot,
   getGreeterRoster,
   insertGreeterGoal,
@@ -63,6 +71,7 @@ import {
   listLocationDays,
   listLocationPeriodRows,
   resolveGreeterLocationKey,
+  restampGoals,
   submitGreeterDay,
   submitLocationDay,
   type ContactRosterEntry,
@@ -72,6 +81,8 @@ import {
 import { json as jsonResponse } from "@splash/http";
 import type {
   GreeterDailyInsert,
+  GreeterGoalRestampResult,
+  GreeterGoalRow,
   GreeterLocationKey,
   LocationDailyInsert
 } from "@splash/types/greeter";
@@ -93,6 +104,8 @@ export function isGreeterRoute(pathname: string, method: string): boolean {
     case "/api/greeter/location-days":
     case "/api/greeter/goals":
       return method === "GET" || method === "POST";
+    case "/api/greeter/goals/delete":
+      return method === "POST";
     default:
       return false;
   }
@@ -129,6 +142,13 @@ export async function handleGreeterRoute(
   }
   if (pathname === "/api/greeter/goals" && method === "POST") {
     return apiCreateGoal(request, env, session, scope);
+  }
+  // Above the read guard with the other writes, and authorised against the
+  // session scope alone for the same reason they are — see the MANAGER FILTER
+  // note at the top. Narrowing a delete by whatever manager happens to be
+  // selected in the filter bar would make the button fail for no visible cause.
+  if (pathname === "/api/greeter/goals/delete" && method === "POST") {
+    return apiDeleteGoal(request, env, scope);
   }
 
   if (!isGreeterRoute(pathname, method)) return null;
@@ -851,11 +871,37 @@ async function apiSubmitLocationDay(
 /**
  * Add a goal window.
  *
- * Overlapping windows for a site are rejected by the greeter_goals_no_overlap
- * exclusion constraint (Postgres 23P01), surfaced here as a 409 with an
- * actionable message — otherwise it reads as an opaque 500. Closing the
- * previous window is a separate edit, on purpose: silently truncating an
- * existing goal would change how already-submitted days are graded.
+ * OVERLAPPING WINDOWS ARE LEGAL. A promo week laid over a standing monthly
+ * baseline is the point — Josh, 2026-08-22: "specials come on by surprise and
+ * require different goals... desired behavior would be that shorter term goals
+ * override longer term goals, for the term they are in place." The gist EXCLUDE
+ * constraint that used to reject them is gone (greeter-goal-overlap-11.sql) and
+ * greeter_goal_for() decides between them by span: shortest wins, and an
+ * open-ended window has infinite span so it always loses to a bounded one.
+ *
+ * WHAT IS STILL REJECTED is an identical window for the same site — the same
+ * row typed twice, which no rule could choose between. That now arrives as a
+ * unique violation (23505) rather than an exclusion violation (23P01), and the
+ * 409 message points at the delete button. The old message told the user to
+ * "close the existing window first", which is advice that no longer applies to
+ * anything.
+ *
+ * AND IT RE-STAMPS. Goals are snapshotted onto each submission at submit time,
+ * so days already entered inside the new window are still carrying the target
+ * that was in force when they were typed. Josh confirmed those should move, so
+ * the insert is followed by greeter_restamp_goals() over the same window and
+ * the counts come back in the response for the banner to report. Without this,
+ * setting last week's promo goal today would change nothing anyone can see and
+ * look exactly like a save that silently failed.
+ *
+ * THE RE-STAMP IS NOT IN THE SAME TRANSACTION as the insert, because PostgREST
+ * gives us no way to put it there. It therefore runs OUTSIDE the try that
+ * catches the duplicate-window 409, and its own failure is caught and logged
+ * rather than raised: by the time it runs the goal row is committed, so a 500
+ * would report a save that succeeded as one that didn't, and the retry that
+ * invites comes back as the 409. The degraded state — goal saved, some days
+ * still graded against the old target — is visible and fixable by deleting the
+ * goal and re-adding it.
  */
 async function apiCreateGoal(
   request: Request,
@@ -869,7 +915,24 @@ async function apiCreateGoal(
   if (!effectiveFrom) {
     return jsonResponse({ error: "effective_from (YYYY-MM-DD) is required" }, 400);
   }
-  const effectiveTo = isoDateOrNull(body.effective_to);
+  // ABSENT IS NOT THE SAME AS UNREADABLE HERE, which is why this is two checks
+  // and effective_from above is one. A missing effective_to legitimately means
+  // "open-ended", so isoDateOrNull returning null is a valid answer — but it is
+  // also what it returns for "2026-13-01" or "next friday", and letting those
+  // through would quietly create a goal that never expires. Under the overlap
+  // rules an open-ended window has infinite span, so it also loses to every
+  // bounded window: the typo's punishment is a goal that grades nothing and
+  // never goes away. Better to refuse it.
+  const effectiveToRaw = body.effective_to;
+  const effectiveToGiven =
+    effectiveToRaw != null && String(effectiveToRaw).trim() !== "";
+  const effectiveTo = isoDateOrNull(effectiveToRaw);
+  if (effectiveToGiven && !effectiveTo) {
+    return jsonResponse(
+      { error: "effective_to must be a date in YYYY-MM-DD form, or left blank for an open-ended goal." },
+      400
+    );
+  }
   if (effectiveTo && effectiveTo < effectiveFrom) {
     return jsonResponse({ error: "effective_to is before effective_from" }, 400);
   }
@@ -906,8 +969,9 @@ async function apiCreateGoal(
   if (!resolved.ok) return resolved.response;
 
   const sb = createServiceClient(env);
+  let row: GreeterGoalRow;
   try {
-    const saved = await insertGreeterGoal(sb, {
+    row = await insertGreeterGoal(sb, {
       site_number: resolved.key.site_number,
       location_code: resolved.key.location_code,
       effective_from: effectiveFrom,
@@ -918,28 +982,129 @@ async function apiCreateGoal(
       note: trimOrNull(body.note),
       created_by: session.userId
     });
-    return jsonResponse(saved, 201);
   } catch (err) {
-    if (isExclusionViolation(err)) {
+    if (isUniqueViolation(err)) {
       return jsonResponse(
         {
-          error: "overlapping goal",
+          // A SENTENCE, not "duplicate goal". apps/web's performancePostJson
+          // surfaces `error` and drops `reason`, so this string is the whole
+          // banner the user reads.
+          error:
+            "This site already has a goal covering exactly that same date range — this window, entered twice. Overlapping windows are fine; identical ones are not, because nothing could choose between them. Delete the existing goal if you meant to change it.",
           reason:
-            "This site already has a goal window covering part of that date range. Close the existing window first."
+            "idx_greeter_goals_unique_window. Overlaps were made legal by greeter-goal-overlap-11.sql; only an exact duplicate is refused."
         },
         409
       );
     }
     throw err;
   }
+
+  // OUTSIDE THE try, AND ITS OWN FAILURE IS SWALLOWED, because the row above is
+  // already committed and nothing here can take it back. A 500 at this point
+  // would tell the user their goal did not save when it did, and the retry it
+  // invites would come back as the 409 above. Reporting zero re-grades is the
+  // honest degradation: the goal is visible in the table, and deleting and
+  // re-adding it runs the re-stamp again.
+  let restamped: GreeterGoalRestampResult = {
+    greeter_rows: 0,
+    location_rows: 0
+  };
+  try {
+    restamped = await restampGoals(
+      sb,
+      resolved.key.site_number,
+      effectiveFrom,
+      effectiveTo
+    );
+  } catch (err) {
+    console.error("greeter goal re-stamp failed after insert", err);
+  }
+
+  return jsonResponse({ row, restamped }, 201);
 }
 
-/** Postgres 23P01 exclusion_violation, as surfaced by PostgREST/supabase-js. */
-function isExclusionViolation(err: unknown): boolean {
+/**
+ * Remove a goal window, and re-grade the days it was covering.
+ *
+ * THE RE-STAMP IS THE HALF THAT MATTERS. Deleting the row alone would leave
+ * every day already submitted inside its window still stamped with its targets,
+ * so a goal entered by mistake would go on grading days after it was removed.
+ * greeter_restamp_goals() re-resolves each of those days from what is LEFT —
+ * the baseline underneath, or nothing at all — which is why the same function
+ * serves this path and the insert path with no branch between them.
+ *
+ * Scope is applied inside the DELETE itself (see deleteGreeterGoal), so an id
+ * belonging to another site removes nothing and is reported as gone. That
+ * deliberately does not distinguish "not yours" from "not there": the page only
+ * ever lists goals the caller can see, so the difference is not information
+ * they are owed.
+ */
+async function apiDeleteGoal(
+  request: Request,
+  env: Env,
+  scope: string[] | undefined
+): Promise<Response> {
+  const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
+
+  const id = trimOrNull(body.id);
+  if (!id) {
+    return jsonResponse({ error: "id is required" }, 400);
+  }
+
+  const sb = createServiceClient(env);
+  const deleted = await deleteGreeterGoal(sb, id, {
+    location_scope: scope ?? null
+  });
+
+  if (!deleted) {
+    return jsonResponse(
+      {
+        error:
+          "That goal no longer exists — it may already have been deleted. Reload the page to see the current list.",
+        reason: "No row matched the id within the caller's location scope."
+      },
+      404
+    );
+  }
+
+  // Swallowed for the same reason as the insert path: the row is already gone
+  // and a 500 here would report a delete that plainly did happen as a failure.
+  // The days keep the deleted goal's targets until something re-stamps them,
+  // which is wrong but visible — and re-running the delete can't fix it, so the
+  // failure is logged where it can be found rather than shown to the user as
+  // something they can retry.
+  let restamped: GreeterGoalRestampResult = {
+    greeter_rows: 0,
+    location_rows: 0
+  };
+  try {
+    restamped = await restampGoals(
+      sb,
+      deleted.site_number,
+      deleted.effective_from,
+      deleted.effective_to
+    );
+  } catch (err) {
+    console.error("greeter goal re-stamp failed after delete", err);
+  }
+
+  return jsonResponse({ row: deleted, restamped });
+}
+
+/**
+ * Postgres 23505 unique_violation, as surfaced by PostgREST/supabase-js.
+ *
+ * Replaced a 23P01 exclusion_violation check when greeter-goal-overlap-11.sql
+ * swapped the gist EXCLUDE for a unique index on the exact window. If a 23P01
+ * ever reaches this handler again, some database still has the old constraint
+ * and the migration has not been applied there.
+ */
+function isUniqueViolation(err: unknown): boolean {
   return (
     typeof err === "object" &&
     err !== null &&
-    (err as { code?: string }).code === "23P01"
+    (err as { code?: string }).code === "23505"
   );
 }
 

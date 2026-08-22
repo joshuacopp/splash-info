@@ -113,8 +113,9 @@
 --
 -- Lookup is "the row for this location whose [effective_from, effective_to]
 -- window contains the business_date", with effective_to NULL meaning open-
--- ended. The exclusion constraint below makes overlapping windows for one
--- location impossible, so the lookup can never be ambiguous.
+-- ended. OVERLAPPING WINDOWS ARE LEGAL and the shortest one covering a day is
+-- the one that grades it, so a promo week can be laid over a standing monthly
+-- baseline without closing it. Section 4b resolves that; nothing else may.
 --
 -- Both rate goals are expressed in the SAME UNITS as the actuals they grade:
 -- capture_goal_pct against capture_pct, dob_goal against dob. A raw sign-up
@@ -148,18 +149,38 @@ CREATE TABLE IF NOT EXISTS greeter_goals (
 );
 CREATE INDEX IF NOT EXISTS idx_greeter_goals_site        ON greeter_goals (site_number, effective_from DESC);
 CREATE INDEX IF NOT EXISTS idx_greeter_goals_code        ON greeter_goals (location_code);
+-- NAME IS LEGACY: this indexes OPEN-ENDED goals, which stopped being the same
+-- thing as "current" when greeter-goal-overlap-11.sql made windows overlap. An
+-- open-ended window now has infinite span and therefore LOSES to any bounded
+-- window covering the same day, so it is frequently not the current one at all.
+-- Kept under the old name rather than renamed because a rename is a DROP and a
+-- CREATE against a live table for no functional gain; greeter_goal_for() is
+-- what answers "which goal is current", and it reads no index by name.
 CREATE INDEX IF NOT EXISTS idx_greeter_goals_current     ON greeter_goals (site_number) WHERE effective_to IS NULL;
 
--- Overlap guard. daterange with '[]' bounds treats effective_to as inclusive;
--- COALESCE to 'infinity' models the open-ended row. Requires btree_gist for
--- the `site_number WITH =` operand alongside the range operand.
-CREATE EXTENSION IF NOT EXISTS btree_gist;
+-- Duplicate guard, NOT an overlap guard. There used to be a gist EXCLUDE here
+-- forbidding any overlap; greeter-goal-overlap-11.sql dropped it, because a
+-- special-week goal laid over a monthly baseline is the whole point and that
+-- constraint made it unrepresentable. The DROP is kept so a database built from
+-- an older copy of this file converges.
+--
+-- What remains rejected is two goals for one site with the SAME window: that is
+-- one row typed twice, and no rule could choose between them that wouldn't be a
+-- coin flip. COALESCE to 'infinity' because NULLs compare distinct in a plain
+-- UNIQUE, which would otherwise let a site hold two identical open-ended
+-- baselines and tie in the resolver forever.
 ALTER TABLE greeter_goals DROP CONSTRAINT IF EXISTS greeter_goals_no_overlap;
-ALTER TABLE greeter_goals ADD CONSTRAINT greeter_goals_no_overlap
-  EXCLUDE USING gist (
-    site_number WITH =,
-    daterange(effective_from, COALESCE(effective_to, 'infinity'::date), '[]') WITH &&
+CREATE UNIQUE INDEX IF NOT EXISTS idx_greeter_goals_unique_window
+  ON greeter_goals (
+    site_number,
+    effective_from,
+    COALESCE(effective_to, 'infinity'::date)
   );
+
+COMMENT ON INDEX idx_greeter_goals_unique_window IS
+  'Overlapping goal windows are allowed (shortest span wins — see '
+  'greeter_goal_for). Identical windows are not: there is no rule that could '
+  'choose between them. Delete the existing goal instead.';
 
 -- ===========================================================================
 -- 2. greeter_daily — one row per greeter per day per location.
@@ -410,6 +431,173 @@ DROP TRIGGER IF EXISTS trg_greeter_goals_updated_at ON greeter_goals;
 CREATE TRIGGER trg_greeter_goals_updated_at
   BEFORE UPDATE ON greeter_goals
   FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+-- ===========================================================================
+-- 4b. Goal resolution — which of several overlapping windows grades a day.
+-- ===========================================================================
+-- Introduced by greeter-goal-overlap-11.sql; kept here so a database built from
+-- this file alone behaves identically. Placed after the tables because
+-- greeter_restamp_goals writes to both daily tables.
+--
+-- THE RULE: smallest span wins; an open-ended window has infinite span and
+-- therefore always loses to a bounded one. That covers a promo week nested in a
+-- monthly baseline, a promo straddling a month boundary, a flash sale nested in
+-- the promo, and a standing baseline with no end date — none of them a special
+-- case. Resolution lives here and nowhere else; the application must not carry
+-- a second copy of this ORDER BY.
+--
+-- Returns a ROW, not three scalars, so all three goals come from the SAME
+-- window. Three separate lookups could tie differently and hand back a capture
+-- target from the promo beside a member target from the baseline — a
+-- combination nobody set. No row at all when nothing covers the date, and
+-- callers stamp NULLs: that is what the goal columns on both daily tables
+-- already mean. A zero capture goal would grade every day as a win.
+--
+-- ORDER BY, term by term:
+--   1. bounded windows before open-ended ones. This is how "infinite span" is
+--      expressed without subtracting 'infinity'::date, which Postgres refuses.
+--   2. among bounded windows, the shortest.
+--   3. later start wins the tie. Two equal-length windows can both cover a day
+--      (Sept 1-7 and Sept 5-11 both cover Sept 6), and every pair of open-ended
+--      windows for a site ties at 1 and NULLs at 2, so they all land here. Same
+--      semantic as expense_labor_rate_for: the newest instruction wins.
+--   4. created_at, id — pure determinism. Only reachable if the unique index on
+--      (site, from, to) is ever dropped.
+CREATE OR REPLACE FUNCTION greeter_goal_for(
+  p_site_number   integer,
+  p_business_date date
+)
+RETURNS TABLE (
+  capture_goal_pct      numeric,
+  dob_goal              numeric,
+  member_goal_month_end integer
+)
+LANGUAGE sql
+STABLE
+AS $$
+  SELECT
+    g.capture_goal_pct,
+    g.dob_goal,
+    g.member_goal_month_end
+  FROM greeter_goals g
+  WHERE g.site_number = p_site_number
+    AND g.effective_from <= p_business_date
+    AND (g.effective_to IS NULL OR g.effective_to >= p_business_date)
+  ORDER BY
+    (g.effective_to IS NULL)              ASC,
+    (g.effective_to - g.effective_from)   ASC,
+    g.effective_from                      DESC,
+    g.created_at                          DESC,
+    g.id
+  LIMIT 1;
+$$;
+
+REVOKE ALL ON FUNCTION greeter_goal_for(integer, date) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION greeter_goal_for(integer, date) TO service_role;
+
+-- Goals are SNAPSHOTTED at submit time (see the greeter_goals header), so a
+-- goal set today for a window partly in the past leaves those days graded
+-- against whatever was in force when they were typed. This walks back over them.
+--
+-- IT RE-RESOLVES; IT DOES NOT APPLY THE GOAL IT WAS CALLED ABOUT. Every day in
+-- the window goes back through greeter_goal_for(), so re-stamping a month-long
+-- baseline does not flatten the promo week inside it — those days resolve to
+-- the promo again and are left alone. That is also what lets the DELETE path
+-- call this same function: with the goal gone the days resolve to whatever is
+-- left, possibly nothing, and the NULL-out falls out for free.
+--
+-- p_to NULL means open-ended, which in practice means "to the last day anybody
+-- has submitted" — there is nothing to re-stamp in the future.
+--
+-- Both counts are returned separately because they are different grains: four
+-- greeter rows and one site row is one DAY at a four-greeter site, and adding
+-- them into "5 rows" would be arithmetic on two different units. IS DISTINCT
+-- FROM on every column keeps the count meaning "days that changed" rather than
+-- "days considered", and stops the updated_at triggers firing on rows nothing
+-- happened to.
+--
+-- updated_by / updated_by_email ARE DELIBERATELY LEFT ALONE, which means a
+-- re-stamped row shows a fresh updated_at beside the email of whoever last
+-- typed its numbers. That is the lesser of two wrongs: overwriting those
+-- columns would destroy the only record of who entered the day, to replace it
+-- with a name that isn't a person. The updated_at movement is true — the row
+-- did change — and /admin/greeters says how many rows moved in the banner, so
+-- the change is not silent.
+CREATE OR REPLACE FUNCTION greeter_restamp_goals(
+  p_site_number integer,
+  p_from        date,
+  p_to          date DEFAULT NULL
+)
+RETURNS TABLE (
+  greeter_rows  integer,
+  location_rows integer
+)
+LANGUAGE plpgsql
+AS $$
+DECLARE
+  v_greeter  integer := 0;
+  v_location integer := 0;
+BEGIN
+  WITH resolved AS (
+    SELECT
+      d.id,
+      f.capture_goal_pct,
+      f.dob_goal
+    FROM greeter_daily d
+    -- LEFT JOIN LATERAL, not a plain one: when no window covers the day the
+    -- resolver returns no rows, and an inner join would skip that day rather
+    -- than clearing the stale goal off it. Clearing it is the point on delete.
+    LEFT JOIN LATERAL greeter_goal_for(d.site_number, d.business_date) f ON true
+    WHERE d.site_number = p_site_number
+      AND d.business_date >= p_from
+      AND (p_to IS NULL OR d.business_date <= p_to)
+  ),
+  changed AS (
+    UPDATE greeter_daily d
+       SET capture_goal_pct = r.capture_goal_pct,
+           dob_goal         = r.dob_goal
+      FROM resolved r
+     WHERE d.id = r.id
+       AND (d.capture_goal_pct IS DISTINCT FROM r.capture_goal_pct
+         OR d.dob_goal         IS DISTINCT FROM r.dob_goal)
+    RETURNING 1
+  )
+  SELECT count(*)::integer INTO v_greeter FROM changed;
+
+  WITH resolved AS (
+    SELECT
+      l.id,
+      f.capture_goal_pct,
+      f.dob_goal,
+      f.member_goal_month_end
+    FROM location_daily l
+    LEFT JOIN LATERAL greeter_goal_for(l.site_number, l.business_date) f ON true
+    WHERE l.site_number = p_site_number
+      AND l.business_date >= p_from
+      AND (p_to IS NULL OR l.business_date <= p_to)
+  ),
+  changed AS (
+    UPDATE location_daily l
+       SET capture_goal_pct      = r.capture_goal_pct,
+           dob_goal              = r.dob_goal,
+           member_goal_month_end = r.member_goal_month_end
+      FROM resolved r
+     WHERE l.id = r.id
+       AND (l.capture_goal_pct      IS DISTINCT FROM r.capture_goal_pct
+         OR l.dob_goal              IS DISTINCT FROM r.dob_goal
+         OR l.member_goal_month_end IS DISTINCT FROM r.member_goal_month_end)
+    RETURNING 1
+  )
+  SELECT count(*)::integer INTO v_location FROM changed;
+
+  greeter_rows  := v_greeter;
+  location_rows := v_location;
+  RETURN NEXT;
+END
+$$;
+
+REVOKE ALL ON FUNCTION greeter_restamp_goals(integer, date, date) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION greeter_restamp_goals(integer, date, date) TO service_role;
 
 -- ===========================================================================
 -- 5. greeter_rollup() — per-greeter aggregation over a filtered range.

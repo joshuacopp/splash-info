@@ -252,12 +252,19 @@ BEGIN
   -- 3. The goal — 20% capture, open-ended from 2026-08-01.
   -- =========================================================================
   -- Open-ended (effective_to NULL) so it also covers days entered after the
-  -- workbook's window; the exclusion constraint on greeter_goals guarantees it
-  -- can never overlap a second window for this site.
+  -- workbook's window.
   --
-  -- ON CONFLICT DO NOTHING is targetless on purpose: the guard here is an
-  -- EXCLUDE ... USING gist constraint, which a column-list conflict target
-  -- cannot name. It also means an existing goal row wins — see the header.
+  -- ON CONFLICT DO NOTHING is targetless, and what it now guards against is
+  -- narrower than when this file was written. The guard used to be an EXCLUDE
+  -- ... USING gist constraint forbidding ANY overlapping window for the site,
+  -- which no column-list conflict target could name. greeter-goal-overlap-11
+  -- replaced it with a unique index on the exact window, because a promo laid
+  -- over a baseline is legal now (shortest span wins — see greeter_goal_for).
+  -- So this insert is suppressed only by a site-122 goal starting on exactly
+  -- 2026-08-01 and also open-ended; an overlapping-but-different window no
+  -- longer blocks it, it just loses or wins on span. The verification below is
+  -- unaffected — it asks whether SOME goal covers the seeded window, which was
+  -- always the question that mattered.
   INSERT INTO greeter_goals (
     site_number, location_code, effective_from, effective_to,
     capture_goal_pct, dob_goal, member_goal_month_end, note, created_by

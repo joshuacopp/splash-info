@@ -277,6 +277,27 @@ export interface GreeterGoalRow extends GreeterGoalInsert {
   updated_at: string;
 }
 
+/**
+ * How many already-submitted days had their goal snapshot rewritten.
+ *
+ * Goal windows may overlap (shortest span wins — see greeter_goal_for in
+ * supabase/greeter-scorecard-tables.sql), and goals are snapshotted onto each
+ * submission at submit time. So adding or deleting a goal whose window is even
+ * partly in the past has to go back and re-grade the days already entered under
+ * the old answer. This is the report of that.
+ *
+ * THE TWO NUMBERS ARE DIFFERENT GRAINS AND MUST NOT BE ADDED. Four greeter rows
+ * and one site row is one DAY at a four-greeter site; a banner reading "5 rows"
+ * would be summing people-days with site-days.
+ *
+ * Both zero is the normal case for a goal set entirely in the future, and means
+ * "nothing needed changing", never "the re-stamp failed".
+ */
+export interface GreeterGoalRestampResult {
+  greeter_rows: number;
+  location_rows: number;
+}
+
 /* ============================================================
  * Rollup (greeter_rollup() function)
  * ============================================================ */

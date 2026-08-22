@@ -17,9 +17,17 @@
 //   4. Insight panels (last 7 days, ignoring the date/location/greeter filters
 //      on purpose but honouring the manager filter): "No submissions" then
 //      "Underreported".
-//   5. Summary table (per-greeter rollup for the filtered range).
-//   6. Daily rows table.
-//   7. Site-wide day rows table, including Scanned %.
+//   5. Goal windows table — every goal set, which one is grading today, and a
+//      delete per row.
+//   6. Summary table (per-greeter rollup for the filtered range).
+//   7. Daily rows table.
+//   8. Site-wide day rows table, including Scanned %.
+//
+// GOAL WINDOWS MAY OVERLAP, and the shortest window covering a day is the one
+// that grades it — a promo week laid over a standing monthly baseline. The
+// database decides that in greeter_goal_for(); inForceGoalIds below is this
+// page's mirror of it, and exists only to label the table. Nothing here may
+// become a second source of truth for which goal applies.
 //
 // THE TWO INSIGHTS ARE SEPARATE ON PURPOSE. "Nobody reported" and "reported but
 // only scanned 60% of the cars" are different failures with different owners,
@@ -57,6 +65,7 @@ import {
   DAY_MS,
   dobCell,
   firstParam,
+  goalNum,
   goalSuffix,
   hours,
   localDay,
@@ -72,12 +81,15 @@ import {
   scanTier
 } from "./_lib/grading";
 import { RedirectForm } from "../_components/RedirectForm";
+import { DeleteGoalButton } from "./_components/DeleteGoalButton";
 import { GreeterDayForm } from "./_components/GreeterDayForm";
 import { LocationMetricFields } from "./_components/MetricFields";
 import { SavingButton } from "./_components/SavingButton";
 import { SubmitPanels } from "./_components/SubmitPanels";
+import type { GreeterGoalRow } from "@splash/types/greeter";
 import {
   createGoalAction,
+  deleteGoalAction,
   submitGreeterDayAction,
   submitLocationDayAction
 } from "./actions";
@@ -256,8 +268,140 @@ function shiftCell(start: string | null, end: string | null): string {
 const SUCCESS_COPY: Record<string, string> = {
   day: "Greeter day saved.",
   location: "Site-wide day saved.",
-  goal: "Goal window saved."
+  goal: "Goal window saved.",
+  goal_deleted: "Goal window deleted."
 };
+
+/**
+ * The re-grading tail on the goal banners: "… 12 greeter days and 3 site days
+ * were re-graded."
+ *
+ * WHY THIS IS SAID AT ALL. Goals are copied onto each day as it is submitted,
+ * so adding or removing a window that reaches into the past changes how days
+ * ALREADY ENTERED are graded. The database does that re-stamp; without this
+ * sentence the numbers on the tables below would simply be different from what
+ * they were a moment ago, with nothing to connect the two.
+ *
+ * THE TWO COUNTS ARE NOT ADDED. Four greeter rows and one site row is one day
+ * at a four-greeter site; "5 rows re-graded" would be summing people-days with
+ * site-days. They are named separately or not at all.
+ *
+ * ABSENT PARAMS MEAN "NOT MENTIONED", NOT ZERO. The action omits rg/rl entirely
+ * when both are zero, so a redirect that predates this feature and a goal that
+ * needed no re-grading both land here as nulls and get no tail — which is the
+ * right outcome for both.
+ */
+function restampTail(rg: string, rl: string, successKey: string): string {
+  const g = /^\d+$/.test(rg) ? Number.parseInt(rg, 10) : 0;
+  const l = /^\d+$/.test(rl) ? Number.parseInt(rl, 10) : 0;
+  if (g === 0 && l === 0) return "";
+
+  const parts: string[] = [];
+  if (g > 0) parts.push(`${g} greeter ${g === 1 ? "day" : "days"}`);
+  if (l > 0) parts.push(`${l} site ${l === 1 ? "day" : "days"}`);
+  const subject = parts.join(" and ");
+  // "the new goal" is only true on the insert path. After a delete there is no
+  // new goal — the days fell back to whatever window is left covering them, or
+  // to no goal at all, and saying otherwise would send someone looking for a
+  // goal that was never created.
+  const against =
+    successKey === "goal_deleted"
+      ? "re-graded against whatever goal is left covering them"
+      : "re-graded against the new goal";
+  return ` ${subject} already submitted ${
+    g + l === 1 ? "was" : "were"
+  } ${against}.`;
+}
+
+/**
+ * The goal window in force TODAY, per site — the page's copy of what
+ * greeter_goal_for() decides in the database.
+ *
+ * MIRRORS THE RESOLVER'S ORDER BY EXACTLY, and must keep mirroring it. The rule
+ * is NOT the labor-rate page's "newest effective date wins": goal windows may
+ * overlap on purpose (a promo week laid over a standing monthly baseline) and
+ * the SHORTEST window covering a day is the one that grades it. A newest-wins
+ * answer here would label a month-long baseline as in force on days the promo
+ * is actually grading, which is the one thing this table exists to be right
+ * about.
+ *
+ * Ties break the same way the SQL does: open-ended windows lose to bounded
+ * ones, then shortest span, then latest start, then most recently created, then
+ * lowest id. The last two are unreachable in practice — the unique index makes
+ * (site, from, to) unique — but they are the resolver's terms, so they are
+ * this function's terms.
+ *
+ * Spans are compared as raw millisecond differences off Date.parse of the two
+ * ISO strings, which is UTC midnight at both ends — the offset cancels in the
+ * subtraction, so this never touches the timezone question. Only the ORDER of
+ * the numbers matters, never their units.
+ *
+ * An open-ended window is Infinity rather than a date, which is also why the
+ * SQL can't express this as arithmetic: Postgres refuses to subtract
+ * 'infinity'::date, so greeter_goal_for() sorts on `(effective_to IS NULL)`
+ * first instead. Same ranking, different spelling.
+ */
+function windowSpanMs(row: GreeterGoalRow): number {
+  if (!row.effective_to) return Number.POSITIVE_INFINITY;
+  return Date.parse(row.effective_to) - Date.parse(row.effective_from);
+}
+
+function inForceGoalIds(rows: GreeterGoalRow[], today: string): Set<string> {
+  const best = new Map<number, GreeterGoalRow>();
+  for (const r of rows) {
+    if (r.effective_from > today) continue;
+    if (r.effective_to && r.effective_to < today) continue;
+
+    const current = best.get(r.site_number);
+    if (!current || beats(r, current)) best.set(r.site_number, r);
+  }
+  return new Set([...best.values()].map((r) => r.id));
+}
+
+function beats(candidate: GreeterGoalRow, incumbent: GreeterGoalRow): boolean {
+  const a = windowSpanMs(candidate);
+  const b = windowSpanMs(incumbent);
+  if (a !== b) return a < b;
+  if (candidate.effective_from !== incumbent.effective_from) {
+    return candidate.effective_from > incumbent.effective_from;
+  }
+  if (candidate.created_at !== incumbent.created_at) {
+    return candidate.created_at > incumbent.created_at;
+  }
+  // The resolver's last ORDER BY term, `g.id` with no direction — so ASC, so
+  // the LOWER id wins, which is the opposite direction from the two tiebreaks
+  // above it. Unreachable while idx_greeter_goals_unique_window stands (two
+  // rows can't share a site, a start AND an end), and here anyway because the
+  // point of this function is to be the same ranking as the SQL; a mirror that
+  // stops one term short is one somebody eventually has to re-derive.
+  return candidate.id < incumbent.id;
+}
+
+/**
+ * "Sep 1, 2026" — deliberately NOT _lib/format's dayLabel.
+ *
+ * dayLabel renders "Tue 09-01", which is right for a daily row inside a range
+ * the reader already picked, and wrong here: a goal window is often months long
+ * and can cross a year boundary, so the year is load-bearing and the weekday is
+ * noise. Parsed at UTC noon for the same reason dayLabel is — so no offset can
+ * push the label onto the day before.
+ */
+function goalDate(iso: string): string {
+  const d = new Date(`${iso}T12:00:00Z`);
+  if (Number.isNaN(d.getTime())) return iso;
+  return new Intl.DateTimeFormat("en-US", {
+    timeZone: "UTC",
+    month: "short",
+    day: "numeric",
+    year: "numeric"
+  }).format(d);
+}
+
+/** "Sep 1, 2026 – Sep 30, 2026", or "From Sep 1, 2026" when open-ended. */
+function windowLabel(row: GreeterGoalRow): string {
+  if (!row.effective_to) return `From ${goalDate(row.effective_from)}`;
+  return `${goalDate(row.effective_from)} – ${goalDate(row.effective_to)}`;
+}
 
 export default async function GreetersPage({ searchParams }: PageProps) {
   const sp = await searchParams;
@@ -277,7 +421,17 @@ export default async function GreetersPage({ searchParams }: PageProps) {
 
   const actionError = firstParam(sp.action_error).trim() || null;
   const successKey = firstParam(sp.success).trim();
-  const successMessage = SUCCESS_COPY[successKey] ?? null;
+  const successBase = SUCCESS_COPY[successKey] ?? null;
+  // Only the two goal outcomes carry a re-grading tail. Appending it to the
+  // day banners would be meaningless — submitting a day doesn't re-stamp
+  // anything — and the params are never set on those redirects anyway.
+  const successMessage = successBase
+    ? `${successBase}${restampTail(
+        firstParam(sp.rg),
+        firstParam(sp.rl),
+        successKey
+      )}`
+    : null;
 
   const qs = new URLSearchParams();
   if (dateFrom) qs.set("date_from", dateFrom);
@@ -321,6 +475,7 @@ export default async function GreetersPage({ searchParams }: PageProps) {
   let scanRates: ScanRateRow[] | null = null;
   let watchRates: ScanRateRow[] | null = null;
   let missingDays: MissingDayRow[] | null = null;
+  let goals: GreeterGoalRow[] | null = null;
   // Initialised rather than left null because fetchManagerRosters() never
   // throws or resolves null — a roster outage arrives here as EMPTY_ROSTERS, so
   // the dropdowns render empty and disabled instead of taking the page down or
@@ -329,10 +484,18 @@ export default async function GreetersPage({ searchParams }: PageProps) {
   let fetchError: string | null = null;
 
   try {
-    // Parallel: seven independent reads. Sequential awaits would multiply the
+    // Parallel: eight independent reads. Sequential awaits would multiply the
     // page's time-to-first-byte for no benefit.
-    [days, rollup, locationDays, scanRates, watchRates, missingDays, rosters] =
-      await Promise.all([
+    [
+      days,
+      rollup,
+      locationDays,
+      scanRates,
+      watchRates,
+      missingDays,
+      goals,
+      rosters
+    ] = await Promise.all([
         performanceGetJson<DayRow[]>(`/pertrack/api/greeter/days${suffix}`),
         performanceGetJson<RollupRow[]>(`/pertrack/api/greeter/rollup${suffix}`),
         performanceGetJson<LocationDayRow[]>(
@@ -351,6 +514,14 @@ export default async function GreetersPage({ searchParams }: PageProps) {
         performanceGetJson<MissingDayRow[]>(
           `/pertrack/api/greeter/missing-days${watchSuffix}`
         ),
+        // DELIBERATELY UNFILTERED. Every window for every site the caller can
+        // see, because which one is in force today is decided by comparing a
+        // site's windows AGAINST EACH OTHER — hand this list a date-filtered
+        // subset and the shortest-window rule would be resolving against
+        // whichever windows happened to survive the filter. The page's location
+        // filter is applied below, after that comparison, and only to what is
+        // displayed. Worker-side location scoping still applies.
+        performanceGetJson<GreeterGoalRow[]>("/pertrack/api/greeter/goals"),
         fetchManagerRosters()
       ]);
   } catch (err) {
@@ -427,6 +598,28 @@ export default async function GreetersPage({ searchParams }: PageProps) {
   // Today in YYYY-MM-DD, for the forms' default date. Local, not UTC — a
   // greeter filling this in at 9pm should get today, not tomorrow.
   const today = localDay(Date.now());
+
+  // In force is decided over ALL windows, then the display is narrowed. Doing
+  // it the other way round would let the page's location filter change which
+  // window it calls current.
+  const goalList = goals ?? [];
+  const inForceGoals = inForceGoalIds(goalList, today);
+  // The filter is by SITE NUMBER, resolved from a row already on the page,
+  // because greeter_goals carries site_number and location_code but not
+  // location_id. When no row in the filtered result set can supply it — a site
+  // with goals set but no days logged yet — the goal table stays unfiltered
+  // rather than going empty, and its subtitle says so.
+  const filterSiteNumber =
+    locationIdNum === undefined
+      ? undefined
+      : (
+          dayList.find((r) => r.location_id === locationIdNum) ??
+          locationDayList.find((r) => r.location_id === locationIdNum)
+        )?.site_number;
+  const shownGoals =
+    filterSiteNumber === undefined
+      ? goalList
+      : goalList.filter((g) => g.site_number === filterSiteNumber);
 
   return (
     <section className="mx-auto w-full max-w-[1200px] px-5 py-9">
@@ -561,7 +754,7 @@ export default async function GreetersPage({ searchParams }: PageProps) {
             label: "Set goals for a site",
             title: "Set goals for a site",
             description:
-              "Goals apply to a location for a date range and are copied onto each day as it's logged — changing them later won't re-grade days already submitted. Leave the end date blank for an open-ended goal. Ranges for one site can't overlap.",
+              "Goals apply to a location for a date range. Ranges may overlap on purpose — set a baseline for the month, then lay a promo week over it, and the shorter window grades its own days. Leave the end date blank for an open-ended goal. Days already submitted inside the new window are re-graded when you save, and the confirmation says how many.",
             form: (
               <RedirectForm
                 action={createGoalAction}
@@ -677,6 +870,17 @@ export default async function GreetersPage({ searchParams }: PageProps) {
       />
 
       <CaptureLegend />
+
+      <GoalWindowsCard
+        rows={shownGoals}
+        inForce={inForceGoals}
+        today={today}
+        narrowedTo={
+          locationIdNum !== undefined && filterSiteNumber === undefined
+            ? filterLocationLabel ?? null
+            : null
+        }
+      />
 
       {/* Summary */}
       <Card
@@ -1023,6 +1227,201 @@ function Card({
       </div>
       {children}
     </div>
+  );
+}
+
+/* ------------------------------------------------------------
+ * Goal windows
+ * ------------------------------------------------------------ */
+
+/**
+ * Every goal window, with the one grading TODAY marked, and a delete per row.
+ *
+ * WHY THIS TABLE EXISTS AT ALL. Windows may overlap, so "what is this site's
+ * capture goal?" stopped being answerable by looking at the newest row. Without
+ * somewhere to see the whole stack, a promo week quietly laid over a monthly
+ * baseline is invisible until the grading looks wrong, and the only way to
+ * remove a mistake would be to write SQL.
+ *
+ * A NAMED STATE PER ROW, NOT A BOLDED CURRENT ONE — the same treatment as the
+ * labor-rate screen, for the same reason: every non-current state reads as
+ * "old" if it isn't named, and they mean different things. FOUR states here
+ * rather than that screen's three, because overlap adds one: a window can cover
+ * today and still not be grading it.
+ *
+ *   In force    a day logged today at this site is graded against this.
+ *   Scheduled   starts in the future. Real, saved, grading nothing yet.
+ *   Expired     ended. Still the correct explanation of the days inside it.
+ *   Superseded  covers today, but a shorter window at this site also does and
+ *               wins. Comes BACK into force the day the shorter one ends, which
+ *               is the behaviour, not a glitch.
+ *
+ * SORTED BY SITE, THEN LATEST START FIRST, which is the order the worker's
+ * SELECT already returns. Not re-sorted here into span order even though span
+ * is what decides the winner — a reader scanning for "what did we do in
+ * September" wants chronology, and the badge already answers the other
+ * question.
+ */
+function GoalWindowsCard({
+  rows,
+  inForce,
+  today,
+  narrowedTo
+}: {
+  rows: GreeterGoalRow[];
+  inForce: Set<string>;
+  today: string;
+  /**
+   * Set only when the page's location filter could NOT be resolved to a site
+   * number, meaning this table is showing every site while the rest of the page
+   * shows one. Named in the subtitle rather than silently ignored.
+   */
+  narrowedTo: string | null;
+}) {
+  return (
+    <Card
+      title="Goal windows"
+      subtitle={
+        narrowedTo
+          ? `Showing every site — no logged day in the current filter identifies ${narrowedTo}, so its goals can't be picked out. Overlapping windows are allowed; the shortest one covering a day is the one that grades it.`
+          : "Overlapping windows are allowed: the shortest one covering a day is the one that grades it. Deleting a window re-grades the days inside it against whatever is left."
+      }
+    >
+      {rows.length === 0 ? (
+        <EmptyNote>
+          No goals set. Days logged without a goal are stored and totalled, but
+          nothing grades them — use &ldquo;Set goals for a site&rdquo; above.
+        </EmptyNote>
+      ) : (
+        <TableWrap>
+          <thead className={THEAD_CLS}>
+            <tr>
+              <th className="px-4 py-3">Status</th>
+              <th className="px-4 py-3">Site</th>
+              <th className="px-4 py-3">Window</th>
+              <th className="px-4 py-3">Capture % goal</th>
+              <th className="px-4 py-3">D.O.B. goal</th>
+              <th className="px-4 py-3">Member goal</th>
+              <th className="px-4 py-3">Note</th>
+              <th className="px-4 py-3 text-right">Remove</th>
+            </tr>
+          </thead>
+          <tbody className={TBODY_CLS}>
+            {rows.map((r) => (
+              <tr key={r.id}>
+                <td className="whitespace-nowrap px-4 py-2.5">
+                  <GoalStatusBadge
+                    row={r}
+                    today={today}
+                    current={inForce.has(r.id)}
+                  />
+                </td>
+                <td className="whitespace-nowrap px-4 py-2.5 text-splash-navy/80">
+                  <div className="font-semibold">{r.location_code}</div>
+                  <div className="font-mono text-xs text-splash-navy/50">
+                    {r.site_number}
+                  </div>
+                </td>
+                <td className="whitespace-nowrap px-4 py-2.5 text-splash-navy/80">
+                  {windowLabel(r)}
+                </td>
+                <td className="whitespace-nowrap px-4 py-2.5 font-mono">
+                  {goalNum(r.capture_goal_pct)}%
+                </td>
+                <td className="whitespace-nowrap px-4 py-2.5 font-mono">
+                  ${goalNum(r.dob_goal)}
+                </td>
+                <td className="whitespace-nowrap px-4 py-2.5 font-mono text-splash-navy/70">
+                  {r.member_goal_month_end === null
+                    ? "—"
+                    : num(r.member_goal_month_end)}
+                </td>
+                <td className="max-w-[16rem] px-4 py-2.5 text-xs text-splash-navy/70">
+                  {r.note || "—"}
+                </td>
+                <td className="whitespace-nowrap px-4 py-2.5 text-right">
+                  {/* RedirectForm, never redirect() — see its header. One form
+                      per row so the hidden id can't be ambiguous, and so a
+                      pending delete only disables its own button. */}
+                  <RedirectForm action={deleteGoalAction}>
+                    <input type="hidden" name="goal_id" value={r.id} />
+                    <DeleteGoalButton
+                      confirmText={`Delete the ${r.location_code} goal for ${windowLabel(
+                        r
+                      )}?\n\nDays already submitted inside that window will be re-graded against whatever goal is left covering them — or left ungraded if none is.`}
+                    />
+                  </RedirectForm>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </TableWrap>
+      )}
+    </Card>
+  );
+}
+
+/**
+ * In force / Scheduled / Expired / Superseded — see GoalWindowsCard's header
+ * for what each one means.
+ *
+ * `current` is computed once for the whole table by inForceGoalIds rather than
+ * derived per row, because the answer depends on comparing a site's windows
+ * against each other — a row cannot decide it alone, and a second copy of the
+ * shortest-wins rule here would be a second place for it to drift from
+ * greeter_goal_for().
+ *
+ * ORDER MATTERS IN THIS FUNCTION. `current` is checked first because an
+ * in-force window is also, trivially, a window that covers today; the last
+ * branch is reached only by a row that covers today and lost anyway, which is
+ * exactly what "Superseded" is claiming.
+ */
+function GoalStatusBadge({
+  row,
+  today,
+  current
+}: {
+  row: GreeterGoalRow;
+  today: string;
+  current: boolean;
+}) {
+  if (current) {
+    return (
+      <span
+        className="rounded-full bg-splash-success/15 px-2.5 py-1 text-[11px] font-bold uppercase tracking-wide text-splash-success"
+        title="A day logged today at this site is graded against this goal."
+      >
+        In force
+      </span>
+    );
+  }
+  if (row.effective_from > today) {
+    return (
+      <span
+        className="rounded-full bg-splash-blue/15 px-2.5 py-1 text-[11px] font-bold uppercase tracking-wide text-splash-blue"
+        title={`Starts ${goalDate(row.effective_from)}. Until then the site is graded against whatever is in force.`}
+      >
+        Scheduled
+      </span>
+    );
+  }
+  if (row.effective_to && row.effective_to < today) {
+    return (
+      <span
+        className="rounded-full bg-splash-navy/10 px-2.5 py-1 text-[11px] font-bold uppercase tracking-wide text-splash-navy/60"
+        title={`Ended ${goalDate(row.effective_to)}. Still the correct explanation of the days inside it.`}
+      >
+        Expired
+      </span>
+    );
+  }
+  return (
+    <span
+      className="rounded-full bg-splash-navy/10 px-2.5 py-1 text-[11px] font-bold uppercase tracking-wide text-splash-navy/60"
+      title="Covers today, but a shorter window at this site covers it too and wins. This goal grades the days the shorter one doesn't."
+    >
+      Superseded
+    </span>
   );
 }
 

@@ -13,6 +13,7 @@ import type {
   GreeterDailyInsert,
   GreeterDailyRow,
   GreeterGoalInsert,
+  GreeterGoalRestampResult,
   GreeterGoalRow,
   GreeterLocationKey,
   GreeterMissingDayRow,
@@ -197,10 +198,21 @@ export async function getGreeterRoster(
 /**
  * The goal window covering `businessDate` for a site, or nulls when none does.
  *
- * The `greeter_goals_no_overlap` exclusion constraint guarantees at most one
- * matching window per site, so `limit(1)` is exact rather than arbitrary.
+ * DELEGATES TO greeter_goal_for() AND MUST CONTINUE TO. Overlapping windows are
+ * legal — a promo week laid over a monthly baseline is the reason this feature
+ * exists — and the rule for choosing between them (shortest span wins; an
+ * open-ended window has infinite span and always loses to a bounded one) lives
+ * in that function, once. This used to be a hand-built PostgREST filter with a
+ * bare `.limit(1)` and no ordering, which was correct only for as long as the
+ * `greeter_goals_no_overlap` exclusion constraint made two matches impossible.
+ * That constraint is gone (greeter-goal-overlap-11.sql), so an unordered
+ * limit-1 here would now return whichever of two windows Postgres handed back
+ * first — a different answer on different days for the same submission.
+ *
  * Callers snapshot the result onto the submission row — see the schema header
- * for why goals are frozen per-submission rather than joined at read time.
+ * for why goals are frozen per-submission rather than joined at read time. The
+ * corollary is greeter_restamp_goals(): a goal added for a window that is
+ * partly in the past has to walk back over the days already entered under it.
  *
  * Returns the LOCATION-shaped snapshot (the superset). The greeter path takes
  * only capture_goal_pct/dob_goal from it and drops member_goal_month_end, which
@@ -211,15 +223,17 @@ export async function getGoalSnapshot(
   siteNumber: number,
   businessDate: string
 ): Promise<LocationGoalSnapshot> {
-  const { data, error } = await client
-    .from("greeter_goals")
-    .select("capture_goal_pct,dob_goal,member_goal_month_end")
-    .eq("site_number", siteNumber)
-    .lte("effective_from", businessDate)
-    .or(`effective_to.gte.${businessDate},effective_to.is.null`)
-    .limit(1);
+  const { data, error } = await client.rpc("greeter_goal_for", {
+    p_site_number: siteNumber,
+    p_business_date: businessDate
+  });
   if (error) throw error;
 
+  // RETURNS TABLE, so PostgREST hands back an array even though the function
+  // is LIMIT 1. Empty means no window covered the date, which is a normal
+  // answer and not an error: the goal columns are nullable precisely so a day
+  // nobody set a target for can say so. Do NOT substitute zeros — a zero
+  // capture goal grades every day as a win.
   const row = (data ?? [])[0] as
     | {
         capture_goal_pct: number | null;
@@ -264,6 +278,90 @@ export async function insertGreeterGoal(
     .single();
   if (error) throw error;
   return data as unknown as GreeterGoalRow;
+}
+
+/**
+ * Remove a goal window, returning the row that was removed.
+ *
+ * RETURNS THE ROW BECAUSE THE CALLER NEEDS IT AFTER THE FACT. Deleting a goal
+ * changes how days already submitted inside its window should be graded, and
+ * re-stamping them needs the site and the window — which only exist on the row
+ * that just stopped existing. Fetching it back afterwards is not an option.
+ *
+ * Null when no row matched. Deleting a goal that is already gone is not an
+ * error worth raising: two clicks on the same button, or a stale page, and the
+ * user's intent is satisfied either way.
+ *
+ * SCOPE IS PART OF THE DELETE, not a check in front of it. Passing the caller's
+ * location_codes narrows the DELETE itself, so a location admin who guesses
+ * another site's goal id removes nothing and gets the same null a stale id
+ * gives. Doing it in one statement rather than read-then-check-then-delete is
+ * what makes it atomic, and scopeCodes() turns an empty scope into a sentinel
+ * that matches nothing — a scoping bug deletes zero rows rather than all of
+ * them. `null` scope means no restriction (super_admin / dc-admin), matching
+ * every other function in this module.
+ *
+ * There is no updateGreeterGoal, deliberately. A window is deleted and
+ * re-entered so that exactly one code path has to re-stamp, and so the delete
+ * confirmation is the only place the consequence has to be spelled out.
+ */
+export async function deleteGreeterGoal(
+  client: SupabaseClient,
+  id: string,
+  opts: { location_scope?: string[] | null } = {}
+): Promise<GreeterGoalRow | null> {
+  let q = client.from("greeter_goals").delete().eq("id", id);
+
+  const codes = scopeCodes(opts.location_scope);
+  if (codes) q = q.in("location_code", codes);
+
+  const { data, error } = await q.select();
+  if (error) throw error;
+  return ((data ?? [])[0] as unknown as GreeterGoalRow) ?? null;
+}
+
+/**
+ * Re-resolve and rewrite the goal snapshot on every day already submitted in a
+ * window, and report how many rows moved.
+ *
+ * Goals are frozen onto each submission at submit time, so a goal set today for
+ * a window partly in the past leaves those days graded against whatever was in
+ * force when they were typed. Without this, adding the special-week goal after
+ * the special week would change nothing visible and look like a save that
+ * silently failed. Josh confirmed those days should move.
+ *
+ * IT RE-RESOLVES RATHER THAN APPLYING ONE GOAL, which is why the same call
+ * serves both the insert and the delete path: after an insert the promo week
+ * inside a re-stamped baseline resolves to the promo again and is left alone;
+ * after a delete the days fall back to whatever is left, or to nulls.
+ *
+ * `to` null means open-ended. Days in the future can't have submissions, so the
+ * range is bounded by reality rather than by the argument.
+ *
+ * The two counts are different grains — four greeter rows and one site row is
+ * one day at a four-greeter site — so they are reported separately and must not
+ * be added together for display.
+ */
+export async function restampGoals(
+  client: SupabaseClient,
+  siteNumber: number,
+  from: string,
+  to: string | null
+): Promise<GreeterGoalRestampResult> {
+  const { data, error } = await client.rpc("greeter_restamp_goals", {
+    p_site_number: siteNumber,
+    p_from: from,
+    p_to: to
+  });
+  if (error) throw error;
+
+  const row = (data ?? [])[0] as
+    | { greeter_rows: number | null; location_rows: number | null }
+    | undefined;
+  return {
+    greeter_rows: row?.greeter_rows ?? 0,
+    location_rows: row?.location_rows ?? 0
+  };
 }
 
 /* ============================================================
