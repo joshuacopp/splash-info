@@ -494,6 +494,99 @@ export function ScheduleWeekGrid({
     }
   }
 
+  // Duplicate the shift currently open in the editor onto other days of the
+  // visible week. Copies the values as they sit in the form, so you can tweak
+  // the times and then fan them out in one go. Reuses the create endpoint once
+  // per day rather than a bulk route, which keeps the worker's overlap
+  // validation and audit logging in play for every copy. Days that can't take
+  // the shift are skipped and named in the summary instead of aborting the
+  // rest of the run.
+  async function copyFormToDays(targets: string[]) {
+    if (!form || targets.length === 0) return;
+    setCopying(true);
+    setError(null);
+    setOkMsg(null);
+
+    const copied: string[] = [];
+    const skipped: string[] = [];
+    const failed: string[] = [];
+    const unattempted: string[] = [];
+    let firstFailure = "";
+
+    for (let i = 0; i < targets.length; i++) {
+      const date = targets[i]!;
+
+      // The worker only runs overlap detection for a named employee — an
+      // open/unassigned shift has no one to collide with, so it would happily
+      // accept the same shift twice and re-clicking Copy would stack
+      // duplicates. Catch the exact-duplicate case here instead.
+      const duplicate = shifts.some(
+        (s) =>
+          s.startDate === date &&
+          s.userId === form.userId &&
+          s.startHour === form.startHour &&
+          s.startMinute === form.startMinute &&
+          s.endHour === form.endHour &&
+          s.endMinute === form.endMinute
+      );
+      if (duplicate) {
+        skipped.push(date);
+        continue;
+      }
+
+      const body = JSON.stringify({
+        userId: form.userId,
+        date,
+        startHour: form.startHour,
+        startMinute: form.startMinute,
+        endHour: form.endHour,
+        endMinute: form.endMinute,
+        title: form.title.trim() || undefined,
+        color: form.color || undefined
+      });
+      try {
+        await api(`${apiBase}/shifts`, { method: "POST", body });
+        copied.push(date);
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : "copy failed";
+        // A rejection can arrive two ways: the worker's own check phrases it
+        // "overlaps an existing shift for this employee (…)", and any upstream
+        // 409 arrives as "Beekeeper rejected: shift conflict". The 409 covers
+        // more than employee overlap, so the summary says "rejected as
+        // conflicting" rather than diagnosing the cause.
+        if (/overlap|conflict/i.test(msg)) skipped.push(date);
+        else {
+          failed.push(date);
+          if (!firstFailure) firstFailure = msg;
+          // Auth failures won't fix themselves on the next day, so stop rather
+          // than firing the rest and stacking identical errors. Remember what
+          // never got tried so the summary can't imply those days are done.
+          if (/not signed in|don't have access/i.test(msg)) {
+            unattempted.push(...targets.slice(i + 1));
+            break;
+          }
+        }
+      }
+    }
+
+    setCopying(false);
+    // Only dismiss the editor when something actually landed — on a total
+    // failure the form (and the day selection) is the only way to retry.
+    if (copied.length) setForm(null);
+    await loadShifts(monday);
+
+    const names = (ds: string[]) => ds.map((d) => dayHeader(d).weekday).join(", ");
+    const parts: string[] = [];
+    if (copied.length) parts.push(`Copied to ${names(copied)}.`);
+    if (skipped.length)
+      parts.push(`Skipped ${names(skipped)} — already scheduled or rejected as conflicting.`);
+    if (failed.length) parts.push(`Failed on ${names(failed)}: ${firstFailure}`);
+    if (unattempted.length) parts.push(`Did not attempt ${names(unattempted)}.`);
+    const summary = parts.join(" ");
+    if (copied.length) setOkMsg(summary);
+    else setError(summary || "Nothing copied.");
+  }
+
   // Duplicate every shift in the visible week onto the same weekday next week
   // (date + 7). Reuses the create endpoint per shift so the worker still runs
   // its overlap/validation checks; shifts that collide with something already
@@ -609,12 +702,19 @@ export function ScheduleWeekGrid({
       </div>
 
       {error ? (
-        <div className="mb-4 rounded-splash-md border border-splash-deny/50 bg-splash-deny/10 px-4 py-3 text-sm text-splash-deny">
+        <div
+          role="alert"
+          className="mb-4 rounded-splash-md border border-splash-deny/50 bg-splash-deny/10 px-4 py-3 text-sm text-splash-deny"
+        >
           {error}
         </div>
       ) : null}
       {okMsg ? (
-        <div className="mb-4 rounded-splash-md border border-green-300 bg-green-50 px-4 py-3 text-sm text-green-800">
+        <div
+          role="status"
+          aria-live="polite"
+          className="mb-4 rounded-splash-md border border-green-300 bg-green-50 px-4 py-3 text-sm text-green-800"
+        >
           {okMsg}
         </div>
       ) : null}
@@ -760,10 +860,13 @@ export function ScheduleWeekGrid({
           overnight={overnight}
           saving={saving}
           rosterName={rosterName}
+          weekDays={days}
+          copying={copying}
           onChange={setForm}
           onClose={() => setForm(null)}
           onSave={saveForm}
           onDelete={deleteForm}
+          onCopy={copyFormToDays}
         />
       ) : null}
     </div>
@@ -780,21 +883,43 @@ function EditorModal({
   overnight,
   saving,
   rosterName,
+  weekDays,
+  copying,
   onChange,
   onClose,
   onSave,
-  onDelete
+  onDelete,
+  onCopy
 }: {
   form: FormState;
   roster: RosterMember[];
   overnight: boolean;
   saving: boolean;
   rosterName: (id: string) => string;
+  /** The seven ET dates of the visible week — the available copy targets. */
+  weekDays: string[];
+  copying: boolean;
   onChange: (f: FormState) => void;
   onClose: () => void;
   onSave: () => void;
   onDelete: () => void;
+  onCopy: (targetDates: string[]) => void;
 }) {
+  // Copy-to-days panel state. Collapsed by default so the editor stays as
+  // simple as it was for the common single-shift edit.
+  const [copyOpen, setCopyOpen] = useState(false);
+  const [copyTargets, setCopyTargets] = useState<string[]>([]);
+
+  const toggleTarget = (date: string) =>
+    setCopyTargets((prev) =>
+      prev.includes(date) ? prev.filter((d) => d !== date) : [...prev, date]
+    );
+
+  const copyLabel =
+    copyTargets.length === 0
+      ? "Pick days"
+      : `Copy to ${copyTargets.length} day${copyTargets.length === 1 ? "" : "s"}`;
+
   const set = <K extends keyof FormState>(k: K, v: FormState[K]) =>
     onChange({ ...form, [k]: v });
 
@@ -823,7 +948,7 @@ function EditorModal({
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-splash-navy/40 p-4"
-      onClick={onClose}
+      onClick={copying ? undefined : onClose}
     >
       <div
         className="w-full max-w-md rounded-splash-lg border border-gray-light bg-white p-6 shadow-splash-card"
@@ -951,6 +1076,88 @@ function EditorModal({
               />
             </div>
           </Field>
+
+          {form.mode === "edit" ? (
+            <div className="rounded-splash-md border border-gray-light bg-gray-light/20 p-3">
+              {!copyOpen ? (
+                <button
+                  type="button"
+                  onClick={() => setCopyOpen(true)}
+                  disabled={saving || copying}
+                  className="text-sm font-semibold text-splash-blue hover:text-splash-blue-dark disabled:opacity-50"
+                >
+                  Copy to other days…
+                </button>
+              ) : (
+                <>
+                  <p className="mb-1 text-sm font-semibold text-splash-navy">
+                    Copy to other days
+                  </p>
+                  <p className="mb-2.5 text-xs leading-relaxed text-splash-navy/60">
+                    Duplicates the values above onto the days you pick. The original
+                    shift is left alone — use Save changes for that. Days that already
+                    hold this shift, or that the scheduler rejects as conflicting, are
+                    skipped.
+                  </p>
+                  <div
+                    role="group"
+                    aria-label="Days to copy this shift to"
+                    className="mb-3 flex flex-wrap gap-1.5"
+                  >
+                    {weekDays.map((d) => {
+                      const head = dayHeader(d);
+                      const isSource = d === form.date;
+                      const checked = copyTargets.includes(d);
+                      const tone = isSource
+                        ? "cursor-not-allowed border-gray-light bg-gray-light/40 text-splash-navy/35"
+                        : checked
+                          ? "cursor-pointer border-splash-blue bg-splash-blue/10 text-splash-navy"
+                          : "cursor-pointer border-gray-light bg-white text-splash-navy hover:bg-gray-light/40";
+                      return (
+                        <label
+                          key={d}
+                          className={`flex items-center gap-1.5 rounded-splash-md border px-2.5 py-1 text-xs font-semibold transition-colors ${tone}`}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            disabled={isSource || copying}
+                            onChange={() => toggleTarget(d)}
+                            className="h-3.5 w-3.5 accent-splash-blue"
+                          />
+                          <span>
+                            {head.weekday} {head.label}
+                            {isSource ? " (this shift)" : ""}
+                          </span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <button
+                      type="button"
+                      onClick={() => onCopy(copyTargets)}
+                      disabled={copying || saving || copyTargets.length === 0}
+                      className="rounded-splash-md bg-splash-blue px-4 py-1.5 text-xs font-semibold text-white shadow-splash-btn hover:bg-splash-blue-dark disabled:opacity-50"
+                    >
+                      {copying ? "Copying…" : copyLabel}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setCopyOpen(false);
+                        setCopyTargets([]);
+                      }}
+                      disabled={copying}
+                      className="text-xs font-semibold text-splash-navy/60 hover:text-splash-navy disabled:opacity-50"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
+          ) : null}
         </div>
 
         <div className="mt-6 flex items-center justify-between gap-3">
@@ -959,7 +1166,7 @@ function EditorModal({
               <button
                 type="button"
                 onClick={onDelete}
-                disabled={saving}
+                disabled={saving || copying}
                 className="rounded-splash-md border border-splash-deny/50 px-4 py-2 text-sm font-semibold text-splash-deny hover:bg-splash-deny/10 disabled:opacity-50"
               >
                 Delete
@@ -970,7 +1177,7 @@ function EditorModal({
             <button
               type="button"
               onClick={onClose}
-              disabled={saving}
+              disabled={saving || copying}
               className="rounded-splash-md border border-gray-light px-4 py-2 text-sm font-semibold text-splash-navy hover:bg-gray-light/40 disabled:opacity-50"
             >
               Cancel
@@ -978,7 +1185,7 @@ function EditorModal({
             <button
               type="button"
               onClick={onSave}
-              disabled={saving}
+              disabled={saving || copying}
               className="rounded-splash-md bg-splash-navy px-5 py-2 text-sm font-semibold text-white shadow-splash-btn hover:bg-splash-blue-dark disabled:opacity-50"
             >
               {saving ? "Saving…" : form.mode === "edit" ? "Save changes" : "Add shift"}
