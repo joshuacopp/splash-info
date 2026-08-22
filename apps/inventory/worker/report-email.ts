@@ -58,6 +58,13 @@ export interface ReportEntry {
   usageGal: number;
   cost: number;
   onHandValue: number;
+  /** Value of what was DROPPED OFF this visit — qty_delivered_gal priced at the
+   *  product's rate, discount applied. Independent of `cost`, which prices what
+   *  was CONSUMED (starting + delivered − ending). A visit with a big delivery
+   *  and light usage shows a large deliveredValue and a small cost, which is
+   *  the whole point of reporting both. */
+  deliveredValue: number;
+  qtyDeliveredGal: number;
   endingQtyGal: number;
   negativeUsage: boolean;
   /** Attached by attachPrevDeltas; absent when the site has no earlier visit. */
@@ -80,6 +87,9 @@ export interface ComputedVisitLike {
   totalWashCount: number;
   chemicalCost: number;
   onHandValue: number;
+  /** Sum of entries' deliveredValue — what the chemical dropped off this visit
+   *  was worth. Not a component of chemicalCost; see ReportEntry above. */
+  deliveredValue: number;
   blendedCpc: number | null;
   blendedTargetCpc: number | null;
   entries: ReportEntry[];
@@ -91,6 +101,7 @@ export interface ComputedVisitLike {
     totalWashCount: number;
     chemicalCost: number;
     onHandValue: number;
+    deliveredValue: number;
     blendedCpc: number | null;
     blendedTargetCpc: number | null;
     entries: ReportEntry[];
@@ -181,9 +192,17 @@ function renderBodyHtml(
   // Every one of these is now computed server-side, so Target CPC is always
   // present when the location has package composition rows — the old
   // conditional existed only because the client couldn't compute it.
+  //
+  // Chemical cost and Delivery cost sit next to each other deliberately. They
+  // answer different questions and are routinely far apart: cost is what the
+  // site CONSUMED, delivery cost is what was DROPPED OFF. A drum delivered and
+  // barely touched inflates one and not the other. Shown even when zero — most
+  // visits have no delivery, and a blank would read as a missing number rather
+  // than as "nothing was delivered".
   const stats: Array<[string, string]> = [
     ["Cars washed", fmtInt(c.totalWashCount)],
     ["Chemical cost", fmtMoney(c.chemicalCost)],
+    ["Delivery cost", fmtMoney(c.deliveredValue)],
     ["Blended CPC", fmtCpc(c.blendedCpc)]
   ];
   if (c.blendedTargetCpc != null) stats.push(["Goal CPC", fmtCpc(c.blendedTargetCpc)]);
@@ -435,6 +454,12 @@ function renderBodyText(
     "",
     `Cars washed:   ${fmtInt(c.totalWashCount)}`,
     `Chemical cost: ${fmtMoney(c.chemicalCost)}`,
+    // Unconditional, unlike the optional lines below it: a missing line in a
+    // plain-text block reads as "the report forgot" rather than "nothing was
+    // delivered", and most visits have no delivery. Sits next to Chemical cost
+    // because the pair is the point — consumed vs dropped off, routinely far
+    // apart on a drum-delivery visit.
+    `Delivery cost: ${fmtMoney(c.deliveredValue)}`,
     `Blended CPC:   ${fmtCpc(c.blendedCpc)}`,
     c.blendedTargetCpc != null ? `Goal CPC:      ${fmtCpc(c.blendedTargetCpc)}` : "",
     c.onHandValue != null ? `On-hand value: ${fmtMoney(c.onHandValue)}` : "",
@@ -536,6 +561,7 @@ function renderComparisonDoc(
   const summaryRows: Array<[string, string, string]> = [
     ["Cars washed", fmtInt(c.totalWashCount), pc ? fmtInt(pc.totalWashCount) : "—"],
     ["Chemical cost", fmtMoney(c.chemicalCost), pc ? fmtMoney(pc.chemicalCost) : "—"],
+    ["Delivery cost", fmtMoney(c.deliveredValue), pc ? fmtMoney(pc.deliveredValue) : "—"],
     ["Blended CPC", fmtCpc(c.blendedCpc), pc ? fmtCpc(pc.blendedCpc) : "—"],
     ["Goal CPC", fmtCpc(c.blendedTargetCpc), pc ? fmtCpc(pc.blendedTargetCpc) : "—"],
     ["On-hand value", fmtMoney(c.onHandValue), pc ? fmtMoney(pc.onHandValue) : "—"]
@@ -564,6 +590,12 @@ function renderComparisonDoc(
       `<td>${escapeHtml(fmtNum(e.usageGal, 2))}</td>` +
       `<td>${escapeHtml(fmtMoney(e.cost))}</td>` +
       `<td>${escapeHtml(e.prevCost != null ? fmtMoney(e.prevCost) : "—")}</td>` +
+      // Gallons AND dollars, because the two answer different questions: the
+      // gallon figure reconciles against the delivery ticket, the dollar figure
+      // against the invoice. A discounted product makes them disagree on
+      // purpose.
+      `<td>${escapeHtml(fmtNum(e.qtyDeliveredGal, 2))}</td>` +
+      `<td>${escapeHtml(fmtMoney(e.deliveredValue))}</td>` +
       `<td>${escapeHtml(fmtMoney(e.onHandValue))}</td>` +
       `</tr>`
     );
@@ -621,7 +653,8 @@ function renderComparisonDoc(
 <h2>Per-product — goal vs actual</h2>
 <table><thead><tr>
 <th>Product</th><th>Goal ml/car</th><th>Actual ml/car</th><th>Variance</th>
-<th>Prev ml/car</th><th>&Delta; ml/car</th><th>Usage gal</th><th>Cost</th><th>Prev cost</th><th>On hand</th>
+<th>Prev ml/car</th><th>&Delta; ml/car</th><th>Usage gal</th><th>Cost</th><th>Prev cost</th>
+<th>Delivered gal</th><th>Delivered $</th><th>On hand</th>
 </tr></thead><tbody>${productRows.join("")}</tbody></table>
 
 <h2>Flags</h2>

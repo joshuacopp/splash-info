@@ -38,7 +38,7 @@ export default function VisitView({ computed }) {
 
   return (
     <div className="space-y-6">
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-5">
         <KpiCard label="Wash count" value={fmtInt(c.totalWashCount)} sub="this visit" />
         <KpiCard
           label="Blended CPC"
@@ -55,6 +55,17 @@ export default function VisitView({ computed }) {
               ? `prev visit ${fmtCurrency(c.prevComputed.chemicalCost)}`
               : 'this visit'
           }
+        />
+        {/* Deliberately adjacent to Chemical cost, and deliberately NOT summed
+            with it. Chemical cost is what the site CONSUMED (starting +
+            delivered − ending); this is what was DROPPED OFF. A drum delivered
+            and barely touched makes them diverge, which is the reason to show
+            both. Rendered even at $0 — most visits have no delivery, and an
+            absent card would read as a broken tile rather than as "none". */}
+        <KpiCard
+          label="Delivery cost"
+          value={fmtCurrency(c.deliveredValue)}
+          sub={c.deliveredValue > 0 ? 'delivered this visit' : 'no delivery'}
         />
       </div>
 

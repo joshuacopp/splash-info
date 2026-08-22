@@ -281,17 +281,33 @@ export default function NewVisit() {
     { cost: 0 }
   )
 
-  // Kill implicit submission.
+  // Enter walks DOWN a column; Tab walks ACROSS a row.
   //
-  // A <form> with a submit button submits on Enter from any single-line input.
-  // On a page whose whole job is typing a few dozen numbers, a tech reaching for
-  // Tab and hitting Enter instead filed a half-empty visit — and for a NEW visit
-  // that also queues the report email, so the mistake leaves the building.
+  // Two problems solved at once. First, a <form> with a submit button submits on
+  // Enter from any single-line input — on a page whose whole job is typing a few
+  // dozen numbers, a tech reaching for Tab and hitting Enter instead filed a
+  // half-empty visit, and for a NEW visit that also queues the report email, so
+  // the mistake leaves the building. Second, the natural way to fill this sheet
+  // is one column at a time: read every reservoir off the shelf, then every
+  // floor count. Tab already does the row direction for free, because the DOM
+  // order inside a <tbody> is row-major; Enter is the one that needed code.
   //
-  // Enter still works everywhere it should: textareas take a newline (the
-  // browser never implicit-submits from one), and buttons and links fire on
-  // Enter through the click path, not this one. Saving is the Save button only,
-  // which is the intent the accident was borrowing.
+  // The lookup is a DOM query taken at keypress time, deliberately not a cached
+  // array of refs. Products get added, removed and reordered per location, and a
+  // cached grid goes stale SILENTLY — it still has an entry at that index, it
+  // just points at the wrong chemical. Querying live cannot be stale, and it
+  // handles the equipment table's conditional cells (a row shows a tip-colour
+  // box, a versadial number, or neither) without any special casing: a cell that
+  // isn't rendered simply isn't in the list.
+  //
+  // At the bottom of a column, Enter jumps to the top of the next column in the
+  // same grid — the order you'd actually work in. Column order is read off the
+  // DOM too (first appearance wins), so it tracks the table rather than a list
+  // here that someone has to remember to update. At the very last cell it stops.
+  //
+  // Enter still behaves normally everywhere it should: textareas take a newline
+  // (the browser never implicit-submits from one), and buttons and links fire on
+  // Enter through the click path, not this one. Saving is the Save button only.
   function onFormKeyDown(e) {
     if (e.key !== 'Enter' || e.shiftKey || e.ctrlKey || e.metaKey || e.altKey) return
     const el = e.target
@@ -299,7 +315,37 @@ export default function NewVisit() {
     if (tag === 'TEXTAREA' || tag === 'BUTTON' || tag === 'A') return
     // A <select> uses Enter to commit an open dropdown; leave it alone.
     if (tag === 'SELECT') return
+
+    // Suppress the submit first and unconditionally. Everything below is a
+    // best-effort convenience, and none of it is allowed to be the reason an
+    // accidental Enter files a visit.
     e.preventDefault()
+
+    const grid = el?.dataset?.grid
+    const col = el?.dataset?.col
+    if (!grid || !col) return
+
+    const cells = Array.from(e.currentTarget.querySelectorAll(`[data-grid="${grid}"]`)).filter(
+      (n) => !n.disabled
+    )
+    const inCol = cells.filter((n) => n.dataset.col === col)
+    const i = inCol.indexOf(el)
+    if (i === -1) return
+
+    let next = inCol[i + 1]
+    if (!next) {
+      const order = []
+      for (const n of cells) if (!order.includes(n.dataset.col)) order.push(n.dataset.col)
+      const nextCol = order[order.indexOf(col) + 1]
+      next = nextCol ? cells.find((n) => n.dataset.col === nextCol) : undefined
+    }
+    if (!next) return
+
+    next.focus()
+    // Select rather than just focus: every one of these cells is prefilled with
+    // a carried-forward or placeholder value, and typing over a selection is
+    // what the tech means. Focusing alone would append to the old number.
+    if (typeof next.select === 'function') next.select()
   }
 
   async function onSubmit(e) {
@@ -589,13 +635,28 @@ export default function NewVisit() {
                     </td>
                     <td className="td text-right tabular-nums text-slate-500">{fmtGal(r.starting)}</td>
                     <td className="td text-right">
-                      <NumInput value={st.delivered} onChange={(v) => setRow(r.productId, { delivered: v })} />
+                      <NumInput
+                        grid="counts"
+                        col="delivered"
+                        value={st.delivered}
+                        onChange={(v) => setRow(r.productId, { delivered: v })}
+                      />
                     </td>
                     <td className="td text-right">
-                      <NumInput value={st.reservoir} onChange={(v) => setRow(r.productId, { reservoir: v })} />
+                      <NumInput
+                        grid="counts"
+                        col="reservoir"
+                        value={st.reservoir}
+                        onChange={(v) => setRow(r.productId, { reservoir: v })}
+                      />
                     </td>
                     <td className="td text-right">
-                      <NumInput value={st.floor} onChange={(v) => setRow(r.productId, { floor: v })} />
+                      <NumInput
+                        grid="counts"
+                        col="floor"
+                        value={st.floor}
+                        onChange={(v) => setRow(r.productId, { floor: v })}
+                      />
                     </td>
                     <td className="td text-right tabular-nums font-semibold text-slate-700">
                       {cr.ending.toFixed(2)}
@@ -676,6 +737,12 @@ export default function NewVisit() {
                       {st.meteringType === 'tip' && (
                         <input
                           type="text"
+                          // Same column key as the versadial box below it on
+                          // purpose: they occupy one table column, and a tech
+                          // walking that column down the table doesn't care
+                          // which metering style each row happens to use.
+                          data-grid="equip"
+                          data-col="setting"
                           className="cell-input w-32 text-left"
                           placeholder="e.g. Blue"
                           value={st.tipColor}
@@ -688,6 +755,8 @@ export default function NewVisit() {
                           min="1"
                           max="32"
                           step="1"
+                          data-grid="equip"
+                          data-col="setting"
                           className="cell-input w-20"
                           placeholder="1–32"
                           value={st.versadialNumber}
@@ -699,6 +768,8 @@ export default function NewVisit() {
                     <td className="td">
                       <input
                         type="text"
+                        data-grid="equip"
+                        data-col="injectorColor"
                         className="cell-input w-32 text-left"
                         placeholder="e.g. Lime green"
                         value={st.injectorColor}
@@ -706,7 +777,13 @@ export default function NewVisit() {
                       />
                     </td>
                     <td className="td text-right">
-                      <NumInput value={st.injectorGpm} onChange={(v) => setRow(r.productId, { injectorGpm: v })} width="w-20" />
+                      <NumInput
+                        grid="equip"
+                        col="injectorGpm"
+                        value={st.injectorGpm}
+                        onChange={(v) => setRow(r.productId, { injectorGpm: v })}
+                        width="w-20"
+                      />
                     </td>
                   </tr>
                 )
@@ -808,18 +885,25 @@ function PackageCount({ pkg, value, onChange }) {
   return (
     <div className="flex items-center justify-between gap-3 rounded-xl border border-slate-200 bg-white px-3 py-2.5">
       <span className="truncate text-sm font-semibold text-slate-700">{pkg.name}</span>
-      <NumInput value={value} onChange={onChange} width="w-24" min={0} />
+      {/* One column, so Enter just walks the package list top to bottom — which
+          is how the counts come off the POS report. */}
+      <NumInput grid="washes" col="count" value={value} onChange={onChange} width="w-24" min={0} />
     </div>
   )
 }
 
-function NumInput({ value, onChange, highlight, width = 'w-24', min }) {
+// `grid` / `col` opt a cell into Enter-walks-down navigation (see onFormKeyDown).
+// Both or neither — an input tagged with only one is skipped, which is the safe
+// direction: it still won't submit the form, it just won't advance.
+function NumInput({ value, onChange, highlight, width = 'w-24', min, grid, col }) {
   return (
     <input
       type="number"
       inputMode="decimal"
       step="any"
       min={min}
+      data-grid={grid}
+      data-col={col}
       className={`cell-input ${width} ${highlight ? 'border-splash-300 bg-splash-50' : ''}`}
       value={value}
       onChange={(e) => {
