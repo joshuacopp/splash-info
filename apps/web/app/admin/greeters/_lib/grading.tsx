@@ -63,10 +63,10 @@ export function dobTier(value: number, goal: number): CaptureTier {
 /**
  * Capture % graded against the goal snapshotted on that row.
  *
- * Ungraded when either side is null — a day with no wash sales has no capture
- * rate to judge, and a site with no goal window covering that date was never
- * given a target. Both render plain rather than green, since "no goal" is not
- * the same as "met the goal".
+ * Ungraded when either side is null — a day with no wash sales AND no sign ups
+ * has no capture rate to judge, and a site with no goal window covering that
+ * date was never given a target. Both render plain rather than green, since "no
+ * goal" is not the same as "met the goal".
  */
 export function CaptureCell({
   value,

@@ -18,6 +18,11 @@
 --      the rate the scorecard grades greeters on, and would silently restate
 --      every historical capture % the day this migration ran.
 --
+--      PARTLY SUPERSEDED 2026-08-22 by greeter-capture-13.sql, which moved the
+--      denominator to wash_sales + sign_ups. The decision that matters here is
+--      unchanged and still binding: reactivations stay out of capture_pct
+--      entirely, numerator and denominator both.
+--
 --   2. net_members DOES change, to sign_ups + reactivations - cancellations.
 --      That column is the day's change in the member roll, and a reactivation
 --      genuinely moves the roll. Leaving it out would make net_members

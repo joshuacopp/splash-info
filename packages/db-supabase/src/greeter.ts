@@ -865,8 +865,10 @@ export async function listGreeterRollup(
  * (site_wash_sales, house_accounts, rewashes) alongside scannable_wash_sales so
  * the UI can show its work rather than asserting a number.
  *
- * capture_pct and dob are NOT computed here and stay on gross wash sales by
- * company policy — they're generated columns on location_daily.
+ * capture_pct and dob are NOT computed here and do not net house accounts or
+ * rewashes off their denominators by company policy — they're generated
+ * columns on location_daily. (capture_pct divides by wash_sales + sign_ups;
+ * dob divides by wash_sales. Neither deducts anything the scan rate deducts.)
  *
  * A function again, for the same reason as the rollup — and additionally
  * because the numerator lives in a different table from the denominator, so it

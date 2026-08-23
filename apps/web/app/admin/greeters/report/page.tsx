@@ -563,6 +563,10 @@ export default async function GreeterReportPage({ searchParams }: PageProps) {
         <>
         {/* KPI strip */}
         <div className="mb-6 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+          {/* The capture foot spells its denominator out because that is the
+              part people get wrong: a sign-up is an opportunity that converted,
+              so it sits on both sides of the fraction. "on N wash sales" would
+              name a number this tile is not dividing by. */}
           <Kpi
             label="Capture rate"
             value={pct(now.capture_pct)}
@@ -574,7 +578,9 @@ export default async function GreeterReportPage({ searchParams }: PageProps) {
             delta={delta(now.capture_pct, before.capture_pct)}
             deltaUnit="pts"
             tone={toneFor(now.capture_pct, now.capture_goal_pct)}
-            foot={`${num(now.sign_ups)} sign ups on ${num(now.wash_sales)} wash sales`}
+            foot={`${num(now.sign_ups)} sign ups on ${num(
+              now.wash_sales + now.sign_ups
+            )} opportunities`}
           />
           <Kpi
             label="D.O.B."
@@ -636,11 +642,13 @@ export default async function GreeterReportPage({ searchParams }: PageProps) {
         <div className="mb-6 grid grid-cols-1 gap-4 lg:grid-cols-2">
           <ChartFrame
             title="Capture rate by day"
-            caption="Company-wide, weighted by volume. The line breaks on days with no wash sales, and on days nobody reported, rather than being drawn through them."
+            caption="Company-wide, weighted by volume. Sign ups over wash sales plus sign ups, so it tops out at 100%. The line breaks on days with nothing to measure, and on days nobody reported, rather than being drawn through them."
           >
             <TrendChart
               points={trendPoints(windowDays, (d) => d.capture_pct, (d) =>
-                `${num(d.sign_ups)} sign ups / ${num(d.wash_sales)} wash sales`
+                `${num(d.sign_ups)} sign ups / ${num(
+                  (d.wash_sales ?? 0) + (d.sign_ups ?? 0)
+                )} opportunities`
               )}
               goal={now.capture_goal_pct}
               unit="pct"
@@ -983,14 +991,16 @@ function GreeterTable({
                     </div>
                   </td>
                   {/* Graded days, not days logged — a day with no wash sales
-                      has no capture rate and can't be over or under anything.
-                      The two numbers differing is normal, not an error. */}
+                      AND no sign ups has no capture rate and can't be over or
+                      under anything. (No wash sales but some sign ups is 100%,
+                      which grades fine.) The two numbers differing is normal,
+                      not an error. */}
                   <td className="px-4 py-3 text-splash-navy/80">
                     {r.days_logged}
                     {r.ungraded_days > 0 ? (
                       <span
                         className="ml-1 text-xs text-splash-navy/50"
-                        title={`${r.ungraded_days} of these days had no capture rate to grade — no wash sales, or no goal window covering the date.`}
+                        title={`${r.ungraded_days} of these days had no capture rate to grade — no wash sales and no sign ups, or no goal window covering the date.`}
                       >
                         ({r.gradeable_days} graded)
                       </span>
@@ -1568,9 +1578,9 @@ function ScanPill({ value }: { value: number | null }) {
 /**
  * Grade a value against its goal, tolerating either side being missing.
  *
- * Null in, null out — a window with no wash sales has no capture rate to judge,
- * and a scope with no goal window covering it was never given a target. Neither
- * is "met the goal", so neither gets painted green.
+ * Null in, null out — a window with no wash sales and no sign ups has no capture
+ * rate to judge, and a scope with no goal window covering it was never given a
+ * target. Neither is "met the goal", so neither gets painted green.
  */
 function toneFor(value: number | null, goal: number | null): CaptureTier | null {
   if (value === null || goal === null) return null;

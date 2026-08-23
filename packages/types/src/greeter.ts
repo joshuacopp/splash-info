@@ -7,8 +7,9 @@
 //                   SITE-LEVEL ONLY. Not a greeter's number: everyone on shift
 //                   would report the same figure and summing across a crew
 //                   would multiply the site's day.
-//   wash_sales    — "ALC" / a-la-carte: NON-unlimited saleable cars. Denominator
-//                   for both derived metrics. NOT the same as total_cars.
+//   wash_sales    — "ALC" / a-la-carte: NON-unlimited saleable cars. The whole
+//                   denominator for dob, and part of capture_pct's (which adds
+//                   sign_ups to it). NOT the same as total_cars.
 //   total_members — active members as of that day. A LEVEL, not a delta. Never
 //                   sum it across days; read it at the latest date in a window.
 //   net_members   — sign_ups + reactivations - cancellations. THAT is the delta.
@@ -17,8 +18,13 @@
 //                   deliberately excludes reactivations (the customer already
 //                   knew the product, so they were never an opportunity).
 //   dob           — dollars over base = (package $ + extras $) / wash_sales.
-//   capture_pct   — sign_ups / wash_sales as a percentage (0-100), NOT a 0-1
-//                   fraction, matching performance_tracking.capture_rate.
+//   capture_pct   — sign_ups / (wash_sales + sign_ups) as a percentage (0-100),
+//                   NOT a 0-1 fraction. A sign-up and a wash sale are the two
+//                   possible outcomes for the same car, so both are in the
+//                   denominator and the value cannot exceed 100. NULL only when
+//                   both are zero. Changed 2026-08-22 — it used to divide by
+//                   wash_sales alone, which let a good day read 400%. See
+//                   supabase/greeter-capture-13.sql.
 //   churn_pct     — the site's self-reported daily churn, as a percentage.
 //                   SITE-LEVEL ONLY, and the one number here that must NEVER be
 //                   aggregated: it arrives already divided, with the site
@@ -131,7 +137,10 @@ export interface LocationGoalSnapshot extends GreeterGoalSnapshot {
 /**
  * Columns Postgres computes. Present on read, never sent on write — they are
  * GENERATED ALWAYS ... STORED and PostgREST rejects an insert that names them.
- * Null whenever wash_sales is 0/null (no opportunities is unknown, not zero).
+ * Their null rules differ. `dob` is null whenever wash_sales is 0/null — it is
+ * a per-wash average and there is nothing to average. `capture_pct` is null
+ * only when wash_sales AND sign_ups are both 0/null: no wash sales but three
+ * sign-ups is three opportunities, all three converted, a real 100%.
  */
 export interface GreeterDerivedMetrics {
   capture_pct: number | null;
@@ -526,7 +535,8 @@ export interface GreeterMissingDayRow {
  * THE THREE DAY BUCKETS are mutually exclusive and sum to `days_logged`:
  *   days_over_goal    capture_pct >= capture_goal_pct (a tie is a hit)
  *   days_under_goal   capture_pct <  capture_goal_pct
- *   ungraded_days     no capture_pct (no wash sales, so no opportunity) or no
+ *   ungraded_days     no capture_pct (no wash sales AND no sign-ups, so
+ *                     nothing happened and there is no rate) or no
  *                     capture_goal_pct (no goal covered the day). Surfaced
  *                     rather than dropped so the reader can see the real
  *                     denominator instead of trusting a percentage computed off

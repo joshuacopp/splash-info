@@ -26,12 +26,18 @@
 --
 -- WHAT DELIBERATELY DOES NOT CHANGE
 -- ---------------------------------
--- capture_pct and dob keep the GROSS wash_sales denominator. That is a company
--- policy call, not an oversight: house accounts and rewashes are included in
--- the capture rate even though they aren't salable cars. Do not "fix" this to
--- match the scan rate — the two metrics answer to different rules on purpose.
+-- capture_pct and dob do NOT net house accounts and rewashes off their
+-- denominator. That is a company policy call, not an oversight: they are
+-- included even though they aren't salable cars. Do not "fix" this to match
+-- the scan rate — the two metrics answer to different rules on purpose.
 -- capture_pct and dob are also GENERATED ALWAYS columns on both daily tables,
 -- so changing them would mean rewriting stored data, not just a function.
+--
+-- PARTLY SUPERSEDED 2026-08-22. The paragraph above originally described the
+-- denominator as "GROSS wash_sales". greeter-capture-13.sql changed
+-- capture_pct to sign_ups / (wash_sales + sign_ups); dob still divides by
+-- wash_sales. The house-accounts and rewashes rule is unaffected — neither is
+-- netted off either metric, and neither is added to capture's denominator.
 --
 -- WHERE house_accounts LIVES
 -- --------------------------

@@ -23,10 +23,17 @@ export interface ScheduleLocation {
   name: string;
 }
 
-/** One assignable employee (GET .../context roster[]). */
+/** One assignable employee (GET .../context roster[]).
+ *
+ *  `rate`/`payType` come from Beekeeper's admin-visibility custom fields. They
+ *  are here to price salaried staff, who cost the same whether or not they have
+ *  a shift on the grid; per-shift cost uses ShiftView.rate instead. A null rate
+ *  means never entered, which is NOT zero. */
 export interface RosterMember {
   id: string;
   name: string;
+  rate: number | null;
+  payType: string | null;
 }
 
 /** GET /schedule/api/loc/{code}/context */
@@ -44,6 +51,11 @@ export interface ShiftView {
   id: string;
   userId: string;
   userName: string;
+  /** Assigned user's pay rate, or null for open/unrated/unknown users. The
+   *  single per-shift cost input — see the note on the worker's ShiftView. */
+  rate: number | null;
+  /** "Salary" | "Hourly" | null. */
+  payType: string | null;
   title: string;
   /** metadata.color from Beekeeper (hex string), or undefined. */
   color?: string;

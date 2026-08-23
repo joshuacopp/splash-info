@@ -1061,7 +1061,7 @@ export default async function GreetersPage({ searchParams }: PageProps) {
       {/* Summary */}
       <Card
         title="By greeter"
-        subtitle="Totals for the filtered range. Capture % and D.O.B. are recomputed from the summed numbers, not averaged across days."
+        subtitle="Totals for the filtered range. Capture % is sign ups over wash sales plus sign ups, so it tops out at 100%. Capture % and D.O.B. are recomputed from the summed numbers, not averaged across days."
       >
         {rollupList.length === 0 ? (
           <EmptyNote>No greeter days match these filters.</EmptyNote>

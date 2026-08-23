@@ -57,22 +57,37 @@
 --   hours_worked     Generated from the shift window.
 --   wash_sales_per_hour  Generated: wash_sales over the shift duration.
 --   dob              "Dollars over base" = (package $ + extras $) / wash_sales.
---   capture_pct      sign_ups / wash_sales, as a PERCENTAGE (0-100).
+--   capture_pct      sign_ups / (wash_sales + sign_ups), as a PERCENTAGE
+--                    (0-100). See greeter-capture-13.sql.
 --
---   Capture is divided by wash_sales, NOT total_cars: a customer already on an
+--   The denominator is every car that could have gone either way. A sign-up
+--   and a wash sale are mutually exclusive outcomes for the same customer —
+--   they either bought a single wash or joined the plan — so both belong on
+--   the bottom and the result is bounded at 100. Dividing by wash sales alone
+--   (which is what this did until 2026-08-22) let a greeter who converted more
+--   people than they sold single washes score 400%, which is not a rate.
+--
+--   total_cars is still NOT the denominator: a customer already on an
 --   unlimited plan cannot sign up again, so they were never an opportunity and
---   must not count against the greeter.
+--   must not count against the greeter. Nor are reactivations, rewashes,
+--   house accounts or google reviews on either side.
 --
 -- `dob` and `capture_pct` are GENERATED ALWAYS ... STORED rather than
 -- application-computed. Two reasons: the arithmetic cannot drift between the
 -- submit path, the CSV export, and any future rollup; and stored generated
 -- columns are indexable and filterable, which read-time computation is not.
--- Both are NULL when wash_sales is 0 or NULL — a zero denominator is "no
--- opportunities that day", which is genuinely unknown, not 0%.
 --
--- capture_pct is stored as a raw percentage (62.40 = 62.4%) to match the
--- existing `performance_tracking.capture_rate` convention. Do not switch one
--- without the other.
+-- THEIR NULL RULES DIFFER, deliberately. dob is NULL when wash_sales is 0 or
+-- NULL, because dollars over base is a per-wash average and there is nothing
+-- to average. capture_pct is NULL only when wash_sales + sign_ups is 0 —
+-- a day with no wash sales but three sign-ups is three opportunities, all
+-- three converted, a real 100% rather than an unknown.
+--
+-- capture_pct is stored as a raw percentage (62.40 = 62.4%), not a 0-1
+-- fraction, matching the `performance_tracking.capture_rate` convention. That
+-- is a statement about SCALE only. performance_tracking is a separate legacy
+-- table, hand-entered on /admin/performance and not derived from greeter logs;
+-- its denominator is its own business.
 --
 -- Conventions follow forms-tables.sql / promo-tables.sql:
 --   - uuid PK, `gen_random_uuid()` default.
@@ -240,8 +255,10 @@ CREATE TABLE IF NOT EXISTS greeter_daily (
 
   -- Derived. See the header note on why these are generated, not computed.
   capture_pct         numeric(6,2) GENERATED ALWAYS AS (
-                        CASE WHEN COALESCE(wash_sales, 0) > 0
-                          THEN ROUND(COALESCE(sign_ups, 0)::numeric * 100 / wash_sales, 2)
+                        CASE WHEN COALESCE(wash_sales, 0) + COALESCE(sign_ups, 0) > 0
+                          THEN ROUND(
+                                 COALESCE(sign_ups, 0)::numeric * 100
+                                 / (COALESCE(wash_sales, 0) + COALESCE(sign_ups, 0)), 2)
                         END
                       ) STORED,
   dob                 numeric(10,2) GENERATED ALWAYS AS (
@@ -291,8 +308,14 @@ CREATE TABLE IF NOT EXISTS greeter_daily (
   updated_by          uuid,                                 -- auth.users.id; set on upsert-overwrite
   updated_by_email    text,
 
-  CONSTRAINT greeter_daily_unique_day
-    UNIQUE (location_id, beekeeper_user_id, business_date),
+  -- VOID, NOT DELETE. A day that was entered wrongly is struck out rather than
+  -- removed: the scorecard is the record of what a site reported, and "this was
+  -- submitted and then withdrawn" is a different fact from "this was never
+  -- submitted". NULL means live. Nothing computed reads a voided row — see the
+  -- _live views below, which every reading function goes through.
+  voided_at           timestamptz,
+  voided_by           uuid,                                 -- auth.users.id
+  voided_by_email     text,
 
   -- Both-or-neither. A half-filled window yields a NULL hours_worked that is
   -- indistinguishable from "no shift recorded", and the form can't tell them
@@ -300,6 +323,23 @@ CREATE TABLE IF NOT EXISTS greeter_daily (
   CONSTRAINT greeter_daily_shift_pair
     CHECK ((shift_start IS NULL) = (shift_end IS NULL))
 );
+
+-- ONE LIVE ROW PER (location, greeter, date) — a PARTIAL unique index, not the
+-- table constraint this replaces.
+--
+-- The old constraint covered voided rows too, which would have made voiding a
+-- day a trap: the slot stays occupied by the struck-out row, so re-entering the
+-- day comes back as a duplicate-key error naming a row the user can no longer
+-- see in any total. Excluding voided rows means a void genuinely frees the day,
+-- and any number of withdrawn attempts can accumulate underneath the one live
+-- answer.
+--
+-- Still an UPSERT key for live rows, so re-submitting a day that was never
+-- voided corrects it exactly as before.
+ALTER TABLE greeter_daily DROP CONSTRAINT IF EXISTS greeter_daily_unique_day;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_greeter_daily_unique_live_day
+  ON greeter_daily (location_id, beekeeper_user_id, business_date)
+  WHERE voided_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_greeter_daily_date        ON greeter_daily (business_date DESC);
 CREATE INDEX IF NOT EXISTS idx_greeter_daily_scope       ON greeter_daily (location_code);
 CREATE INDEX IF NOT EXISTS idx_greeter_daily_site_date   ON greeter_daily (site_number, business_date DESC);
@@ -377,9 +417,15 @@ CREATE TABLE IF NOT EXISTS location_daily (
                         - COALESCE(cancellations, 0)
                       ) STORED,
 
+  -- Identical to greeter_daily.capture_pct, and it must stay identical: a
+  -- greeter row and the site row for the same day sit side by side on the
+  -- report, and a denominator that differed between them would make the site
+  -- look like it captured at a different rate than the sum of its greeters.
   capture_pct         numeric(6,2) GENERATED ALWAYS AS (
-                        CASE WHEN COALESCE(wash_sales, 0) > 0
-                          THEN ROUND(COALESCE(sign_ups, 0)::numeric * 100 / wash_sales, 2)
+                        CASE WHEN COALESCE(wash_sales, 0) + COALESCE(sign_ups, 0) > 0
+                          THEN ROUND(
+                                 COALESCE(sign_ups, 0)::numeric * 100
+                                 / (COALESCE(wash_sales, 0) + COALESCE(sign_ups, 0)), 2)
                         END
                       ) STORED,
   dob                 numeric(10,2) GENERATED ALWAYS AS (
@@ -398,11 +444,71 @@ CREATE TABLE IF NOT EXISTS location_daily (
   updated_by          uuid,
   updated_by_email    text,
 
-  CONSTRAINT location_daily_unique_day UNIQUE (location_id, business_date)
+  -- See greeter_daily's copy of these three. Same rule, same reason.
+  voided_at           timestamptz,
+  voided_by           uuid,
+  voided_by_email     text
 );
 CREATE INDEX IF NOT EXISTS idx_location_daily_date      ON location_daily (business_date DESC);
 CREATE INDEX IF NOT EXISTS idx_location_daily_scope     ON location_daily (location_code);
 CREATE INDEX IF NOT EXISTS idx_location_daily_site_date ON location_daily (site_number, business_date DESC);
+
+-- One LIVE row per (location, date). See greeter_daily's partial index above.
+ALTER TABLE location_daily DROP CONSTRAINT IF EXISTS location_daily_unique_day;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_location_daily_unique_live_day
+  ON location_daily (location_id, business_date)
+  WHERE voided_at IS NULL;
+
+-- ===========================================================================
+-- 3b. greeter_daily_live / location_daily_live — the reading surface
+-- ===========================================================================
+-- EVERY FUNCTION BELOW READS THESE, NOT THE TABLES. That is the whole
+-- enforcement mechanism for "voided rows are not reported", and it is a view
+-- rather than a predicate repeated in each function for two reasons.
+--
+-- First, it is one place to be right instead of twelve. Six functions read
+-- these tables, several of them twice, and a rule spelled out twelve times is a
+-- rule that will eventually be spelled eleven.
+--
+-- Second, and more concretely: greeter_missing_days() LEFT JOINs location_daily
+-- to find days a site reported nothing. Written as a predicate, the exclusion
+-- would have to go in the JOIN's ON clause, because putting `l.voided_at IS
+-- NULL` in the WHERE silently converts that LEFT JOIN into an INNER JOIN and
+-- deletes exactly the missing days the function exists to find. Reading from a
+-- view makes that mistake unavailable.
+--
+-- Voiding a day therefore makes it MISSING again, which is correct: the site
+-- has no standing answer for it, and the missing-days panel should say so.
+--
+-- SELECT * is deliberate: it saves listing forty-odd columns twice, generated
+-- ones included, and reads as "the table, minus the struck-out rows".
+--
+-- BUT IT DOES NOT TRACK THE TABLE. Postgres expands the star ONCE, at CREATE
+-- time, and freezes the result in the view definition. A later ALTER TABLE ...
+-- ADD COLUMN does NOT appear here, so any migration that adds a metric to
+-- greeter_daily or location_daily must re-run these two statements or the new
+-- column is invisible to every reporting function.
+--
+-- CREATE OR REPLACE VIEW can only APPEND columns. Dropping or reordering one
+-- needs DROP VIEW first — see greeter-capture-13.sql, which had to do exactly
+-- that to redefine capture_pct.
+CREATE OR REPLACE VIEW greeter_daily_live AS
+  SELECT * FROM greeter_daily WHERE voided_at IS NULL;
+
+CREATE OR REPLACE VIEW location_daily_live AS
+  SELECT * FROM location_daily WHERE voided_at IS NULL;
+
+REVOKE ALL ON greeter_daily_live  FROM PUBLIC;
+REVOKE ALL ON location_daily_live FROM PUBLIC;
+GRANT SELECT ON greeter_daily_live  TO service_role;
+GRANT SELECT ON location_daily_live TO service_role;
+
+COMMENT ON VIEW greeter_daily_live IS
+  'greeter_daily minus voided rows. Every reporting function reads this, not '
+  'the table. Read the table directly only to show a user their own struck-out '
+  'rows so they can restore one.';
+COMMENT ON VIEW location_daily_live IS
+  'location_daily minus voided rows. See greeter_daily_live.';
 
 -- ===========================================================================
 -- 4. updated_at triggers
@@ -543,7 +649,10 @@ BEGIN
       d.id,
       f.capture_goal_pct,
       f.dob_goal
-    FROM greeter_daily d
+    -- The _live view, so a voided day is never re-graded. The UPDATE below
+    -- needs no voided_at predicate of its own: it joins `resolved` on id, and
+    -- an id that isn't in this SELECT cannot be written by it.
+    FROM greeter_daily_live d
     -- LEFT JOIN LATERAL, not a plain one: when no window covers the day the
     -- resolver returns no rows, and an inner join would skip that day rather
     -- than clearing the stale goal off it. Clearing it is the point on delete.
@@ -570,7 +679,7 @@ BEGIN
       f.capture_goal_pct,
       f.dob_goal,
       f.member_goal_month_end
-    FROM location_daily l
+    FROM location_daily_live l
     LEFT JOIN LATERAL greeter_goal_for(l.site_number, l.business_date) f ON true
     WHERE l.site_number = p_site_number
       AND l.business_date >= p_from
@@ -681,14 +790,20 @@ AS $$
     END                          AS wash_sales_per_hour,
     ROUND(AVG(g.capture_goal_pct), 2) AS capture_goal_pct,
     ROUND(AVG(g.dob_goal), 2)         AS dob_goal,
-    CASE WHEN SUM(g.wash_sales) > 0
-      THEN ROUND(SUM(COALESCE(g.sign_ups, 0))::numeric * 100 / SUM(g.wash_sales), 2)
+    -- Opportunities = wash sales + sign-ups. The guard is on the sum, not on
+    -- wash_sales alone: a stretch with no wash sales but some sign-ups is
+    -- 100%, not unknown.
+    CASE WHEN SUM(COALESCE(g.wash_sales, 0)) + SUM(COALESCE(g.sign_ups, 0)) > 0
+      THEN ROUND(
+             SUM(COALESCE(g.sign_ups, 0))::numeric * 100
+             / (SUM(COALESCE(g.wash_sales, 0)) + SUM(COALESCE(g.sign_ups, 0))), 2)
     END                          AS capture_pct,
+    -- dob keeps the wash_sales denominator. Deliberate, not an oversight.
     CASE WHEN SUM(g.wash_sales) > 0
       THEN ROUND((SUM(COALESCE(g.package_dollars, 0)) + SUM(COALESCE(g.extras_dollars, 0)))
                  / SUM(g.wash_sales), 2)
     END                          AS dob
-  FROM greeter_daily g
+  FROM greeter_daily_live g
   WHERE (p_date_from         IS NULL OR g.business_date     >= p_date_from)
     AND (p_date_to           IS NULL OR g.business_date     <= p_date_to)
     AND (p_location_id       IS NULL OR g.location_id        = p_location_id)
@@ -729,7 +844,11 @@ GRANT EXECUTE ON FUNCTION greeter_rollup(date, date, integer, integer, text, tex
 -- minus rewashes: both are real wash sales that no customer can scan a card
 -- for, so counting them punishes a site for business it did correctly. See
 -- greeter-house-accounts-10.sql for the full reasoning, including why
--- capture_pct and dob deliberately keep the gross denominator.
+-- capture_pct and dob deliberately keep the gross wash_sales figure rather
+-- than netting these two off. That still holds. Note that 10's wider claim —
+-- that capture_pct divides by wash_sales — was superseded on 2026-08-22 by
+-- greeter-capture-13.sql, which moved the denominator to wash_sales +
+-- sign_ups. House accounts and rewashes are excluded from it either way.
 CREATE OR REPLACE FUNCTION greeter_scan_rates(
   p_date_from      date    DEFAULT NULL,
   p_date_to        date    DEFAULT NULL,
@@ -778,7 +897,7 @@ AS $$
         - COALESCE(l.rewashes, 0),
         0
       ) AS scannable
-    FROM location_daily l
+    FROM location_daily_live l
     WHERE (p_date_from      IS NULL OR l.business_date >= p_date_from)
       AND (p_date_to        IS NULL OR l.business_date <= p_date_to)
       AND (p_location_id    IS NULL OR l.location_id   =  p_location_id)
@@ -795,7 +914,7 @@ AS $$
       g.location_id,
       SUM(COALESCE(g.wash_sales, 0))::bigint AS scanned,
       COUNT(*)::bigint                       AS greeters
-    FROM greeter_daily g
+    FROM greeter_daily_live g
     JOIN site s
       ON s.business_date = g.business_date
      AND s.location_id   = g.location_id
@@ -804,7 +923,7 @@ AS $$
   ever AS (
     -- Lets the UI tell "onboarded and slipping" (0%, flag it) apart from
     -- "never started" (blank, don't nag).
-    SELECT DISTINCT g.location_id FROM greeter_daily g
+    SELECT DISTINCT g.location_id FROM greeter_daily_live g
   )
   SELECT
     s.business_date,
@@ -902,13 +1021,13 @@ AS $$
     -- on whichever spelling won would intermittently drop a location admin's
     -- own site out of their panel.
     SELECT l.location_id, l.site_number, l.location_code, l.business_date
-      FROM location_daily l
+      FROM location_daily_live l
      WHERE (p_location_id    IS NULL OR l.location_id   =  p_location_id)
        AND (p_site_number    IS NULL OR l.site_number   =  p_site_number)
        AND (p_location_codes IS NULL OR l.location_code = ANY(p_location_codes))
     UNION ALL
     SELECT g.location_id, g.site_number, g.location_code, g.business_date
-      FROM greeter_daily g
+      FROM greeter_daily_live g
      WHERE (p_location_id    IS NULL OR g.location_id   =  p_location_id)
        AND (p_site_number    IS NULL OR g.site_number   =  p_site_number)
        AND (p_location_codes IS NULL OR g.location_code = ANY(p_location_codes))
@@ -931,7 +1050,7 @@ AS $$
   ),
   greeter_counts AS (
     SELECT g.location_id, g.business_date, COUNT(*)::bigint AS greeters
-      FROM greeter_daily g
+      FROM greeter_daily_live g
      WHERE g.business_date BETWEEN p_date_from AND p_date_to
      GROUP BY g.location_id, g.business_date
   )
@@ -944,7 +1063,11 @@ AS $$
     COALESCE(gc.greeters, 0)::bigint
   FROM scoped s
   CROSS JOIN days d
-  LEFT JOIN location_daily l
+  -- The _live view, which is the ONLY correct spelling here: `l.voided_at IS
+  -- NULL` in this query's WHERE would turn the LEFT JOIN into an inner one and
+  -- drop every missing day. A voided site day therefore counts as missing
+  -- again, which is the answer this function should give.
+  LEFT JOIN location_daily_live l
     ON l.location_id   = s.location_id
    AND l.business_date = d.business_date
   LEFT JOIN greeter_counts gc
@@ -978,13 +1101,18 @@ GRANT EXECUTE ON FUNCTION greeter_missing_days(date, date, integer, integer, tex
 -- WHAT "OVER GOAL" MEANS:
 --   over    capture_pct >= capture_goal_pct  (hitting it exactly is hitting it)
 --   under   capture_pct <  capture_goal_pct
---   neither capture_pct IS NULL (no wash sales, so no opportunity and no rate)
+--   neither capture_pct IS NULL (no wash sales AND no sign-ups — nothing
+--           happened, so there is no rate)
 --           OR capture_goal_pct IS NULL (no goal window covered the day)
 -- The "neither" bucket is returned as ungraded_days rather than dropped, so the
 -- page can say "5 of 12 days couldn't be graded" instead of quietly reporting
 -- percentages off a denominator the reader can't see. The percentages are over
 -- GRADEABLE days: dividing by days_logged would let a greeter improve their
--- standing by logging days with no wash sales.
+-- standing by logging days on which nothing happened.
+--
+-- This bucket got smaller on 2026-08-22. Under the old sign_ups/wash_sales
+-- definition a day with sign-ups but no wash sales was NULL and landed here;
+-- it is now a genuine 100% and grades as a day over goal.
 --
 -- low_sample (fewer than 3 gradeable days) exists because two days, both under
 -- goal, is "100% under goal" and would otherwise open the underperformer list.
@@ -1068,7 +1196,7 @@ AS $$
       CASE WHEN g.capture_pct IS NOT NULL AND g.capture_goal_pct IS NOT NULL
                 AND g.capture_pct <  g.capture_goal_pct
            THEN 1 ELSE 0 END AS is_under
-    FROM greeter_daily g
+    FROM greeter_daily_live g
     WHERE g.business_date >= p_date_from
       AND g.business_date <= p_date_to
       AND (p_location_id       IS NULL OR g.location_id       = p_location_id)
@@ -1112,9 +1240,14 @@ AS $$
     END                                                   AS wash_sales_per_hour,
     ROUND(AVG(r.capture_goal_pct), 2)                     AS capture_goal_pct,
     ROUND(AVG(r.dob_goal), 2)                             AS dob_goal,
-    CASE WHEN SUM(r.wash_sales) > 0
-      THEN ROUND(SUM(COALESCE(r.sign_ups, 0))::numeric * 100 / SUM(r.wash_sales), 2)
+    -- Opportunities = wash sales + sign-ups. Must match greeter_rollup exactly;
+    -- the two are shown on screens a click apart and any drift reads as a bug.
+    CASE WHEN SUM(COALESCE(r.wash_sales, 0)) + SUM(COALESCE(r.sign_ups, 0)) > 0
+      THEN ROUND(
+             SUM(COALESCE(r.sign_ups, 0))::numeric * 100
+             / (SUM(COALESCE(r.wash_sales, 0)) + SUM(COALESCE(r.sign_ups, 0))), 2)
     END                                                   AS capture_pct,
+    -- dob keeps the wash_sales denominator. Deliberate, not an oversight.
     CASE WHEN SUM(r.wash_sales) > 0
       THEN ROUND((SUM(COALESCE(r.package_dollars, 0)) + SUM(COALESCE(r.extras_dollars, 0)))
                  / SUM(r.wash_sales), 2)
@@ -1228,7 +1361,7 @@ AS $$
       l.dob_goal,
       l.churn_pct,
       l.google_reviews
-    FROM location_daily l
+    FROM location_daily_live l
     WHERE l.business_date >= p_date_from
       AND l.business_date <= p_date_to
       AND (p_location_id    IS NULL OR l.location_id   =  p_location_id)
@@ -1242,7 +1375,7 @@ AS $$
       g.location_id,
       SUM(COALESCE(g.wash_sales, 0))::bigint AS scanned,
       COUNT(*)::bigint                       AS greeters
-    FROM greeter_daily g
+    FROM greeter_daily_live g
     JOIN site s
       ON s.business_date = g.business_date
      AND s.location_id   = g.location_id

@@ -58,7 +58,11 @@ export interface Totals {
   scanned_wash_sales: number;
   /** Member roll at the latest day in the window. A level — see the note above. */
   total_members: number | null;
-  /** Null when the window sold no wash sales: no denominator, not zero. */
+  /**
+   * Null only when the window had no wash sales AND no sign ups: nothing
+   * happened, so there is no denominator. A window of pure sign ups is 100%,
+   * not null.
+   */
   capture_pct: number | null;
   dob: number | null;
   /**
@@ -84,25 +88,33 @@ function meanOrNull(values: (number | null)[]): number | null {
 /**
  * A goal column collapsed the SAME WAY as the actual it will be graded against.
  *
- * The actual is volume-weighted (summed sign ups over summed wash sales), so a
- * flat mean of the goal column would grade it against a target no site has: a
- * 400-car site's 32% goal would count exactly as much as a 40-car site's 22%,
- * and a site that reported seven days would count seven times. Weighting the
- * goal by wash sales puts both sides of the comparison on the same footing.
+ * The actual is volume-weighted, so a flat mean of the goal column would grade
+ * it against a target no site has: a 400-car site's 32% goal would count exactly
+ * as much as a 40-car site's 22%, and a site that reported seven days would
+ * count seven times. Weighting the goal by volume puts both sides of the
+ * comparison on the same footing.
+ *
+ * THE WEIGHT MUST BE THE ACTUAL'S DENOMINATOR, which is why callers pass it in
+ * rather than it being hard-coded here. Capture is sign ups over wash sales PLUS
+ * SIGN UPS, so its goal weights by that same sum; dob is dollars over wash sales
+ * alone, so its goal weights by wash sales alone. Weighting the capture goal by
+ * wash sales would quietly under-count exactly the days a greeter converted
+ * best — the days with the fewest wash sales left over.
  *
  * Falls back to a flat mean when the window sold nothing — with no volume there
  * are no weights, and the plain average is the only answer available.
  */
 function weightedGoal(
   rows: LocationPeriodRow[],
-  pick: (r: LocationPeriodRow) => number | null
+  pick: (r: LocationPeriodRow) => number | null,
+  weigh: (r: LocationPeriodRow) => number
 ): number | null {
   let num = 0;
   let den = 0;
   for (const r of rows) {
     const g = pick(r);
     if (g === null || g === undefined) continue;
-    const w = n(r.wash_sales);
+    const w = weigh(r);
     num += g * w;
     den += w;
   }
@@ -174,27 +186,54 @@ export function totals(rows: LocationPeriodRow[]): Totals {
     t.scanned_wash_sales += r.scanned_wash_sales;
   }
 
-  // THREE RATES, TWO DENOMINATORS, ON PURPOSE.
+  // THREE RATES, THREE DENOMINATORS, ON PURPOSE.
   //
-  // capture_pct and dob divide by GROSS wash sales. House accounts and rewashes
-  // are real wash sales and company policy counts them in capture rate, even
-  // though nobody could buy a membership against one. That policy also matches
-  // the GENERATED columns on location_daily/greeter_daily, so changing it here
-  // would make this report disagree with the day rows it's built from.
+  // THESE MUST MATCH THE SQL EXACTLY. This is the only place in the app that
+  // recomputes a rate in TypeScript — it exists because the KPI tiles at the
+  // top of the report roll several already-aggregated rows into one figure,
+  // which SQL has no chance to do. It sits directly above tables whose numbers
+  // come straight out of Postgres, so any drift between the two reads as a
+  // bug to whoever is looking at the screen. The counterparts are the
+  // generated columns in greeter-scorecard-tables.sql and the summed
+  // recomputes in greeter_rollup / greeter_period_report.
+  //
+  // capture_pct divides by wash sales PLUS sign-ups: a customer either bought
+  // a single wash or joined the plan, so both outcomes are opportunities and
+  // the rate is bounded at 100. Changed 2026-08-22 along with the SQL; it used
+  // to divide by wash sales alone, which put 400% on the scorecard. See
+  // supabase/greeter-capture-13.sql.
+  //
+  // dob divides by wash sales. Unchanged, and deliberately not "made
+  // consistent" with capture — dollars over base is a per-wash average.
+  //
+  // Neither nets house accounts or rewashes off its denominator. Those are
+  // real wash sales and company policy counts them, even though nobody could
+  // buy a membership against one.
   //
   // scanned_pct divides by SCANNABLE. It asks a different question: of the cars
   // a greeter COULD have scanned a card for, how many got attributed? Grading
   // that against gross would penalise a site for cars no card exists for.
+  //
+  // ROUNDING: capture to 1dp here, 2dp in SQL. The tile is a headline figure
+  // and 1dp is what fits; the difference is display-only and never compared.
+  const opportunities = t.wash_sales + t.sign_ups;
+  if (opportunities > 0) {
+    t.capture_pct = round((t.sign_ups * 100) / opportunities, 1);
+  }
   if (t.wash_sales > 0) {
-    t.capture_pct = round((t.sign_ups * 100) / t.wash_sales, 1);
     t.dob = round((t.package_dollars + t.extras_dollars) / t.wash_sales, 2);
   }
   if (scannable > 0) {
     t.scanned_pct = round((t.scanned_wash_sales * 100) / scannable, 1);
   }
 
-  const cg = weightedGoal(rows, (r) => r.capture_goal_pct);
-  const dg = weightedGoal(rows, (r) => r.dob_goal);
+  // Each goal weights by its own actual's denominator — see weightedGoal.
+  const cg = weightedGoal(
+    rows,
+    (r) => r.capture_goal_pct,
+    (r) => n(r.wash_sales) + n(r.sign_ups)
+  );
+  const dg = weightedGoal(rows, (r) => r.dob_goal, (r) => n(r.wash_sales));
   t.capture_goal_pct = cg === null ? null : round(cg, 2);
   t.dob_goal = dg === null ? null : round(dg, 2);
   t.total_members = memberLevel(rows);

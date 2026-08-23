@@ -447,7 +447,7 @@ export interface ScatterPoint {
   key: string;
   /** Wash sales for the period — the volume behind the rate. */
   x: number;
-  /** Capture %, or null when there were no wash sales at all. */
+  /** Capture %, or null when there were no wash sales and no sign ups at all. */
   y: number | null;
   tier: CaptureTier | null;
   hover: string;

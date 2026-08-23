@@ -71,6 +71,15 @@
 --      generates as 150.00. What the sheet says (a member signed up off a car
 --      that wasn't an ALC sale, or a scan landed on the wrong day).
 --
+-- SCALE NOTE, added 2026-08-22. Every capture % in this header and in the
+-- verification queries at the foot of the file is on the OLD definition,
+-- sign_ups / wash_sales. greeter-capture-13.sql changed it to
+-- sign_ups / (wash_sales + sign_ups), so the stored rows now read lower and
+-- the hand-written check queries below (which still divide by wash_sales
+-- alone) will disagree with the table. The seed itself is unaffected — it
+-- inserts raw wash_sales and sign_ups, which did not change. Dylan's 150.00
+-- is now 60.00, and 6.67% for the period is now 6.25%.
+--
 --   c) The greeter tabs never add up to the site's ALC, and now they add up to
 --      LESS on every single day. Against the workbook's site tab, Aug 5 scanned
 --      157% (14 site ALC vs 22 greeter ALC) — a clear source inconsistency.

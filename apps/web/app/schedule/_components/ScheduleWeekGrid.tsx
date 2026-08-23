@@ -98,6 +98,45 @@ function fmtHours(min: number): string {
   return `${Math.round((min / 60) * 100) / 100}`;
 }
 
+/* ============================================================
+ * Payroll cost model.
+ *
+ * This grid exists to help keep a week inside a MONTHLY payroll budget, so the
+ * numbers below are split into the part scheduling moves and the part it does
+ * not:
+ *
+ *   variable = sum over HOURLY shifts of (hours x rate) — the lever the writer
+ *              actually pulls when dragging shifts around.
+ *   salaried = roster members on salary, priced at their hourly-equivalent
+ *              rate x SALARY_WEEK_HOURS — a flat weekly baseline that does NOT
+ *              move when a salaried person is given more or fewer shifts.
+ *
+ * Pricing salaried staff per shift would be actively harmful: it would teach
+ * the schedule writer that under-scheduling a GM makes the day look cheaper,
+ * when in truth their hours are the one free lever on the board. So salaried
+ * shifts contribute $0 to the day and their cost is carried exactly once, in
+ * the week baseline.
+ *
+ * Beekeeper's `rate` custom field is an HOURLY-EQUIVALENT figure for salaried
+ * staff too (confirmed against the tenant: 42.00 ~ $87k/yr for a GM), which is
+ * why the same number is multiplied by hours in both branches.
+ * ============================================================ */
+
+/** Hours a salaried employee's weekly baseline is priced at. */
+const SALARY_WEEK_HOURS = 40;
+
+/** True for a salaried pay type. Beekeeper returns "Salary" | "Hourly"; the
+ *  compare is case-insensitive because the value is typed by an admin. */
+function isSalaried(payType: string | null | undefined): boolean {
+  return (payType ?? "").trim().toLowerCase() === "salary";
+}
+
+/** Whole-dollar money label. Cents are noise at this scale and would wrap the
+ *  narrow day columns. */
+function fmtMoney(dollars: number): string {
+  return `$${Math.round(dollars).toLocaleString("en-US")}`;
+}
+
 /** Format an unavailability marker's time range. Times are "HH:MM" 24h strings
  *  straight off the form; a blank on either end means the employee didn't scope
  *  it, so we read it as all-day. */
@@ -369,6 +408,56 @@ export function ScheduleWeekGrid({
     }
     return map;
   }, [days, shifts]);
+
+  // Variable payroll cost bucketed by day: HOURLY shifts only, priced
+  // hours x rate. Salaried shifts are deliberately $0 here — see the payroll
+  // cost model note above. `unrated` counts working shifts that carry no rate
+  // (open/unassigned shifts, or an employee whose Beekeeper rate was never
+  // entered); those add $0, so the day is UNDERSTATED and has to say so rather
+  // than silently reading as cheap.
+  const dailyCost = useMemo(() => {
+    const map = new Map<string, { variable: number; unrated: number }>();
+    for (const d of days) map.set(d, { variable: 0, unrated: 0 });
+    for (const s of shifts) {
+      if (!isWorkingShift(s)) continue;
+      const cell = map.get(s.startDate);
+      if (!cell) continue;
+      if (isSalaried(s.payType)) continue;
+      if (typeof s.rate !== "number") {
+        cell.unrated += 1;
+        continue;
+      }
+      cell.variable += (shiftDurationMinutes(s) / 60) * s.rate;
+    }
+    return map;
+  }, [days, shifts]);
+
+  // Flat weekly cost of everyone on salary at this location, whether or not
+  // they appear on the grid — they are paid the same either way and the
+  // monthly budget still has to carry them. Salaried members with no rate
+  // entered are counted separately so the baseline can admit it is incomplete.
+  const salaried = useMemo(() => {
+    let weekly = 0;
+    let unrated = 0;
+    for (const r of roster) {
+      if (!isSalaried(r.payType)) continue;
+      if (typeof r.rate !== "number") {
+        unrated += 1;
+        continue;
+      }
+      weekly += r.rate * SALARY_WEEK_HOURS;
+    }
+    return { weekly, unrated };
+  }, [roster]);
+
+  const weekVariable = useMemo(
+    () => days.reduce((sum, d) => sum + (dailyCost.get(d)?.variable ?? 0), 0),
+    [days, dailyCost]
+  );
+  const weekUnrated = useMemo(
+    () => days.reduce((sum, d) => sum + (dailyCost.get(d)?.unrated ?? 0), 0),
+    [days, dailyCost]
+  );
 
   // Worked minutes per employee for the visible week — powers the summary
   // panel. Keyed by userId; "" collects open/unassigned shifts.
@@ -801,6 +890,23 @@ export function ScheduleWeekGrid({
                       ? `${fmtHours(dailyMinutes.get(date) ?? 0)}h scheduled`
                       : "—"}
                   </div>
+                  {/* Hourly cost only — salaried staff are carried once in
+                      the week baseline below, so this number moves if and only
+                      if the writer changed something they control. */}
+                  {(dailyCost.get(date)?.variable ?? 0) > 0 ||
+                  (dailyCost.get(date)?.unrated ?? 0) > 0 ? (
+                    <div className="text-center text-[11px] font-semibold tabular-nums text-splash-navy">
+                      {fmtMoney(dailyCost.get(date)?.variable ?? 0)}
+                      {(dailyCost.get(date)?.unrated ?? 0) > 0 ? (
+                        <span
+                          className="ml-1 font-medium text-amber-700"
+                          title="These shifts have no pay rate in Beekeeper and count as $0, so this day is understated."
+                        >
+                          · {dailyCost.get(date)?.unrated} unrated
+                        </span>
+                      ) : null}
+                    </div>
+                  ) : null}
                 </div>
               </div>
             );
@@ -851,6 +957,60 @@ export function ScheduleWeekGrid({
             </tbody>
           </table>
         )}
+      </div>
+
+      {/* Payroll cost · week. Split so the budget conversation and the
+          scheduling conversation stay separate: the hourly line is what this
+          week's grid decided, the salaried line is what the location costs
+          before anyone is scheduled at all. */}
+      <div className="mt-4 rounded-splash-lg border border-gray-light bg-white p-4">
+        <h2 className="mb-3 text-sm font-bold text-splash-navy">
+          Payroll cost · week of {weekRangeLabel(monday)}
+        </h2>
+        <table className="w-full max-w-md text-sm">
+          <tbody>
+            <tr className="border-b border-gray-light/60">
+              <td className="py-1.5 pr-4 text-splash-navy">
+                Hourly (scheduled)
+                {weekUnrated > 0 ? (
+                  <span className="ml-1 text-xs font-medium text-amber-700">
+                    · {weekUnrated} unrated
+                  </span>
+                ) : null}
+              </td>
+              <td className="py-1.5 text-right font-semibold tabular-nums text-splash-navy">
+                {fmtMoney(weekVariable)}
+              </td>
+            </tr>
+            <tr className="border-b border-gray-light/60">
+              <td className="py-1.5 pr-4 text-splash-navy">
+                Salaried (fixed)
+                {salaried.unrated > 0 ? (
+                  <span className="ml-1 text-xs font-medium text-amber-700">
+                    · {salaried.unrated} unrated
+                  </span>
+                ) : null}
+              </td>
+              <td className="py-1.5 text-right font-semibold tabular-nums text-splash-navy">
+                {fmtMoney(salaried.weekly)}
+              </td>
+            </tr>
+            <tr>
+              <td className="pr-4 pt-2 font-bold text-splash-navy">
+                Week total
+              </td>
+              <td className="pt-2 text-right font-bold tabular-nums text-splash-navy">
+                {fmtMoney(weekVariable + salaried.weekly)}
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        <p className="mt-2 max-w-md text-xs text-splash-navy/60">
+          Salaried staff are priced at rate x {SALARY_WEEK_HOURS}h and do not
+          change when their shifts do. Shifts flagged as unrated have no pay
+          rate in Beekeeper and count as $0, so the total is a floor rather than
+          an estimate.
+        </p>
       </div>
 
       {form ? (
