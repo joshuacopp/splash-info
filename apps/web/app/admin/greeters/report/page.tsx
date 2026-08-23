@@ -1280,7 +1280,7 @@ function SiteDayTable({
               last on purpose: put it beside Members and someone will give it a
               goal to match its neighbours. */}
           <th className="px-4 py-3">Churn %</th>
-          <th className="px-4 py-3">Actions</th>
+          <th className={STICKY_TH_CLS}>Actions</th>
         </tr>
       </thead>
       <tbody className={TBODY_CLS}>
@@ -1314,7 +1314,7 @@ function SiteDayTable({
             </td>
             <td className="px-4 py-3 font-semibold">{dobCell(d.dob)}</td>
             <td className="px-4 py-3 text-splash-navy/80">{pct(d.churn_pct)}</td>
-            <td className="whitespace-nowrap px-4 py-3">
+            <td className={STICKY_TD_CLS}>
               <VoidDayButton
                 id={d.id}
                 action={voidLocationDayAction}
@@ -1361,7 +1361,7 @@ function PersonDayTable({
           <th className="px-4 py-3">Reviews</th>
           <th className="px-4 py-3">Capture %</th>
           <th className="px-4 py-3">D.O.B.</th>
-          <th className="px-4 py-3">Actions</th>
+          <th className={STICKY_TH_CLS}>Actions</th>
         </tr>
       </thead>
       <tbody className={TBODY_CLS}>
@@ -1395,7 +1395,7 @@ function PersonDayTable({
               <CaptureCell value={d.capture_pct} goal={d.capture_goal_pct} />
             </td>
             <td className="px-4 py-3 font-semibold">{dobCell(d.dob)}</td>
-            <td className="whitespace-nowrap px-4 py-3">
+            <td className={STICKY_TD_CLS}>
               <VoidDayButton
                 id={d.id}
                 action={voidDayAction}
@@ -1525,6 +1525,16 @@ const BTN_CLS =
 const THEAD_CLS =
   "bg-splash-navy/5 text-left text-xs font-semibold uppercase tracking-wider text-splash-navy/70";
 const TBODY_CLS = "divide-y divide-gray-light text-splash-navy";
+
+// PINNED ACTIONS COLUMN — same reasoning, and the same flattened hexes, as
+// /admin/greeters. See the long note beside these constants there.
+//
+// The one difference: no voided variant here. This report reads the _live
+// views, so a struck-out row never reaches these tables and the pinned cell is
+// always plain white.
+const STICKY_EDGE = "shadow-[inset_1px_0_0_#dbdbdb]";
+const STICKY_TH_CLS = `sticky right-0 z-20 bg-[#f4f3f6] px-4 py-3 ${STICKY_EDGE}`;
+const STICKY_TD_CLS = `sticky right-0 z-10 whitespace-nowrap bg-white px-4 py-3 ${STICKY_EDGE}`;
 
 /**
  * Site-day scanned share. Null when the site sold nothing a card could be

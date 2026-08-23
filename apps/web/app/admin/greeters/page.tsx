@@ -1172,7 +1172,7 @@ export default async function GreetersPage({ searchParams }: PageProps) {
                 <th className="px-4 py-3">Reacts</th>
                 <th className="px-4 py-3">Reviews</th>
                 <th className="px-4 py-3">Capture %</th>
-                <th className="px-4 py-3">Actions</th>
+                <th className={STICKY_TH_CLS}>Actions</th>
               </tr>
             </thead>
             <tbody className={TBODY_CLS}>
@@ -1246,7 +1246,7 @@ export default async function GreetersPage({ searchParams }: PageProps) {
                       goal={r.capture_goal_pct}
                     />
                   </td>
-                  <td className="whitespace-nowrap px-4 py-3">
+                  <td className={stickyTd(r.voided_at !== null)}>
                     <DayRowActions
                       id={r.id}
                       editHref={editHref("edit_day", r.id)}
@@ -1305,7 +1305,7 @@ export default async function GreetersPage({ searchParams }: PageProps) {
                     Members and the next person to touch this table will give it
                     a goal to match its neighbours; it has none, and shouldn't. */}
                 <th className="px-4 py-3">Churn %</th>
-                <th className="px-4 py-3">Actions</th>
+                <th className={STICKY_TH_CLS}>Actions</th>
               </tr>
             </thead>
             <tbody className={TBODY_CLS}>
@@ -1396,7 +1396,7 @@ export default async function GreetersPage({ searchParams }: PageProps) {
                   <td className="px-4 py-3 text-splash-navy/80">
                     {pct(r.churn_pct)}
                   </td>
-                  <td className="whitespace-nowrap px-4 py-3">
+                  <td className={stickyTd(r.voided_at !== null)}>
                     <DayRowActions
                       id={r.id}
                       editHref={editHref("edit_location_day", r.id)}
@@ -1432,6 +1432,33 @@ const HINT_CLS = "text-[11px] text-splash-navy/60";
 const THEAD_CLS =
   "bg-splash-navy/5 text-left text-xs font-semibold uppercase tracking-wider text-splash-navy/70";
 const TBODY_CLS = "divide-y divide-gray-light text-splash-navy";
+
+// PINNED ACTIONS COLUMN.
+//
+// Edit and Void are the last cell of a 16- and 19-column table. On any laptop
+// that put them a full screen-width past the right edge, behind a scrollbar
+// sitting at the TOP of the card where nobody looks — the buttons shipped, and
+// were reported as missing. Pinning the column keeps them on screen at every
+// scroll position, which is the only reason anyone finds them.
+//
+// THE BACKGROUNDS ARE FLATTENED HEXES, not the bg-splash-navy/5 and
+// bg-splash-deny/[0.04] tints the same cells would otherwise inherit. A
+// translucent sticky cell is see-through, so the columns sliding underneath
+// would read straight through the buttons. #f4f3f6 is splash-navy at 5% over
+// white; #fef6f6 is splash-deny at 4% over white. If either token moves in
+// tailwind.base.cjs these have to be recomputed by hand — nothing checks them.
+//
+// The divider is an inset shadow rather than a border because Tailwind's
+// preflight sets border-collapse: collapse, and collapsed borders do not travel
+// with a sticky cell in Chrome. The shadow does.
+const STICKY_EDGE = "shadow-[inset_1px_0_0_#dbdbdb]";
+const STICKY_TH_CLS = `sticky right-0 z-20 bg-[#f4f3f6] px-4 py-3 ${STICKY_EDGE}`;
+const STICKY_TD_CLS = `sticky right-0 z-10 whitespace-nowrap px-4 py-3 ${STICKY_EDGE}`;
+
+/** The pinned cell paints its own opaque background — see STICKY_TD_CLS. */
+function stickyTd(voided: boolean): string {
+  return `${STICKY_TD_CLS} ${voided ? "bg-[#fef6f6]" : "bg-white"}`;
+}
 
 function Card({
   title,
