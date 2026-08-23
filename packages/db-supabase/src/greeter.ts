@@ -12,6 +12,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import type {
   GreeterDailyInsert,
   GreeterDailyRow,
+  GreeterDailyUpdate,
   GreeterGoalInsert,
   GreeterGoalRestampResult,
   GreeterGoalRow,
@@ -24,6 +25,7 @@ import type {
   GreeterScanRateRow,
   LocationDailyInsert,
   LocationDailyRow,
+  LocationDailyUpdate,
   LocationGoalSnapshot,
   LocationPeriodRow
 } from "@splash/types/greeter";
@@ -411,8 +413,17 @@ export interface DaySubmitActor {
  * happens on the correction path, which is the rare case.
  *
  * 23505 is Postgres' unique_violation — here it can only be
- * `greeter_daily_unique_day`, since every other unique column is a generated
- * uuid PK.
+ * `idx_greeter_daily_unique_live_day`, since every other unique column is a
+ * generated uuid PK.
+ *
+ * `.is("voided_at", null)` IS LOAD-BEARING, not defensive. That index is
+ * PARTIAL (live rows only), so struck-out rows pile up freely underneath the
+ * live one at the same (location, greeter, date) — that is what makes a void
+ * genuinely free the day. Without the filter this UPDATE matches the live row
+ * AND every voided one: `.single()` then throws PGRST116 on an ordinary
+ * correction, and every withdrawn row gets overwritten with the new numbers,
+ * destroying the record of what was withdrawn. Which is the entire reason this
+ * feature is a void and not a delete.
  */
 export async function submitGreeterDay(
   client: SupabaseClient,
@@ -441,6 +452,9 @@ export async function submitGreeterDay(
     .eq("location_id", row.location_id)
     .eq("beekeeper_user_id", row.beekeeper_user_id)
     .eq("business_date", row.business_date)
+    // See the note above — the unique index is partial, so this is the only
+    // thing keeping the correction off the struck-out rows beneath it.
+    .is("voided_at", null)
     .select()
     .single();
   if (updErr) throw updErr;
@@ -448,7 +462,8 @@ export async function submitGreeterDay(
   return { row: updated as unknown as GreeterDailyRow, corrected: true };
 }
 
-/** Site-wide day totals. Same insert-then-correct semantics as above. */
+/** Site-wide day totals. Same insert-then-correct semantics as above, and the
+ *  same load-bearing `.is("voided_at", null)` for the same reason. */
 export async function submitLocationDay(
   client: SupabaseClient,
   row: LocationDailyInsert,
@@ -475,11 +490,230 @@ export async function submitLocationDay(
     })
     .eq("location_id", row.location_id)
     .eq("business_date", row.business_date)
+    .is("voided_at", null)
     .select()
     .single();
   if (updErr) throw updErr;
 
   return { row: updated as unknown as LocationDailyRow, corrected: true };
+}
+
+/* ============================================================
+ * Corrections — update by id, void, restore
+ * ============================================================ */
+
+/**
+ * Rewrite one greeter day, addressed by its id.
+ *
+ * BY ID, NOT BY THE NATURAL KEY, because an edit is allowed to change the date,
+ * the site or the greeter — the three columns the natural key is made of. Going
+ * through submitGreeterDay would insert a second row at the new coordinates and
+ * leave the original standing at the old ones, which is how a typo becomes two
+ * days that both look real. Addressing the row directly moves it instead.
+ *
+ * A key collision is therefore possible and is left to the database:
+ * idx_greeter_daily_unique_live_day raises 23505 when the edit lands on a date
+ * that site+greeter already has a live row for. That error propagates. The
+ * caller must catch it and say which day is already taken — it is the one case
+ * where the user can actually fix the problem, so it must not read as "save
+ * failed".
+ *
+ * SCOPE NARROWS THE STATEMENT, exactly as in deleteGreeterGoal, so a location
+ * admin who guesses another site's id updates nothing. That guard binds against
+ * the row's CURRENT location_code, which is not enough on its own: an edit that
+ * moves a day to a different site must also be allowed at the DESTINATION, or a
+ * location admin could push their row into a site they don't administer and lose
+ * sight of it. Hence the second check below. It sits in front of the statement
+ * rather than inside it because the destination code isn't in the table yet —
+ * it's in the payload.
+ *
+ * Null means the update matched nothing. Deliberately one return value for three
+ * causes — no such id, not the caller's site, or already voided — because
+ * distinguishing them would confirm to a location admin that another site's id
+ * exists. Callers should phrase the message to cover all three.
+ *
+ * Voided rows are excluded on purpose: a struck-out row is restored first and
+ * edited second, so that "what did this row say when it was withdrawn" stays
+ * answerable.
+ */
+export async function updateGreeterDayById(
+  client: SupabaseClient,
+  id: string,
+  patch: GreeterDailyUpdate,
+  actor: DaySubmitActor,
+  opts: { location_scope?: string[] | null } = {}
+): Promise<GreeterDailyRow | null> {
+  const codes = scopeCodes(opts.location_scope);
+  if (codes && !codes.includes(patch.location_code)) return null;
+
+  let q = client
+    .from("greeter_daily")
+    .update({
+      ...patch,
+      updated_by: actor.user_id,
+      updated_by_email: actor.email
+    })
+    .eq("id", id)
+    .is("voided_at", null);
+
+  if (codes) q = q.in("location_code", codes);
+
+  const { data, error } = await q.select();
+  if (error) throw error;
+  return ((data ?? [])[0] as unknown as GreeterDailyRow) ?? null;
+}
+
+/** Site-day equivalent of updateGreeterDayById — read that comment. */
+export async function updateLocationDayById(
+  client: SupabaseClient,
+  id: string,
+  patch: LocationDailyUpdate,
+  actor: DaySubmitActor,
+  opts: { location_scope?: string[] | null } = {}
+): Promise<LocationDailyRow | null> {
+  const codes = scopeCodes(opts.location_scope);
+  if (codes && !codes.includes(patch.location_code)) return null;
+
+  let q = client
+    .from("location_daily")
+    .update({
+      ...patch,
+      updated_by: actor.user_id,
+      updated_by_email: actor.email
+    })
+    .eq("id", id)
+    .is("voided_at", null);
+
+  if (codes) q = q.in("location_code", codes);
+
+  const { data, error } = await q.select();
+  if (error) throw error;
+  return ((data ?? [])[0] as unknown as LocationDailyRow) ?? null;
+}
+
+/**
+ * Strike out a greeter day, returning the row that was struck.
+ *
+ * NOT A DELETE. The numbers stay on the row and the row keeps its id; only
+ * voided_at is set, and every reporting function reads through the _live views,
+ * so the day leaves every total at once. It also becomes MISSING again — the
+ * site now has no standing answer for that date, which is the truth, and the
+ * missing-days panel will start asking for it. That is intended, not a leak.
+ *
+ * `.is("voided_at", null)` keeps the FIRST voider's name on the row. Without it
+ * a second click would overwrite voided_by with whoever clicked last, which is
+ * the one fact this function exists to record.
+ *
+ * Null when nothing matched — same three-causes-one-value reasoning as
+ * updateGreeterDayById, plus a fourth here (already voided). Voiding a day that
+ * is already void is not an error worth raising: two clicks, or a stale page,
+ * and the user's intent is satisfied either way.
+ */
+export async function voidGreeterDay(
+  client: SupabaseClient,
+  id: string,
+  actor: DaySubmitActor,
+  opts: { location_scope?: string[] | null } = {}
+): Promise<GreeterDailyRow | null> {
+  let q = client
+    .from("greeter_daily")
+    .update({
+      voided_at: new Date().toISOString(),
+      voided_by: actor.user_id,
+      voided_by_email: actor.email
+    })
+    .eq("id", id)
+    .is("voided_at", null);
+
+  const codes = scopeCodes(opts.location_scope);
+  if (codes) q = q.in("location_code", codes);
+
+  const { data, error } = await q.select();
+  if (error) throw error;
+  return ((data ?? [])[0] as unknown as GreeterDailyRow) ?? null;
+}
+
+/** Site-day equivalent of voidGreeterDay. */
+export async function voidLocationDay(
+  client: SupabaseClient,
+  id: string,
+  actor: DaySubmitActor,
+  opts: { location_scope?: string[] | null } = {}
+): Promise<LocationDailyRow | null> {
+  let q = client
+    .from("location_daily")
+    .update({
+      voided_at: new Date().toISOString(),
+      voided_by: actor.user_id,
+      voided_by_email: actor.email
+    })
+    .eq("id", id)
+    .is("voided_at", null);
+
+  const codes = scopeCodes(opts.location_scope);
+  if (codes) q = q.in("location_code", codes);
+
+  const { data, error } = await q.select();
+  if (error) throw error;
+  return ((data ?? [])[0] as unknown as LocationDailyRow) ?? null;
+}
+
+/**
+ * Put a struck-out greeter day back into the totals.
+ *
+ * CAN FAIL WITH 23505, which is the whole reason this isn't a trivial inverse.
+ * While the row was void its slot was free, so someone may have re-entered the
+ * day; restoring would then put two live rows on one (site, greeter, date) and
+ * the partial unique index refuses. The error propagates and the caller has to
+ * say so — "there is already a live entry for that day" is actionable, "restore
+ * failed" is not.
+ *
+ * ALL THREE VOID COLUMNS ARE CLEARED, which does lose the record of who struck
+ * the row out. The alternative — leaving voided_by set on a live row — is worse:
+ * every reader that checks the wrong one of the three columns would conclude the
+ * row is still withdrawn. A row is either struck out or it isn't.
+ *
+ * updated_by is deliberately NOT touched. It records who last typed the numbers,
+ * and a restore doesn't change them; overwriting it would trade a true fact for
+ * a misleading one. Same reasoning as greeter_restamp_goals.
+ */
+export async function restoreGreeterDay(
+  client: SupabaseClient,
+  id: string,
+  opts: { location_scope?: string[] | null } = {}
+): Promise<GreeterDailyRow | null> {
+  let q = client
+    .from("greeter_daily")
+    .update({ voided_at: null, voided_by: null, voided_by_email: null })
+    .eq("id", id)
+    .not("voided_at", "is", null);
+
+  const codes = scopeCodes(opts.location_scope);
+  if (codes) q = q.in("location_code", codes);
+
+  const { data, error } = await q.select();
+  if (error) throw error;
+  return ((data ?? [])[0] as unknown as GreeterDailyRow) ?? null;
+}
+
+/** Site-day equivalent of restoreGreeterDay — including the 23505. */
+export async function restoreLocationDay(
+  client: SupabaseClient,
+  id: string,
+  opts: { location_scope?: string[] | null } = {}
+): Promise<LocationDailyRow | null> {
+  let q = client
+    .from("location_daily")
+    .update({ voided_at: null, voided_by: null, voided_by_email: null })
+    .eq("id", id)
+    .not("voided_at", "is", null);
+
+  const codes = scopeCodes(opts.location_scope);
+  if (codes) q = q.in("location_code", codes);
+
+  const { data, error } = await q.select();
+  if (error) throw error;
+  return ((data ?? [])[0] as unknown as LocationDailyRow) ?? null;
 }
 
 /* ============================================================
@@ -497,10 +731,26 @@ export interface GreeterDayFilters {
   /** undefined = caller sees all sites; array = restrict to these codes. */
   location_scope?: string[] | null;
   limit?: number;
+  /**
+   * Default false — struck-out rows are hidden.
+   *
+   * Set true ONLY on the correction screens, which need to render a voided row
+   * so that restoring it is reachable. Anything that totals, averages or charts
+   * must leave this alone: a voided row still carries its full set of numbers,
+   * so including one doesn't fail loudly, it just makes the number wrong.
+   */
+  include_voided?: boolean;
 }
 
 // No total_cars: it's site-level only. hours_worked / wash_sales_per_hour are
 // generated from the shift window and read-only.
+//
+// The three void columns are selected in full, including the uuid, unlike
+// created_by / updated_by above them — those two are omitted because nothing
+// renders a raw uuid, and their _email twins carry the display value. voided_by
+// is here anyway because VoidState declares it, and a row whose type promises a
+// field the SELECT never asked for is a lie that costs more to debug than one
+// uuid costs to fetch.
 const DAY_COLS =
   "id,business_date,location_id,site_number,location_code," +
   "beekeeper_user_id,greeter_name," +
@@ -508,7 +758,8 @@ const DAY_COLS =
   "google_reviews," +
   "shift_start,shift_end,hours_worked,wash_sales_per_hour," +
   "capture_goal_pct,dob_goal,capture_pct,dob," +
-  "comments,created_at,created_by_email,updated_at,updated_by_email";
+  "comments,created_at,created_by_email,updated_at,updated_by_email," +
+  "voided_at,voided_by,voided_by_email";
 
 export async function listGreeterDays(
   client: SupabaseClient,
@@ -537,7 +788,8 @@ const LOCATION_DAY_COLS =
   "sign_ups,reactivations,cancellations,total_members,net_members," +
   "churn_pct,google_reviews," +
   "capture_goal_pct,dob_goal,member_goal_month_end,capture_pct,dob," +
-  "comments,created_at,created_by_email,updated_at,updated_by_email";
+  "comments,created_at,created_by_email,updated_at,updated_by_email," +
+  "voided_at,voided_by,voided_by_email";
 
 export async function listLocationDays(
   client: SupabaseClient,
@@ -555,6 +807,10 @@ export async function listLocationDays(
   if (filters.site_number != null) q = q.eq("site_number", filters.site_number);
   const locScope = scopeCodes(filters.location_scope);
   if (locScope) q = q.in("location_code", locScope);
+  // See the note in applyDayFilters — this list is hand-rolled rather than
+  // sharing that helper because greeter-only filters don't apply to site rows,
+  // so the void predicate has to be repeated here.
+  if (!filters.include_voided) q = q.is("voided_at", null);
 
   const { data, error } = await q;
   if (error) throw error;
@@ -778,5 +1034,11 @@ function applyDayFilters<T extends Record<string, any>>(
   }
   const scope = scopeCodes(filters.location_scope);
   if (scope) q = q.in("location_code", scope);
+  // A PREDICATE HERE, A VIEW EVERYWHERE ELSE. The six SQL reporting functions go
+  // through greeter_daily_live / location_daily_live precisely so they cannot
+  // forget this line. The day list is the one read that must be able to see a
+  // struck-out row — that's how a restore is reached — so it reads the base
+  // table and opts out by default instead.
+  if (!filters.include_voided) q = q.is("voided_at", null);
   return q;
 }

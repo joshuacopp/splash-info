@@ -9,6 +9,8 @@
 //   GET  /api/greeter/contact-roster ?role=          -> RD/RM filter dropdowns
 //   GET  /api/greeter/days           filters         -> per-greeter day rows
 //   POST /api/greeter/days                           -> submit/correct a day
+//   POST /api/greeter/days/void      { id }          -> strike out a day
+//   POST /api/greeter/days/restore   { id }          -> put a struck day back
 //   GET  /api/greeter/rollup         filters         -> per-greeter aggregate
 //   GET  /api/greeter/scan-rates     filters         -> per site-day scan rate
 //   GET  /api/greeter/missing-days   dates required  -> location-days not logged
@@ -16,6 +18,8 @@
 //   GET  /api/greeter/location-rows  dates required  -> site day rows + scanned
 //   GET  /api/greeter/location-days  filters         -> site-wide day rows
 //   POST /api/greeter/location-days                  -> submit/correct a day
+//   POST /api/greeter/location-days/void    { id }   -> strike out a site day
+//   POST /api/greeter/location-days/restore { id }   -> put a struck day back
 //   GET  /api/greeter/goals          ?site_number=   -> goal windows
 //   POST /api/greeter/goals                          -> add a goal window
 //   POST /api/greeter/goals/delete   { id }          -> remove a goal window
@@ -24,7 +28,16 @@
 // performancePostJson only (app/admin/performance/_lib/worker-fetch.ts), which
 // speaks POST; adding a verb would mean a second transport helper, a second
 // CSRF-origin path and a second thing to get wrong, to express something the
-// path already says.
+// path already says. The two void paths follow it for the same reason — and
+// they would not be DELETEs anyway, since nothing is removed.
+//
+// EDITING A DAY IS THE SAME POST AS SUBMITTING ONE, distinguished only by an
+// `id` in the body. With an id the row is rewritten in place, which is what lets
+// an edit change the date, the site or the greeter — the three columns the
+// natural key is made of. Without one, the existing insert-or-correct behaviour
+// is unchanged. There is no separate edit endpoint because every field, every
+// coercion and every goal-snapshot rule would have to be duplicated in it, and
+// the two copies would drift.
 //
 // SCOPING RULE, applied identically to reads and writes:
 //   Full admin tier (super_admin / dcRole admin|super_admin) -> undefined scope,
@@ -72,8 +85,14 @@ import {
   listLocationPeriodRows,
   resolveGreeterLocationKey,
   restampGoals,
+  restoreGreeterDay,
+  restoreLocationDay,
   submitGreeterDay,
   submitLocationDay,
+  updateGreeterDayById,
+  updateLocationDayById,
+  voidGreeterDay,
+  voidLocationDay,
   type ContactRosterEntry,
   type GreeterDayFilters,
   type SupabaseEnv
@@ -81,10 +100,12 @@ import {
 import { json as jsonResponse } from "@splash/http";
 import type {
   GreeterDailyInsert,
+  GreeterDailyRow,
   GreeterGoalRestampResult,
   GreeterGoalRow,
   GreeterLocationKey,
-  LocationDailyInsert
+  LocationDailyInsert,
+  LocationDailyRow
 } from "@splash/types/greeter";
 
 type Env = SupabaseEnv;
@@ -105,6 +126,10 @@ export function isGreeterRoute(pathname: string, method: string): boolean {
     case "/api/greeter/goals":
       return method === "GET" || method === "POST";
     case "/api/greeter/goals/delete":
+    case "/api/greeter/days/void":
+    case "/api/greeter/days/restore":
+    case "/api/greeter/location-days/void":
+    case "/api/greeter/location-days/restore":
       return method === "POST";
     default:
       return false;
@@ -149,6 +174,22 @@ export async function handleGreeterRoute(
   // selected in the filter bar would make the button fail for no visible cause.
   if (pathname === "/api/greeter/goals/delete" && method === "POST") {
     return apiDeleteGoal(request, env, scope);
+  }
+  // Four more writes, above the read guard for the same reason as the delete.
+  // A void reached from the report page arrives with whatever manager filter the
+  // page had applied; narrowing by it would make the button fail on rows the
+  // user is looking at right now.
+  if (pathname === "/api/greeter/days/void" && method === "POST") {
+    return apiVoidDay(request, env, session, scope, "greeter");
+  }
+  if (pathname === "/api/greeter/days/restore" && method === "POST") {
+    return apiRestoreDay(request, env, scope, "greeter");
+  }
+  if (pathname === "/api/greeter/location-days/void" && method === "POST") {
+    return apiVoidDay(request, env, session, scope, "location");
+  }
+  if (pathname === "/api/greeter/location-days/restore" && method === "POST") {
+    return apiRestoreDay(request, env, scope, "location");
   }
 
   if (!isGreeterRoute(pathname, method)) return null;
@@ -494,7 +535,12 @@ function filtersFromQuery(url: URL, scope: string[] | undefined): GreeterDayFilt
     beekeeper_user_id: sp.get("beekeeper_user_id"),
     greeter: sp.get("greeter"),
     location_scope: scope ?? null,
-    limit: toIntOrNull(sp.get("limit")) ?? 500
+    limit: toIntOrNull(sp.get("limit")) ?? 500,
+    // Opt-in, and only the correction screens ask. Every aggregate endpoint
+    // below reaches SQL functions that read the _live views and cannot see a
+    // voided row whatever this says; this flag only widens the two flat day
+    // lists, which is where a restore has to be reachable from.
+    include_voided: sp.get("include_voided") === "1"
   };
 }
 
@@ -787,6 +833,51 @@ async function apiSubmitGreeterDay(
     created_by_email: session.email
   };
 
+  // EDIT PATH. An id in the body means "rewrite this row", which is the only way
+  // to change the date, the site or the greeter without stranding the original
+  // at its old coordinates. Note it re-stamps the goal above without a branch:
+  // getGoalSnapshot ran against the business date in the PAYLOAD, so moving a
+  // day into another week re-grades it against that week's target, which is what
+  // Josh asked for.
+  const editId = trimOrNull(body.id);
+  if (editId) {
+    const { created_by: _c, created_by_email: _e, ...patch } = row;
+    let edited: GreeterDailyRow | null;
+    try {
+      edited = await updateGreeterDayById(
+        sb,
+        editId,
+        patch,
+        { user_id: session.userId, email: session.email },
+        { location_scope: scope ?? null }
+      );
+    } catch (err) {
+      if (isUniqueViolation(err)) {
+        return jsonResponse(
+          {
+            // A whole sentence: performancePostJson surfaces `error` and drops
+            // `reason`, so this is the entire banner the user reads.
+            error: `That greeter already has an entry for ${businessDate} at this site, so this edit would make two. Open that day instead, or void it first.`,
+            reason: "idx_greeter_daily_unique_live_day"
+          },
+          409
+        );
+      }
+      throw err;
+    }
+    if (!edited) {
+      return jsonResponse(
+        {
+          error:
+            "That day could not be edited — it may have been voided or removed, or it belongs to a site you don't administer. Reload the page to see the current list.",
+          reason: "No live row matched the id within the caller's location scope."
+        },
+        404
+      );
+    }
+    return jsonResponse({ row: edited, corrected: true });
+  }
+
   const { row: saved, corrected } = await submitGreeterDay(sb, row, {
     user_id: session.userId,
     email: session.email
@@ -861,11 +952,164 @@ async function apiSubmitLocationDay(
     created_by_email: session.email
   };
 
+  // Edit path — see the equivalent block in apiSubmitGreeterDay.
+  const editId = trimOrNull(body.id);
+  if (editId) {
+    const { created_by: _c, created_by_email: _e, ...patch } = row;
+    let edited: LocationDailyRow | null;
+    try {
+      edited = await updateLocationDayById(
+        sb,
+        editId,
+        patch,
+        { user_id: session.userId, email: session.email },
+        { location_scope: scope ?? null }
+      );
+    } catch (err) {
+      if (isUniqueViolation(err)) {
+        return jsonResponse(
+          {
+            error: `This site already has totals recorded for ${businessDate}, so this edit would make two. Open that day instead, or void it first.`,
+            reason: "idx_location_daily_unique_live_day"
+          },
+          409
+        );
+      }
+      throw err;
+    }
+    if (!edited) {
+      return jsonResponse(
+        {
+          error:
+            "That day could not be edited — it may have been voided or removed, or it belongs to a site you don't administer. Reload the page to see the current list.",
+          reason: "No live row matched the id within the caller's location scope."
+        },
+        404
+      );
+    }
+    return jsonResponse({ row: edited, corrected: true });
+  }
+
   const { row: saved, corrected } = await submitLocationDay(sb, row, {
     user_id: session.userId,
     email: session.email
   });
   return jsonResponse({ row: saved, corrected }, corrected ? 200 : 201);
+}
+
+/**
+ * Strike out a day so it stops counting, without destroying it.
+ *
+ * ONE HANDLER FOR BOTH GRAINS, picked by the `kind` argument, because the two
+ * differ in nothing but which function they call: the id is opaque, the scope
+ * check lives inside the UPDATE, and the failure messages are the same sentence
+ * with a different noun. Two copies would be two places to forget the scope.
+ *
+ * SAME ROLE AS DELETING A GOAL, per Josh: a location admin may void their own
+ * sites' days. Enforced the same way too — scope narrows the statement, so an id
+ * from another site matches nothing and comes back as the 404 below rather than
+ * as a 403 that would confirm the row exists.
+ *
+ * A VOIDED DAY BECOMES MISSING AGAIN. Nothing here does that; it falls out of
+ * greeter_missing_days reading location_daily_live. It is the right answer — the
+ * site has no standing figure for that date once its entry is withdrawn — but it
+ * is worth expecting, because the missing-days panel will start asking for a day
+ * somebody deliberately took away.
+ */
+async function apiVoidDay(
+  request: Request,
+  env: Env,
+  session: Session,
+  scope: string[] | undefined,
+  kind: "greeter" | "location"
+): Promise<Response> {
+  const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
+
+  const id = trimOrNull(body.id);
+  if (!id) return jsonResponse({ error: "id is required" }, 400);
+
+  const sb = createServiceClient(env);
+  const actor = { user_id: session.userId, email: session.email };
+  const voided =
+    kind === "greeter"
+      ? await voidGreeterDay(sb, id, actor, { location_scope: scope ?? null })
+      : await voidLocationDay(sb, id, actor, { location_scope: scope ?? null });
+
+  if (!voided) {
+    return jsonResponse(
+      {
+        error:
+          "That day is already voided, or is no longer there. Reload the page to see the current list.",
+        reason:
+          "No live row matched the id within the caller's location scope. The `voided_at IS NULL` filter is deliberate — it keeps the first voider's name on the row."
+      },
+      404
+    );
+  }
+  return jsonResponse({ row: voided });
+}
+
+/**
+ * Put a struck-out day back into the totals.
+ *
+ * THE 409 IS THE INTERESTING CASE. While a day was void its slot was free, so
+ * somebody may have re-entered it; restoring would then put two live rows on one
+ * (site, greeter, date) and the partial unique index refuses. That is a real
+ * situation with a real fix — void the newer row, or leave this one struck out —
+ * so it gets a sentence rather than a 500.
+ *
+ * No actor is recorded. Restoring clears all three void columns, which loses the
+ * record of who struck the row out; the alternative, leaving voided_by set on a
+ * live row, would read as "still withdrawn" to anything that checked the wrong
+ * column. See restoreGreeterDay.
+ */
+async function apiRestoreDay(
+  request: Request,
+  env: Env,
+  scope: string[] | undefined,
+  kind: "greeter" | "location"
+): Promise<Response> {
+  const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
+
+  const id = trimOrNull(body.id);
+  if (!id) return jsonResponse({ error: "id is required" }, 400);
+
+  const sb = createServiceClient(env);
+  const opts = { location_scope: scope ?? null };
+  let restored;
+  try {
+    restored =
+      kind === "greeter"
+        ? await restoreGreeterDay(sb, id, opts)
+        : await restoreLocationDay(sb, id, opts);
+  } catch (err) {
+    if (isUniqueViolation(err)) {
+      return jsonResponse(
+        {
+          error:
+            "That day can't be restored: a live entry already exists for the same date, and there can only be one. Void that entry first if this one is the right version.",
+          reason:
+            kind === "greeter"
+              ? "idx_greeter_daily_unique_live_day"
+              : "idx_location_daily_unique_live_day"
+        },
+        409
+      );
+    }
+    throw err;
+  }
+
+  if (!restored) {
+    return jsonResponse(
+      {
+        error:
+          "That day is already live, or is no longer there. Reload the page to see the current list.",
+        reason: "No voided row matched the id within the caller's location scope."
+      },
+      404
+    );
+  }
+  return jsonResponse({ row: restored });
 }
 
 /**

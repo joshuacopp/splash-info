@@ -37,6 +37,15 @@
 // with its own inputs. Hours worked and wash sales per hour are the same deal —
 // they come from the shift window, not from a box.
 
+// The two Edit row types rather than the full GreeterDailyRow / LocationDailyRow:
+// the pages that render these forms only ever hold the column subset the list
+// endpoints return, so a prop typed as the whole row could never be satisfied.
+// See the doc on GreeterDayEditRow.
+import type {
+  GreeterDayEditRow,
+  LocationDayEditRow
+} from "@splash/types/greeter";
+
 const labelCls =
   "text-xs font-semibold uppercase tracking-wider text-splash-navy/70";
 const inputCls =
@@ -45,23 +54,45 @@ const hintCls = "text-[11px] text-splash-navy/60";
 const gridCls = "grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3";
 
 /**
+ * A stored value as an input's defaultValue.
+ *
+ * NULL BECOMES EMPTY, NOT ZERO, and the distinction is the whole point of this
+ * function. Every metric here is nullable, and a blank box means "not reported"
+ * while a 0 means "reported, and it was none" — a site that logged no sign-ups
+ * is a different fact from a site that didn't say. Rendering null as 0 would
+ * turn the second into the first the moment anybody opened the row to edit an
+ * unrelated field.
+ */
+function fieldValue(v: number | string | null | undefined): string {
+  return v == null ? "" : String(v);
+}
+
+/**
  * `pct` caps the input at 100 and allows two decimals. The max is a courtesy —
  * a browser will still let a determined user submit past it, so the real
  * enforcement is the worker's 400 and the DB's CHECK. It exists to catch the
  * fat-finger at the point where it's cheapest to fix.
+ *
+ * `defaultValue` rather than `value`: these stay uncontrolled so the fields need
+ * no state and this file needs no "use client". The consequence is that React
+ * only picks up a new default when the input is REMOUNTED, so whatever renders
+ * these in edit mode must key the form on the row id — otherwise switching from
+ * one row's edit form to another's leaves the first row's numbers on screen.
  */
 function NumberField({
   name,
   label,
   hint,
   money = false,
-  pct = false
+  pct = false,
+  defaultValue
 }: {
   name: string;
   label: string;
   hint?: string;
   money?: boolean;
   pct?: boolean;
+  defaultValue?: number | string | null;
 }) {
   return (
     <label className="flex flex-col gap-1">
@@ -73,6 +104,7 @@ function NumberField({
         max={pct ? "100" : undefined}
         step={money || pct ? "0.01" : "1"}
         placeholder={money || pct ? "0.00" : "0"}
+        defaultValue={fieldValue(defaultValue)}
         className={inputCls}
       />
       {hint ? <span className={hintCls}>{hint}</span> : null}
@@ -80,7 +112,7 @@ function NumberField({
   );
 }
 
-function CommentsField() {
+function CommentsField({ defaultValue }: { defaultValue?: string | null }) {
   return (
     <label className="flex flex-col gap-1">
       <span className={labelCls}>Comments</span>
@@ -89,61 +121,91 @@ function CommentsField() {
         name="comments"
         maxLength={2000}
         placeholder="Optional"
+        defaultValue={fieldValue(defaultValue)}
         className={inputCls}
       />
     </label>
   );
 }
 
-/** What one greeter reports for their own day. No tunnel volume, no member roll. */
-export function GreeterMetricFields() {
+/**
+ * What one greeter reports for their own day. No tunnel volume, no member roll.
+ *
+ * `row` present means this is an edit. The goal snapshot columns on the row are
+ * deliberately NOT rendered as fields: capture_goal_pct and dob_goal are
+ * re-resolved server-side from the business date on every save, so a box for
+ * them would collect a number the worker then overwrites.
+ */
+export function GreeterMetricFields({ row }: { row?: GreeterDayEditRow | null }) {
   return (
     <div className={gridCls}>
       <NumberField
         name="wash_sales"
         label="Wash sales (ALC)"
         hint="A-la-carte, non-unlimited cars. Drives D.O.B. and capture %."
+        defaultValue={row?.wash_sales}
       />
       <NumberField
         name="sign_ups"
         label="Sign ups"
         hint="Unlimited memberships sold."
+        defaultValue={row?.sign_ups}
       />
       <NumberField
         name="reactivations"
         label="Reactivations"
         hint="Optional. Lapsed members you brought back. Not counted in capture %."
+        defaultValue={row?.reactivations}
       />
-      <NumberField name="package_dollars" label="Package $" money />
-      <NumberField name="extras_dollars" label="Extras $" money />
+      <NumberField
+        name="package_dollars"
+        label="Package $"
+        money
+        defaultValue={row?.package_dollars}
+      />
+      <NumberField
+        name="extras_dollars"
+        label="Extras $"
+        money
+        defaultValue={row?.extras_dollars}
+      />
       <NumberField
         name="rewashes"
         label="Rewashes"
         hint="Optional. The site's total is the number that counts."
+        defaultValue={row?.rewashes}
       />
       <NumberField
         name="google_reviews"
         label="Google reviews"
         hint="Optional. How many reviews you got today — a count, not a rating."
+        defaultValue={row?.google_reviews}
       />
-      <CommentsField />
+      <CommentsField defaultValue={row?.comments} />
     </div>
   );
 }
 
-/** The whole location's day, not attributed to anyone. */
-export function LocationMetricFields() {
+/** The whole location's day, not attributed to anyone. See GreeterMetricFields
+ *  for what `row` does and why the goal columns aren't fields. */
+export function LocationMetricFields({
+  row
+}: {
+  row?: LocationDayEditRow | null;
+}) {
   return (
     <div className={gridCls}>
       <NumberField
         name="total_cars"
         label="Total cars"
         hint="Every car through the tunnel, members included."
+        defaultValue={row?.total_cars}
       />
       <NumberField
         name="wash_sales"
         label="Wash sales (ALC)"
         hint="A-la-carte, non-unlimited cars. Drives D.O.B. and capture %."
+        defaultValue={row?.wash_sales}
       />
       {/* The two unscannable-car boxes, adjacent because they do the same job:
           each is a real wash sale that no customer could have scanned a card
@@ -153,42 +215,63 @@ export function LocationMetricFields() {
         name="house_accounts"
         label="House accounts"
         hint="Cars washed on a house account. Counts as a wash sale, but can't be scanned — so it comes out of the scan-rate denominator."
+        defaultValue={row?.house_accounts}
       />
       <NumberField
         name="rewashes"
         label="Rewashes"
         hint="Also unscannable, and also deducted from the scan rate."
+        defaultValue={row?.rewashes}
       />
-      <NumberField name="package_dollars" label="Package $" money />
-      <NumberField name="extras_dollars" label="Extras $" money />
-      <NumberField name="sign_ups" label="Sign ups" />
+      <NumberField
+        name="package_dollars"
+        label="Package $"
+        money
+        defaultValue={row?.package_dollars}
+      />
+      <NumberField
+        name="extras_dollars"
+        label="Extras $"
+        money
+        defaultValue={row?.extras_dollars}
+      />
+      <NumberField
+        name="sign_ups"
+        label="Sign ups"
+        defaultValue={row?.sign_ups}
+      />
       <NumberField
         name="reactivations"
         label="Reactivations"
         hint="Lapsed members reinstated today. Counts toward net members."
+        defaultValue={row?.reactivations}
       />
       <NumberField
         name="cancellations"
         label="Cancellations"
         hint="Memberships cancelled today."
+        defaultValue={row?.cancellations}
       />
       <NumberField
         name="total_members"
         label="Total members"
         hint="Active members as of today — a running total, not today's adds."
+        defaultValue={row?.total_members}
       />
       <NumberField
         name="churn_pct"
         label="Churn %"
         pct
         hint="Optional. Today's churn as a percentage, 0-100. Reported, not graded."
+        defaultValue={row?.churn_pct}
       />
       <NumberField
         name="google_reviews"
         label="Google reviews"
         hint="Optional. Reviews collected today — a count, not a rating."
+        defaultValue={row?.google_reviews}
       />
-      <CommentsField />
+      <CommentsField defaultValue={row?.comments} />
     </div>
   );
 }

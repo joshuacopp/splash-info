@@ -80,18 +80,27 @@ import {
   SCAN_TARGET_PCT,
   scanTier
 } from "./_lib/grading";
-import { RedirectForm } from "../_components/RedirectForm";
+import { SUCCESS_COPY } from "./_lib/copy";
+import {
+  RedirectForm,
+  type RedirectResult
+} from "../_components/RedirectForm";
 import { DeleteGoalButton } from "./_components/DeleteGoalButton";
 import { GreeterDayForm } from "./_components/GreeterDayForm";
 import { LocationMetricFields } from "./_components/MetricFields";
+import { RowActionButton } from "./_components/RowActionButton";
 import { SavingButton } from "./_components/SavingButton";
 import { SubmitPanels } from "./_components/SubmitPanels";
-import type { GreeterGoalRow } from "@splash/types/greeter";
+import type { GreeterGoalRow, VoidState } from "@splash/types/greeter";
 import {
   createGoalAction,
   deleteGoalAction,
+  restoreDayAction,
+  restoreLocationDayAction,
   submitGreeterDayAction,
-  submitLocationDayAction
+  submitLocationDayAction,
+  voidDayAction,
+  voidLocationDayAction
 } from "./actions";
 
 /** Shape of the two `*_goal` snapshot columns, on every row of both tables. */
@@ -100,14 +109,28 @@ interface GoalSnapshot {
   dob_goal: number | null;
 }
 
-interface DayRow extends GoalSnapshot {
+/**
+ * Both day tables carry the void columns, and this page is one of the very few
+ * reads that asks for struck-out rows at all (`include_voided=1` below) — the
+ * correction screen has to be able to SEE a voided day, or restoring it would
+ * be unreachable.
+ *
+ * NOTHING ON THIS PAGE SUMS A DAY ROW, which is what makes that safe. The
+ * per-greeter summary, the scan rates and the two insight panels are all
+ * separate reads that go through the _live views in SQL and cannot see a voided
+ * row whatever this page asks for. If a total is ever computed here from
+ * `dayList` or `locationDayList`, it must filter on voided_at first.
+ */
+interface DayRow extends GoalSnapshot, VoidState {
   id: string;
   business_date: string;
   location_id: number;
   site_number: number;
   location_code: string;
-  beekeeper_user_id?: string;
-  greeter_name?: string;
+  /** Always selected — the two were optional here for no reason, and an edit
+   *  form can't seed its people picker from a maybe. */
+  beekeeper_user_id: string;
+  greeter_name: string;
   wash_sales: number | null;
   rewashes: number | null;
   package_dollars: number | null;
@@ -130,7 +153,7 @@ interface DayRow extends GoalSnapshot {
 }
 
 /** Site-wide day. Deliberately NOT the same shape as DayRow — see MetricFields. */
-interface LocationDayRow extends GoalSnapshot {
+interface LocationDayRow extends GoalSnapshot, VoidState {
   id: string;
   business_date: string;
   location_id: number;
@@ -265,12 +288,10 @@ function shiftCell(start: string | null, end: string | null): string {
   return clockLabel((start ?? end) as string);
 }
 
-const SUCCESS_COPY: Record<string, string> = {
-  day: "Greeter day saved.",
-  location: "Site-wide day saved.",
-  goal: "Goal window saved.",
-  goal_deleted: "Goal window deleted."
-};
+// SUCCESS_COPY now lives in _lib/copy.ts (imported at the top of this file).
+// It moved when the report page grew its own void buttons: both screens render
+// a banner off the same `success` key, and two copies of the sentence drifted
+// apart within a day of existing.
 
 /**
  * The re-grading tail on the goal banners: "… 12 greeter days and 3 site days
@@ -419,6 +440,16 @@ export default async function GreetersPage({ searchParams }: PageProps) {
   const rd = firstParam(sp.rd).trim();
   const rm = firstParam(sp.rm).trim();
 
+  // Which row, if any, is being corrected. Kept in the URL rather than in
+  // component state so the edit form is a plain server render of a row this page
+  // already fetched — no second lookup, and the back button leaves the edit.
+  //
+  // DELIBERATELY NOT IN `qs` BELOW. The filter suffix is what the fetches and
+  // the "Reset" link are built from, and carrying an edit id into either one
+  // would re-open the form on every filter change.
+  const editDayId = firstParam(sp.edit_day).trim();
+  const editLocationDayId = firstParam(sp.edit_location_day).trim();
+
   const actionError = firstParam(sp.action_error).trim() || null;
   const successKey = firstParam(sp.success).trim();
   const successBase = SUCCESS_COPY[successKey] ?? null;
@@ -441,6 +472,18 @@ export default async function GreetersPage({ searchParams }: PageProps) {
   if (rd) qs.set("rd", rd);
   if (rm) qs.set("rm", rm);
   const suffix = qs.toString() ? `?${qs.toString()}` : "";
+
+  // THE TWO FLAT DAY LISTS ASK FOR VOIDED ROWS; nothing else on this page does.
+  //
+  // This is the correction screen, and a struck-out day has to be visible here
+  // or there is no way to reach the Restore button. Every other read below —
+  // the rollup, the scan rates, the missing-days watchlist — goes through a SQL
+  // function that reads greeter_daily_live / location_daily_live and cannot see
+  // a voided row at all, which is exactly why this flag is confined to the two
+  // reads that render individual rows rather than totals.
+  const dayQs = new URLSearchParams(qs);
+  dayQs.set("include_voided", "1");
+  const daySuffix = `?${dayQs.toString()}`;
 
   // Trailing seven days for the two insight panels, ENDING YESTERDAY.
   //
@@ -496,10 +539,10 @@ export default async function GreetersPage({ searchParams }: PageProps) {
       goals,
       rosters
     ] = await Promise.all([
-        performanceGetJson<DayRow[]>(`/pertrack/api/greeter/days${suffix}`),
+        performanceGetJson<DayRow[]>(`/pertrack/api/greeter/days${daySuffix}`),
         performanceGetJson<RollupRow[]>(`/pertrack/api/greeter/rollup${suffix}`),
         performanceGetJson<LocationDayRow[]>(
-          `/pertrack/api/greeter/location-days${suffix}`
+          `/pertrack/api/greeter/location-days${daySuffix}`
         ),
         // Same filter set as the site-wide table so the two line up row for
         // row. The greeter-name filter rides along in the suffix but the
@@ -529,6 +572,11 @@ export default async function GreetersPage({ searchParams }: PageProps) {
       err instanceof Error ? err.message : "Unknown error loading the scorecard.";
   }
 
+  // This page as the user currently has it filtered. Two jobs: where to send
+  // them back after a login, and the `return_to` on every form and row button
+  // below — a correction that dropped the date range and site filter would
+  // succeed and then navigate away from the row it just corrected. The server
+  // allow-lists the value before redirecting to it.
   const returnPath = `/admin/greeters${suffix}`;
 
   if (days === null && !fetchError) {
@@ -598,6 +646,36 @@ export default async function GreetersPage({ searchParams }: PageProps) {
   // Today in YYYY-MM-DD, for the forms' default date. Local, not UTC — a
   // greeter filling this in at 9pm should get today, not tomorrow.
   const today = localDay(Date.now());
+
+  /* ----------------------------------------------------------
+   * Corrections
+   * ---------------------------------------------------------- */
+
+  /** The current filters plus one edit key. Filters are preserved so cancelling
+   *  an edit puts the user back on the list they were looking at. */
+  function editHref(key: "edit_day" | "edit_location_day", id: string): string {
+    const p = new URLSearchParams(qs);
+    p.set(key, id);
+    return `/admin/greeters?${p.toString()}`;
+  }
+
+  // The row being corrected, found in what the page already fetched rather than
+  // re-requested by id. An id that isn't in the current result set — because the
+  // filters exclude it, or because someone pasted a stale link — yields
+  // undefined and simply renders no edit form, which is the honest outcome: the
+  // alternative is a form seeded from a row the user can't see on the page.
+  const editDay = editDayId
+    ? dayList.find((r) => r.id === editDayId)
+    : undefined;
+  const editLocationDay = editLocationDayId
+    ? locationDayList.find((r) => r.id === editLocationDayId)
+    : undefined;
+
+  /** "BINGHAMTON · 7042" — LocationPicker needs a label to show a preselection,
+   *  and the row carries a site_number rather than the name the typeahead renders. */
+  const editDayLocationLabel = editDay
+    ? `${editDay.location_code} · ${editDay.site_number}`
+    : undefined;
 
   // In force is decided over ALL windows, then the display is narrowed. Doing
   // it the other way round would let the page's location filter change which
@@ -694,6 +772,100 @@ export default async function GreetersPage({ searchParams }: PageProps) {
         </div>
       </form>
 
+      {/* Corrections.
+          A card in the page body rather than a fourth modal panel. SubmitPanels
+          keeps its open/closed state on the client and is deliberately
+          mounted-but-hidden so half-typed input survives a close, which is
+          exactly wrong for a prefilled form: it would either fail to open on a
+          client-side navigation or keep the previous row's numbers on screen.
+          An edit is addressed by the URL, so it belongs where a server render
+          can key it on the row id.
+
+          KEYED ON THE ROW ID, and that is load-bearing. Both forms seed
+          themselves from `defaultValue` / initial useState, neither of which is
+          re-read on a re-render. Without the key, going from editing one row to
+          editing another would leave the first row's numbers in every box while
+          the hidden id pointed at the second. */}
+      {editDayId && !editDay ? (
+        <EditNotFoundNote
+          what="greeter day"
+          backHref={`/admin/greeters${suffix}`}
+        />
+      ) : null}
+      {editDay ? (
+        <Card
+          title={`Editing ${editDay.greeter_name} — ${editDay.business_date}`}
+          subtitle="Every field is editable, including the date, the site and the person: this updates the row in place rather than adding a second one. Goals are re-applied from whichever window covers the date you save, so moving a day re-grades it."
+        >
+          <div className="px-5 py-5">
+            <GreeterDayForm
+              key={editDay.id}
+              action={submitGreeterDayAction}
+              defaultDate={today}
+              row={editDay}
+              locationLabel={editDayLocationLabel}
+              returnTo={returnPath}
+            />
+            <CancelEditLink href={`/admin/greeters${suffix}`} />
+          </div>
+        </Card>
+      ) : null}
+
+      {editLocationDayId && !editLocationDay ? (
+        <EditNotFoundNote
+          what="site-wide day"
+          backHref={`/admin/greeters${suffix}`}
+        />
+      ) : null}
+      {editLocationDay ? (
+        <Card
+          title={`Editing ${editLocationDay.location_code} — ${editLocationDay.business_date}`}
+          subtitle="The whole location's day. Changing the date or the site moves the row rather than copying it, and the goal snapshot is re-applied from whichever window covers the date you save."
+        >
+          <div className="px-5 py-5">
+            <RedirectForm
+              key={editLocationDay.id}
+              action={submitLocationDayAction}
+              className="flex flex-col gap-4"
+            >
+              {/* The whole of edit mode, as far as the worker is concerned. */}
+              <input type="hidden" name="id" value={editLocationDay.id} />
+              {/* See GreeterDayForm's returnTo doc — this is the same field,
+                  and it is what keeps the save from throwing away the filters
+                  that were used to find this row in the first place. */}
+              <input type="hidden" name="return_to" value={returnPath} />
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <label className="flex flex-col gap-1">
+                  <span className={LABEL_CLS}>Date *</span>
+                  <input
+                    type="date"
+                    name="business_date"
+                    required
+                    defaultValue={editLocationDay.business_date}
+                    className={INPUT_CLS}
+                  />
+                </label>
+                <div className="flex flex-col gap-1">
+                  <span className={LABEL_CLS}>Location *</span>
+                  <LocationPicker
+                    name="location_id"
+                    required
+                    placeholder="Search by site number, name, or code…"
+                    defaultValue={editLocationDay.location_id}
+                    defaultLabel={`${editLocationDay.location_code} · ${editLocationDay.site_number}`}
+                  />
+                </div>
+              </div>
+              <LocationMetricFields row={editLocationDay} />
+              <div className="mt-1">
+                <SavingButton>Save changes</SavingButton>
+              </div>
+            </RedirectForm>
+            <CancelEditLink href={`/admin/greeters${suffix}`} />
+          </div>
+        </Card>
+      ) : null}
+
       {/* Submissions. Buttons, not stacked cards — see the note up top. The
           forms are built here (server components) and handed down as props. */}
       <SubmitPanels
@@ -708,6 +880,7 @@ export default async function GreetersPage({ searchParams }: PageProps) {
               <GreeterDayForm
                 action={submitGreeterDayAction}
                 defaultDate={today}
+                returnTo={returnPath}
               />
             )
           },
@@ -722,6 +895,7 @@ export default async function GreetersPage({ searchParams }: PageProps) {
                 action={submitLocationDayAction}
                 className="flex flex-col gap-4"
               >
+                <input type="hidden" name="return_to" value={returnPath} />
                 <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                   <label className="flex flex-col gap-1">
                     <span className={LABEL_CLS}>Date *</span>
@@ -760,6 +934,7 @@ export default async function GreetersPage({ searchParams }: PageProps) {
                 action={createGoalAction}
                 className="flex flex-col gap-4"
               >
+                <input type="hidden" name="return_to" value={returnPath} />
                 <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
                   <div className="flex flex-col gap-1">
                     <span className={LABEL_CLS}>Location *</span>
@@ -880,6 +1055,7 @@ export default async function GreetersPage({ searchParams }: PageProps) {
             ? filterLocationLabel ?? null
             : null
         }
+        returnTo={returnPath}
       />
 
       {/* Summary */}
@@ -996,13 +1172,25 @@ export default async function GreetersPage({ searchParams }: PageProps) {
                 <th className="px-4 py-3">Reacts</th>
                 <th className="px-4 py-3">Reviews</th>
                 <th className="px-4 py-3">Capture %</th>
+                <th className="px-4 py-3">Actions</th>
               </tr>
             </thead>
             <tbody className={TBODY_CLS}>
               {dayList.map((r) => (
-                <tr key={r.id}>
+                // Tinted rather than faded for a voided row. `opacity` on the
+                // <tr> would take the Restore button down with the numbers, and
+                // that button is the only way back.
+                <tr
+                  key={r.id}
+                  className={r.voided_at ? "bg-splash-deny/[0.04]" : undefined}
+                >
                   <td className="px-4 py-3 font-mono text-xs text-splash-navy/80">
-                    {r.business_date}
+                    <span className={r.voided_at ? "line-through" : undefined}>
+                      {r.business_date}
+                    </span>
+                    {r.voided_at ? (
+                      <VoidedBadge email={r.voided_by_email} />
+                    ) : null}
                   </td>
                   <td className="px-4 py-3 font-semibold">
                     {r.greeter_name ?? "—"}
@@ -1058,6 +1246,23 @@ export default async function GreetersPage({ searchParams }: PageProps) {
                       goal={r.capture_goal_pct}
                     />
                   </td>
+                  <td className="whitespace-nowrap px-4 py-3">
+                    <DayRowActions
+                      id={r.id}
+                      editHref={editHref("edit_day", r.id)}
+                      voided={r.voided_at !== null}
+                      voidAction={voidDayAction}
+                      restoreAction={restoreDayAction}
+                      returnTo={returnPath}
+                      // The missing-list clause is CONDITIONAL and says so.
+                      // greeter_missing_days() flags a day only when the site
+                      // has no live greeter rows left for it, so voiding one of
+                      // three greeters changes nothing there. Stating it flatly
+                      // would be a consequence the feature doesn't carry, and
+                      // people stop reading confirms that overstate.
+                      confirmText={`Void ${r.greeter_name}'s day at ${r.location_code} on ${r.business_date}?\n\nThe row is kept but struck out: it drops out of every report and rollup. If it was the last greeter logged for that site's day, the day goes back onto the missing-submissions list until someone logs it again. You can restore it from this table.`}
+                    />
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -1100,13 +1305,22 @@ export default async function GreetersPage({ searchParams }: PageProps) {
                     Members and the next person to touch this table will give it
                     a goal to match its neighbours; it has none, and shouldn't. */}
                 <th className="px-4 py-3">Churn %</th>
+                <th className="px-4 py-3">Actions</th>
               </tr>
             </thead>
             <tbody className={TBODY_CLS}>
               {locationDayList.map((r) => (
-                <tr key={r.id}>
+                <tr
+                  key={r.id}
+                  className={r.voided_at ? "bg-splash-deny/[0.04]" : undefined}
+                >
                   <td className="px-4 py-3 font-mono text-xs text-splash-navy/80">
-                    {r.business_date}
+                    <span className={r.voided_at ? "line-through" : undefined}>
+                      {r.business_date}
+                    </span>
+                    {r.voided_at ? (
+                      <VoidedBadge email={r.voided_by_email} />
+                    ) : null}
                   </td>
                   <td className="px-4 py-3 text-splash-navy/80">
                     <div>{r.location_code}</div>
@@ -1181,6 +1395,17 @@ export default async function GreetersPage({ searchParams }: PageProps) {
                       flat average of daily percentages would be a lie. */}
                   <td className="px-4 py-3 text-splash-navy/80">
                     {pct(r.churn_pct)}
+                  </td>
+                  <td className="whitespace-nowrap px-4 py-3">
+                    <DayRowActions
+                      id={r.id}
+                      editHref={editHref("edit_location_day", r.id)}
+                      voided={r.voided_at !== null}
+                      voidAction={voidLocationDayAction}
+                      restoreAction={restoreLocationDayAction}
+                      returnTo={returnPath}
+                      confirmText={`Void the site-wide totals for ${r.location_code} on ${r.business_date}?\n\nThe row is kept but struck out: it drops out of every report, the Scanned % for that day loses its denominator, and the day goes back onto the missing-submissions list. The greeters' own rows for that day are NOT affected. You can restore it from this table.`}
+                    />
                   </td>
                 </tr>
               ))}
@@ -1266,7 +1491,8 @@ function GoalWindowsCard({
   rows,
   inForce,
   today,
-  narrowedTo
+  narrowedTo,
+  returnTo
 }: {
   rows: GreeterGoalRow[];
   inForce: Set<string>;
@@ -1277,6 +1503,13 @@ function GoalWindowsCard({
    * shows one. Named in the subtitle rather than silently ignored.
    */
   narrowedTo: string | null;
+  /**
+   * The page with its current filters, posted as `return_to` on the delete.
+   * Passed down rather than rebuilt here because this card doesn't see the
+   * search params, and a delete that returned to the unfiltered list would
+   * answer "remove this window" by throwing away the reader's view of it.
+   */
+  returnTo: string;
 }) {
   return (
     <Card
@@ -1345,6 +1578,7 @@ function GoalWindowsCard({
                       pending delete only disables its own button. */}
                   <RedirectForm action={deleteGoalAction}>
                     <input type="hidden" name="goal_id" value={r.id} />
+                    <input type="hidden" name="return_to" value={returnTo} />
                     <DeleteGoalButton
                       confirmText={`Delete the ${r.location_code} goal for ${windowLabel(
                         r
@@ -1822,6 +2056,148 @@ function TableWrap({ children }: { children: ReactNode }) {
 
 function EmptyNote({ children }: { children: ReactNode }) {
   return <p className="px-5 py-6 text-sm text-splash-navy/70">{children}</p>;
+}
+
+/**
+ * "Voided", next to the date of a struck-out row.
+ *
+ * WHO struck it out is in the tooltip rather than the cell because the tables
+ * are already at the width of the viewport, and the answer only matters when
+ * somebody is asking. The badge itself has to be visible without hovering —
+ * a row that is silently excluded from every report while still showing its
+ * numbers is the worst of both.
+ */
+function VoidedBadge({ email }: { email: string | null }) {
+  return (
+    <span
+      title={email ? `Voided by ${email}` : "Voided"}
+      className="ml-2 rounded-splash-sm bg-splash-deny/10 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-splash-deny"
+    >
+      Voided
+    </span>
+  );
+}
+
+/**
+ * Edit + Void, or Restore, for one day row.
+ *
+ * Shared by both tables because the two grains differ in nothing but which pair
+ * of actions they post to — and two copies would be two places to forget the
+ * hidden id.
+ *
+ * NO EDIT LINK ON A VOIDED ROW, on purpose. update-by-id in the db layer is
+ * guarded with `.is("voided_at", null)`, so an edit posted for a struck-out row
+ * comes back as a 404 with a message about a day that "may have been voided" —
+ * technically correct and completely useless as an explanation. Restore first,
+ * then edit, and the button order says so.
+ *
+ * The two verbs go through <RedirectForm> rather than a plain <form> for the
+ * usual reason: a redirect() inside the action would cost ~20 seconds under
+ * OpenNext with the row already written the whole time.
+ */
+function DayRowActions({
+  id,
+  editHref,
+  voided,
+  voidAction,
+  restoreAction,
+  confirmText,
+  returnTo
+}: {
+  id: string;
+  editHref: string;
+  voided: boolean;
+  voidAction: (formData: FormData) => Promise<RedirectResult>;
+  restoreAction: (formData: FormData) => Promise<RedirectResult>;
+  /** Spelled out per row — see RowActionButton for why restore gets none. */
+  confirmText: string;
+  /**
+   * This page with its current filters, so a void or restore returns to the
+   * rows the user was looking at.
+   *
+   * Load-bearing for RESTORE in particular: a struck-out row is only visible
+   * when the table is showing voided days, which is itself a filter. Dropping
+   * the query string would put the row back and then navigate away from the
+   * only view it appears in, so the undo would look like it failed.
+   */
+  returnTo: string;
+}) {
+  return (
+    <div className="flex items-center gap-2">
+      {voided ? null : (
+        <Link
+          href={editHref}
+          className="rounded-splash-sm border border-splash-blue/40 px-2.5 py-1 text-[11px] font-bold uppercase tracking-wide text-splash-blue transition-colors hover:bg-splash-blue/10"
+        >
+          Edit
+        </Link>
+      )}
+      <RedirectForm action={voided ? restoreAction : voidAction}>
+        <input type="hidden" name="id" value={id} />
+        <input type="hidden" name="return_to" value={returnTo} />
+        <RowActionButton
+          label={voided ? "Restore" : "Void"}
+          pendingLabel={voided ? "Restoring…" : "Voiding…"}
+          tone={voided ? "quiet" : "deny"}
+          confirmText={voided ? undefined : confirmText}
+        />
+      </RedirectForm>
+    </div>
+  );
+}
+
+/**
+ * The way out of an edit without saving.
+ *
+ * A LINK, NOT A BUTTON, and deliberately outside the <form>: an edit is a URL,
+ * so leaving one is a navigation. A button inside the form would be a submit by
+ * default, and a type="button" one would need client state to do anything at all.
+ * Points back at the filtered list, so cancelling returns to the rows the user
+ * was looking at rather than to an unfiltered page.
+ */
+function CancelEditLink({ href }: { href: string }) {
+  return (
+    <p className="mt-4 text-xs text-splash-navy/60">
+      <Link
+        href={href}
+        className="font-semibold text-splash-blue hover:text-splash-blue-dark"
+      >
+        Cancel
+      </Link>{" "}
+      — leaves the row as it is.
+    </p>
+  );
+}
+
+/**
+ * An `?edit_day=` id that matches nothing in the current result set.
+ *
+ * SAID OUT LOUD RATHER THAN IGNORED. The id can miss for two ordinary reasons —
+ * the page's filters exclude the row, or the link is stale because the day was
+ * already voided and re-entered — and in both cases a silently absent form
+ * looks like the Edit button is broken.
+ */
+function EditNotFoundNote({
+  what,
+  backHref
+}: {
+  what: string;
+  backHref: string;
+}) {
+  return (
+    <div className="mb-6 rounded-splash-md border border-splash-navy/20 bg-splash-navy/[0.03] p-4 text-sm text-splash-navy/80">
+      That {what} isn&rsquo;t in the rows below, so there&rsquo;s nothing to
+      edit. It may be outside the current date range or site filter, or the link
+      may be out of date.{" "}
+      <Link
+        href={backHref}
+        className="font-semibold text-splash-blue hover:text-splash-blue-dark"
+      >
+        Back to the list
+      </Link>
+      .
+    </div>
+  );
 }
 
 function ActionAlert({ message }: { message: string | null }) {

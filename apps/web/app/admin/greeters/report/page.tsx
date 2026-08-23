@@ -44,6 +44,17 @@ import type {
 import { performanceGetJson } from "../../performance/_lib/worker-fetch";
 import { LocationPicker } from "../../performance/_components/LocationPicker";
 import {
+  RedirectForm,
+  type RedirectResult
+} from "../../_components/RedirectForm";
+// Void, but NOT restore, and NOT edit. Every read on this page goes through the
+// _live views, so a struck-out day cannot appear here at all — a Restore button
+// would have nothing to attach to, and an Edit link would have to guess a set of
+// filters on /admin/greeters that happened to contain the row. Corrections start
+// here and finish on the list page.
+import { voidDayAction, voidLocationDayAction } from "../actions";
+import { RowActionButton } from "../_components/RowActionButton";
+import {
   EMPTY_ROSTERS,
   fetchManagerRosters,
   ManagerFilters,
@@ -72,6 +83,7 @@ import {
   SCAN_TARGET_PCT,
   scanTier
 } from "../_lib/grading";
+import { SUCCESS_COPY } from "../_lib/copy";
 import {
   ChartFrame,
   RankBars,
@@ -208,6 +220,15 @@ export default async function GreeterReportPage({ searchParams }: PageProps) {
   const selectedSite = /^\d+$/.test(siteRaw) ? Number.parseInt(siteRaw, 10) : null;
   const selectedPerson = firstParam(sp.person).trim() || null;
 
+  // Outcome of a void posted from one of the drill-through tables below.
+  //
+  // DELIBERATELY NOT IN `base`. Every link on this page is built from `base`, so
+  // leaving these out is what makes the banner clear itself the moment the
+  // reader touches anything — a "day voided" notice that survived a change of
+  // preset would eventually be read as applying to the new view.
+  const successKey = firstParam(sp.success).trim();
+  const actionError = firstParam(sp.action_error).trim();
+
   const base = new URLSearchParams();
   base.set("view", view);
   base.set("date_from", dateFrom);
@@ -296,7 +317,7 @@ export default async function GreeterReportPage({ searchParams }: PageProps) {
   if (siteRows === null && !fetchError) {
     return (
       <section className="mx-auto w-full max-w-[1200px] px-5 py-9">
-        <ReportBanner mgrQs={mgrQs} />
+        <ReportBanner mgrQs={mgrQs} windowQs={windowQs} />
         <div className="rounded-splash-lg border border-gray-light bg-white p-6 shadow-splash-card">
           <p className="mb-4 text-splash-deny">
             You don&rsquo;t have access to the greeter scorecard. Contact your
@@ -316,7 +337,7 @@ export default async function GreeterReportPage({ searchParams }: PageProps) {
   if (fetchError) {
     return (
       <section className="mx-auto w-full max-w-[1200px] px-5 py-9">
-        <ReportBanner mgrQs={mgrQs} />
+        <ReportBanner mgrQs={mgrQs} windowQs={windowQs} />
         <div className="rounded-splash-lg border border-gray-light bg-white p-6 shadow-splash-card">
           <h2 className="mb-2 text-lg font-bold text-splash-deny">
             Could not load the report
@@ -393,9 +414,20 @@ export default async function GreeterReportPage({ searchParams }: PageProps) {
     .filter((s): s is string => s !== null)
     .join(" and ");
 
+  // The URL the void buttons return to: this exact screen, drill-through and
+  // all. Built from link({}) rather than assembled by hand so it can't drift
+  // from what every other link on the page considers "here".
+  const here = link({});
+
   return (
     <section className="mx-auto w-full max-w-[1200px] px-5 py-9">
-      <ReportBanner mgrQs={mgrQs} />
+      <ReportBanner mgrQs={mgrQs} windowQs={windowQs} />
+
+      <CorrectionBanner
+        successKey={successKey}
+        error={actionError}
+        scorecardHref={`/admin/greeters?${windowQs}${mgrQs}`}
+      />
 
       {/* Presets */}
       <div className="mb-4 flex flex-wrap gap-2">
@@ -685,7 +717,11 @@ export default async function GreeterReportPage({ searchParams }: PageProps) {
           subtitle={`Every day in the window for this site. ${spanDays} days requested, ${selectedSiteRow.days} reported.`}
           action={{ href: link({ site: "" }), label: "Clear site" }}
         >
-          <SiteDayTable rows={daysForSite(siteList, selectedSiteRow.location_id)} />
+          <SiteDayTable
+            rows={daysForSite(siteList, selectedSiteRow.location_id)}
+            siteLabel={selectedSiteRow.location_code}
+            returnTo={here}
+          />
         </Card>
       ) : null}
 
@@ -708,7 +744,7 @@ export default async function GreeterReportPage({ searchParams }: PageProps) {
               No days logged for this greeter inside {dateFrom} to {dateTo}.
             </EmptyNote>
           ) : (
-            <PersonDayTable rows={personDays} />
+            <PersonDayTable rows={personDays} returnTo={here} />
           )}
         </Card>
       ) : null}
@@ -1191,8 +1227,24 @@ function MorningCall({
   );
 }
 
-/** One site's days, for the drill-through card on the greeter views. */
-function SiteDayTable({ rows }: { rows: LocationPeriodRow[] }) {
+/**
+ * One site's days, for the drill-through card on the greeter views.
+ *
+ * The Void column is the reason this table takes `returnTo`: a bad site day is
+ * usually spotted here, reading a period, rather than on the list page. Striking
+ * it out from where it was noticed and landing back on the same screen is the
+ * whole point — see returnPath() in ../actions.
+ */
+function SiteDayTable({
+  rows,
+  siteLabel,
+  returnTo
+}: {
+  rows: LocationPeriodRow[];
+  /** Only for the confirm sentence, so it names the site being struck out. */
+  siteLabel: string;
+  returnTo: string;
+}) {
   if (rows.length === 0) {
     return <EmptyNote>This site logged nothing in the window.</EmptyNote>;
   }
@@ -1218,6 +1270,7 @@ function SiteDayTable({ rows }: { rows: LocationPeriodRow[] }) {
               last on purpose: put it beside Members and someone will give it a
               goal to match its neighbours. */}
           <th className="px-4 py-3">Churn %</th>
+          <th className="px-4 py-3">Actions</th>
         </tr>
       </thead>
       <tbody className={TBODY_CLS}>
@@ -1251,6 +1304,14 @@ function SiteDayTable({ rows }: { rows: LocationPeriodRow[] }) {
             </td>
             <td className="px-4 py-3 font-semibold">{dobCell(d.dob)}</td>
             <td className="px-4 py-3 text-splash-navy/80">{pct(d.churn_pct)}</td>
+            <td className="whitespace-nowrap px-4 py-3">
+              <VoidDayButton
+                id={d.id}
+                action={voidLocationDayAction}
+                returnTo={returnTo}
+                confirmText={`Void the site day for ${siteLabel} on ${d.business_date}?\n\nThe row is kept but struck out: it drops out of this report and every rollup, the Scanned % for that day loses its denominator, and the day goes back onto the missing-submissions list. The greeters' own rows for that day are NOT affected. Restore it from the Daily submissions table on /admin/greeters.`}
+              />
+            </td>
           </tr>
         ))}
       </tbody>
@@ -1258,8 +1319,15 @@ function SiteDayTable({ rows }: { rows: LocationPeriodRow[] }) {
   );
 }
 
-/** One greeter's days — the bottom of the drill-through. */
-function PersonDayTable({ rows }: { rows: GreeterDayRow[] }) {
+/** One greeter's days — the bottom of the drill-through. See SiteDayTable on
+ *  why the Void button is here and why there is no Restore beside it. */
+function PersonDayTable({
+  rows,
+  returnTo
+}: {
+  rows: GreeterDayRow[];
+  returnTo: string;
+}) {
   const ordered = [...rows].sort((a, b) =>
     a.business_date.localeCompare(b.business_date)
   );
@@ -1283,6 +1351,7 @@ function PersonDayTable({ rows }: { rows: GreeterDayRow[] }) {
           <th className="px-4 py-3">Reviews</th>
           <th className="px-4 py-3">Capture %</th>
           <th className="px-4 py-3">D.O.B.</th>
+          <th className="px-4 py-3">Actions</th>
         </tr>
       </thead>
       <tbody className={TBODY_CLS}>
@@ -1316,6 +1385,19 @@ function PersonDayTable({ rows }: { rows: GreeterDayRow[] }) {
               <CaptureCell value={d.capture_pct} goal={d.capture_goal_pct} />
             </td>
             <td className="px-4 py-3 font-semibold">{dobCell(d.dob)}</td>
+            <td className="whitespace-nowrap px-4 py-3">
+              <VoidDayButton
+                id={d.id}
+                action={voidDayAction}
+                returnTo={returnTo}
+                // Conditional, and worded that way on purpose:
+                // greeter_missing_days() only flags the site's day when no
+                // live greeter rows are left for it, so voiding one of three
+                // greeters doesn't put it back on the list. Same sentence as
+                // the one on /admin/greeters.
+                confirmText={`Void ${d.greeter_name ?? "this greeter"}'s day at ${d.location_code} on ${d.business_date}?\n\nThe row is kept but struck out: it drops out of every report and rollup. If it was the last greeter logged for that site's day, the day goes back onto the missing-submissions list until someone logs it again. Restore it from the Daily submissions table on /admin/greeters.`}
+              />
+            </td>
           </tr>
         ))}
       </tbody>
@@ -1326,6 +1408,103 @@ function PersonDayTable({ rows }: { rows: GreeterDayRow[] }) {
 /* ============================================================
  * Small presentational pieces
  * ============================================================ */
+
+/**
+ * The Void cell on both drill-through tables.
+ *
+ * A form rather than a link because it's a write, and <RedirectForm> because a
+ * redirect() inside a server action costs ~20 seconds under OpenNext. The
+ * confirm itself lives in RowActionButton's onClick — a server round trip to ask
+ * "are you sure" would cost that same 20 seconds for a question the browser
+ * answers for free.
+ *
+ * `return_to` is what keeps the reader on this page. Without it the action's own
+ * default sends them to /admin/greeters, which on a report with a window, a
+ * manager filter and a drill-through open is indistinguishable from losing their
+ * place. The value is allow-listed server-side; see returnPath() in ../actions.
+ */
+function VoidDayButton({
+  id,
+  action,
+  returnTo,
+  confirmText
+}: {
+  id: string;
+  action: (formData: FormData) => Promise<RedirectResult>;
+  returnTo: string;
+  confirmText: string;
+}) {
+  return (
+    <RedirectForm action={action}>
+      <input type="hidden" name="id" value={id} />
+      <input type="hidden" name="return_to" value={returnTo} />
+      <RowActionButton
+        label="Void"
+        pendingLabel="Voiding…"
+        confirmText={confirmText}
+      />
+    </RedirectForm>
+  );
+}
+
+/**
+ * Outcome of a void, on the page it was posted from.
+ *
+ * The sentence comes from the SHARED map in _lib/copy.ts so that voiding a day
+ * says the same thing here as it does on /admin/greeters — the button is the
+ * same button, and two wordings for one action read like two different actions.
+ *
+ * Only the two void keys are accepted, though, even though the map holds more.
+ * Restore and the edit successes cannot reach this page (nothing here posts
+ * them), so honouring those keys would let a hand-typed or stale URL raise a
+ * banner claiming something happened that didn't. An unrecognised key renders
+ * nothing rather than a generic "done", because a banner that can't say what
+ * happened is worse than silence.
+ */
+const REPORT_SUCCESS_KEYS = ["day_voided", "location_voided"];
+
+function CorrectionBanner({
+  successKey,
+  error,
+  scorecardHref
+}: {
+  successKey: string;
+  error: string;
+  /**
+   * /admin/greeters on this report's own window and manager filters. The
+   * banner's whole job after "it worked" is to make the undo reachable, and the
+   * scorecard's Daily submissions table — the only place a Restore button
+   * exists — is windowed, so a bare link would often open on a range that
+   * doesn't contain the day just struck out.
+   */
+  scorecardHref: string;
+}) {
+  if (error) {
+    return (
+      <div className="mb-4 rounded-splash-lg border border-splash-deny/40 bg-splash-deny/10 px-5 py-4 text-sm text-splash-deny">
+        {error}
+      </div>
+    );
+  }
+
+  const copy = REPORT_SUCCESS_KEYS.includes(successKey)
+    ? SUCCESS_COPY[successKey]
+    : undefined;
+  if (!copy) return null;
+
+  return (
+    <div className="mb-4 rounded-splash-lg border border-splash-success/40 bg-splash-success/10 px-5 py-4 text-sm text-splash-navy">
+      {copy}{" "}
+      <Link
+        href={scorecardHref}
+        className="font-semibold text-splash-blue underline hover:text-splash-blue-dark"
+      >
+        Undo on the scorecard
+      </Link>
+      .
+    </div>
+  );
+}
 
 const LABEL_CLS =
   "text-xs font-semibold uppercase tracking-wider text-splash-navy/70";
@@ -1552,10 +1731,30 @@ function EmptyNote({ children }: { children: ReactNode }) {
  * means to stay narrowed, and silently widening to the whole company would show
  * them sites they don't run without saying so.
  */
-function ReportBanner({ mgrQs }: { mgrQs: string }) {
-  const backHref = mgrQs
-    ? `/admin/greeters?${mgrQs.replace(/^&/, "")}`
-    : "/admin/greeters";
+/**
+ * Title block and the way back to the scorecard.
+ *
+ * THE BACK LINK CARRIES THE WINDOW, not just the manager filters. Restoring a
+ * voided day is only possible on /admin/greeters, and its Daily submissions
+ * table is itself windowed — so a back link that dropped the dates would land
+ * the reader on that page's default range, which very often does not contain
+ * the day they just struck out. Since every void confirm on this page ends with
+ * "restore it from the Daily submissions table on /admin/greeters", this link is
+ * the thing that makes that sentence followable.
+ *
+ * Both param names match what /admin/greeters reads (`date_from` / `date_to`);
+ * if either side renames them, this link silently reverts to the default window
+ * rather than erroring, so keep them in step.
+ */
+function ReportBanner({
+  mgrQs,
+  windowQs
+}: {
+  mgrQs: string;
+  /** Already-encoded `date_from=…&date_to=…`, with no leading separator. */
+  windowQs: string;
+}) {
+  const backHref = `/admin/greeters?${windowQs}${mgrQs}`;
   return (
     <div className="mb-6 flex flex-wrap items-end justify-between gap-3">
       <div>

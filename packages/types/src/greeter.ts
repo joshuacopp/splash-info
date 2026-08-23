@@ -189,6 +189,26 @@ export interface GreeterRoster {
   members: GreeterRosterMember[];
 }
 
+/**
+ * Withdrawal state, carried by both daily tables.
+ *
+ * A day that was entered wrongly is struck out, not deleted: "submitted and
+ * then withdrawn" is a different fact from "never submitted", and the second is
+ * what the missing-days panel is for. `voided_at === null` means live.
+ *
+ * A ROW CARRYING THESE FIELDS IS NOT NECESSARILY SAFE TO COUNT. Every reporting
+ * function in the database reads greeter_daily_live / location_daily_live and
+ * so never sees a voided row at all; the only reads that return one are the
+ * correction screens, which ask for it deliberately so a restore is reachable.
+ * If you are summing rows in TypeScript, check this field.
+ */
+export interface VoidState {
+  /** ISO timestamp, or null when the row is live. */
+  voided_at: string | null;
+  voided_by: string | null;
+  voided_by_email: string | null;
+}
+
 /* ============================================================
  * greeter_daily
  * ============================================================ */
@@ -211,13 +231,60 @@ export interface GreeterDailyInsert
 export interface GreeterDailyRow
   extends GreeterDailyInsert,
     GreeterDerivedMetrics,
-    GreeterShiftDerived {
+    GreeterShiftDerived,
+    VoidState {
   id: string;
   created_at: string;
   updated_at: string;
   updated_by: string | null;
   updated_by_email: string | null;
 }
+
+/**
+ * The editable half of a greeter day.
+ *
+ * Deliberately omits created_by / created_by_email (an edit does not re-author
+ * the row) and the location key + identity fields are present because an edit
+ * MAY move a day to another site, greeter or date — that is the whole reason
+ * updates go by id rather than by re-upserting on the natural key.
+ */
+export type GreeterDailyUpdate = Omit<
+  GreeterDailyInsert,
+  "created_by" | "created_by_email"
+>;
+
+/**
+ * The narrowest shape an edit form needs in order to seed itself.
+ *
+ * Exists because the pages that render those forms do NOT hold a full
+ * `GreeterDailyRow`: the list endpoints select a column subset (no created_by,
+ * no updated_by), so a form prop typed as the full row would be unsatisfiable
+ * from the only data the page has. Picking the fields the form actually renders
+ * keeps the prop honest AND keeps it tied to the row type, so renaming a column
+ * upstream breaks here rather than silently seeding an empty box.
+ *
+ * Read-only and derived columns are deliberately absent — capture_pct, dob,
+ * hours_worked and the two goal snapshots are all recomputed or re-resolved on
+ * save, so a field for any of them would collect a number the server overwrites.
+ */
+export type GreeterDayEditRow = Pick<
+  GreeterDailyRow,
+  | "id"
+  | "business_date"
+  | "location_id"
+  | "beekeeper_user_id"
+  | "greeter_name"
+  | "shift_start"
+  | "shift_end"
+  | "wash_sales"
+  | "rewashes"
+  | "package_dollars"
+  | "extras_dollars"
+  | "sign_ups"
+  | "reactivations"
+  | "google_reviews"
+  | "comments"
+>;
 
 /* ============================================================
  * location_daily
@@ -235,7 +302,8 @@ export interface LocationDailyInsert
 
 export interface LocationDailyRow
   extends LocationDailyInsert,
-    GreeterDerivedMetrics {
+    GreeterDerivedMetrics,
+    VoidState {
   id: string;
   /** Generated: sign_ups + reactivations - cancellations. Read-only. */
   net_members: number | null;
@@ -244,6 +312,33 @@ export interface LocationDailyRow
   updated_by: string | null;
   updated_by_email: string | null;
 }
+
+/** The editable half of a site day. See GreeterDailyUpdate. */
+export type LocationDailyUpdate = Omit<
+  LocationDailyInsert,
+  "created_by" | "created_by_email"
+>;
+
+/** What the site day's edit form needs to seed itself. See GreeterDayEditRow. */
+export type LocationDayEditRow = Pick<
+  LocationDailyRow,
+  | "id"
+  | "business_date"
+  | "location_id"
+  | "total_cars"
+  | "wash_sales"
+  | "house_accounts"
+  | "rewashes"
+  | "package_dollars"
+  | "extras_dollars"
+  | "sign_ups"
+  | "reactivations"
+  | "cancellations"
+  | "total_members"
+  | "churn_pct"
+  | "google_reviews"
+  | "comments"
+>;
 
 /* ============================================================
  * greeter_goals
@@ -515,6 +610,17 @@ export interface GreeterPeriodReportRow {
  * Field list must stay in sync with location_period_rows()'s RETURNS TABLE.
  */
 export interface LocationPeriodRow {
+  /**
+   * The location_daily row this came from, so the report's drill-through can
+   * void a bad day where it's noticed instead of sending the reader to
+   * /admin/greeters to find it again.
+   *
+   * Safe to treat as an identity because this function does not aggregate the
+   * site side — one row per (location, business_date), straight off
+   * location_daily_live. If a future caller ever rolls these up, the id must be
+   * dropped from that shape rather than carried as the first row's.
+   */
+  id: string;
   business_date: string;
   location_id: number;
   site_number: number;

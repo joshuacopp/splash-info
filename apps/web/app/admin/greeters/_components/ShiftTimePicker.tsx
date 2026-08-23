@@ -36,16 +36,62 @@ function to24h(hour: string, minute: string, meridiem: string): string {
   return `${String(h).padStart(2, "0")}:${minute}`;
 }
 
+/**
+ * The inverse of to24h, for seeding the three selects when editing a day.
+ *
+ * TOLERATES SECONDS because that is what comes back. Postgres `time` serializes
+ * as "14:30:00" through PostgREST, not the "14:30" that went in, so an exact
+ * HH:MM match would fail on every stored row and silently blank the shift on
+ * every edit — the user would then save the day and lose the hours worked
+ * without ever touching the field.
+ *
+ * Anything unparseable yields three empty strings, which is the same state as
+ * "no shift entered". A shift that can't be read is better shown as absent than
+ * as some half-guessed time the user might not check.
+ */
+function from24h(value: string | null | undefined): {
+  hour: string;
+  minute: string;
+  meridiem: string;
+} {
+  const empty = { hour: "", minute: "", meridiem: "" };
+  if (!value) return empty;
+  const m = /^(\d{2}):(\d{2})/.exec(value.trim());
+  if (!m) return empty;
+
+  // Destructured rather than indexed because `noUncheckedIndexedAccess` types
+  // every group as possibly undefined — true in general, but not for two
+  // non-optional groups in a regex that just matched. The guard below is what
+  // tells the compiler that, and it costs nothing at runtime.
+  const [, rawHour, rawMinute] = m;
+  if (rawHour === undefined || rawMinute === undefined) return empty;
+
+  const h24 = Number(rawHour);
+  if (!Number.isFinite(h24) || h24 > 23) return empty;
+
+  const meridiem = h24 < 12 ? "AM" : "PM";
+  const h12 = h24 % 12 === 0 ? 12 : h24 % 12;
+  return { hour: String(h12), minute: rawMinute, meridiem };
+}
+
 export function ShiftTimePicker({
   name,
-  label
+  label,
+  defaultValue
 }: {
   name: string;
   label: string;
+  /** Stored 24-hour "HH:MM" or "HH:MM:SS". Seeds the selects on an edit. */
+  defaultValue?: string | null;
 }) {
-  const [hour, setHour] = useState("");
-  const [minute, setMinute] = useState("");
-  const [meridiem, setMeridiem] = useState("");
+  // Read once as the initial state, not synced afterwards. Whatever renders this
+  // in edit mode keys the form on the row id, so switching rows remounts the
+  // component and re-reads the prop — which is also the only way three pieces of
+  // state stay honest without a useEffect that would fight the user's typing.
+  const seed = from24h(defaultValue);
+  const [hour, setHour] = useState(seed.hour);
+  const [minute, setMinute] = useState(seed.minute);
+  const [meridiem, setMeridiem] = useState(seed.meridiem);
 
   const value = to24h(hour, minute, meridiem);
 
