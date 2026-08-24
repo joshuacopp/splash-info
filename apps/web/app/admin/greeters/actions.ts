@@ -211,6 +211,17 @@ export async function submitLocationDayAction(
     // Site only — a greeter has no member base to churn. The worker range-checks
     // it and returns a readable 400, so nothing is validated here.
     churn_pct: strOrNull(formData, "churn_pct"),
+    // The two typed halves of the labor/revenue feature, and the ONLY halves the
+    // client sends. Their denominators (labor_budget, revenue_goal) are resolved
+    // server-side from the site's monthly target for this business_date — never
+    // posted from here, or a stale form could overwrite a budget by saving a day.
+    //
+    // Both are month-to-date projections that happen to be recorded on a day, and
+    // both are optional: blank is "nobody had a fresh figure", which is a normal
+    // day and not a validation failure. Nothing is checked here for the same
+    // reason churn isn't — the worker's 400 already names the box.
+    labor_trend: strOrNull(formData, "labor_trend"),
+    revenue_trend: strOrNull(formData, "revenue_trend"),
     ...sharedMetricFields(formData)
   });
 
@@ -443,5 +454,147 @@ export async function deleteGoalAction(
   const sep = back.includes("?") ? "&" : "?";
   return {
     redirectTo: `${back}${sep}success=goal_deleted${restampQs(result.body)}`
+  };
+}
+
+/* ============================================================
+ * Monthly targets — a site's labor budget and revenue goal
+ * ============================================================
+ *
+ * The goal actions' sibling, deliberately, down to the transport and the
+ * banner-plus-restamp-count shape. What differs is that (site, month) is unique,
+ * so there is ONE endpoint rather than a create/delete pair: saving over a month
+ * that already has a target is a CORRECTION, and the worker says which of the
+ * two happened in `corrected` rather than leaving this file to guess from a
+ * status code it never sees.
+ */
+
+/**
+ * How many already-logged site days the worker re-stamped, off the upsert or
+ * delete response.
+ *
+ * ONE COUNT, NOT TWO, unlike restampCounts above: greeter_daily carries no labor
+ * or revenue columns, so there is no greeter-grain number to report and inventing
+ * a zero for one would imply there is.
+ *
+ * Same paranoia about the body's shape and for the same reason — a missing count
+ * has to degrade to "no re-stamping mentioned", never to "NaN days re-stamped".
+ */
+function targetRestampCount(body: unknown): number {
+  const r =
+    body && typeof body === "object" && "restamped" in body
+      ? (body as { restamped?: unknown }).restamped
+      : null;
+  if (!r || typeof r !== "object") return 0;
+  const l = (r as { location_rows?: unknown }).location_rows;
+  return typeof l === "number" && Number.isFinite(l) ? l : 0;
+}
+
+/** True only when the worker says it overwrote an existing month's target. */
+function wasCorrected(body: unknown): boolean {
+  return (
+    body !== null &&
+    typeof body === "object" &&
+    (body as { corrected?: unknown }).corrected === true
+  );
+}
+
+/**
+ * Set or correct one site's labor budget and revenue goal for one calendar month.
+ *
+ * NO "AT LEAST ONE DOLLAR" CHECK HERE, AND THAT IS DELIBERATE. The worker's 400
+ * for that case is a whole sentence that points the user at the delete button
+ * (`site_monthly_targets_not_empty`), and it lands in the action-error banner
+ * unchanged. A second copy of the rule in this file would be a second place for
+ * it to drift, and the copy here is the one that would silently stop matching
+ * what the database actually enforces. Same reasoning as the goal action's date
+ * ordering, which is also left to the worker.
+ *
+ * The month arrives from an <input type="month"> as "YYYY-MM"; the worker
+ * normalises any day in the month to the 1st, so nothing is reshaped here.
+ */
+export async function setMonthlyTargetAction(
+  formData: FormData
+): Promise<RedirectResult> {
+  /** See submitGreeterDayAction — the targets card sits on the filtered list. */
+  const back = returnPath(formData);
+
+  const locationId = strField(formData, "location_id");
+  if (!locationId) {
+    return fail("Pick a location before saving the target.", back);
+  }
+
+  const month = strField(formData, "month");
+  if (!month) return fail("Pick the month this budget covers.", back);
+
+  const result = await performancePostJson(
+    "/pertrack/api/greeter/monthly-targets",
+    {
+      location_id: locationId,
+      month,
+      // Blank stays blank rather than becoming 0: a site that budgets labor and
+      // sets no revenue goal is a supported state, and a 0 would be a claim that
+      // the site is meant to take no money this month.
+      labor_budget: strOrNull(formData, "labor_budget"),
+      revenue_goal: strOrNull(formData, "revenue_goal"),
+      note: strOrNull(formData, "note")
+    }
+  );
+
+  if (!result.ok) return fail(result.error, back);
+
+  // The report reads the day rows this just re-stamped, so it is exactly as
+  // stale as the list is.
+  revalidatePath(LIST_PATH);
+  revalidatePath(REPORT_PATH);
+
+  // Two success keys off one endpoint. "Saved" and "changed" are different
+  // events to the person reading the banner — the second one moved numbers that
+  // were already on screen, and telling them apart is the whole reason the
+  // worker returns `corrected` instead of leaving it to be inferred.
+  const key = wasCorrected(result.body) ? "target_corrected" : "target";
+  const n = targetRestampCount(result.body);
+  const sep = back.includes("?") ? "&" : "?";
+  return {
+    redirectTo: `${back}${sep}success=${key}${n > 0 ? `&rt=${n}` : ""}`
+  };
+}
+
+/**
+ * Remove a month's target, and clear it off the days it was stamped on.
+ *
+ * A target is deleted, never blanked. Clearing both dollar figures on the form
+ * would be refused by site_monthly_targets_not_empty — a row carrying no dollars
+ * makes a month look configured while doing nothing — so this button is the only
+ * way to un-configure a month, and the worker's 400 on the save path says so.
+ *
+ * NO CONFIRMATION STEP HERE; the button that posts this asks on the client. See
+ * deleteGoalAction for why a server-side "are you sure" is not an option.
+ */
+export async function deleteMonthlyTargetAction(
+  formData: FormData
+): Promise<RedirectResult> {
+  /** See submitGreeterDayAction. */
+  const back = returnPath(formData);
+
+  const id = strField(formData, "target_id");
+  if (!id) {
+    return fail("That target could not be identified. Reload the page.", back);
+  }
+
+  const result = await performancePostJson(
+    "/pertrack/api/greeter/monthly-targets/delete",
+    { id }
+  );
+
+  if (!result.ok) return fail(result.error, back);
+
+  revalidatePath(LIST_PATH);
+  revalidatePath(REPORT_PATH);
+
+  const n = targetRestampCount(result.body);
+  const sep = back.includes("?") ? "&" : "?";
+  return {
+    redirectTo: `${back}${sep}success=target_deleted${n > 0 ? `&rt=${n}` : ""}`
   };
 }

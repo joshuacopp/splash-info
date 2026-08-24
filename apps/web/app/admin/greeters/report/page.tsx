@@ -81,7 +81,8 @@ import {
   type CaptureTier,
   dobTier,
   SCAN_TARGET_PCT,
-  scanTier
+  scanTier,
+  TrendCell
 } from "../_lib/grading";
 import { SUCCESS_COPY } from "../_lib/copy";
 import {
@@ -1085,7 +1086,7 @@ function MorningCall({
   return (
     <Card
       title={`Morning call · ${sites.length} site${sites.length === 1 ? "" : "s"}`}
-      subtitle="Site numbers only, worst capture rate first, each site's days listed underneath it. Scanned % is a data-quality signal, not a sales one — a low number means cars went unattributed, so every per-greeter figure for that site is understated."
+      subtitle="Site numbers only, worst capture rate first, each site's days listed underneath it. Scanned % is a data-quality signal, not a sales one — a low number means cars went unattributed, so every per-greeter figure for that site is understated. The last two columns are month-to-date, not the window: Labor % over 100 is bad (trending to overspend the budget), Revenue % over 100 is good (trending to beat the goal)."
     >
       {sites.length === 0 ? (
         <EmptyNote>No site-wide days were logged in this window.</EmptyNote>
@@ -1112,9 +1113,36 @@ function MorningCall({
               {/* Day rows only. The site row above each group shows an em dash,
                   not a total: churn arrives already divided, so a week's figure
                   could only be a flat average of daily percentages. The dash is
-                  the honest answer and the reason this column sits last, well
-                  clear of the graded pair. */}
+                  the honest answer, and the column sits here — after the graded
+                  pair and before the month block — so nobody reads it as
+                  something with a target. */}
               <th className="px-4 py-3">Churn %</th>
+              {/* THE MONTH BLOCK, LAST AND TOGETHER. Every column to the left is
+                  a day's worth of something and adds up down the group; these
+                  two are a MONTH-to-date projection that happens to have been
+                  written on a day, so the site row shows the LATEST day's figure
+                  rather than a total. Keeping them together at the end is the
+                  only structural hint a reader gets that the arithmetic changes
+                  here — see trendLevels() in _lib/aggregate.
+
+                  THE TWO ARE GRADED IN OPPOSITE DIRECTIONS. Same division, and
+                  the colours mean the reverse of each other: 105% of the labor
+                  budget is red because the site is projected to overspend, 105%
+                  of the revenue goal is green because it is projected to beat
+                  it. The `direction` prop on each cell below is what carries
+                  that, and it is not a copy-paste field. */}
+              <th
+                className="px-4 py-3"
+                title="Projected month-end labor spend against the month's budget. OVER 100% IS BAD — the site is trending to overspend."
+              >
+                Labor %
+              </th>
+              <th
+                className="px-4 py-3"
+                title="Projected month-end revenue against the month's goal. OVER 100% IS GOOD — the opposite reading from Labor %."
+              >
+                Revenue %
+              </th>
             </tr>
           </thead>
           <tbody className={TBODY_CLS}>
@@ -1174,6 +1202,27 @@ function MorningCall({
                     >
                       —
                     </td>
+                    {/* The site's latest reported day, NOT a total of the days
+                        below — see trendLevels(). Seven days of a $24,000
+                        budget is $24,000. */}
+                    <td className="px-4 py-3">
+                      <TrendCell
+                        value={s.labor_trend_pct}
+                        actual={s.labor_trend}
+                        target={s.labor_budget}
+                        direction="under-is-good"
+                        label="labor budget"
+                      />
+                    </td>
+                    <td className="px-4 py-3">
+                      <TrendCell
+                        value={s.revenue_trend_pct}
+                        actual={s.revenue_trend}
+                        target={s.revenue_goal}
+                        direction="over-is-good"
+                        label="revenue goal"
+                      />
+                    </td>
                   </tr>
                   {dayRows.map((d) => (
                     <tr
@@ -1224,6 +1273,27 @@ function MorningCall({
                       <td className="px-4 py-2 font-semibold">{dobCell(d.dob)}</td>
                       <td className="px-4 py-2 text-splash-navy/80">
                         {pct(d.churn_pct)}
+                      </td>
+                      {/* Month-to-date as of THIS day, so the figure repeats or
+                          steps up down the group instead of accumulating. A day
+                          nobody read a fresh number for shows a dash. */}
+                      <td className="px-4 py-2">
+                        <TrendCell
+                          value={d.labor_trend_pct}
+                          actual={d.labor_trend}
+                          target={d.labor_budget}
+                          direction="under-is-good"
+                          label="labor budget"
+                        />
+                      </td>
+                      <td className="px-4 py-2">
+                        <TrendCell
+                          value={d.revenue_trend_pct}
+                          actual={d.revenue_trend}
+                          target={d.revenue_goal}
+                          direction="over-is-good"
+                          label="revenue goal"
+                        />
                       </td>
                     </tr>
                   ))}
@@ -1277,9 +1347,25 @@ function SiteDayTable({
           <th className="px-4 py-3">D.O.B.</th>
           {/* The ONLY place a period-capable table shows churn, and it's safe
               here because every row is one day. Self-reported, ungraded, and
-              last on purpose: put it beside Members and someone will give it a
-              goal to match its neighbours. */}
+              kept away from Members on purpose: put it beside a level and
+              someone will give it a goal to match its neighbours. */}
           <th className="px-4 py-3">Churn %</th>
+          {/* The month block. Every row here is one day, so these are simply
+              that day's month-to-date figures — no aggregation to get wrong.
+              Opposite gradings, same as the Morning call: over the labor budget
+              is bad, over the revenue goal is good. */}
+          <th
+            className="px-4 py-3"
+            title="Projected month-end labor spend against the month's budget. OVER 100% IS BAD."
+          >
+            Labor %
+          </th>
+          <th
+            className="px-4 py-3"
+            title="Projected month-end revenue against the month's goal. OVER 100% IS GOOD — the opposite reading from Labor %."
+          >
+            Revenue %
+          </th>
           <th className={STICKY_TH_CLS}>Actions</th>
         </tr>
       </thead>
@@ -1314,6 +1400,24 @@ function SiteDayTable({
             </td>
             <td className="px-4 py-3 font-semibold">{dobCell(d.dob)}</td>
             <td className="px-4 py-3 text-splash-navy/80">{pct(d.churn_pct)}</td>
+            <td className="px-4 py-3">
+              <TrendCell
+                value={d.labor_trend_pct}
+                actual={d.labor_trend}
+                target={d.labor_budget}
+                direction="under-is-good"
+                label="labor budget"
+              />
+            </td>
+            <td className="px-4 py-3">
+              <TrendCell
+                value={d.revenue_trend_pct}
+                actual={d.revenue_trend}
+                target={d.revenue_goal}
+                direction="over-is-good"
+                label="revenue goal"
+              />
+            </td>
             <td className={STICKY_TD_CLS}>
               <VoidDayButton
                 id={d.id}

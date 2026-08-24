@@ -18,6 +18,14 @@
 // latest day in the window and only then added across locations. `net_members`
 // (sign ups plus reactivations minus cancellations) is the summable one.
 //
+// THE LABOR AND REVENUE FIGURES ARE LEVELS TOO, and they are the reason to read
+// that paragraph twice. Every other dollar column here is a day's worth of
+// something; those four are a MONTH's, recorded on a day because that is when
+// somebody read them off the internal reports. Seven days of a $24,000 budget is
+// $24,000. They go through trendLevels(), which is memberLevel()'s treatment
+// applied to a whole block — latest day per location, never a sum across days
+// and never an average.
+//
 // `reactivations` is summed and reported, and that is ALL it does here. It is
 // deliberately NOT in capture_pct's numerator — a returning member was never a
 // new capture opportunity — so do not "fix" that by adding it in.
@@ -35,7 +43,36 @@
 
 import type { LocationPeriodRow } from "@splash/types/greeter";
 
-export interface Totals {
+/**
+ * The month's labor and revenue picture as of the latest day in a window.
+ *
+ * Split out from Totals as its own bag because these six travel together and
+ * must be resolved together: the two percentages are GENERATED in Postgres from
+ * the four dollars ON THE SAME ROW, so a budget taken from one day and a trend
+ * taken from another would produce a pair that no percentage on this interface
+ * describes. trendLevels() is the only thing that should ever build one.
+ *
+ * LABOR OVER 100% IS BAD (projected to overspend the budget), REVENUE OVER 100%
+ * IS GOOD (projected to beat the goal). Same arithmetic, opposite readings —
+ * anything that colours or sorts these carries the direction explicitly. See
+ * trendTier() in ../../_lib/grading.
+ */
+export interface TrendLevels {
+  /** Dollars budgeted for the whole MONTH, not the window. Never summed. */
+  labor_budget: number | null;
+  /** Projected month-end labor spend, as of the latest day. Never summed. */
+  labor_trend: number | null;
+  /** labor_trend / labor_budget * 100, straight off the row. OVER 100 IS BAD. */
+  labor_trend_pct: number | null;
+  /** Dollars of revenue targeted for the whole MONTH. Never summed. */
+  revenue_goal: number | null;
+  /** Projected month-end revenue, as of the latest day. Never summed. */
+  revenue_trend: number | null;
+  /** revenue_trend / revenue_goal * 100, off the row. OVER 100 IS GOOD. */
+  revenue_trend_pct: number | null;
+}
+
+export interface Totals extends TrendLevels {
   days: number;
   total_cars: number;
   wash_sales: number;
@@ -154,7 +191,15 @@ export function totals(rows: LocationPeriodRow[]): Totals {
     dob: null,
     scanned_pct: null,
     capture_goal_pct: null,
-    dob_goal: null
+    dob_goal: null,
+    // Resolved at the foot of this function, like total_members, and for the
+    // same reason: nothing about them accumulates in the loop below.
+    labor_budget: null,
+    labor_trend: null,
+    labor_trend_pct: null,
+    revenue_goal: null,
+    revenue_trend: null,
+    revenue_trend_pct: null
   };
 
   // scanned_pct's denominator, accumulated PER DAY and floored per day, exactly
@@ -238,7 +283,10 @@ export function totals(rows: LocationPeriodRow[]): Totals {
   t.dob_goal = dg === null ? null : round(dg, 2);
   t.total_members = memberLevel(rows);
 
-  return t;
+  // Assigned as a block, from one call. Picking the six off individually would
+  // let a future edit resolve a budget from one day and a trend from another,
+  // which is the one way to produce a percentage that describes no real row.
+  return { ...t, ...trendLevels(rows) };
 }
 
 /**
@@ -263,6 +311,100 @@ export function memberLevel(rows: LocationPeriodRow[]): number | null {
   let sum = 0;
   for (const r of latest.values()) sum += n(r.total_members);
   return sum;
+}
+
+/**
+ * The labor and revenue block across a set of site-days. memberLevel()'s rule,
+ * applied to six columns instead of one.
+ *
+ * Per location, per SIDE, take the LATEST day that carries anything for that
+ * side and read all three of its columns off that one row. Summing the columns
+ * would add a month's budget to itself once per day in the window and turn a
+ * $24,000 budget into $168,000; averaging would report a number the site was
+ * never given.
+ *
+ * PER SIDE, not per row, because labor and revenue are typed independently: a
+ * manager who reads the labor number off the reports on Monday and the revenue
+ * number on Wednesday leaves Wednesday's row carrying only half the picture, and
+ * taking both sides off the newest row would blank Monday's labor figure back
+ * out. Within a side the three columns still come from a single row — the
+ * percentage is generated in Postgres from the two dollars beside it, so mixing
+ * days inside a side would print a percentage that isn't the division of the
+ * numbers next to it.
+ *
+ * THE PERCENTAGES ARE CARRIED, NEVER RECOMPUTED, and they are dropped outright
+ * once more than one location contributes. Two sites' budgets add up fine, but
+ * the percentage of a summed budget is a number this codebase has nowhere agreed
+ * to produce — the generated columns are per row, and the schema is explicit
+ * that they must not be re-derived from aggregated dollars. Nothing renders a
+ * company-level trend % today; if a KPI tile ever wants one, that decision gets
+ * made here, in the open, rather than arriving as a side effect of a sum.
+ *
+ * Null throughout when no row carries a figure at all — an unread trend is
+ * unknown, not zero, and a zero would claim the site is trending at nothing.
+ */
+export function trendLevels(rows: LocationPeriodRow[]): TrendLevels {
+  const out: TrendLevels = {
+    labor_budget: null,
+    labor_trend: null,
+    labor_trend_pct: null,
+    revenue_goal: null,
+    revenue_trend: null,
+    revenue_trend_pct: null
+  };
+
+  const latestFor = (has: (r: LocationPeriodRow) => boolean) => {
+    const latest = new Map<number, LocationPeriodRow>();
+    for (const r of rows) {
+      if (!has(r)) continue;
+      const prev = latest.get(r.location_id);
+      if (!prev || r.business_date > prev.business_date) {
+        latest.set(r.location_id, r);
+      }
+    }
+    return [...latest.values()];
+  };
+
+  // Added across locations only — never across days, which latestFor() has
+  // already collapsed. Null rather than 0 when none of those rows carried the
+  // column: a site whose month was never configured has no budget, and "$0.00
+  // budgeted" is a different and much more alarming statement.
+  const acrossSites = (
+    list: LocationPeriodRow[],
+    pick: (r: LocationPeriodRow) => number | null
+  ): number | null => {
+    let seen = false;
+    let sum = 0;
+    for (const r of list) {
+      const v = pick(r);
+      if (v === null || v === undefined) continue;
+      seen = true;
+      sum += v;
+    }
+    return seen ? sum : null;
+  };
+
+  const labor = latestFor(
+    (r) => r.labor_budget !== null || r.labor_trend !== null
+  );
+  if (labor.length > 0) {
+    out.labor_budget = acrossSites(labor, (r) => r.labor_budget);
+    out.labor_trend = acrossSites(labor, (r) => r.labor_trend);
+    out.labor_trend_pct =
+      labor.length === 1 ? (labor[0]?.labor_trend_pct ?? null) : null;
+  }
+
+  const revenue = latestFor(
+    (r) => r.revenue_goal !== null || r.revenue_trend !== null
+  );
+  if (revenue.length > 0) {
+    out.revenue_goal = acrossSites(revenue, (r) => r.revenue_goal);
+    out.revenue_trend = acrossSites(revenue, (r) => r.revenue_trend);
+    out.revenue_trend_pct =
+      revenue.length === 1 ? (revenue[0]?.revenue_trend_pct ?? null) : null;
+  }
+
+  return out;
 }
 
 export interface SiteTotals extends Totals {

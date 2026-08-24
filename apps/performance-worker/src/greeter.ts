@@ -23,8 +23,19 @@
 //   GET  /api/greeter/goals          ?site_number=   -> goal windows
 //   POST /api/greeter/goals                          -> add a goal window
 //   POST /api/greeter/goals/delete   { id }          -> remove a goal window
+//   GET  /api/greeter/monthly-targets       filters  -> labor/revenue targets
+//   POST /api/greeter/monthly-targets                -> set or correct a month
+//   POST /api/greeter/monthly-targets/delete { id }  -> remove a month's target
 //
-// THE DELETE IS A POST, not a DELETE verb. apps/web reaches this worker through
+// THE MONTHLY TARGETS ARE THE GOALS ENDPOINTS' SIBLING, deliberately down to the
+// shape of every request and response, but they are NOT goal windows and the
+// difference is load-bearing: a goal window may overlap another and resolves
+// shortest-span-wins, which would let a three-day promo window with no labor
+// budget on it blank a site's denominator mid-month. A month's target is keyed
+// (site, month) and there is one, so the write is an UPSERT where goals get an
+// insert-and-delete pair. See greeter-labor-revenue-14.sql.
+//
+// THE DELETES ARE POSTS, not DELETE verbs. apps/web reaches this worker through
 // performancePostJson only (app/admin/performance/_lib/worker-fetch.ts), which
 // speaks POST; adding a verb would mean a second transport helper, a second
 // CSRF-origin path and a second thing to get wrong, to express something the
@@ -51,7 +62,7 @@
 //   let a location admin stamp another site's rows.
 //
 // MANAGER FILTER (?rd= / ?rm=, emails). Every LIST read accepts them — the
-// eight endpoints below the guard in handleGreeterRoute. They are not a second
+// nine endpoints below the guard in handleGreeterRoute. They are not a second
 // scope: they are INTERSECTED with the caller's scope, so a filter can only
 // ever narrow what somebody already sees. That direction matters, because the
 // codes come from pricing_simple and the client picks the manager — treating
@@ -71,7 +82,9 @@ import type { Session } from "@splash/auth";
 import {
   createServiceClient,
   deleteGreeterGoal,
+  deleteSiteMonthlyTarget,
   getGoalSnapshot,
+  getMonthlyTargetSnapshot,
   getGreeterRoster,
   insertGreeterGoal,
   listGreeterDays,
@@ -83,14 +96,17 @@ import {
   listContactRoster,
   listLocationDays,
   listLocationPeriodRows,
+  listSiteMonthlyTargets,
   resolveGreeterLocationKey,
   restampGoals,
+  restampMonthlyTargets,
   restoreGreeterDay,
   restoreLocationDay,
   submitGreeterDay,
   submitLocationDay,
   updateGreeterDayById,
   updateLocationDayById,
+  upsertSiteMonthlyTarget,
   voidGreeterDay,
   voidLocationDay,
   type ContactRosterEntry,
@@ -105,7 +121,8 @@ import type {
   GreeterGoalRow,
   GreeterLocationKey,
   LocationDailyInsert,
-  LocationDailyRow
+  LocationDailyRow,
+  SiteMonthlyTargetRestampResult
 } from "@splash/types/greeter";
 
 type Env = SupabaseEnv;
@@ -124,7 +141,9 @@ export function isGreeterRoute(pathname: string, method: string): boolean {
     case "/api/greeter/days":
     case "/api/greeter/location-days":
     case "/api/greeter/goals":
+    case "/api/greeter/monthly-targets":
       return method === "GET" || method === "POST";
+    case "/api/greeter/monthly-targets/delete":
     case "/api/greeter/goals/delete":
     case "/api/greeter/days/void":
     case "/api/greeter/days/restore":
@@ -168,12 +187,19 @@ export async function handleGreeterRoute(
   if (pathname === "/api/greeter/goals" && method === "POST") {
     return apiCreateGoal(request, env, session, scope);
   }
+  if (pathname === "/api/greeter/monthly-targets" && method === "POST") {
+    return apiUpsertMonthlyTarget(request, env, session, scope);
+  }
   // Above the read guard with the other writes, and authorised against the
   // session scope alone for the same reason they are — see the MANAGER FILTER
   // note at the top. Narrowing a delete by whatever manager happens to be
   // selected in the filter bar would make the button fail for no visible cause.
   if (pathname === "/api/greeter/goals/delete" && method === "POST") {
     return apiDeleteGoal(request, env, scope);
+  }
+  // Same placement and the same reasoning as the goal delete directly above.
+  if (pathname === "/api/greeter/monthly-targets/delete" && method === "POST") {
+    return apiDeleteMonthlyTarget(request, env, scope);
   }
   // Four more writes, above the read guard for the same reason as the delete.
   // A void reached from the report page arrives with whatever manager filter the
@@ -220,6 +246,9 @@ export async function handleGreeterRoute(
   }
   if (pathname === "/api/greeter/goals" && method === "GET") {
     return apiListGoals(url, env, readScope);
+  }
+  if (pathname === "/api/greeter/monthly-targets" && method === "GET") {
+    return apiListMonthlyTargets(url, env, readScope);
   }
   return null;
 }
@@ -754,6 +783,40 @@ async function apiListGoals(
   return jsonResponse(rows);
 }
 
+/**
+ * The labor budgets and revenue goals a caller can see, newest month first.
+ *
+ * Shaped exactly like apiListGoals — a bare array, scoped, `?site_number=`
+ * optional — plus two month bounds it needs and goals don't. `?month_from=` and
+ * `?month_to=` are INCLUSIVE and are normalised to the first of their month, so
+ * a picker that sends today's date selects the whole of today's month.
+ *
+ * An UNPARSEABLE bound becomes null and applies no predicate, which is the same
+ * fail-open the other list reads take with their filters — the write path is
+ * where a bad month gets a 400, because that is where it would silently create a
+ * row under the wrong heading.
+ *
+ * NEITHER BOUND IS REQUIRED, unlike the expense month endpoints. This table has
+ * one row per site per month rather than one per site per category per month, so
+ * an unbounded read is a few hundred rows for the whole company, and the targets
+ * card wants "every month this site has ever had" as its default.
+ */
+async function apiListMonthlyTargets(
+  url: URL,
+  env: Env,
+  scope: string[] | undefined
+): Promise<Response> {
+  const sp = url.searchParams;
+  const sb = createServiceClient(env);
+  const rows = await listSiteMonthlyTargets(sb, {
+    site_number: toIntOrNull(sp.get("site_number")),
+    month_from: monthStartOrNull(sp.get("month_from")),
+    month_to: monthStartOrNull(sp.get("month_to")),
+    location_scope: scope ?? null
+  });
+  return jsonResponse(rows);
+}
+
 /* ============================================================
  * Writes
  * ============================================================ */
@@ -918,11 +981,43 @@ async function apiSubmitLocationDay(
     );
   }
 
+  // Range-checked here as well as by the two *_trend_nonneg CHECKs, for the same
+  // reason churn is above: a raw 23514 doesn't say which box was wrong. Both are
+  // dollar projections, so there is no upper bound worth asserting — a site
+  // trending at four figures of its budget has a data-entry problem the report
+  // will show far more legibly than a 400 would.
+  const laborTrend = toNumOrNull(body.labor_trend);
+  const revenueTrend = toNumOrNull(body.revenue_trend);
+  if (
+    (laborTrend !== null && laborTrend < 0) ||
+    (revenueTrend !== null && revenueTrend < 0)
+  ) {
+    return jsonResponse(
+      {
+        error: "trending figures can't be negative",
+        reason:
+          "Labor and revenue trending are projected month-end dollars. Leave a box blank if there's no fresh number for it."
+      },
+      400
+    );
+  }
+
   const resolved = await resolveWritableLocation(env, locationId, scope);
   if (!resolved.ok) return resolved.response;
 
   const sb = createServiceClient(env);
   const goal = await getGoalSnapshot(sb, resolved.key.site_number, businessDate);
+  // TWO SNAPSHOTS, TWO CALLS, and they cannot be merged: goal windows and
+  // monthly targets live in different tables with different resolution rules.
+  // Resolved from the business date in the PAYLOAD and above the edit branch
+  // alongside the goal, so the edit path re-stamps both without a branch of its
+  // own — moving a day into another month re-reads that month's budget, which is
+  // the only reading under which the generated trend percentages stay true.
+  const targets = await getMonthlyTargetSnapshot(
+    sb,
+    resolved.key.site_number,
+    businessDate
+  );
 
   const row: LocationDailyInsert = {
     business_date: businessDate,
@@ -946,7 +1041,14 @@ async function apiSubmitLocationDay(
     // generated column, a goal, or any rate.
     churn_pct: churnPct,
     google_reviews: toIntOrNull(body.google_reviews),
+    // The only two typed halves of the labor/revenue feature. Their
+    // denominators arrive from ...targets below and are never accepted from the
+    // client — a box for either would collect a number the server overwrites.
+    // Both are MONTH-TO-DATE projections that happen to be recorded on a day.
+    labor_trend: laborTrend,
+    revenue_trend: revenueTrend,
     ...goal,
+    ...targets,
     comments: trimOrNull(body.comments),
     created_by: session.userId,
     created_by_email: session.email
@@ -1337,6 +1439,191 @@ async function apiDeleteGoal(
 }
 
 /**
+ * Set or correct one site's labor budget and revenue goal for one month.
+ *
+ * ONE ENDPOINT FOR BOTH, WHERE GOALS GET AN INSERT AND A DELETE. (site, month)
+ * is unique, so there is nothing to re-enter a target as: "delete then insert"
+ * would be two requests with a window in between where the site has no budget
+ * and every day in the month reads as unconfigured. `corrected` says which of
+ * the two happened rather than leaving the page to infer it from timestamps,
+ * and the status code follows the day-submit endpoints — 201 created, 200
+ * changed.
+ *
+ * A NULL FROM upsertSiteMonthlyTarget IS "NOT YOURS", NOT "FAILED", and must
+ * come back as a 403 rather than a 500. It cannot actually fire today —
+ * resolveWritableLocation has already checked the same code against the same
+ * scope — and that is exactly why it is handled explicitly: the day the two
+ * guards diverge, the wrong one of them has to be the one that reports it.
+ *
+ * ONE FIGURE IS ENOUGH, NEITHER IS NOT. site_monthly_targets_not_empty refuses
+ * a row carrying no dollars at all, and it is right to: such a row makes the
+ * month look configured while doing nothing. Caught here so the message can
+ * point at the delete button instead of surfacing a 23514.
+ *
+ * AND IT RE-STAMPS, for the same reason apiCreateGoal does and with the same
+ * caveats — outside the try, failure logged rather than raised, because by then
+ * the target row is committed and a 500 would report a save that happened as one
+ * that didn't. Without it, fixing a budget mid-month would move no day already
+ * logged and read as a save that silently failed.
+ */
+async function apiUpsertMonthlyTarget(
+  request: Request,
+  env: Env,
+  session: Session,
+  scope: string[] | undefined
+): Promise<Response> {
+  const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
+
+  const month = monthStartOrNull(body.month);
+  if (!month) {
+    return jsonResponse(
+      {
+        error: "month (YYYY-MM or YYYY-MM-DD) is required",
+        reason:
+          "Targets are set per calendar month. Any day in the month is accepted and normalised to the 1st."
+      },
+      400
+    );
+  }
+  const locationId = toIntOrNull(body.location_id);
+  if (locationId == null) {
+    return jsonResponse({ error: "location_id is required" }, 400);
+  }
+
+  const laborBudget = toNumOrNull(body.labor_budget);
+  const revenueGoal = toNumOrNull(body.revenue_goal);
+  if (laborBudget == null && revenueGoal == null) {
+    return jsonResponse(
+      {
+        // A whole sentence: performancePostJson surfaces `error` and drops
+        // `reason`, so this is the entire banner the user reads.
+        error:
+          "Give a labor budget, a revenue goal, or both. A month with neither isn't a target — if you meant to clear this month, delete it instead.",
+        reason: "site_monthly_targets_not_empty"
+      },
+      400
+    );
+  }
+  // Checked here as well as by the two *_nonneg CHECKs so the caller gets a
+  // readable 400. Zero is legal on both and is NOT the same as blank: a site
+  // told to spend nothing on labor has a budget of 0.00, against which the
+  // trend percentage is null rather than a division by zero.
+  if (
+    (laborBudget !== null && laborBudget < 0) ||
+    (revenueGoal !== null && revenueGoal < 0)
+  ) {
+    return jsonResponse(
+      {
+        error: "labor_budget and revenue_goal must be 0 or more",
+        reason: "Both are dollar figures for the whole month."
+      },
+      400
+    );
+  }
+
+  const resolved = await resolveWritableLocation(env, locationId, scope);
+  if (!resolved.ok) return resolved.response;
+
+  const sb = createServiceClient(env);
+  const saved = await upsertSiteMonthlyTarget(
+    sb,
+    {
+      site_number: resolved.key.site_number,
+      location_code: resolved.key.location_code,
+      month,
+      labor_budget: laborBudget,
+      revenue_goal: revenueGoal,
+      note: trimOrNull(body.note),
+      created_by: session.userId,
+      created_by_email: session.email
+    },
+    { location_scope: scope ?? null }
+  );
+  if (!saved) {
+    return jsonResponse({ error: "forbidden" }, 403);
+  }
+
+  // OUTSIDE ANY try/catch OF THE WRITE'S, AND ITS OWN FAILURE IS SWALLOWED — see
+  // apiCreateGoal. Reporting zero re-stamped days is the honest degradation: the
+  // target is visible in the table, and saving it again runs this a second time.
+  let restamped: SiteMonthlyTargetRestampResult = { location_rows: 0 };
+  try {
+    restamped = await restampMonthlyTargets(sb, resolved.key.site_number, month);
+  } catch (err) {
+    console.error("monthly target re-stamp failed after upsert", err);
+  }
+
+  return jsonResponse(
+    { row: saved.row, corrected: saved.corrected, restamped },
+    saved.corrected ? 200 : 201
+  );
+}
+
+/**
+ * Remove a month's target, and clear it off the days it was stamped on.
+ *
+ * THE RE-STAMP IS THE HALF THAT MATTERS, exactly as on the goal delete. The
+ * figures are frozen onto each day at submit time, so deleting the row alone
+ * would leave every day in the month still quoting a budget that no longer
+ * exists — and still showing a trend percentage computed against it.
+ * site_restamp_monthly_targets() re-resolves rather than applying anything, so
+ * with the row gone the days resolve to nothing and the NULL-out falls out for
+ * free. That is why the same function serves this path and the upsert path.
+ *
+ * The month and site come off the DELETED row because they have to: they only
+ * exist on the row that just stopped existing.
+ *
+ * Scope is applied inside the DELETE itself (see deleteSiteMonthlyTarget), so an
+ * id belonging to another site removes nothing and is reported as gone, without
+ * distinguishing "not yours" from "not there".
+ */
+async function apiDeleteMonthlyTarget(
+  request: Request,
+  env: Env,
+  scope: string[] | undefined
+): Promise<Response> {
+  const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
+
+  const id = trimOrNull(body.id);
+  if (!id) {
+    return jsonResponse({ error: "id is required" }, 400);
+  }
+
+  const sb = createServiceClient(env);
+  const deleted = await deleteSiteMonthlyTarget(sb, id, {
+    location_scope: scope ?? null
+  });
+
+  if (!deleted) {
+    return jsonResponse(
+      {
+        error:
+          "That month's target no longer exists — it may already have been deleted. Reload the page to see the current list.",
+        reason: "No row matched the id within the caller's location scope."
+      },
+      404
+    );
+  }
+
+  // Swallowed for the same reason as the goal delete: the row is already gone,
+  // re-running the delete can't fix a failed re-stamp, and the days keep the
+  // deleted budget until something clears it — wrong but visible, and logged
+  // where it can be found rather than shown as something the user can retry.
+  let restamped: SiteMonthlyTargetRestampResult = { location_rows: 0 };
+  try {
+    restamped = await restampMonthlyTargets(
+      sb,
+      deleted.site_number,
+      deleted.month
+    );
+  } catch (err) {
+    console.error("monthly target re-stamp failed after delete", err);
+  }
+
+  return jsonResponse({ row: deleted, restamped });
+}
+
+/**
  * Postgres 23505 unique_violation, as surfaced by PostgREST/supabase-js.
  *
  * Replaced a 23P01 exclusion_violation check when greeter-goal-overlap-11.sql
@@ -1384,6 +1671,39 @@ function isoDateOrNull(v: unknown): string | null {
   const t = trimOrNull(v);
   if (!t || !/^\d{4}-\d{2}-\d{2}$/.test(t)) return null;
   return t;
+}
+
+/**
+ * Any day in a month -> that month's first, as `YYYY-MM-01`.
+ *
+ * ACCEPTS BARE `YYYY-MM` TOO, which is what `<input type="month">` submits and
+ * is the whole reason this isn't just isoDateOrNull. Rejecting it would push a
+ * string concatenation into every caller that has a month picker.
+ *
+ * LOOSER THAN monthStartOrNull() IN expense.ts, WHICH DEMANDS THE 1ST, and the
+ * difference is deliberate rather than drift: expense budgets are CHECKed on the
+ * stored value, so a mid-month date there is a caller that forgot to normalise
+ * and worth naming. site_monthly_targets normalises in the db layer by design —
+ * "a caller that sends the 14th gets the row it meant" — so refusing it here
+ * would contradict the layer underneath.
+ *
+ * Normalised HERE as well, even though monthStart() in @splash/db-supabase does
+ * it again, so the value handed to restampMonthlyTargets() is the month we are
+ * claiming to act on. That is what ends up in the log line when this goes wrong.
+ *
+ * The month component is range-checked because the pattern happily matches
+ * "2026-13", which Postgres would reject as a bad date.
+ */
+function monthStartOrNull(v: unknown): string | null {
+  const t = trimOrNull(v);
+  if (!t) return null;
+  const m = /^(\d{4})-(\d{2})(?:-\d{2})?$/.exec(t);
+  const year = m?.[1];
+  const month = m?.[2];
+  if (!year || !month) return null;
+  const n = Number(month);
+  if (n < 1 || n > 12) return null;
+  return `${year}-${month}-01`;
 }
 
 /**

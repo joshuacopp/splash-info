@@ -35,6 +35,22 @@
 //                   Day-level display only.
 //   google_reviews— a COUNT of reviews collected that day, not a star rating.
 //                   On both tables, informational, summed and nothing more.
+//   labor_budget / revenue_goal / labor_trend / revenue_trend
+//                 — dollars, SITE-LEVEL ONLY, and MONTH-TO-DATE LEVELS that
+//                   happen to sit on a day row. Seven days of a $24,000 budget
+//                   is $24,000, not $168,000. Same hazard and same rule as
+//                   total_members: read the value at the LATEST business_date in
+//                   the window, never a SUM and never an average. All four are
+//                   optional — a site with no budget, or a day nobody read a
+//                   fresh trending number for, is a normal state.
+//   labor_trend_pct / revenue_trend_pct
+//                 — the same division with OPPOSITE meanings, which is the one
+//                   thing about this pair that must not be got backwards:
+//                   LABOR OVER 100% IS BAD (projected to overspend the budget),
+//                   REVENUE OVER 100% IS GOOD (projected to beat the goal).
+//                   Anything that colours or grades them carries that asymmetry;
+//                   the intuitive "over goal is green" rule is exactly wrong for
+//                   labor. See supabase/greeter-labor-revenue-14.sql.
 
 /**
  * Metrics both forms collect. Split out from the two form-specific interfaces
@@ -109,6 +125,28 @@ export interface LocationMetricInputs extends GreeterSharedMetrics {
    * why a period churn number can't be derived from this column.
    */
   churn_pct: number | null;
+  /**
+   * Projected month-end labor spend in dollars, read off the internal reports
+   * and typed onto the day. Site only — a greeter has no labor line.
+   *
+   * A MONTH FIGURE ON A DAY ROW. Do not sum it across a window; take the value
+   * at the latest business_date. Its denominator (labor_budget) is NOT typed
+   * here — it is snapshotted server-side from site_monthly_targets, exactly as
+   * capture_goal_pct and dob_goal are. See SiteMonthlyTargetSnapshot.
+   *
+   * Null means nobody had a fresh number that day, which is normal and not an
+   * error. Zero would be a claim that the site is trending at no labor spend.
+   */
+  labor_trend: number | null;
+  /**
+   * Projected month-end revenue in dollars, same provenance and same rules as
+   * labor_trend — including that its denominator (revenue_goal) is stamped
+   * server-side rather than typed here.
+   *
+   * Graded in the OPPOSITE direction from labor: over goal is good. The two
+   * fields sit next to each other precisely so that is hard to forget.
+   */
+  revenue_trend: number | null;
 }
 
 /**
@@ -135,6 +173,39 @@ export interface LocationGoalSnapshot extends GreeterGoalSnapshot {
 }
 
 /**
+ * The month's labor budget and revenue goal, snapshotted onto a site day at
+ * submit time from the `site_monthly_targets` row covering that month.
+ *
+ * NOT USER INPUT, and deliberately kept off LocationMetricInputs for that
+ * reason: these two are resolved server-side by site_monthly_target_for(), the
+ * same way capture_goal_pct/dob_goal are resolved by greeter_goal_for(). A form
+ * field for either would collect a number the server immediately overwrites.
+ * The typed halves of this feature are labor_trend and revenue_trend.
+ *
+ * DELIBERATELY A SEPARATE BAG FROM LocationGoalSnapshot, even though both are
+ * frozen goal columns on the same row. They come from different tables with
+ * different resolution rules — goal windows may overlap and resolve
+ * shortest-span-wins, monthly targets are one row per (site, month) with nothing
+ * to resolve — and folding these into GreeterGoalSnapshot would invite someone
+ * to resolve all four through greeter_goal_for(), where a three-day promo window
+ * carrying no budget would blank a site's denominator mid-month.
+ *
+ * Frozen, so editing a month's target does NOT move the days already logged
+ * against it. site_restamp_monthly_targets() is what moves them — see
+ * SiteMonthlyTargetRestampResult.
+ *
+ * Both are MONTH figures sitting on a day row. Never sum them.
+ */
+export interface SiteMonthlyTargetSnapshot {
+  /** Dollars budgeted for labor for the whole month. Null when the month was
+   *  never configured. OVER 100% AGAINST IT IS BAD. */
+  labor_budget: number | null;
+  /** Dollars of revenue targeted for the whole month. Null when unconfigured.
+   *  OVER 100% AGAINST IT IS GOOD — the opposite reading from labor. */
+  revenue_goal: number | null;
+}
+
+/**
  * Columns Postgres computes. Present on read, never sent on write — they are
  * GENERATED ALWAYS ... STORED and PostgREST rejects an insert that names them.
  * Their null rules differ. `dob` is null whenever wash_sales is 0/null — it is
@@ -154,6 +225,33 @@ export interface GreeterDerivedMetrics {
 export interface GreeterShiftDerived {
   hours_worked: number | null;
   wash_sales_per_hour: number | null;
+}
+
+/**
+ * The two trend percentages. Also GENERATED ALWAYS ... STORED, so read-only:
+ * never write them and never put either on an input type — PostgREST rejects an
+ * insert that names a generated column.
+ *
+ * THE SAME ARITHMETIC WITH OPPOSITE MEANINGS. This is the single most important
+ * thing about this pair and the easiest thing here to get backwards:
+ *
+ *   labor_trend_pct    over 100 is BAD  — projected to overspend the budget.
+ *   revenue_trend_pct  over 100 is GOOD — projected to beat the goal.
+ *
+ * Any grading, colouring or sorting must carry that asymmetry per field. A
+ * shared "over goal is green" helper applied to both is wrong for half of them.
+ *
+ * Null when either input is missing OR when the denominator is not positive. A
+ * budget of exactly 0.00 is a legal row (a site told to spend nothing on labor),
+ * and there is no percentage of nothing — null is the honest answer, whereas a
+ * 0 would read as "trending at nothing", which is a claim. Site rows only:
+ * greeter_daily carries no labor or revenue columns.
+ */
+export interface LocationTrendDerived {
+  /** labor_trend / labor_budget * 100. OVER 100 IS BAD. */
+  labor_trend_pct: number | null;
+  /** revenue_trend / revenue_goal * 100. OVER 100 IS GOOD. */
+  revenue_trend_pct: number | null;
 }
 
 /**
@@ -302,6 +400,7 @@ export type GreeterDayEditRow = Pick<
 export interface LocationDailyInsert
   extends LocationMetricInputs,
     LocationGoalSnapshot,
+    SiteMonthlyTargetSnapshot,
     GreeterLocationKey {
   business_date: string;
   comments: string | null;
@@ -312,6 +411,7 @@ export interface LocationDailyInsert
 export interface LocationDailyRow
   extends LocationDailyInsert,
     GreeterDerivedMetrics,
+    LocationTrendDerived,
     VoidState {
   id: string;
   /** Generated: sign_ups + reactivations - cancellations. Read-only. */
@@ -328,7 +428,15 @@ export type LocationDailyUpdate = Omit<
   "created_by" | "created_by_email"
 >;
 
-/** What the site day's edit form needs to seed itself. See GreeterDayEditRow. */
+/**
+ * What the site day's edit form needs to seed itself. See GreeterDayEditRow.
+ *
+ * The two trend dollars are here because the site types them. labor_budget,
+ * revenue_goal and the two trend percentages are NOT, for the same reason the
+ * goal snapshots aren't: the first pair is re-resolved from the month's target
+ * on save and the second is generated, so a box for any of the four would
+ * collect a number the server overwrites or the database refuses.
+ */
 export type LocationDayEditRow = Pick<
   LocationDailyRow,
   | "id"
@@ -346,6 +454,8 @@ export type LocationDayEditRow = Pick<
   | "total_members"
   | "churn_pct"
   | "google_reviews"
+  | "labor_trend"
+  | "revenue_trend"
   | "comments"
 >;
 
@@ -399,6 +509,84 @@ export interface GreeterGoalRow extends GreeterGoalInsert {
  */
 export interface GreeterGoalRestampResult {
   greeter_rows: number;
+  location_rows: number;
+}
+
+/* ============================================================
+ * site_monthly_targets
+ * ============================================================ */
+
+/**
+ * One site's labor budget and revenue goal for one calendar month.
+ *
+ * DELIBERATELY NOT A greeter_goals WINDOW, and this is the design decision the
+ * rest of the feature rests on. Goal windows may overlap and greeter_goal_for()
+ * resolves the collision by picking the SHORTEST window covering the day — right
+ * for a capture target, destructive for a budget. A three-day flash-sale window
+ * carrying no labor budget would win those days and blank the month's budget out
+ * from under them, so a site would silently lose its denominator mid-month.
+ * Keyed on (site_number, month), unique, there is nothing to resolve.
+ *
+ * Both dollar figures are optional, but NOT AT THE SAME TIME: a CHECK
+ * (site_monthly_targets_not_empty) refuses a row carrying neither, because such
+ * a row does nothing except make the month look configured. Clearing both is a
+ * DELETE and the screens must send one.
+ *
+ * Both are also CHECKed >= 0. Zero is legal and is not the same as null — a site
+ * told to spend nothing on labor has a budget of 0.00, and the trend percentage
+ * against it is null rather than a division by zero.
+ */
+export interface SiteMonthlyTargetInsert {
+  /** The cross-app join key. Resolved server-side from one typed site number,
+   *  never from two typed fields — see GreeterLocationKey. */
+  site_number: number;
+  /** Carried for the caller-scoping filter, as on greeter_goals. Do not JOIN on
+   *  it; it has been observed to diverge between tables for the same site. */
+  location_code: string;
+  /**
+   * YYYY-MM-01. THE FIRST OF THE MONTH, enforced by a CHECK
+   * (`month = date_trunc('month', month)`). Callers should normalise before
+   * sending rather than relying on the constraint to tell them off — a 23514
+   * reads like bad data rather than a date nobody rounded.
+   */
+  month: string;
+  /** Dollars budgeted for labor across the WHOLE month. Null when the site
+   *  budgets revenue only. Compared against location_daily.labor_trend, and
+   *  OVER 100% IS BAD: the site is projected to overspend. */
+  labor_budget: number | null;
+  /** Dollars of revenue targeted across the WHOLE month. Null when the site
+   *  budgets labor only. OVER 100% IS GOOD — the opposite reading from
+   *  labor_budget, which shares this row. */
+  revenue_goal: number | null;
+  note: string | null;
+  created_by: string;
+  created_by_email: string;
+}
+
+export interface SiteMonthlyTargetRow extends SiteMonthlyTargetInsert {
+  id: string;
+  created_at: string;
+  updated_at: string;
+  updated_by: string | null;
+  updated_by_email: string | null;
+}
+
+/**
+ * How many already-submitted site days had their target snapshot rewritten.
+ *
+ * The targets are frozen onto each submission at submit time (see
+ * SiteMonthlyTargetSnapshot), so editing or deleting a month's target changes
+ * nothing about the days already logged against it until this runs. Without it,
+ * fixing a budget mid-month would look like a save that silently failed.
+ *
+ * ONE COUNT, NOT TWO, unlike GreeterGoalRestampResult: greeter_daily carries no
+ * labor or revenue columns, so there is no greeter-grain number to report. It is
+ * still named `location_rows` so the grain is stated rather than assumed.
+ *
+ * Zero is the normal case for a month with no days logged yet and means "nothing
+ * needed changing", never "the re-stamp failed".
+ */
+export interface SiteMonthlyTargetRestampResult {
   location_rows: number;
 }
 
@@ -608,6 +796,12 @@ export interface GreeterPeriodReportRow {
  * business_date present. Use `net_members` (sign_ups + reactivations -
  * cancellations) for the period's actual change.
  *
+ * THE SIX LABOR/REVENUE FIELDS AT THE END ARE LEVELS TOO, and the same rule
+ * applies to all of them: they are month-to-date figures recorded on a day, so
+ * read them at the latest business_date and never sum or average them. They are
+ * grouped at the end of the row rather than filed next to the other dollars so
+ * that the boundary between "a day's worth" and "a month's worth" is visible.
+ *
  * `churn_pct` IS ALREADY DIVIDED and has no companion numerator or denominator
  * on this row, so unlike every other rate here it cannot be re-derived from
  * sums. That makes it the one field a caller must NOT roll up — display it per
@@ -659,6 +853,28 @@ export interface LocationPeriodRow {
   /** Day-level only. Never sum or average this — see the note above. */
   churn_pct: number | null;
   google_reviews: number | null;
+  /**
+   * THE MONTH BLOCK. Every field above this point is a day's worth of something;
+   * these six are a MONTH's, recorded on a day because that is when somebody
+   * read them. They are kept together and kept last for exactly that reason —
+   * the grouping is the only structural hint that summing down this part of the
+   * result is meaningless. Seven days of a $24,000 budget is $24,000.
+   *
+   * Aggregate them the way total_members is aggregated: take the value at the
+   * LATEST business_date in the window. Not a SUM, not an average.
+   *
+   * The two percentages are generated in Postgres from the four dollar figures
+   * on the same row, so they are already correct per day and must NOT be
+   * recomputed from aggregated dollars — and must not be averaged either.
+   * LABOR OVER 100 IS BAD, REVENUE OVER 100 IS GOOD; see LocationTrendDerived
+   * before writing anything that colours them.
+   */
+  labor_budget: number | null;
+  labor_trend: number | null;
+  labor_trend_pct: number | null;
+  revenue_goal: number | null;
+  revenue_trend: number | null;
+  revenue_trend_pct: number | null;
   scanned_wash_sales: number;
   greeters_logged: number;
 }

@@ -25,6 +25,12 @@
 //                    member base to churn. Informational: no goal, no grading.
 //   google_reviews   Both, informational on both. A COUNT of reviews collected,
 //                    not a star rating.
+//   labor_trend      Site only, and the one pair on either form that is not a
+//   revenue_trend    DAY's worth of anything: each is a projected MONTH-END
+//                    total read off the internal reports. Never summed. Their
+//                    denominators (labor_budget / revenue_goal) are stamped
+//                    server-side from the site's monthly target and are
+//                    deliberately not fields — see below.
 //
 // No "use client" on purpose: this is presentational markup with no hooks or
 // handlers, so it renders as a server component inside the location-day form
@@ -270,6 +276,39 @@ export function LocationMetricFields({
         label="Google reviews"
         hint="Optional. Reviews collected today — a count, not a rating."
         defaultValue={row?.google_reviews}
+      />
+      {/* The two trending dollars, kept together and kept last.
+          THESE ARE MONTH-TO-DATE LEVELS, NOT DAY AMOUNTS, and they are the only
+          boxes on this form that aren't a day's worth of something. Somebody who
+          types today's payroll into the first one has entered a figure roughly
+          thirty times too small, and nothing downstream can tell: the column is
+          numeric(12,2) and every positive number is legal. These labels and
+          hints are the only defence against that, so "month-end" says so twice
+          rather than once.
+
+          THEIR DENOMINATORS ARE NOT FIELDS ON PURPOSE. labor_budget and
+          revenue_goal are stamped server-side from the site's monthly target
+          (see the targets card on /admin/greeters), exactly as capture_goal_pct
+          and dob_goal are stamped from the goal window. A box for either would
+          collect a number the worker immediately overwrites.
+
+          BOTH ARE OPTIONAL AND A BLANK ONE IS NORMAL — a day where nobody had a
+          fresh reading is not an error, and neither field may ever be made
+          required or nagged about. Blank means "no figure today"; a 0 would
+          claim the site is trending at nothing. */}
+      <NumberField
+        name="labor_trend"
+        label="Labor trend $ (month-end)"
+        money
+        hint="Optional. Off the internal reports: projected labor spend for the WHOLE month, not today's. The month's budget is filled in for you."
+        defaultValue={row?.labor_trend}
+      />
+      <NumberField
+        name="revenue_trend"
+        label="Revenue trend $ (month-end)"
+        money
+        hint="Optional. Same report, same grain: projected revenue for the WHOLE month, not today's takings. The month's goal is filled in for you."
+        defaultValue={row?.revenue_trend}
       />
       <CommentsField defaultValue={row?.comments} />
     </div>

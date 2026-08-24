@@ -17,8 +17,9 @@
 //                             agm / regional_manager / area_manager /
 //                             rm_group / fivestar filters.
 //   /api/greeter/*          — greeter scorecard (roster, daily rows, rollup,
-//                             site-wide days, goals). Owned by ./greeter.ts;
-//                             see that file's header for the route list.
+//                             site-wide days, goals, monthly labor/revenue
+//                             targets). Owned by ./greeter.ts; see that file's
+//                             header for the route list.
 //   /api/expenses/*         — expense log (categories, entries + void,
 //                             budgets + month copy, month rollup). Owned by
 //                             ./expense.ts; see that file's header for the

@@ -49,6 +49,25 @@
 --                    rating. On BOTH tables. Informational: summed so a period
 --                    total is visible, and nothing else. A review is not a
 --                    capture and must never reach capture_pct.
+--   labor_budget /   Dollars for a whole CALENDAR MONTH, set per site in
+--   revenue_goal     site_monthly_targets and snapshotted onto each site day.
+--   labor_trend /    The projected month-end figures, read off the internal
+--   revenue_trend    reports and typed onto the site day log.
+--   labor_trend_pct /   Generated: trend / target * 100.
+--   revenue_trend_pct
+--
+--   SAME ARITHMETIC, OPPOSITE MEANINGS. LABOR OVER 100% IS BAD — the site is
+--   projected to overspend its budget. REVENUE OVER 100% IS GOOD — the site is
+--   projected to beat its goal. The intuitive "over goal is green" rule is
+--   exactly backwards for half of this pair, and anything that grades them has
+--   to carry the asymmetry.
+--
+--   ALL FOUR DOLLAR FIGURES ARE LEVELS, NOT DAY AMOUNTS. Each is a
+--   month-to-date projection that happens to have been recorded on a day.
+--   Seven days of a $24,000 budget is $24,000, not $168,000. Same hazard and
+--   same rule as total_members: read the value at the latest business_date in
+--   the window, never a SUM and never an average.
+--
 --   package_dollars  Wash package revenue.
 --   extras_dollars   Wash extras revenue.
 --   sign_ups         Unlimited memberships sold.
@@ -198,6 +217,92 @@ COMMENT ON INDEX idx_greeter_goals_unique_window IS
   'choose between them. Delete the existing goal instead.';
 
 -- ===========================================================================
+-- 1b. site_monthly_targets — labor budget and revenue goal, per calendar month.
+-- ===========================================================================
+-- WHY THIS IS NOT A greeter_goals WINDOW. greeter_goals already resolves
+-- per-site targets over arbitrary date ranges and reusing it was the obvious
+-- move. It is the wrong home for these two.
+--
+-- Goal windows are allowed to OVERLAP, and greeter_goal_for() resolves the
+-- collision by picking the SHORTEST window covering the day — a promo week laid
+-- over a monthly baseline. That rule is right for a capture target and actively
+-- destructive for a budget: a three-day flash-sale window carrying no labor
+-- budget would resolve as the winner for those days and blank the month's
+-- budget out from under them. The site would silently lose its denominator
+-- mid-month.
+--
+-- A budget is stated per calendar month and there is exactly one of them, so
+-- the key is (site, month) and there is no resolution rule to get wrong.
+--
+-- LABOR OVER 100% IS BAD, REVENUE OVER 100% IS GOOD. Two numbers with the same
+-- arithmetic and opposite readings share this table; see the header note and
+-- the trend columns on location_daily.
+CREATE TABLE IF NOT EXISTS site_monthly_targets (
+  id                uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+
+  -- Both carried, matching greeter_goals: site_number is the join key and
+  -- location_code is what the screens filter and display on. Resolved
+  -- server-side from one typed site number, never from two typed fields.
+  site_number       integer NOT NULL,
+  location_code     text    NOT NULL,
+
+  -- THE FIRST OF THE MONTH, always. Stored as a date rather than a
+  -- (year, month) pair so every comparison against business_date is plain date
+  -- arithmetic, with no casting at the call site.
+  month             date NOT NULL,
+  CONSTRAINT site_monthly_targets_month_is_first
+    CHECK (month = date_trunc('month', month)::date),
+
+  -- Dollars for the whole month. Either may be NULL: a site that budgets labor
+  -- but sets no revenue goal is a real and supported state.
+  labor_budget      numeric(12,2),
+  revenue_goal      numeric(12,2),
+  CONSTRAINT site_monthly_targets_labor_budget_nonneg
+    CHECK (labor_budget IS NULL OR labor_budget >= 0),
+  CONSTRAINT site_monthly_targets_revenue_goal_nonneg
+    CHECK (revenue_goal IS NULL OR revenue_goal >= 0),
+
+  -- A row exists only to carry these two numbers, so a row carrying neither is
+  -- a row that does nothing except make the month look configured. Clearing
+  -- both is a DELETE, and the screens send one.
+  CONSTRAINT site_monthly_targets_not_empty
+    CHECK (labor_budget IS NOT NULL OR revenue_goal IS NOT NULL),
+
+  note              text,
+  created_at        timestamptz NOT NULL DEFAULT now(),
+  created_by        uuid NOT NULL,
+  created_by_email  text NOT NULL,
+  updated_at        timestamptz NOT NULL DEFAULT now(),
+  updated_by        uuid,
+  updated_by_email  text
+);
+
+-- No partial-index cleverness and no overlap handling: one site, one month, one
+-- row. This is the constraint the whole design rests on, and it is why
+-- site_monthly_target_for() carries no resolver ORDER BY.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_site_monthly_targets_unique
+  ON site_monthly_targets (site_number, month);
+CREATE INDEX IF NOT EXISTS idx_site_monthly_targets_code
+  ON site_monthly_targets (location_code, month DESC);
+
+COMMENT ON TABLE site_monthly_targets IS
+  'Per-site labor budget and revenue goal for one calendar month. Deliberately '
+  'NOT stored as a greeter_goals window: goal windows may overlap and resolve '
+  'shortest-span-wins, which would let a short window blank a month budget.';
+COMMENT ON COLUMN site_monthly_targets.month IS
+  'First day of the month. Enforced by site_monthly_targets_month_is_first.';
+COMMENT ON COLUMN site_monthly_targets.labor_budget IS
+  'Dollars budgeted for labor across the whole month. Compared against the '
+  'trending figure typed onto location_daily. OVER 100% IS BAD.';
+COMMENT ON COLUMN site_monthly_targets.revenue_goal IS
+  'Dollars of revenue targeted across the whole month. OVER 100% IS GOOD — '
+  'the opposite of labor, which shares this table.';
+
+ALTER TABLE site_monthly_targets ENABLE ROW LEVEL SECURITY;
+REVOKE ALL ON TABLE site_monthly_targets FROM PUBLIC;
+GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE site_monthly_targets TO service_role;
+
+-- ===========================================================================
 -- 2. greeter_daily — one row per greeter per day per location.
 -- ===========================================================================
 -- Grain is per DAY, not per shift: the spreadsheet this replaces has one dated
@@ -340,6 +445,14 @@ ALTER TABLE greeter_daily DROP CONSTRAINT IF EXISTS greeter_daily_unique_day;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_greeter_daily_unique_live_day
   ON greeter_daily (location_id, beekeeper_user_id, business_date)
   WHERE voided_at IS NULL;
+
+-- Voided rows are read only by the correction screen, keyed by location and
+-- date like every other read on this table. Partial so it stays small — the
+-- expected count is a handful of rows against tens of thousands.
+CREATE INDEX IF NOT EXISTS idx_greeter_daily_voided
+  ON greeter_daily (location_code, business_date DESC)
+  WHERE voided_at IS NOT NULL;
+
 CREATE INDEX IF NOT EXISTS idx_greeter_daily_date        ON greeter_daily (business_date DESC);
 CREATE INDEX IF NOT EXISTS idx_greeter_daily_scope       ON greeter_daily (location_code);
 CREATE INDEX IF NOT EXISTS idx_greeter_daily_site_date   ON greeter_daily (site_number, business_date DESC);
@@ -410,6 +523,46 @@ CREATE TABLE IF NOT EXISTS location_daily (
   dob_goal              numeric(12,2),
   member_goal_month_end integer,
 
+  -- Snapshot of site_monthly_targets for this row's month, copied at submit
+  -- time for the same reason the three goal columns above are: the trend
+  -- percentages below are GENERATED, so freezing their denominator here is what
+  -- stops history re-reading itself when a month's budget is edited. Editing a
+  -- budget after the fact therefore does NOT move the days already logged
+  -- against it — call site_restamp_monthly_targets() for that, exactly as
+  -- greeter_restamp_goals() exists for the goal columns.
+  --
+  -- THESE FOUR DOLLAR COLUMNS ARE LEVELS, NOT DAY AMOUNTS. Every other dollar
+  -- column on this table is a day's worth of something and adding seven gives
+  -- you a week. These are month-to-date projections that happen to have been
+  -- recorded on a day: seven days of a $24,000 budget is $24,000, not $168,000.
+  -- Same hazard and same rule as total_members above — read the value at the
+  -- latest business_date in the window, never a SUM and never an average.
+  --
+  -- All four are optional. A site with no budget set, or a day where nobody had
+  -- a fresh trending number, is a normal state and not an error.
+  --
+  -- Named CHECKs, matching house_accounts and churn_pct: greeter-labor-
+  -- revenue-14.sql verifies them BY NAME, so an inline unnamed CHECK here would
+  -- auto-name to `..._check` and fail that check on any database built from
+  -- this file rather than from the ALTER path.
+  labor_budget        numeric(12,2),
+  revenue_goal        numeric(12,2),
+  CONSTRAINT location_daily_labor_budget_nonneg
+    CHECK (labor_budget IS NULL OR labor_budget >= 0),
+  CONSTRAINT location_daily_revenue_goal_nonneg
+    CHECK (revenue_goal IS NULL OR revenue_goal >= 0),
+
+  -- Typed in by the site off the internal reports: the PROJECTED MONTH-END
+  -- figure, not the day's spend or the day's take. Nothing derives these from
+  -- the daily columns and nothing should — the projection is somebody's read of
+  -- a report, and a computed stand-in would quietly replace it.
+  labor_trend         numeric(12,2),
+  revenue_trend       numeric(12,2),
+  CONSTRAINT location_daily_labor_trend_nonneg
+    CHECK (labor_trend IS NULL OR labor_trend >= 0),
+  CONSTRAINT location_daily_revenue_trend_nonneg
+    CHECK (revenue_trend IS NULL OR revenue_trend >= 0),
+
   -- The day's membership delta. Generated so it can't drift from its inputs.
   net_members         integer GENERATED ALWAYS AS (
                         COALESCE(sign_ups, 0)
@@ -436,6 +589,38 @@ CREATE TABLE IF NOT EXISTS location_daily (
                         END
                       ) STORED,
 
+  -- SAME ARITHMETIC, OPPOSITE MEANINGS, and this is the single most important
+  -- thing to know about the pair:
+  --
+  --   labor_trend_pct   OVER 100 IS BAD.  Projected to overspend the budget.
+  --   revenue_trend_pct OVER 100 IS GOOD. Projected to beat the goal.
+  --
+  -- Nothing here grades them — the database stores the percentage and the
+  -- application colours it. But anything that ever does grade them has to carry
+  -- that asymmetry, and the obvious "over goal is green" rule is exactly
+  -- backwards for labor.
+  --
+  -- Both guard on the DENOMINATOR being positive, not merely non-null. A budget
+  -- of exactly 0.00 is a legal row — a site told to spend nothing on labor —
+  -- and dividing by it would raise, taking the whole submission down with it.
+  -- NULL is the honest answer to "what percentage of nothing is this": there
+  -- isn't one. A zero would mean "trending at nothing", which is a claim.
+  --
+  -- numeric(6,2) tops out at 9999.99, which is four figures of overspend and
+  -- far past any number worth reading aloud. A site that manages to exceed it
+  -- has a data-entry problem, and an overflow error is a better outcome than a
+  -- plausible-looking wrong number on the Morning call.
+  labor_trend_pct     numeric(6,2) GENERATED ALWAYS AS (
+                        CASE WHEN labor_budget > 0 AND labor_trend IS NOT NULL
+                          THEN ROUND(labor_trend * 100 / labor_budget, 2)
+                        END
+                      ) STORED,
+  revenue_trend_pct   numeric(6,2) GENERATED ALWAYS AS (
+                        CASE WHEN revenue_goal > 0 AND revenue_trend IS NOT NULL
+                          THEN ROUND(revenue_trend * 100 / revenue_goal, 2)
+                        END
+                      ) STORED,
+
   comments            text,
   created_at          timestamptz NOT NULL DEFAULT now(),
   created_by          uuid NOT NULL,
@@ -458,6 +643,51 @@ ALTER TABLE location_daily DROP CONSTRAINT IF EXISTS location_daily_unique_day;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_location_daily_unique_live_day
   ON location_daily (location_id, business_date)
   WHERE voided_at IS NULL;
+
+-- See greeter_daily's copy. Same read, same reason for being partial.
+CREATE INDEX IF NOT EXISTS idx_location_daily_voided
+  ON location_daily (location_code, business_date DESC)
+  WHERE voided_at IS NOT NULL;
+
+-- ---------------------------------------------------------------------------
+-- 3a. Column comments — the rules that survive a `\d`
+-- ---------------------------------------------------------------------------
+-- Restated here as real catalog comments rather than left to the `--` notes
+-- above, because the person about to break one of these rules is usually
+-- looking at psql or the Supabase table editor, not at this file.
+COMMENT ON COLUMN greeter_daily.voided_at IS
+  'Non-NULL means this submission was withdrawn. Nothing computed reads it — '
+  'see greeter_daily_live. Restoring is voided_at = NULL.';
+COMMENT ON COLUMN location_daily.voided_at IS
+  'Non-NULL means this submission was withdrawn. See location_daily_live.';
+
+COMMENT ON COLUMN greeter_daily.capture_pct IS
+  'sign_ups / (wash_sales + sign_ups), as a percentage 0-100. The denominator '
+  'is every car that could have gone either way, so this cannot exceed 100. '
+  'NULL only when both are zero — nothing happened, so there is no rate. '
+  'Reactivations, rewashes, house accounts and reviews are excluded from both '
+  'sides. Changed 2026-08-22; it used to divide by wash_sales alone.';
+COMMENT ON COLUMN location_daily.capture_pct IS
+  'Same definition as greeter_daily.capture_pct, and it must stay the same.';
+
+COMMENT ON COLUMN location_daily.labor_budget IS
+  'Snapshot of site_monthly_targets.labor_budget for this row''s month, taken '
+  'at submit time. A MONTH figure sitting on a day row — never SUM it. Move it '
+  'with site_restamp_monthly_targets(), not by hand.';
+COMMENT ON COLUMN location_daily.labor_trend IS
+  'Projected month-end labor spend, read off the internal reports. A MONTH '
+  'figure on a day row — never SUM it; read the latest day in the window.';
+COMMENT ON COLUMN location_daily.labor_trend_pct IS
+  'labor_trend / labor_budget * 100. OVER 100 IS BAD: projected to overspend.';
+COMMENT ON COLUMN location_daily.revenue_goal IS
+  'Snapshot of site_monthly_targets.revenue_goal for this row''s month. A '
+  'MONTH figure on a day row — never SUM it.';
+COMMENT ON COLUMN location_daily.revenue_trend IS
+  'Projected month-end revenue, read off the internal reports. A MONTH figure '
+  'on a day row — never SUM it; read the latest day in the window.';
+COMMENT ON COLUMN location_daily.revenue_trend_pct IS
+  'revenue_trend / revenue_goal * 100. OVER 100 IS GOOD: projected to beat '
+  'goal. The opposite reading from labor_trend_pct on the same row.';
 
 -- ===========================================================================
 -- 3b. greeter_daily_live / location_daily_live — the reading surface
@@ -508,7 +738,10 @@ COMMENT ON VIEW greeter_daily_live IS
   'the table. Read the table directly only to show a user their own struck-out '
   'rows so they can restore one.';
 COMMENT ON VIEW location_daily_live IS
-  'location_daily minus voided rows. See greeter_daily_live.';
+  'location_daily minus voided rows. See greeter_daily_live. SELECT * freezes '
+  'its column list at CREATE time, so this view must be dropped and recreated '
+  'whenever a column is added to location_daily or the new column is invisible '
+  'to every reporting function.';
 
 -- ===========================================================================
 -- 4. updated_at triggers
@@ -536,6 +769,11 @@ CREATE TRIGGER trg_location_daily_updated_at
 DROP TRIGGER IF EXISTS trg_greeter_goals_updated_at ON greeter_goals;
 CREATE TRIGGER trg_greeter_goals_updated_at
   BEFORE UPDATE ON greeter_goals
+  FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+DROP TRIGGER IF EXISTS trg_site_monthly_targets_updated_at ON site_monthly_targets;
+CREATE TRIGGER trg_site_monthly_targets_updated_at
+  BEFORE UPDATE ON site_monthly_targets
   FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 
 -- ===========================================================================
@@ -707,6 +945,115 @@ $$;
 
 REVOKE ALL ON FUNCTION greeter_restamp_goals(integer, date, date) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION greeter_restamp_goals(integer, date, date) TO service_role;
+
+-- ===========================================================================
+-- 4c. Monthly target resolution — labor budget and revenue goal for a day.
+-- ===========================================================================
+-- Deliberately shaped like greeter_goal_for() so the two read the same at the
+-- call site, but with none of its ORDER BY: one site and one month is one row
+-- by unique index, so there is nothing to resolve and no tie to break. If you
+-- ever find yourself wanting a resolver here, the unique index has been dropped
+-- and that is the bug.
+--
+-- Returns a ROW rather than two scalars for the same reason greeter_goal_for
+-- does — both numbers come from the same record, and two separate lookups would
+-- be two chances to pair a budget with the wrong month's goal.
+--
+-- No row when the month was never configured, and callers stamp NULLs. That is
+-- already what a NULL labor_budget on a day row means.
+CREATE OR REPLACE FUNCTION site_monthly_target_for(
+  p_site_number   integer,
+  p_business_date date
+)
+RETURNS TABLE (
+  labor_budget numeric,
+  revenue_goal numeric
+)
+LANGUAGE sql
+STABLE
+AS $$
+  SELECT
+    t.labor_budget,
+    t.revenue_goal
+  FROM site_monthly_targets t
+  WHERE t.site_number = p_site_number
+    AND t.month = date_trunc('month', p_business_date)::date
+  LIMIT 1;
+$$;
+
+REVOKE ALL ON FUNCTION site_monthly_target_for(integer, date) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION site_monthly_target_for(integer, date) TO service_role;
+
+-- The counterpart to greeter_restamp_goals(), for the same reason: the targets
+-- are SNAPSHOTTED onto each day at submit time, so editing a month's budget
+-- afterwards leaves the days already logged against the old denominator. This
+-- walks back over them.
+--
+-- It follows the same rules as greeter_restamp_goals(), and they matter here
+-- for the same reasons:
+--
+--   * IT RE-RESOLVES rather than applying whatever it was called about, so the
+--     DELETE path can call it too — with the row gone the days resolve to
+--     nothing and the NULL-out falls out for free.
+--   * It reads location_daily_live, so a voided day is never re-stamped, and
+--     the UPDATE needs no voided_at predicate of its own: it joins on ids that
+--     the SELECT could not have produced for a struck-out row.
+--   * LEFT JOIN LATERAL, not an inner one. When no target covers the month the
+--     resolver returns no rows, and an inner join would skip the day instead of
+--     clearing the stale budget off it. Clearing is the point on delete.
+--   * IS DISTINCT FROM on both columns keeps the count meaning "days that
+--     changed", and stops the updated_at trigger firing on rows nothing
+--     happened to.
+--   * updated_by / updated_by_email are left alone. Overwriting them would
+--     destroy the record of who typed the day's numbers to replace it with a
+--     name that isn't a person.
+--
+-- Only location rows: greeter_daily carries no labor or revenue columns, so
+-- there is no greeter-side count to return and no second UPDATE below.
+--
+-- Takes a MONTH rather than a from/to pair, because that is the grain the
+-- targets are set at and a partial month cannot be re-stamped coherently.
+CREATE OR REPLACE FUNCTION site_restamp_monthly_targets(
+  p_site_number integer,
+  p_month       date
+)
+RETURNS integer
+LANGUAGE plpgsql
+AS $$
+DECLARE
+  v_month    date := date_trunc('month', p_month)::date;
+  v_location integer := 0;
+BEGIN
+  WITH resolved AS (
+    SELECT
+      l.id,
+      f.labor_budget,
+      f.revenue_goal
+    FROM location_daily_live l
+    LEFT JOIN LATERAL site_monthly_target_for(l.site_number, l.business_date) f
+      ON true
+    WHERE l.site_number = p_site_number
+      AND l.business_date >= v_month
+      AND l.business_date < (v_month + interval '1 month')::date
+  ),
+  changed AS (
+    UPDATE location_daily l
+       SET labor_budget = r.labor_budget,
+           revenue_goal = r.revenue_goal
+      FROM resolved r
+     WHERE l.id = r.id
+       AND (l.labor_budget IS DISTINCT FROM r.labor_budget
+         OR l.revenue_goal IS DISTINCT FROM r.revenue_goal)
+    RETURNING 1
+  )
+  SELECT count(*)::integer INTO v_location FROM changed;
+
+  RETURN v_location;
+END
+$$;
+
+REVOKE ALL ON FUNCTION site_restamp_monthly_targets(integer, date) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION site_restamp_monthly_targets(integer, date) TO service_role;
 
 -- ===========================================================================
 -- 5. greeter_rollup() — per-greeter aggregation over a filtered range.
@@ -1291,14 +1638,23 @@ GRANT EXECUTE ON FUNCTION greeter_period_report(date, date, integer, integer, te
 -- flat average of daily percentages — the exact thing section 5 forbids. Day rows
 -- only; do not add it to a rollup function.
 --
--- greeter-churn-reviews-09.sql holds an EARLIER copy of this function and is no
--- longer kept in lockstep — do not edit it. The current shape is defined here
--- and in greeter-house-accounts-10.sql, which added house_accounts.
+-- SEVERAL MIGRATION FILES HOLD EARLIER COPIES of this function — 09 (churn and
+-- reviews), 10 (house_accounts), 12 (the id column), 14 (the six month columns)
+-- — and none of them are kept in lockstep once superseded. Do not edit them to
+-- match. THIS is the current shape; the latest-numbered migration is the only
+-- other copy worth reading, and only to confirm the two agree.
 --
 -- This function does no dividing. It hands out day rows, including both
 -- unscannable-car columns, and the report page sums them and divides once —
 -- because a period scan rate must be summed numerator over summed denominator,
 -- never an average of daily percentages (section 5).
+--
+-- THE SIX LABOR/REVENUE COLUMNS ARE PASSED THROUGH, NOT AGGREGATED, and that is
+-- not laziness. Every one of them is a month-to-date figure recorded on a day,
+-- so there is no correct SUM and no correct AVG over a multi-day window — only
+-- "the value as of the latest day", which is a decision about which day to read
+-- and belongs in the caller that knows the window. Same treatment as
+-- total_members, above, and for the same reason.
 CREATE OR REPLACE FUNCTION location_period_rows(
   p_date_from      date,
   p_date_to        date,
@@ -1307,6 +1663,12 @@ CREATE OR REPLACE FUNCTION location_period_rows(
   p_location_codes text[]  DEFAULT NULL
 )
 RETURNS TABLE (
+  -- The site day's own row id, carried purely so the report's drill-through can
+  -- offer a Void button. Every other column here is a number to read; this one
+  -- is a handle to act on, which is why it leads rather than hiding among them.
+  -- location_daily_live has one row per (location, date) and this function does
+  -- not aggregate the site side, so the id stays one-to-one with the row.
+  id                 uuid,
   business_date      date,
   location_id        integer,
   site_number        integer,
@@ -1332,6 +1694,16 @@ RETURNS TABLE (
   -- in among columns that do invites someone to give it one to match.
   churn_pct          numeric,
   google_reviews     integer,
+  -- The month block, kept together and kept LAST. Every column above is a
+  -- day's worth of something; these six are a month's, and separating them
+  -- from the daily columns is the only structural hint a reader gets that
+  -- SUMming down this part of the result is meaningless.
+  labor_budget       numeric,
+  labor_trend        numeric,
+  labor_trend_pct    numeric,
+  revenue_goal       numeric,
+  revenue_trend      numeric,
+  revenue_trend_pct  numeric,
   scanned_wash_sales bigint,
   greeters_logged    bigint
 )
@@ -1340,6 +1712,7 @@ STABLE
 AS $$
   WITH site AS (
     SELECT
+      l.id,
       l.business_date,
       l.location_id,
       l.site_number,
@@ -1360,7 +1733,13 @@ AS $$
       l.capture_goal_pct,
       l.dob_goal,
       l.churn_pct,
-      l.google_reviews
+      l.google_reviews,
+      l.labor_budget,
+      l.labor_trend,
+      l.labor_trend_pct,
+      l.revenue_goal,
+      l.revenue_trend,
+      l.revenue_trend_pct
     FROM location_daily_live l
     WHERE l.business_date >= p_date_from
       AND l.business_date <= p_date_to
@@ -1382,6 +1761,7 @@ AS $$
     GROUP BY g.business_date, g.location_id
   )
   SELECT
+    s.id,
     s.business_date,
     s.location_id,
     s.site_number,
@@ -1403,6 +1783,12 @@ AS $$
     s.dob_goal,
     s.churn_pct,
     s.google_reviews,
+    s.labor_budget,
+    s.labor_trend,
+    s.labor_trend_pct,
+    s.revenue_goal,
+    s.revenue_trend,
+    s.revenue_trend_pct,
     COALESCE(sc.scanned, 0)::bigint,
     COALESCE(sc.greeters, 0)::bigint
   FROM site s

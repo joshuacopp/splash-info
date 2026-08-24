@@ -19,9 +19,13 @@
 //      "Underreported".
 //   5. Goal windows table — every goal set, which one is grading today, and a
 //      delete per row.
-//   6. Summary table (per-greeter rollup for the filtered range).
-//   7. Daily rows table.
-//   8. Site-wide day rows table, including Scanned %.
+//   6. Monthly targets table — each site's labor budget and revenue goal per
+//      calendar month, with a delete per row. Its own table rather than more
+//      columns on (5) because the two are keyed differently and resolve
+//      differently; see MonthlyTargetsCard.
+//   7. Summary table (per-greeter rollup for the filtered range).
+//   8. Daily rows table.
+//   9. Site-wide day rows table, including Scanned %.
 //
 // GOAL WINDOWS MAY OVERLAP, and the shortest window covering a day is the one
 // that grades it — a promo week laid over a standing monthly baseline. The
@@ -91,12 +95,18 @@ import { LocationMetricFields } from "./_components/MetricFields";
 import { RowActionButton } from "./_components/RowActionButton";
 import { SavingButton } from "./_components/SavingButton";
 import { SubmitPanels } from "./_components/SubmitPanels";
-import type { GreeterGoalRow, VoidState } from "@splash/types/greeter";
+import type {
+  GreeterGoalRow,
+  SiteMonthlyTargetRow,
+  VoidState
+} from "@splash/types/greeter";
 import {
   createGoalAction,
   deleteGoalAction,
+  deleteMonthlyTargetAction,
   restoreDayAction,
   restoreLocationDayAction,
+  setMonthlyTargetAction,
   submitGreeterDayAction,
   submitLocationDayAction,
   voidDayAction,
@@ -182,6 +192,19 @@ interface LocationDayRow extends GoalSnapshot, VoidState {
   churn_pct: number | null;
   /** A COUNT of reviews collected, not a star rating. Informational. */
   google_reviews: number | null;
+  /**
+   * The two typed trending dollars. Carried here ONLY so the edit form can seed
+   * itself — this page renders neither, because both are MONTH-TO-DATE
+   * projections and the tables below are day-grain: a column of them would put
+   * the same $24,000 on thirty rows and invite somebody to total it. The report
+   * is where they belong, and it reads them as levels.
+   *
+   * Their denominators and the two percentages are deliberately absent: nothing
+   * on this page needs them, and a labor_budget in scope here is one edit away
+   * from being rendered as though a site spent it that day.
+   */
+  labor_trend: number | null;
+  revenue_trend: number | null;
   capture_pct: number | null;
   dob: number | null;
   comments: string | null;
@@ -335,6 +358,39 @@ function restampTail(rg: string, rl: string, successKey: string): string {
 }
 
 /**
+ * The re-stamping tail on the three monthly-target banners: "… 12 site days
+ * already logged in that month were re-stamped with the new figures."
+ *
+ * SEPARATE FROM restampTail ABOVE RATHER THAN SHARED, because the two sentences
+ * are making different claims. A goal re-stamp changes how a day is GRADED; a
+ * target re-stamp changes the denominator under a percentage the site reads
+ * aloud on the Morning call, and it moves site days only — greeter_daily has no
+ * labor or revenue columns, so there is no second grain and no "and 4 greeter
+ * days" clause to write.
+ *
+ * SAYING THE COUNT IS THE POINT. Correcting a budget mid-month silently rewrites
+ * days that are already on screen; a number that changes with nothing to explain
+ * it is how people stop believing the report. A zero is omitted by the action
+ * rather than sent, so "nothing needed re-stamping" and "this redirect predates
+ * the feature" both land here as no tail, which is right for both.
+ */
+function targetRestampTail(rt: string, successKey: string): string {
+  const n = /^\d+$/.test(rt) ? Number.parseInt(rt, 10) : 0;
+  if (n === 0) return "";
+
+  const days = `${n} site ${n === 1 ? "day" : "days"}`;
+  // Past tense on both branches so the sentence needs no verb agreement, and
+  // worded differently because a delete leaves NO budget rather than a new one —
+  // telling someone their days were "re-stamped with the new figures" after a
+  // delete would send them looking for figures that no longer exist.
+  const what =
+    successKey === "target_deleted"
+      ? "lost the budget and goal they were quoting, so their labor and revenue percentages are blank"
+      : "were re-stamped with the new figures, so their labor and revenue percentages have moved";
+  return ` ${days} already logged in that month ${what}.`;
+}
+
+/**
  * The goal window in force TODAY, per site — the page's copy of what
  * greeter_goal_for() decides in the database.
  *
@@ -424,6 +480,28 @@ function windowLabel(row: GreeterGoalRow): string {
   return `${goalDate(row.effective_from)} – ${goalDate(row.effective_to)}`;
 }
 
+/**
+ * "2026-09-01" -> "September 2026".
+ *
+ * NO DAY IN THE OUTPUT, and that is the whole reason this isn't goalDate. The
+ * stored value is always the 1st because the column says so, not because
+ * anything happens on that date — rendering "Sep 1, 2026" would read as a start
+ * date and invite someone to look for the matching end. A month's target covers
+ * the month.
+ *
+ * Parsed at UTC noon for the same reason goalDate is: no offset can drag the
+ * label back into the previous month.
+ */
+function monthLabel(iso: string): string {
+  const d = new Date(`${iso}T12:00:00Z`);
+  if (Number.isNaN(d.getTime())) return iso;
+  return new Intl.DateTimeFormat("en-US", {
+    timeZone: "UTC",
+    month: "long",
+    year: "numeric"
+  }).format(d);
+}
+
 export default async function GreetersPage({ searchParams }: PageProps) {
   const sp = await searchParams;
   const dateFrom = firstParam(sp.date_from).trim();
@@ -453,15 +531,21 @@ export default async function GreetersPage({ searchParams }: PageProps) {
   const actionError = firstParam(sp.action_error).trim() || null;
   const successKey = firstParam(sp.success).trim();
   const successBase = SUCCESS_COPY[successKey] ?? null;
-  // Only the two goal outcomes carry a re-grading tail. Appending it to the
-  // day banners would be meaningless — submitting a day doesn't re-stamp
-  // anything — and the params are never set on those redirects anyway.
+  // Only the two goal outcomes carry a re-grading tail, and only the three
+  // target outcomes carry a re-stamping one. Appending either to the day banners
+  // would be meaningless — submitting a day doesn't re-stamp anything — and the
+  // params are never set on those redirects anyway.
+  //
+  // BOTH TAILS ARE APPENDED, NEVER ONE OR THE OTHER BY BRANCH: they read
+  // different params (rg/rl vs rt), no action ever sets both, and each returns ""
+  // when its own are absent. A branch here would be a third place that has to
+  // know which action produced which key.
   const successMessage = successBase
     ? `${successBase}${restampTail(
         firstParam(sp.rg),
         firstParam(sp.rl),
         successKey
-      )}`
+      )}${targetRestampTail(firstParam(sp.rt), successKey)}`
     : null;
 
   const qs = new URLSearchParams();
@@ -519,6 +603,7 @@ export default async function GreetersPage({ searchParams }: PageProps) {
   let watchRates: ScanRateRow[] | null = null;
   let missingDays: MissingDayRow[] | null = null;
   let goals: GreeterGoalRow[] | null = null;
+  let targets: SiteMonthlyTargetRow[] | null = null;
   // Initialised rather than left null because fetchManagerRosters() never
   // throws or resolves null — a roster outage arrives here as EMPTY_ROSTERS, so
   // the dropdowns render empty and disabled instead of taking the page down or
@@ -527,7 +612,7 @@ export default async function GreetersPage({ searchParams }: PageProps) {
   let fetchError: string | null = null;
 
   try {
-    // Parallel: eight independent reads. Sequential awaits would multiply the
+    // Parallel: nine independent reads. Sequential awaits would multiply the
     // page's time-to-first-byte for no benefit.
     [
       days,
@@ -537,36 +622,52 @@ export default async function GreetersPage({ searchParams }: PageProps) {
       watchRates,
       missingDays,
       goals,
+      targets,
       rosters
     ] = await Promise.all([
-        performanceGetJson<DayRow[]>(`/pertrack/api/greeter/days${daySuffix}`),
-        performanceGetJson<RollupRow[]>(`/pertrack/api/greeter/rollup${suffix}`),
-        performanceGetJson<LocationDayRow[]>(
-          `/pertrack/api/greeter/location-days${daySuffix}`
-        ),
-        // Same filter set as the site-wide table so the two line up row for
-        // row. The greeter-name filter rides along in the suffix but the
-        // endpoint ignores it — filtering the numerator would understate
-        // every site.
-        performanceGetJson<ScanRateRow[]>(
-          `/pertrack/api/greeter/scan-rates${suffix}`
-        ),
-        performanceGetJson<ScanRateRow[]>(
-          `/pertrack/api/greeter/scan-rates${watchSuffix}`
-        ),
-        performanceGetJson<MissingDayRow[]>(
-          `/pertrack/api/greeter/missing-days${watchSuffix}`
-        ),
-        // DELIBERATELY UNFILTERED. Every window for every site the caller can
-        // see, because which one is in force today is decided by comparing a
-        // site's windows AGAINST EACH OTHER — hand this list a date-filtered
-        // subset and the shortest-window rule would be resolving against
-        // whichever windows happened to survive the filter. The page's location
-        // filter is applied below, after that comparison, and only to what is
-        // displayed. Worker-side location scoping still applies.
-        performanceGetJson<GreeterGoalRow[]>("/pertrack/api/greeter/goals"),
-        fetchManagerRosters()
-      ]);
+      performanceGetJson<DayRow[]>(`/pertrack/api/greeter/days${daySuffix}`),
+      performanceGetJson<RollupRow[]>(`/pertrack/api/greeter/rollup${suffix}`),
+      performanceGetJson<LocationDayRow[]>(
+        `/pertrack/api/greeter/location-days${daySuffix}`
+      ),
+      // Same filter set as the site-wide table so the two line up row for
+      // row. The greeter-name filter rides along in the suffix but the
+      // endpoint ignores it — filtering the numerator would understate
+      // every site.
+      performanceGetJson<ScanRateRow[]>(
+        `/pertrack/api/greeter/scan-rates${suffix}`
+      ),
+      performanceGetJson<ScanRateRow[]>(
+        `/pertrack/api/greeter/scan-rates${watchSuffix}`
+      ),
+      performanceGetJson<MissingDayRow[]>(
+        `/pertrack/api/greeter/missing-days${watchSuffix}`
+      ),
+      // DELIBERATELY UNFILTERED. Every window for every site the caller can
+      // see, because which one is in force today is decided by comparing a
+      // site's windows AGAINST EACH OTHER — hand this list a date-filtered
+      // subset and the shortest-window rule would be resolving against
+      // whichever windows happened to survive the filter. The page's location
+      // filter is applied below, after that comparison, and only to what is
+      // displayed. Worker-side location scoping still applies.
+      performanceGetJson<GreeterGoalRow[]>("/pertrack/api/greeter/goals"),
+      // ALSO UNFILTERED, but for a different reason than the goals above it,
+      // and the difference matters if either read is ever revisited. Goals must
+      // be fetched whole because the shortest-window rule resolves a site's
+      // windows against EACH OTHER. Targets have nothing to resolve — one row
+      // per site per month — so they are unfiltered only because the endpoint
+      // filters on site_number and this page holds a location_id, which cannot
+      // be turned into a site number until some row comes back carrying both.
+      // The location filter is applied below, to the display alone.
+      //
+      // No month bounds either: the card's job is "every month this site has
+      // ever been given", and the table is one row per site per month rather
+      // than per site per category per month, so an unbounded read is small.
+      performanceGetJson<SiteMonthlyTargetRow[]>(
+        "/pertrack/api/greeter/monthly-targets"
+      ),
+      fetchManagerRosters()
+    ]);
   } catch (err) {
     fetchError =
       err instanceof Error ? err.message : "Unknown error loading the scorecard.";
@@ -698,6 +799,22 @@ export default async function GreetersPage({ searchParams }: PageProps) {
     filterSiteNumber === undefined
       ? goalList
       : goalList.filter((g) => g.site_number === filterSiteNumber);
+
+  // The targets table narrows on the same resolved site number, and falls back
+  // to showing everything for the same reason: a site with a budget set but no
+  // day logged yet can't be identified from the rows on this page, and an empty
+  // table would read as "no budget" rather than "couldn't tell which site".
+  const targetList = targets ?? [];
+  const shownTargets =
+    filterSiteNumber === undefined
+      ? targetList
+      : targetList.filter((t) => t.site_number === filterSiteNumber);
+
+  // The first of the current month, in the same form the rows carry, so the card
+  // can mark which target is the one being spent against right now. Derived from
+  // `today` (site-local) rather than from a UTC date, or on the last evening of
+  // the month every site would be told next month's budget is already live.
+  const thisMonth = `${today.slice(0, 7)}-01`;
 
   return (
     <section className="mx-auto w-full max-w-[1200px] px-5 py-9">
@@ -1025,6 +1142,110 @@ export default async function GreetersPage({ searchParams }: PageProps) {
                 </div>
               </RedirectForm>
             )
+          },
+          {
+            key: "monthly-target",
+            label: "Set a month's budget and goal",
+            title: "Set a month's labor budget and revenue goal",
+            // WHAT THIS DESCRIPTION HAS TO CARRY, because nothing else on the
+            // panel can: that both dollars are whole-MONTH figures, that one of
+            // them is enough, that clearing both is spelled "delete", and that
+            // saving over an existing month rewrites days already logged. The
+            // last one is the reason the panel says anything at all about
+            // correction — a user who thinks they are adding a target and is in
+            // fact replacing one has just moved every percentage that month.
+            description:
+              "One target per site per calendar month. Both figures are for the WHOLE month, not a day or a week — they're the numbers the site's labor and revenue trending dollars get measured against. Fill in either one or both; if you want a month to have no target at all, delete it from the table below rather than saving it blank. Saving a month that already has a target replaces it and re-measures the days already logged in it, and the confirmation says how many moved.",
+            form: (
+              <RedirectForm
+                action={setMonthlyTargetAction}
+                className="flex flex-col gap-4"
+              >
+                <input type="hidden" name="return_to" value={returnPath} />
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                  <div className="flex flex-col gap-1">
+                    <span className={LABEL_CLS}>Location *</span>
+                    <LocationPicker
+                      name="location_id"
+                      required
+                      placeholder="Search by site number, name, or code…"
+                    />
+                  </div>
+                  <label className="flex flex-col gap-1">
+                    <span className={LABEL_CLS}>Month *</span>
+                    {/* type="month" submits "YYYY-MM", which the worker accepts
+                        and normalises to the 1st. A date picker would have
+                        offered a day the column then throws away, and a reader
+                        who picked the 15th would reasonably expect it to mean
+                        something. */}
+                    <input
+                      type="month"
+                      name="month"
+                      required
+                      className={INPUT_CLS}
+                    />
+                    <span className={HINT_CLS}>
+                      The whole calendar month this budget covers.
+                    </span>
+                  </label>
+                  <label className="flex flex-col gap-1">
+                    <span className={LABEL_CLS}>Labor budget ($)</span>
+                    <input
+                      type="number"
+                      name="labor_budget"
+                      min="0"
+                      step="0.01"
+                      placeholder="0.00"
+                      className={INPUT_CLS}
+                    />
+                    {/* Says which direction is bad. Labor and revenue share a
+                        row, share the arithmetic, and mean opposite things —
+                        the two hints are worded to be read together. */}
+                    <span className={HINT_CLS}>
+                      Total labor dollars planned for the month. Trending{" "}
+                      <strong>over</strong> 100% means projected to overspend.
+                    </span>
+                  </label>
+                  <label className="flex flex-col gap-1">
+                    <span className={LABEL_CLS}>Revenue goal ($)</span>
+                    <input
+                      type="number"
+                      name="revenue_goal"
+                      min="0"
+                      step="0.01"
+                      placeholder="0.00"
+                      className={INPUT_CLS}
+                    />
+                    <span className={HINT_CLS}>
+                      Total revenue targeted for the month. Trending{" "}
+                      <strong>over</strong> 100% is the good one — projected to
+                      beat it.
+                    </span>
+                  </label>
+                  <label className="flex flex-col gap-1">
+                    <span className={LABEL_CLS}>Note</span>
+                    <input
+                      type="text"
+                      name="note"
+                      maxLength={500}
+                      placeholder="Optional"
+                      className={INPUT_CLS}
+                    />
+                  </label>
+                </div>
+                {/* NEITHER DOLLAR IS `required` AND NEITHER IS CHECKED HERE.
+                    "At least one of two" isn't expressible as an input
+                    attribute, and the rule already exists twice — as the
+                    site_monthly_targets_not_empty CHECK and as the worker's
+                    400, which is a full sentence telling the user to delete the
+                    month instead. That sentence lands in the error banner
+                    unchanged. A third copy in this file would be a third place
+                    for it to drift out of step with the constraint. */}
+                <div className="mt-1">
+                  <SavingButton>Save monthly target</SavingButton>
+                </div>
+              </RedirectForm>
+            )
           }
         ]}
       />
@@ -1050,6 +1271,23 @@ export default async function GreetersPage({ searchParams }: PageProps) {
         rows={shownGoals}
         inForce={inForceGoals}
         today={today}
+        narrowedTo={
+          locationIdNum !== undefined && filterSiteNumber === undefined
+            ? filterLocationLabel ?? null
+            : null
+        }
+        returnTo={returnPath}
+      />
+
+      {/* Directly under the goal windows because they are the same kind of
+          thing — a target somebody sets, against which days are graded — and a
+          reader looking for "what is this site supposed to hit" should find both
+          without hunting. They are two tables rather than one because they are
+          keyed differently: a goal is a date RANGE and ranges may overlap, a
+          target is a calendar MONTH and there is exactly one. */}
+      <MonthlyTargetsCard
+        rows={shownTargets}
+        thisMonth={thisMonth}
         narrowedTo={
           locationIdNum !== undefined && filterSiteNumber === undefined
             ? filterLocationLabel ?? null
@@ -1682,6 +1920,199 @@ function GoalStatusBadge({
       title="Covers today, but a shorter window at this site covers it too and wins. This goal grades the days the shorter one doesn't."
     >
       Superseded
+    </span>
+  );
+}
+
+/* ------------------------------------------------------------
+ * Monthly targets
+ * ------------------------------------------------------------ */
+
+/**
+ * Every month's labor budget and revenue goal, with the current month marked and
+ * a delete per row.
+ *
+ * A SEPARATE TABLE FROM GOAL WINDOWS, not a couple of extra columns on it, and
+ * the difference is in the key rather than in the styling. A goal is a date
+ * RANGE, ranges may overlap, and the shortest one covering a day wins. A target
+ * is a calendar MONTH and there is exactly one — (site_number, month) is unique.
+ * Filing budgets as goal windows would have handed them the overlap rule, and a
+ * promo week laid over September would then have blanked September's budget for
+ * seven days, because a shorter window that doesn't mention labor still wins.
+ *
+ * THREE STATES, NOT THE GOAL TABLE'S FOUR. "Superseded" cannot happen here for
+ * the same uniqueness reason, so it isn't offered — an unreachable badge is a
+ * reader wondering what would produce it.
+ *
+ *   In force    days logged today at this site are measured against this.
+ *   Scheduled   a future month. Real, saved, measuring nothing yet.
+ *   Past        the month is over. Still the correct explanation of its days.
+ *
+ * EITHER DOLLAR MAY BE BLANK and a blank one is not a gap to be filled: a site
+ * that budgets labor but sets no revenue number is a normal, deliberate state,
+ * and the row renders a dash rather than a zero so nobody reads it as "the goal
+ * is nothing". Both blank is impossible — the DB refuses it and the worker says
+ * so in a sentence pointing at this table's delete button.
+ *
+ * NO PERCENTAGES IN THIS TABLE even though the whole feature exists to produce
+ * two. A percentage needs a trend to divide, trends are recorded per day, and
+ * this row is a month; the Morning call report is where the division happens and
+ * where the opposite readings (labor over 100% bad, revenue over 100% good) are
+ * explained. Repeating them here would be a second place for that explanation to
+ * drift.
+ */
+function MonthlyTargetsCard({
+  rows,
+  thisMonth,
+  narrowedTo,
+  returnTo
+}: {
+  rows: SiteMonthlyTargetRow[];
+  /** "YYYY-MM-01" for the current month in site-local time — see where it's
+   *  derived. Compared by string, which is safe because both sides are stored
+   *  and built in that one zero-padded form. */
+  thisMonth: string;
+  /** Set only when the page's location filter could NOT be resolved to a site
+   *  number — same fallback as GoalWindowsCard, same reason. */
+  narrowedTo: string | null;
+  /** The page with its current filters, posted as `return_to` on the delete.
+   *  See GoalWindowsCard's copy of this prop for why it's passed down. */
+  returnTo: string;
+}) {
+  return (
+    <Card
+      title="Monthly targets"
+      subtitle={
+        narrowedTo
+          ? `Showing every site — no logged day in the current filter identifies ${narrowedTo}, so its targets can't be picked out. One target per site per month; saving a month that already has one replaces it.`
+          : "One target per site per month. The labor and revenue figures typed on each day are measured against these, so saving over a month that already has a target re-stamps the days already logged in it — the confirmation says how many."
+      }
+    >
+      {rows.length === 0 ? (
+        <EmptyNote>
+          No monthly targets set. Sites can still log labor and revenue trending
+          dollars — they&rsquo;re stored, but with nothing to divide by, the
+          Morning call shows the dollars and no percentage. Use &ldquo;Set a
+          month&rsquo;s budget and goal&rdquo; above.
+        </EmptyNote>
+      ) : (
+        <TableWrap>
+          <thead className={THEAD_CLS}>
+            <tr>
+              <th className="px-4 py-3">Status</th>
+              <th className="px-4 py-3">Site</th>
+              <th className="px-4 py-3">Month</th>
+              <th className="px-4 py-3">Labor budget</th>
+              <th className="px-4 py-3">Revenue goal</th>
+              <th className="px-4 py-3">Note</th>
+              <th className="px-4 py-3 text-right">Remove</th>
+            </tr>
+          </thead>
+          <tbody className={TBODY_CLS}>
+            {rows.map((r) => (
+              <tr key={r.id}>
+                <td className="whitespace-nowrap px-4 py-2.5">
+                  <MonthlyTargetStatusBadge
+                    month={r.month}
+                    thisMonth={thisMonth}
+                  />
+                </td>
+                <td className="whitespace-nowrap px-4 py-2.5 text-splash-navy/80">
+                  <div className="font-semibold">{r.location_code}</div>
+                  <div className="font-mono text-xs text-splash-navy/50">
+                    {r.site_number}
+                  </div>
+                </td>
+                <td className="whitespace-nowrap px-4 py-2.5 text-splash-navy/80">
+                  {monthLabel(r.month)}
+                </td>
+                {/* money() renders null as a dash, which is what a site that
+                    budgets one of the two and not the other should show. A 0
+                    here would be a claim, not a blank. */}
+                <td className="whitespace-nowrap px-4 py-2.5 font-mono">
+                  {money(r.labor_budget)}
+                </td>
+                <td className="whitespace-nowrap px-4 py-2.5 font-mono">
+                  {money(r.revenue_goal)}
+                </td>
+                <td className="max-w-[16rem] px-4 py-2.5 text-xs text-splash-navy/70">
+                  {r.note || "—"}
+                </td>
+                <td className="whitespace-nowrap px-4 py-2.5 text-right">
+                  {/* RedirectForm, never redirect() — see its header. One form
+                      per row, as in the goals table, so the hidden id can't be
+                      ambiguous.
+
+                      The confirm text names the consequence the button can't
+                      show: deleting doesn't just remove a row, it re-stamps the
+                      days already logged in that month so their percentages go
+                      blank. Deleting the CURRENT month is the dangerous one and
+                      the sentence says so first. */}
+                  <RedirectForm action={deleteMonthlyTargetAction}>
+                    <input type="hidden" name="target_id" value={r.id} />
+                    <input type="hidden" name="return_to" value={returnTo} />
+                    <DeleteGoalButton
+                      confirmText={`Delete the ${r.location_code} target for ${monthLabel(
+                        r.month
+                      )}?\n\nDays already logged in that month lose the budget and goal they were measured against, so their labor and revenue percentages go blank on the Morning call. The trending dollars themselves are kept.`}
+                    />
+                  </RedirectForm>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </TableWrap>
+      )}
+    </Card>
+  );
+}
+
+/**
+ * In force / Scheduled / Past — see MonthlyTargetsCard's header for why there
+ * are three of these and four goal states.
+ *
+ * Compared as strings rather than as Dates on purpose: both sides are
+ * "YYYY-MM-01", zero-padded, so lexical order is calendar order, and parsing
+ * either one would reintroduce the timezone question that thisMonth was derived
+ * site-locally to avoid.
+ *
+ * The classes are written out in full on each branch rather than composed from
+ * a colour variable — Tailwind scans this file as text and a built-up class name
+ * would be absent from the stylesheet, so the badge would render unstyled.
+ */
+function MonthlyTargetStatusBadge({
+  month,
+  thisMonth
+}: {
+  month: string;
+  thisMonth: string;
+}) {
+  if (month === thisMonth) {
+    return (
+      <span
+        className="rounded-full bg-splash-success/15 px-2.5 py-1 text-[11px] font-bold uppercase tracking-wide text-splash-success"
+        title="Days logged today at this site are measured against this budget and goal."
+      >
+        In force
+      </span>
+    );
+  }
+  if (month > thisMonth) {
+    return (
+      <span
+        className="rounded-full bg-splash-blue/15 px-2.5 py-1 text-[11px] font-bold uppercase tracking-wide text-splash-blue"
+        title={`Starts ${monthLabel(month)}. Nothing is measured against it until then.`}
+      >
+        Scheduled
+      </span>
+    );
+  }
+  return (
+    <span
+      className="rounded-full bg-splash-navy/10 px-2.5 py-1 text-[11px] font-bold uppercase tracking-wide text-splash-navy/60"
+      title={`${monthLabel(month)} is over. Still the correct explanation of the days inside it.`}
+    >
+      Past
     </span>
   );
 }

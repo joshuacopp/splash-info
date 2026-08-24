@@ -34,6 +34,16 @@ export const SUCCESS_COPY: Record<string, string> = {
   location_edited: "Site-wide day updated.",
   goal: "Goal window saved.",
   goal_deleted: "Goal window deleted.",
+  // THREE KEYS FOR ONE ENDPOINT. (site, month) is unique, so saving a month that
+  // already had a target overwrites it — and "saved" would describe that as
+  // though nothing had been there. The corrected line names the overwrite,
+  // because the re-stamp tail that follows it is about to say that days already
+  // logged have moved, and that only makes sense if the reader knows they were
+  // measured against something else a moment ago.
+  target: "Monthly labor budget and revenue goal saved.",
+  target_corrected:
+    "Monthly target updated — this month already had one, and the new figures replaced it.",
+  target_deleted: "Monthly target deleted.",
   day_voided:
     "Greeter day voided. It's out of every report and rollup. If it was the last greeter logged for that site's day, the day counts as unreported again.",
   day_restored: "Greeter day restored.",

@@ -1,12 +1,20 @@
-// Greeter scorecard queries — greeter_daily / location_daily / greeter_goals.
+// Greeter scorecard queries — greeter_daily / location_daily / greeter_goals /
+// site_monthly_targets.
 // Schema + metric definitions: supabase/greeter-scorecard-tables.sql.
 //
 // Read that header before touching arithmetic here. Short version: `wash_sales`
 // (a-la-carte, non-unlimited cars) is the denominator for both derived metrics,
 // NOT `total_cars` (which is site-level only and absent from greeter_daily).
-// `capture_pct`, `dob`, `hours_worked`, `wash_sales_per_hour` and `net_members`
-// are Postgres GENERATED columns — this module never writes them, and PostgREST
-// will reject an insert that names one.
+// `capture_pct`, `dob`, `hours_worked`, `wash_sales_per_hour`, `net_members`,
+// `labor_trend_pct` and `revenue_trend_pct` are Postgres GENERATED columns —
+// this module never writes them, and PostgREST will reject an insert that names
+// one.
+//
+// The four labor/revenue dollar columns on location_daily are MONTH-TO-DATE
+// LEVELS recorded on a day row, like `total_members` and unlike every other
+// dollar column here. Nothing in this module aggregates them and nothing should:
+// a period figure is the value at the latest business_date, which is a decision
+// for the caller that knows the window. See supabase/greeter-labor-revenue-14.sql.
 
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type {
@@ -27,7 +35,11 @@ import type {
   LocationDailyRow,
   LocationDailyUpdate,
   LocationGoalSnapshot,
-  LocationPeriodRow
+  LocationPeriodRow,
+  SiteMonthlyTargetInsert,
+  SiteMonthlyTargetRestampResult,
+  SiteMonthlyTargetRow,
+  SiteMonthlyTargetSnapshot
 } from "@splash/types/greeter";
 
 /* ============================================================
@@ -367,6 +379,292 @@ export async function restampGoals(
 }
 
 /* ============================================================
+ * Monthly targets — labor budget and revenue goal
+ * ============================================================ */
+
+/**
+ * First of the month for any day in it, as a `YYYY-MM-DD` string.
+ *
+ * String arithmetic, NOT `new Date(...)`, and that is the whole point.
+ * `new Date("2026-08-01")` parses as UTC midnight and renders in the runtime's
+ * local zone, so on a worker running west of UTC the first of August comes back
+ * as 31 July and every month lands on the previous one. These values are
+ * Postgres `date`s — calendar labels with no time and no zone — and a string is
+ * the only representation that can't drift. Same reasoning, and the same shape,
+ * as monthBounds() in expense.ts; duplicated rather than shared because that one
+ * is private to its module and also computes an exclusive upper bound nothing
+ * here needs.
+ *
+ * Normalising in TypeScript rather than leaning on
+ * site_monthly_targets_month_is_first means a caller that sends the 14th gets
+ * the row it meant, instead of a 23514 that reads like bad data rather than a
+ * date nobody rounded.
+ */
+function monthStart(day: string): string {
+  const m = /^(\d{4})-(\d{2})/.exec(day.trim());
+  const year = m?.[1];
+  const month = m?.[2];
+  if (!year || !month) {
+    throw new Error(`greeter: month must start with YYYY-MM, got "${day}"`);
+  }
+  const n = Number(month);
+  if (n < 1 || n > 12) {
+    throw new Error(`greeter: month out of range in "${day}"`);
+  }
+  return `${year}-${month}-01`;
+}
+
+/**
+ * The labor budget and revenue goal covering `businessDate` for a site, or nulls
+ * when the month was never configured.
+ *
+ * The counterpart to getGoalSnapshot(), and callers use it the same way: stamp
+ * the result onto the submission row so the two trend percentages can be
+ * GENERATED columns that cannot drift from their inputs. The corollary is
+ * restampMonthlyTargets() — editing a month's target does NOT move the days
+ * already logged against it.
+ *
+ * DELEGATES TO site_monthly_target_for() AND MUST CONTINUE TO, for a different
+ * reason from getGoalSnapshot's. There is no resolution rule to get wrong here —
+ * (site, month) is unique — but both numbers must come from the SAME record, and
+ * two hand-built lookups would be two chances to pair a budget with another
+ * month's goal.
+ *
+ * Nulls are a normal answer, not an error: a site with no budget set is a
+ * supported state and the columns are nullable to say so. Do NOT substitute
+ * zeros — a zero budget is a real and different claim, and the generated
+ * percentage against it is null rather than a division by zero.
+ */
+export async function getMonthlyTargetSnapshot(
+  client: SupabaseClient,
+  siteNumber: number,
+  businessDate: string
+): Promise<SiteMonthlyTargetSnapshot> {
+  const { data, error } = await client.rpc("site_monthly_target_for", {
+    p_site_number: siteNumber,
+    p_business_date: businessDate
+  });
+  if (error) throw error;
+
+  // RETURNS TABLE, so PostgREST hands back an array even though the function is
+  // LIMIT 1. Empty means the month was never configured.
+  const row = (data ?? [])[0] as
+    | { labor_budget: number | null; revenue_goal: number | null }
+    | undefined;
+  return {
+    labor_budget: row?.labor_budget ?? null,
+    revenue_goal: row?.revenue_goal ?? null
+  };
+}
+
+/**
+ * Arguments to listSiteMonthlyTargets(). snake_case because every field is a
+ * column name — same convention as GreeterDayFilters below.
+ *
+ * The month bounds are INCLUSIVE at both ends and are compared against the
+ * stored first-of-month, so `month_from: "2026-08-14"` normalises to August and
+ * includes it. Passing neither returns every month a site has ever configured,
+ * which is the right default for the targets card but is bounded only by how
+ * long the site has been running.
+ */
+export interface SiteMonthlyTargetFilters {
+  site_number?: number | null;
+  /** Any day in the earliest wanted month; normalised to the 1st. Inclusive. */
+  month_from?: string | null;
+  /** Any day in the latest wanted month; normalised to the 1st. Inclusive. */
+  month_to?: string | null;
+  /** undefined/null = caller sees every site; array = these location_codes;
+   *  EMPTY array = see nothing (fails closed). */
+  location_scope?: string[] | null;
+}
+
+export async function listSiteMonthlyTargets(
+  client: SupabaseClient,
+  opts: SiteMonthlyTargetFilters = {}
+): Promise<SiteMonthlyTargetRow[]> {
+  let q = client
+    .from("site_monthly_targets")
+    .select("*")
+    .order("site_number", { ascending: true })
+    .order("month", { ascending: false });
+
+  if (opts.site_number != null) q = q.eq("site_number", opts.site_number);
+  if (opts.month_from) q = q.gte("month", monthStart(opts.month_from));
+  if (opts.month_to) q = q.lte("month", monthStart(opts.month_to));
+  const targetScope = scopeCodes(opts.location_scope);
+  if (targetScope) q = q.in("location_code", targetScope);
+
+  const { data, error } = await q;
+  if (error) throw error;
+  return (data ?? []) as unknown as SiteMonthlyTargetRow[];
+}
+
+/**
+ * Set or correct one site's target for one month, on the (site_number, month)
+ * unique index.
+ *
+ * AN UPSERT, WHERE GOALS GET insertGreeterGoal() AND NO UPDATE AT ALL. That
+ * asymmetry is deliberate. A goal window is deleted and re-entered so exactly
+ * one code path has to re-stamp; a month's target has nothing to re-enter it as
+ * — there is one row per month by unique index, and "delete then insert" would
+ * be two statements with a window in between where the site has no budget and
+ * every day in the month reads as unconfigured.
+ *
+ * INSERT-THEN-UPDATE-ON-23505, not `.upsert()`. Same reasoning as
+ * submitGreeterDay() above and upsertExpenseBudget() in expense.ts: an upsert
+ * writes every column in the payload, which would stamp the CORRECTING user over
+ * `created_by`/`created_by_email` and destroy the record of who set the original
+ * number — which is precisely what you want to know when a budget changes
+ * mid-month. The second path leaves the creator columns alone and sets
+ * `updated_by`/`updated_by_email` instead, and only runs on the correction path.
+ *
+ * 23505 here can only be `idx_site_monthly_targets_unique`; the only other
+ * unique column is a generated uuid PK.
+ *
+ * SCOPE IS CHECKED IN FRONT OF THE STATEMENT, not inside it, and this is the one
+ * place this module can't narrow a write the way deleteGreeterGoal() does. The
+ * INSERT arm has no existing row to filter on, so the guard has to bind against
+ * the location_code in the PAYLOAD — the same shape as the destination check in
+ * updateGreeterDayById(). Null return means "not yours"; callers must not report
+ * it as a save.
+ *
+ * NEITHER DOLLAR FIGURE IS REQUIRED, but a row carrying neither is refused by
+ * site_monthly_targets_not_empty with a 23514. That is intended and is not
+ * something to defend against here: clearing both is a DELETE, and the screen
+ * that lets someone blank both boxes should send deleteSiteMonthlyTarget()
+ * instead of a row that makes the month look configured while doing nothing.
+ *
+ * `corrected` distinguishes "created" from "changed" so the UI can say which
+ * happened rather than inferring it from timestamps.
+ *
+ * THE WRITE IS ONLY HALF THE JOB. Targets are frozen onto each submission, so a
+ * caller that changes a month with days already logged in it must follow with
+ * restampMonthlyTargets() or the edit will look like a save that did nothing.
+ */
+export async function upsertSiteMonthlyTarget(
+  client: SupabaseClient,
+  input: SiteMonthlyTargetInsert,
+  opts: { location_scope?: string[] | null } = {}
+): Promise<{ row: SiteMonthlyTargetRow; corrected: boolean } | null> {
+  const codes = scopeCodes(opts.location_scope);
+  if (codes && !codes.includes(input.location_code)) return null;
+
+  const row: SiteMonthlyTargetInsert = {
+    ...input,
+    month: monthStart(input.month),
+    note: input.note?.trim() ? input.note.trim() : null
+  };
+
+  const { data, error } = await client
+    .from("site_monthly_targets")
+    .insert(row)
+    .select()
+    .single();
+
+  if (!error) {
+    return { row: data as unknown as SiteMonthlyTargetRow, corrected: false };
+  }
+  if (error.code !== "23505") throw error;
+
+  // Drop the creator columns from the correction payload — see the note above.
+  const { created_by: _c, created_by_email: _e, ...mutable } = row;
+  const { data: updated, error: updErr } = await client
+    .from("site_monthly_targets")
+    .update({
+      ...mutable,
+      updated_by: input.created_by,
+      updated_by_email: input.created_by_email
+    })
+    .eq("site_number", row.site_number)
+    .eq("month", row.month)
+    .select()
+    .single();
+  if (updErr) throw updErr;
+
+  return { row: updated as unknown as SiteMonthlyTargetRow, corrected: true };
+}
+
+/**
+ * Remove a month's target, returning the row that was removed.
+ *
+ * RETURNS THE ROW BECAUSE THE CALLER NEEDS IT AFTER THE FACT, exactly as
+ * deleteGreeterGoal() does: the days already logged in that month are still
+ * carrying the deleted budget, and clearing it needs the site and the month —
+ * which only exist on the row that just stopped existing. Fetching it back
+ * afterwards is not an option. Pass them straight to restampMonthlyTargets(),
+ * which re-resolves to nothing and NULLs the days out.
+ *
+ * Null when no row matched. Deleting a target that is already gone is not an
+ * error worth raising: two clicks on the same button, or a stale page, and the
+ * user's intent is satisfied either way.
+ *
+ * SCOPE IS PART OF THE DELETE, not a check in front of it — one statement, so a
+ * location admin who guesses another site's target id removes nothing and gets
+ * the same null a stale id gives. scopeCodes() turns an empty scope into a
+ * sentinel matching no real code, so a scoping bug deletes zero rows rather than
+ * all of them.
+ */
+export async function deleteSiteMonthlyTarget(
+  client: SupabaseClient,
+  id: string,
+  opts: { location_scope?: string[] | null } = {}
+): Promise<SiteMonthlyTargetRow | null> {
+  let q = client.from("site_monthly_targets").delete().eq("id", id);
+
+  const codes = scopeCodes(opts.location_scope);
+  if (codes) q = q.in("location_code", codes);
+
+  const { data, error } = await q.select();
+  if (error) throw error;
+  return ((data ?? [])[0] as unknown as SiteMonthlyTargetRow) ?? null;
+}
+
+/**
+ * Re-resolve and rewrite the labor budget and revenue goal on every day already
+ * logged in a month, and report how many rows moved.
+ *
+ * The counterpart to restampGoals(), and it exists for the same reason: the
+ * figures are frozen onto each submission at submit time, so fixing a budget
+ * halfway through the month would otherwise change nothing visible and look like
+ * a save that silently failed.
+ *
+ * IT RE-RESOLVES RATHER THAN APPLYING WHAT IT WAS CALLED ABOUT, which is why the
+ * same call serves the upsert and the delete path. After a delete the days
+ * resolve to nothing and the NULL-out falls out for free — so the delete path
+ * must call this too, or the month's days keep quoting a budget that no longer
+ * exists.
+ *
+ * A MONTH, NOT A FROM/TO PAIR. That is the grain targets are set at, and half a
+ * month cannot be re-stamped coherently. Any day in the month will do; it is
+ * normalised here as well as inside the function, so the value we send is the
+ * month we are claiming to act on — which is what shows up in a log line when
+ * this goes wrong.
+ *
+ * ONE COUNT, unlike restampGoals' two: greeter_daily has no labor or revenue
+ * columns, so there is no greeter-grain number to report. Zero is normal for a
+ * month with nothing logged yet and means "nothing needed changing".
+ *
+ * Voided days are never re-stamped — the function reads location_daily_live —
+ * so a struck-out row keeps the numbers it was struck out with.
+ */
+export async function restampMonthlyTargets(
+  client: SupabaseClient,
+  siteNumber: number,
+  month: string
+): Promise<SiteMonthlyTargetRestampResult> {
+  const { data, error } = await client.rpc("site_restamp_monthly_targets", {
+    p_site_number: siteNumber,
+    p_month: monthStart(month)
+  });
+  if (error) throw error;
+
+  // RETURNS integer — a bare JSON number, not a row. Same shape as
+  // copy_expense_budget_month(), and unlike greeter_restamp_goals() above, which
+  // returns a two-column table.
+  return { location_rows: typeof data === "number" ? data : 0 };
+}
+
+/* ============================================================
  * Scoping
  * ============================================================ */
 
@@ -462,8 +760,18 @@ export async function submitGreeterDay(
   return { row: updated as unknown as GreeterDailyRow, corrected: true };
 }
 
-/** Site-wide day totals. Same insert-then-correct semantics as above, and the
- *  same load-bearing `.is("voided_at", null)` for the same reason. */
+/**
+ * Site-wide day totals. Same insert-then-correct semantics as above, and the
+ * same load-bearing `.is("voided_at", null)` for the same reason.
+ *
+ * TWO SNAPSHOTS TO STAMP, NOT ONE. The caller resolves getGoalSnapshot() AND
+ * getMonthlyTargetSnapshot() and puts both on `row` before calling. They come
+ * from different tables with different resolution rules, so there is no single
+ * call that produces all five columns, and a payload missing labor_budget /
+ * revenue_goal writes NULLs — which reads downstream as "the month was never
+ * configured" rather than as a bug. The two trend percentages are generated and
+ * must NOT be in the payload; PostgREST rejects an insert that names them.
+ */
 export async function submitLocationDay(
   client: SupabaseClient,
   row: LocationDailyInsert,
@@ -782,12 +1090,22 @@ export async function listGreeterDays(
 // house_accounts is here and deliberately absent from DAY_COLS above: it is a
 // site fact, like total_cars and cancellations, and greeter_daily has no such
 // column to select.
+//
+// The six labor/revenue columns are on their own line and last among the data
+// columns, mirroring how location_period_rows() groups them: everything above is
+// a day's worth of something and those six are a month's. All six are selected,
+// not just the two the site types — LocationDailyRow declares the snapshots and
+// the generated percentages, and a row whose type promises fields the SELECT
+// never asked for is a lie that costs more to debug than four columns cost to
+// fetch. Same rule that keeps voided_by in the list below.
 const LOCATION_DAY_COLS =
   "id,business_date,location_id,site_number,location_code," +
   "total_cars,wash_sales,house_accounts,rewashes,package_dollars,extras_dollars," +
   "sign_ups,reactivations,cancellations,total_members,net_members," +
   "churn_pct,google_reviews," +
   "capture_goal_pct,dob_goal,member_goal_month_end,capture_pct,dob," +
+  "labor_budget,labor_trend,labor_trend_pct," +
+  "revenue_goal,revenue_trend,revenue_trend_pct," +
   "comments,created_at,created_by_email,updated_at,updated_by_email," +
   "voided_at,voided_by,voided_by_email";
 
@@ -990,6 +1308,19 @@ export async function listGreeterPeriodReport(
  * DO NOT SUM `total_members`. It is a level — active members as of that day —
  * so a week's worth sums to roughly seven times reality. Read it at the latest
  * `business_date` in the set; use `net_members` for the period's change.
+ *
+ * THE SAME GOES FOR ALL SIX LABOR/REVENUE FIELDS at the end of the row, and it
+ * is a bigger trap there because they look like the other dollar columns next to
+ * them. They are not: each is a month-to-date figure that happens to have been
+ * recorded on a day, so seven days of a $24,000 budget is $24,000. Take the
+ * value at the latest `business_date`, exactly as with total_members, and take
+ * the two percentages from that same row rather than recomputing them from
+ * aggregated dollars.
+ *
+ * And when you render them: LABOR OVER 100% IS BAD (projected to overspend the
+ * budget) while REVENUE OVER 100% IS GOOD (projected to beat the goal). Same
+ * arithmetic, opposite grading, so one shared "over goal is green" helper across
+ * both is wrong for half of them.
  *
  * Window is REQUIRED: this returns day rows, so an unbounded call returns every
  * site day ever recorded.
