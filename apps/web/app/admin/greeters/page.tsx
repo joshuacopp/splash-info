@@ -42,7 +42,7 @@
 //
 // THE THREE DATA TABLES (7-9) ARE GROUPED BY SITE, one collapsible <details>
 // and one <table> per site, with the header row and the leading one or two
-// columns pinned. They run 13 to 18 columns wide and hundreds of rows long: in
+// columns pinned. They run 13 to 17 columns wide and hundreds of rows long: in
 // one piece they lost their header on the first scroll down, lost track of
 // whose row you were on at the first scroll right, and parked the horizontal
 // scrollbar three screens below wherever you were reading. The Site column is
@@ -539,6 +539,13 @@ export default async function GreetersPage({ searchParams }: PageProps) {
   const editDayId = firstParam(sp.edit_day).trim();
   const editLocationDayId = firstParam(sp.edit_location_day).trim();
 
+  // And which row, if any, has its Edit / Void chooser open. Same reasoning as
+  // the two above and same exclusion from `qs`: the chooser is a URL, not client
+  // state, so a row's date cell can link to it from a server-rendered table and
+  // Cancel is a plain navigation back to the filtered list.
+  const actionsDayId = firstParam(sp.actions_day).trim();
+  const actionsLocationDayId = firstParam(sp.actions_location_day).trim();
+
   const actionError = firstParam(sp.action_error).trim() || null;
   const successKey = firstParam(sp.success).trim();
   const successBase = SUCCESS_COPY[successKey] ?? null;
@@ -763,9 +770,16 @@ export default async function GreetersPage({ searchParams }: PageProps) {
    * Corrections
    * ---------------------------------------------------------- */
 
-  /** The current filters plus one edit key. Filters are preserved so cancelling
-   *  an edit puts the user back on the list they were looking at. */
-  function editHref(key: "edit_day" | "edit_location_day", id: string): string {
+  /** The current filters plus one row key. Filters are preserved so cancelling
+   *  an edit or a chooser puts the user back on the list they were looking at. */
+  function rowHref(
+    key:
+      | "edit_day"
+      | "edit_location_day"
+      | "actions_day"
+      | "actions_location_day",
+    id: string
+  ): string {
     const p = new URLSearchParams(qs);
     p.set(key, id);
     return `/admin/greeters?${p.toString()}`;
@@ -781,6 +795,19 @@ export default async function GreetersPage({ searchParams }: PageProps) {
     : undefined;
   const editLocationDay = editLocationDayId
     ? locationDayList.find((r) => r.id === editLocationDayId)
+    : undefined;
+
+  // The chooser resolves against the same two lists for the same reason, with
+  // one difference in the outcome: a miss here renders NOTHING at all. An edit
+  // form that can't find its row says so, because the user pressed Edit and is
+  // owed an answer; an unmatched chooser id is a stale or hand-edited URL with
+  // no row behind it, and an empty modal offering to void something the page
+  // can't show would be worse than no modal.
+  const actionsDay = actionsDayId
+    ? dayList.find((r) => r.id === actionsDayId)
+    : undefined;
+  const actionsLocationDay = actionsLocationDayId
+    ? locationDayList.find((r) => r.id === actionsLocationDayId)
     : undefined;
 
   /** "BINGHAMTON · 7042" — LocationPicker needs a label to show a preselection,
@@ -1049,6 +1076,48 @@ export default async function GreetersPage({ searchParams }: PageProps) {
             <CancelEditLink href={`/admin/greeters${suffix}`} />
           </div>
         </Card>
+      ) : null}
+
+      {/* The row chooser, opened from a row's date cell. It lives here with the
+          edit forms because it is the same kind of thing — a row addressed by
+          the URL, resolved out of what the page already fetched — and being
+          `fixed`, where it sits in the markup changes nothing on screen.
+
+          NEITHER OF THESE HAS A "not found" NOTE, unlike the two edit forms
+          above. See where actionsDay is resolved. */}
+      {actionsDay ? (
+        <RowActionsModal
+          title={`${actionsDay.greeter_name} — ${actionsDay.business_date}`}
+          subtitle={`${actionsDay.location_code} · ${actionsDay.site_number}`}
+          id={actionsDay.id}
+          editHref={rowHref("edit_day", actionsDay.id)}
+          voided={actionsDay.voided_at !== null}
+          voidAction={voidDayAction}
+          restoreAction={restoreDayAction}
+          returnTo={returnPath}
+          closeHref={`/admin/greeters${suffix}`}
+          // The missing-list clause is CONDITIONAL and says so.
+          // greeter_missing_days() flags a day only when the site has no live
+          // greeter rows left for it, so voiding one of three greeters changes
+          // nothing there. Stating it flatly would be a consequence the feature
+          // doesn't carry, and people stop reading confirms that overstate.
+          confirmText={`Void ${actionsDay.greeter_name}'s day at ${actionsDay.location_code} on ${actionsDay.business_date}?\n\nThe row is kept but struck out: it drops out of every report and rollup. If it was the last greeter logged for that site's day, the day goes back onto the missing-submissions list until someone logs it again. You can restore it from this table.`}
+        />
+      ) : null}
+
+      {actionsLocationDay ? (
+        <RowActionsModal
+          title={`${actionsLocationDay.location_code} — ${actionsLocationDay.business_date}`}
+          subtitle={`Site-wide totals · ${actionsLocationDay.site_number}`}
+          id={actionsLocationDay.id}
+          editHref={rowHref("edit_location_day", actionsLocationDay.id)}
+          voided={actionsLocationDay.voided_at !== null}
+          voidAction={voidLocationDayAction}
+          restoreAction={restoreLocationDayAction}
+          returnTo={returnPath}
+          closeHref={`/admin/greeters${suffix}`}
+          confirmText={`Void the site-wide totals for ${actionsLocationDay.location_code} on ${actionsLocationDay.business_date}?\n\nThe row is kept but struck out: it drops out of every report, the Scanned % for that day loses its denominator, and the day goes back onto the missing-submissions list. The greeters' own rows for that day are NOT affected. You can restore it from this table.`}
+        />
       ) : null}
 
       {/* Submissions. Buttons, not stacked cards — see the note up top. The
@@ -1383,42 +1452,37 @@ export default async function GreetersPage({ searchParams }: PageProps) {
                   <tr>
                     {/* Greeter alone is frozen. Freezing two here would take
                         Days with it, and Days is a column nobody navigates by. */}
-                    <th
-                      className={frozenTh({
-                        left: "left-0",
-                        width: "w-[180px]",
-                        edge: true
-                      })}
-                    >
+                    <FrozenTh left="left-0" width="w-[112px]" edge>
                       Greeter
-                    </th>
+                    </FrozenTh>
                     <th className={TH_CLS}>Days</th>
                     <th className={TH_CLS}>Hours</th>
-                    <th className={TH_CLS}>Wash sales</th>
-                    <th className={TH_CLS}>WS / hr</th>
-                    <th className={TH_CLS}>Rewashes</th>
-                    <th className={TH_CLS}>Package $</th>
-                    <th className={TH_CLS}>Extras $</th>
+                    {/* The two graded columns lead, because they are what this
+                        table is read for. Everything right of them is the
+                        arithmetic behind them, in the order it is spoken. */}
+                    <th className={TH_CLS}>Capture %</th>
                     <th className={TH_CLS}>D.O.B.</th>
                     <th className={TH_CLS}>Sign ups</th>
                     <th className={TH_CLS}>Reacts</th>
+                    <th className={TH_CLS}>Wash sales</th>
+                    <th className={TH_CLS}>WS / hr</th>
+                    <th className={TH_CLS}>Package $</th>
+                    <th className={TH_CLS}>Extras $</th>
                     <th className={TH_CLS}>Reviews</th>
-                    <th className={TH_CLS}>Capture %</th>
+                    <th className={TH_CLS}>Rewashes</th>
                   </tr>
                 </thead>
                 <tbody className={TBODY_CLS}>
                   {group.rows.map((r) => (
                     <tr key={`${r.beekeeper_user_id}-${r.site_number}`}>
-                      <td
-                        className={frozenTd({
-                          left: "left-0",
-                          width: "w-[180px]",
-                          edge: true,
-                          extra: "font-semibold"
-                        })}
+                      <FrozenTd
+                        left="left-0"
+                        width="w-[112px]"
+                        edge
+                        extra="font-semibold"
                       >
                         {r.greeter_name}
-                      </td>
+                      </FrozenTd>
                       <td className="px-4 py-3 text-splash-navy/80">
                         {r.days_logged}
                       </td>
@@ -1427,20 +1491,11 @@ export default async function GreetersPage({ searchParams }: PageProps) {
                       <td className="px-4 py-3 text-splash-navy/80">
                         {hours(r.hours_worked)}
                       </td>
-                      <td className="px-4 py-3 text-splash-navy/80">
-                        {num(r.wash_sales)}
-                      </td>
-                      <td className="px-4 py-3 text-splash-navy/80">
-                        {hours(r.wash_sales_per_hour)}
-                      </td>
-                      <td className="px-4 py-3 text-splash-navy/80">
-                        {num(r.rewashes)}
-                      </td>
-                      <td className="px-4 py-3 text-splash-navy/80">
-                        {money(r.package_dollars)}
-                      </td>
-                      <td className="px-4 py-3 text-splash-navy/80">
-                        {money(r.extras_dollars)}
+                      <td className="px-4 py-3">
+                        <CaptureCell
+                          value={r.capture_pct}
+                          goal={r.capture_goal_pct}
+                        />
                       </td>
                       <td className="px-4 py-3 font-semibold">
                         {dobCell(r.dob)}
@@ -1455,16 +1510,25 @@ export default async function GreetersPage({ searchParams }: PageProps) {
                       <td className="px-4 py-3 text-splash-navy/80">
                         {num(r.reactivations)}
                       </td>
+                      <td className="px-4 py-3 text-splash-navy/80">
+                        {num(r.wash_sales)}
+                      </td>
+                      <td className="px-4 py-3 text-splash-navy/80">
+                        {hours(r.wash_sales_per_hour)}
+                      </td>
+                      <td className="px-4 py-3 text-splash-navy/80">
+                        {money(r.package_dollars)}
+                      </td>
+                      <td className="px-4 py-3 text-splash-navy/80">
+                        {money(r.extras_dollars)}
+                      </td>
                       {/* A count of reviews collected, not a rating. Summed and
                           shown; it grades nothing. */}
                       <td className="px-4 py-3 text-splash-navy/80">
                         {num(r.google_reviews)}
                       </td>
-                      <td className="px-4 py-3">
-                        <CaptureCell
-                          value={r.capture_pct}
-                          goal={r.capture_goal_pct}
-                        />
+                      <td className="px-4 py-3 text-splash-navy/80">
+                        {num(r.rewashes)}
                       </td>
                     </tr>
                   ))}
@@ -1492,45 +1556,37 @@ export default async function GreetersPage({ searchParams }: PageProps) {
                     {/* Date and Greeter are both frozen: this table is read by
                         scrolling right to a metric, and either one alone leaves
                         the other question ("whose? when?") unanswered. The
-                        w-[120px] here is what left-[120px] below is measured
-                        against — see frozenTh. */}
-                    <th
-                      className={frozenTh({
-                        left: "left-0",
-                        width: "w-[120px]"
-                      })}
-                    >
+                        w-[80px] here plus px-2 either side is what left-[96px]
+                        below is measured against — see the geometry block above
+                        FrozenTh before changing either. */}
+                    <FrozenTh left="left-0" width="w-[80px]">
                       Date
-                    </th>
-                    <th
-                      className={frozenTh({
-                        left: "left-[120px]",
-                        width: "w-[180px]",
-                        edge: true
-                      })}
-                    >
+                    </FrozenTh>
+                    <FrozenTh left="left-[96px]" width="w-[112px]" edge>
                       Greeter
-                    </th>
-                    <th className={TH_CLS}>Shift</th>
+                    </FrozenTh>
+                    {/* The two graded columns lead, then their inputs. Shift is
+                        last on purpose: it is the column people scroll past, not
+                        the one they scroll to. */}
                     <th className={TH_CLS}>Hours</th>
-                    <th className={TH_CLS}>Wash sales</th>
-                    <th className={TH_CLS}>WS / hr</th>
-                    <th className={TH_CLS}>Rewashes</th>
-                    <th className={TH_CLS}>Package $</th>
-                    <th className={TH_CLS}>Extras $</th>
+                    <th className={TH_CLS}>Capture %</th>
                     <th className={TH_CLS}>D.O.B.</th>
                     <th className={TH_CLS}>Sign ups</th>
                     <th className={TH_CLS}>Reacts</th>
+                    <th className={TH_CLS}>Wash sales</th>
+                    <th className={TH_CLS}>WS / hr</th>
+                    <th className={TH_CLS}>Package $</th>
+                    <th className={TH_CLS}>Extras $</th>
                     <th className={TH_CLS}>Reviews</th>
-                    <th className={TH_CLS}>Capture %</th>
-                    <th className={STICKY_TH_CLS}>Actions</th>
+                    <th className={TH_CLS}>Rewashes</th>
+                    <th className={TH_CLS}>Shift</th>
                   </tr>
                 </thead>
                 <tbody className={TBODY_CLS}>
                   {group.rows.map((r) => (
                     // Tinted rather than faded for a voided row. `opacity` on
-                    // the <tr> would take the Restore button down with the
-                    // numbers, and that button is the only way back.
+                    // the <tr> would take the date link down with the numbers,
+                    // and that link is the only route to Restore.
                     //
                     // The tint is on the <tr>, so the FROZEN cells have to
                     // repaint it as an opaque hex themselves — a translucent
@@ -1541,54 +1597,43 @@ export default async function GreetersPage({ searchParams }: PageProps) {
                         r.voided_at ? "bg-splash-deny/[0.04]" : undefined
                       }
                     >
-                      <td
-                        className={frozenTd({
-                          left: "left-0",
-                          width: "w-[120px]",
-                          voided: r.voided_at !== null,
-                          extra: "font-mono text-xs text-splash-navy/80"
-                        })}
+                      <FrozenTd
+                        left="left-0"
+                        width="w-[80px]"
+                        voided={r.voided_at !== null}
+                        extra="font-mono text-xs"
                       >
-                        <span
-                          className={r.voided_at ? "line-through" : undefined}
+                        <RowActionsLink
+                          href={rowHref("actions_day", r.id)}
+                          label={`Edit or void ${r.greeter_name} on ${r.business_date}`}
                         >
-                          {r.business_date}
-                        </span>
-                        {r.voided_at ? (
-                          <VoidedBadge email={r.voided_by_email} />
-                        ) : null}
-                      </td>
-                      <td
-                        className={frozenTd({
-                          left: "left-[120px]",
-                          width: "w-[180px]",
-                          edge: true,
-                          voided: r.voided_at !== null,
-                          extra: "font-semibold"
-                        })}
+                          <span
+                            className={r.voided_at ? "line-through" : undefined}
+                          >
+                            {r.business_date}
+                          </span>
+                          {r.voided_at ? (
+                            <VoidedBadge email={r.voided_by_email} />
+                          ) : null}
+                        </RowActionsLink>
+                      </FrozenTd>
+                      <FrozenTd
+                        left="left-[96px]"
+                        width="w-[112px]"
+                        edge
+                        voided={r.voided_at !== null}
+                        extra="font-semibold"
                       >
                         {r.greeter_name ?? "—"}
-                      </td>
-                      <td className="whitespace-nowrap px-4 py-3 text-xs text-splash-navy/80">
-                        {shiftCell(r.shift_start, r.shift_end)}
-                      </td>
+                      </FrozenTd>
                       <td className="px-4 py-3 text-splash-navy/80">
                         {hours(r.hours_worked)}
                       </td>
-                      <td className="px-4 py-3 text-splash-navy/80">
-                        {num(r.wash_sales)}
-                      </td>
-                      <td className="px-4 py-3 text-splash-navy/80">
-                        {hours(r.wash_sales_per_hour)}
-                      </td>
-                      <td className="px-4 py-3 text-splash-navy/80">
-                        {num(r.rewashes)}
-                      </td>
-                      <td className="px-4 py-3 text-splash-navy/80">
-                        {money(r.package_dollars)}
-                      </td>
-                      <td className="px-4 py-3 text-splash-navy/80">
-                        {money(r.extras_dollars)}
+                      <td className="px-4 py-3">
+                        <CaptureCell
+                          value={r.capture_pct}
+                          goal={r.capture_goal_pct}
+                        />
                       </td>
                       <td className="px-4 py-3 font-semibold">
                         {dobCell(r.dob)}
@@ -1603,34 +1648,28 @@ export default async function GreetersPage({ searchParams }: PageProps) {
                       <td className="px-4 py-3 text-splash-navy/80">
                         {num(r.reactivations)}
                       </td>
+                      <td className="px-4 py-3 text-splash-navy/80">
+                        {num(r.wash_sales)}
+                      </td>
+                      <td className="px-4 py-3 text-splash-navy/80">
+                        {hours(r.wash_sales_per_hour)}
+                      </td>
+                      <td className="px-4 py-3 text-splash-navy/80">
+                        {money(r.package_dollars)}
+                      </td>
+                      <td className="px-4 py-3 text-splash-navy/80">
+                        {money(r.extras_dollars)}
+                      </td>
                       {/* A count of reviews collected, not a rating. Displayed
                           and nothing more. */}
                       <td className="px-4 py-3 text-splash-navy/80">
                         {num(r.google_reviews)}
                       </td>
-                      <td className="px-4 py-3">
-                        <CaptureCell
-                          value={r.capture_pct}
-                          goal={r.capture_goal_pct}
-                        />
+                      <td className="px-4 py-3 text-splash-navy/80">
+                        {num(r.rewashes)}
                       </td>
-                      <td className={stickyTd(r.voided_at !== null)}>
-                        <DayRowActions
-                          id={r.id}
-                          editHref={editHref("edit_day", r.id)}
-                          voided={r.voided_at !== null}
-                          voidAction={voidDayAction}
-                          restoreAction={restoreDayAction}
-                          returnTo={returnPath}
-                          // The missing-list clause is CONDITIONAL and says so.
-                          // greeter_missing_days() flags a day only when the
-                          // site has no live greeter rows left for it, so
-                          // voiding one of three greeters changes nothing
-                          // there. Stating it flatly would be a consequence the
-                          // feature doesn't carry, and people stop reading
-                          // confirms that overstate.
-                          confirmText={`Void ${r.greeter_name}'s day at ${r.location_code} on ${r.business_date}?\n\nThe row is kept but struck out: it drops out of every report and rollup. If it was the last greeter logged for that site's day, the day goes back onto the missing-submissions list until someone logs it again. You can restore it from this table.`}
-                        />
+                      <td className="whitespace-nowrap px-4 py-3 text-xs text-splash-navy/80">
+                        {shiftCell(r.shift_start, r.shift_end)}
                       </td>
                     </tr>
                   ))}
@@ -1660,15 +1699,9 @@ export default async function GreetersPage({ searchParams }: PageProps) {
                   <tr>
                     {/* Date alone. There is one row per day here, so the date
                         IS the row's identity — nothing else needs freezing. */}
-                    <th
-                      className={frozenTh({
-                        left: "left-0",
-                        width: "w-[120px]",
-                        edge: true
-                      })}
-                    >
+                    <FrozenTh left="left-0" width="w-[80px]" edge>
                       Date
-                    </th>
+                    </FrozenTh>
                     <th className={TH_CLS}>Total cars</th>
                     <th className={TH_CLS}>Wash sales</th>
                     <th className={TH_CLS}>Scanned %</th>
@@ -1692,7 +1725,6 @@ export default async function GreetersPage({ searchParams }: PageProps) {
                         will give it a goal to match its neighbours; it has
                         none, and shouldn't. */}
                     <th className={TH_CLS}>Churn %</th>
-                    <th className={STICKY_TH_CLS}>Actions</th>
                   </tr>
                 </thead>
                 <tbody className={TBODY_CLS}>
@@ -1703,24 +1735,27 @@ export default async function GreetersPage({ searchParams }: PageProps) {
                         r.voided_at ? "bg-splash-deny/[0.04]" : undefined
                       }
                     >
-                      <td
-                        className={frozenTd({
-                          left: "left-0",
-                          width: "w-[120px]",
-                          edge: true,
-                          voided: r.voided_at !== null,
-                          extra: "font-mono text-xs text-splash-navy/80"
-                        })}
+                      <FrozenTd
+                        left="left-0"
+                        width="w-[80px]"
+                        edge
+                        voided={r.voided_at !== null}
+                        extra="font-mono text-xs"
                       >
-                        <span
-                          className={r.voided_at ? "line-through" : undefined}
+                        <RowActionsLink
+                          href={rowHref("actions_location_day", r.id)}
+                          label={`Edit or void ${r.location_code} on ${r.business_date}`}
                         >
-                          {r.business_date}
-                        </span>
-                        {r.voided_at ? (
-                          <VoidedBadge email={r.voided_by_email} />
-                        ) : null}
-                      </td>
+                          <span
+                            className={r.voided_at ? "line-through" : undefined}
+                          >
+                            {r.business_date}
+                          </span>
+                          {r.voided_at ? (
+                            <VoidedBadge email={r.voided_by_email} />
+                          ) : null}
+                        </RowActionsLink>
+                      </FrozenTd>
                       <td className="px-4 py-3 text-splash-navy/80">
                         {num(r.total_cars)}
                       </td>
@@ -1793,17 +1828,6 @@ export default async function GreetersPage({ searchParams }: PageProps) {
                       <td className="px-4 py-3 text-splash-navy/80">
                         {pct(r.churn_pct)}
                       </td>
-                      <td className={stickyTd(r.voided_at !== null)}>
-                        <DayRowActions
-                          id={r.id}
-                          editHref={editHref("edit_location_day", r.id)}
-                          voided={r.voided_at !== null}
-                          voidAction={voidLocationDayAction}
-                          restoreAction={restoreLocationDayAction}
-                          returnTo={returnPath}
-                          confirmText={`Void the site-wide totals for ${r.location_code} on ${r.business_date}?\n\nThe row is kept but struck out: it drops out of every report, the Scanned % for that day loses its denominator, and the day goes back onto the missing-submissions list. The greeters' own rows for that day are NOT affected. You can restore it from this table.`}
-                        />
-                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -1832,14 +1856,18 @@ const THEAD_CLS =
   "bg-splash-navy/5 text-left text-xs font-semibold uppercase tracking-wider text-splash-navy/70";
 const TBODY_CLS = "divide-y divide-gray-light text-splash-navy";
 
-// PINNED CELLS — HEADER ROW, LEADING COLUMNS, ACTIONS COLUMN.
+// PINNED CELLS — HEADER ROW AND LEADING COLUMNS.
 //
-// Three pins with one shared set of hazards, so one shared block of constants.
+// Two pins with one shared set of hazards, so one shared block of constants.
 //
-// WHY THE ACTIONS COLUMN IS PINNED. Edit and Void are the last cell of a 15-
-// and an 18-column table. On any laptop that put them a full screen-width past
-// the right edge, behind a scrollbar sitting at the TOP of the card where
-// nobody looks — the buttons shipped, and were reported as missing.
+// THERE IS NO PINNED ACTIONS COLUMN ANY MORE, and nothing should reinstate one.
+// Edit and Void were the last cell of a 15- and an 18-column table, pinned
+// right so they weren't a full screen-width past the edge — but pinned they
+// cost a permanent right-hand strip that covered most of a row on a phone. The
+// row's DATE CELL is the entry point now: it links to `?actions_day=` /
+// `?actions_location_day=` and RowActionsModal renders over the page. That link
+// is the ONLY way to reach Edit and Void; strip it out of the date cell and
+// both verbs become unreachable from the table.
 //
 // WHY THE LEADING COLUMNS ARE PINNED. The same table from the other end:
 // scrolling right far enough to read Capture % took Greeter and Date off the
@@ -1875,67 +1903,110 @@ const TBODY_CLS = "divide-y divide-gray-light text-splash-navy";
 const TH_CLS =
   "sticky top-0 z-20 bg-[#f4f3f6] px-4 py-3 shadow-[inset_0_-1px_0_#dbdbdb]";
 
-/** Actions header: a corner (top + right), so z-30 and a divider on its left. */
-const STICKY_TH_CLS =
-  "sticky right-0 top-0 z-30 bg-[#f4f3f6] px-4 py-3 shadow-[inset_1px_0_0_#dbdbdb,inset_0_-1px_0_#dbdbdb]";
-const STICKY_TD_CLS =
-  "sticky right-0 z-10 whitespace-nowrap px-4 py-3 shadow-[inset_1px_0_0_#dbdbdb,inset_0_-1px_0_#dbdbdb]";
-
-/** The pinned cell paints its own opaque background — see STICKY_TD_CLS. */
-function stickyTd(voided: boolean): string {
-  return `${STICKY_TD_CLS} ${voided ? "bg-[#fef6f6]" : "bg-white"}`;
-}
+// FROZEN COLUMN GEOMETRY — THE ONE INVARIANT ON THIS PAGE THAT NOTHING CHECKS.
+//
+// Column two's `left` must equal column one's TOTAL rendered width, padding
+// included. Written out, because getting it wrong is what produced the bug this
+// replaced (Greeter's header sitting on the tail of Date, with the third column
+// sliding visibly through the gap between them):
+//
+//   FROZEN_PAD_X  = px-2      ->  8px a side, 16px per cell
+//   FROZEN_DATE_W = w-[80px]  ->  fits "2026-08-24" in font-mono text-xs
+//   FROZEN_NAME_W = w-[112px] ->  a greeter name wrapping to two lines
+//
+//   Date column    =  80 + 16 = 96px   ==  Greeter's left-[96px]
+//   Greeter column = 112 + 16 = 128px
+//   Frozen block   = 224px, which is what a 375px phone gives up to it.
+//
+// Widen Date and left-[96px] moves by the same number of pixels, or the two
+// columns overlap again. Nothing fails, no test catches it, it just looks
+// wrong — which is why it shipped twice.
+//
+// THE WIDTH GOES ON AN INNER <div>, NOT ON THE CELL. That is the fix, not a
+// style choice: under `table-layout: auto` a width on a <td> is only a
+// suggestion — the browser sizes the column to its content and the space going
+// spare — and `max-width` on a table cell is ignored outright. A block child
+// with a definite width leaves the column nothing to negotiate. Move the width
+// back onto the cell and the overlap comes straight back.
+//
+// The widths still assume these tables stay WIDER than their scroll box, which
+// at 13-17 columns they are. If one is ever narrowed until it fits, auto layout
+// hands the leftover width out to every column including the frozen ones, and
+// the offset drifts by however much it handed the first one.
 
 /**
  * A frozen leading column, header half.
  *
- * THE `left` OFFSET IS HARD-CODED AND THE `width` EXISTS TO MAKE IT TRUE. CSS
- * gives a second frozen column no way to ask how wide the first one rendered,
- * so "Daily rows" pins Date at left-0 with w-[120px] purely so that Greeter can
- * pin at left-[120px]. Change one number without the other and the two frozen
- * columns overlap — nothing fails, no test catches it, it just looks wrong.
- *
- * The widths also assume these tables stay WIDER than their scroll box, which
- * at 13-18 columns they are. If one is ever narrowed until it fits, auto table
- * layout hands the leftover width out to every column including the frozen
- * ones, and the offset drifts by however much it handed the first one.
- *
  * `edge` marks the OUTER column of the frozen block — the only one that draws a
  * vertical divider, so a two-column freeze reads as one pinned unit rather than
  * as a little table of its own.
+ *
+ * `width` arrives as a whole literal class string from the call site rather
+ * than assembled here: Tailwind scans source text, and a class built from a
+ * variable is a class that gets purged.
  */
-function frozenTh(o: { left: string; width: string; edge?: boolean }): string {
-  return [
-    "sticky top-0 z-30 bg-[#f4f3f6] px-4 py-3",
-    o.left,
-    o.width,
-    o.edge
-      ? "shadow-[inset_-1px_0_0_#dbdbdb,inset_0_-1px_0_#dbdbdb]"
-      : "shadow-[inset_0_-1px_0_#dbdbdb]"
-  ].join(" ");
+function FrozenTh({
+  left,
+  width,
+  edge,
+  children
+}: {
+  left: string;
+  width: string;
+  edge?: boolean;
+  children: ReactNode;
+}) {
+  return (
+    <th
+      className={[
+        "sticky top-0 z-30 bg-[#f4f3f6] px-2 py-3",
+        left,
+        edge
+          ? "shadow-[inset_-1px_0_0_#dbdbdb,inset_0_-1px_0_#dbdbdb]"
+          : "shadow-[inset_0_-1px_0_#dbdbdb]"
+      ].join(" ")}
+    >
+      <div className={width}>{children}</div>
+    </th>
+  );
 }
 
-/** Body half of frozenTh — same offsets, opaque background, z-10. */
-function frozenTd(o: {
+/** Body half of FrozenTh — same offsets and width, opaque background, z-10. */
+function FrozenTd({
+  left,
+  width,
+  edge,
+  voided,
+  extra,
+  children
+}: {
   left: string;
   width: string;
   edge?: boolean;
   voided?: boolean;
   /** Type styling the unfrozen version of this cell used to carry. */
   extra?: string;
-}): string {
-  return [
-    // break-words, because the fixed width above is only honoured while the
-    // cell's longest unbreakable token fits inside it.
-    "sticky z-10 break-words px-4 py-3",
-    o.left,
-    o.width,
-    o.voided ? "bg-[#fef6f6]" : "bg-white",
-    o.edge
-      ? "shadow-[inset_-1px_0_0_#dbdbdb,inset_0_-1px_0_#dbdbdb]"
-      : "shadow-[inset_0_-1px_0_#dbdbdb]",
-    o.extra ?? ""
-  ].join(" ");
+  children: ReactNode;
+}) {
+  return (
+    <td
+      className={[
+        // py-3 matches every unfrozen cell so the row heights still line up;
+        // only the horizontal padding is tightened.
+        "sticky z-10 px-2 py-3",
+        left,
+        voided ? "bg-[#fef6f6]" : "bg-white",
+        edge
+          ? "shadow-[inset_-1px_0_0_#dbdbdb,inset_0_-1px_0_#dbdbdb]"
+          : "shadow-[inset_0_-1px_0_#dbdbdb]",
+        extra ?? ""
+      ].join(" ")}
+    >
+      {/* break-words on the width-carrying element, or a name longer than the
+          column blows the column back out and takes the offset with it. */}
+      <div className={`${width} break-words`}>{children}</div>
+    </td>
+  );
 }
 
 /* ------------------------------------------------------------
@@ -1965,7 +2036,7 @@ interface SiteGroup<T> {
  * per group gets its own sticky <thead> for free.
  *
  * The input array is not mutated — each group owns a fresh array — because the
- * lists this runs over are also the ones editHref's lookups search.
+ * lists this runs over are also the ones the edit and chooser id lookups search.
  */
 function groupBySite<T extends { site_number: number; location_code: string }>(
   rows: readonly T[],
@@ -2918,11 +2989,115 @@ function VoidedBadge({ email }: { email: string | null }) {
 }
 
 /**
+ * A row's date cell, as the way into its Edit / Void chooser.
+ *
+ * IT HAS TO READ AS A CONTROL. Since the Actions column came off both tables
+ * this link is the only route to Edit, Void and Restore, and an underline is
+ * the only thing telling a reader the date is more than a date. Take the
+ * underline off and the verbs are still there and still unreachable.
+ *
+ * `block`, so the whole width of a narrow frozen cell is the hit target rather
+ * than the ten characters of the date itself.
+ */
+function RowActionsLink({
+  href,
+  label,
+  children
+}: {
+  href: string;
+  /** Spelled out per row: "Edit or void Jane on 2026-08-24". A screen reader
+   *  hitting forty links called "2026-08-24" learns nothing from any of them. */
+  label: string;
+  children: ReactNode;
+}) {
+  return (
+    <Link
+      href={href}
+      title={label}
+      aria-label={label}
+      className="block text-splash-blue underline decoration-dotted underline-offset-2 transition-colors hover:text-splash-blue-dark"
+    >
+      {children}
+    </Link>
+  );
+}
+
+/**
+ * The Edit / Void chooser itself: one row's actions, over the page.
+ *
+ * URL-DRIVEN, NOT CLIENT STATE, and that is what makes it possible at all here
+ * — this page is a server component. The row's date cell links to
+ * `?actions_day=<id>`, the page resolves that id out of the list it already
+ * fetched, and Cancel is a link back to the filtered list. No useState, no
+ * dialog element to open imperatively, and the back button closes it.
+ *
+ * THE BACKDROP IS A LINK, not a click handler, for the same reason.
+ *
+ * `fixed` rather than absolute: the tables live inside an overflow-auto scroll
+ * box and an `overflow-hidden` card, either of which would clip an absolutely
+ * positioned panel. Fixed elements escape both — but only while no ancestor
+ * grows a `transform`, `filter` or `contain`, any of which silently turns this
+ * back into an absolutely positioned box and hides it inside the table.
+ */
+function RowActionsModal({
+  title,
+  subtitle,
+  closeHref,
+  ...actions
+}: {
+  title: string;
+  subtitle: string;
+  /** The filtered list, for Cancel and for the backdrop. */
+  closeHref: string;
+  id: string;
+  editHref: string;
+  voided: boolean;
+  voidAction: (formData: FormData) => Promise<RedirectResult>;
+  restoreAction: (formData: FormData) => Promise<RedirectResult>;
+  confirmText: string;
+  returnTo: string;
+}) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      <Link
+        href={closeHref}
+        aria-label="Close"
+        className="absolute inset-0 bg-splash-navy/40"
+      />
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label={title}
+        className="relative w-full max-w-[360px] rounded-splash-lg border border-gray-light bg-white p-5 shadow-splash-card"
+      >
+        <h3 className="text-sm font-bold text-splash-navy">{title}</h3>
+        <p className="mt-1 text-xs text-splash-navy/60">{subtitle}</p>
+        <div className="mt-4">
+          <DayRowActions {...actions} />
+        </div>
+        <p className="mt-4 text-xs text-splash-navy/60">
+          <Link
+            href={closeHref}
+            className="font-semibold text-splash-blue hover:text-splash-blue-dark"
+          >
+            Cancel
+          </Link>{" "}
+          — leaves the row as it is.
+        </p>
+      </div>
+    </div>
+  );
+}
+
+/**
  * Edit + Void, or Restore, for one day row.
  *
  * Shared by both tables because the two grains differ in nothing but which pair
  * of actions they post to — and two copies would be two places to forget the
- * hidden id.
+ * hidden id. It renders inside RowActionsModal now rather than in a pinned
+ * Actions cell, which changed where it sits and nothing else: the verbs, the
+ * hidden id and the confirm are the same, and there is still exactly one
+ * voiding path on this page.
  *
  * NO EDIT LINK ON A VOIDED ROW, on purpose. update-by-id in the db layer is
  * guarded with `.is("voided_at", null)`, so an edit posted for a struck-out row
