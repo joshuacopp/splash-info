@@ -426,26 +426,13 @@ export default async function GreeterReportPage({ searchParams }: PageProps) {
     .filter((s): s is string => s !== null)
     .join(" and ");
 
-  // What the two by-day charts are actually drawn from. `windowDays` has
-  // already been narrowed by the location filter and by RD/RM — but NOT by the
-  // greeter filter, which by design touches the greeter tables only and leaves
-  // site figures whole. So the greeter box is deliberately absent here.
-  //
-  // Captioning these "company-wide" under a filter is a plain falsehood, and
-  // the expensive kind: the chart still looks company-wide, so a filtered
-  // number gets read aloud in a call as if it were the whole business. Same
-  // reasoning as managerNote above — the filter is in force whether or not the
-  // caption admits it, so the caption admits it.
-  //
-  // Location wins when both are set: it is the narrower of the two, and naming
-  // both ("binghamton · 122, sites under Regional Director X") says nothing the
-  // site code did not already say.
-  const chartScope =
-    filterLocationLabel !== undefined
-      ? filterLocationLabel
-      : managerNote
-        ? `Sites under ${managerNote}`
-        : "Company-wide";
+  // NOTE for anyone tempted to caption the by-day charts: they used to say
+  // "company-wide", which was false under a filter and the expensive kind of
+  // false — the chart still LOOKS company-wide, so a filtered number gets read
+  // aloud in a call as the whole business. The legend under those charts now
+  // names every site being drawn, which states the scope better than a sentence
+  // did. If a caption ever goes back, it has to be derived from the filters in
+  // force, not hardcoded.
 
   // THE colour order for every per-site mark on this page — the two by-day
   // lines, the legend that keys them, and the scatter dots. One list, built
@@ -730,10 +717,7 @@ export default async function GreeterReportPage({ searchParams }: PageProps) {
 
         {/* Charts */}
         <div className="mb-6 grid grid-cols-1 gap-4 lg:grid-cols-2">
-          <ChartFrame
-            title="Capture rate by day"
-            caption={`${chartScope} — one line per site, not a blend. Sign ups over wash sales plus sign ups, so it tops out at 100%. A site's line breaks on days it had nothing to measure, and on days it didn't report at all, rather than being drawn through them.`}
-          >
+          <ChartFrame title="Capture rate by day">
             <TrendChart
               series={captureSeries}
               goal={captureGoalLine}
@@ -741,10 +725,7 @@ export default async function GreeterReportPage({ searchParams }: PageProps) {
             />
           </ChartFrame>
 
-          <ChartFrame
-            title="D.O.B. by day"
-            caption={`${chartScope} — one line per site, not a blend. Package and extras dollars per wash sale. A site's line breaks on days it sold no washes, and on days it didn't report at all, rather than being drawn through them.`}
-          >
+          <ChartFrame title="D.O.B. by day">
             <TrendChart series={dobSeries} goal={dobGoalLine} unit="money" />
           </ChartFrame>
         </div>
@@ -758,8 +739,7 @@ export default async function GreeterReportPage({ searchParams }: PageProps) {
           <>
             <SiteLegend items={legendItems} />
             <p className="-mt-2 mb-6 text-[11px] text-splash-navy/60">
-              One colour per site, keyed to both by-day charts above and to the
-              dots in Volume against capture rate below.
+              Keys the two charts above and the dots below.
             </p>
           </>
         )}
