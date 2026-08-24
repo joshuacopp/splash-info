@@ -642,7 +642,6 @@ export function ScheduleWeekGrid({
     [dailyCost]
   );
 
-  const weekTotal = weekVariable + salaried.weekly;
 
   /** The week card's allowance, netted the same way the day lines are so the
    *  two framings cannot drift apart. Null-safe on the same contract. */
@@ -1140,8 +1139,8 @@ export function ScheduleWeekGrid({
                         className={`rounded-splash-md text-center text-[11px] tabular-nums ${BUDGET_BAND_CLASS[band]}`}
                         title={
                           (net < 0
-                            ? `Salaried staff alone (${fmtMoney(salariedDaily)}/day) already exceed this day's 1/${daysInMonth} slice of the monthly labor budget, so there are no hourly dollars left before a single shift is written. Any hourly spend is over.`
-                            : `Scheduled hourly cost against 1/${daysInMonth} of the month's labor budget, less this day's share of the salaried baseline (${fmtMoney(salariedDaily)}). What is left for hourly labor.`) +
+                            ? `The fixed staffing baseline alone already exceeds this day's 1/${daysInMonth} slice of the monthly labor budget, so there are no schedulable dollars left before a single shift is written. Any spend is over.`
+                            : `Scheduled cost against this day's share of the monthly labor budget, after the fixed staffing baseline. What is left to schedule against.`) +
                           (band === "under"
                             ? ` Under by ${fmtMoney(net - spent)}.`
                             : band === "at"
@@ -1216,21 +1215,80 @@ export function ScheduleWeekGrid({
         )}
       </div>
 
-      {/* Payroll cost · week. Split so the budget conversation and the
-          scheduling conversation stay separate: the hourly line is what this
-          week's grid decided, the salaried line is what the location costs
-          before anyone is scheduled at all. */}
+      {/* Labor budget · week.
+
+          Deliberately three lines and no more: allowance, scheduled, variance.
+
+          The salaried baseline is NOT shown. It is still subtracted — the
+          allowance below is net of it — but this panel renders on a screen
+          that assistant managers and shift leads look over the schedule
+          writer's shoulder at, and a single "Salaried (fixed)" row with one
+          salaried person at the location is that person's pay, published. The
+          same reason the printout carries no dollars at all.
+
+          Dropping the row costs nothing analytically. "Week total" was
+          allowance-agnostic and the variance already answers the only question
+          the panel exists to answer, so the arithmetic the schedule writer
+          needs survives intact while the disclosure does not. */}
       <div className="mt-4 rounded-splash-lg border border-gray-light bg-white p-4">
         <h2 className="mb-3 text-sm font-bold text-splash-navy">
-          Payroll cost · week of {weekRangeLabel(monday)}
+          Labor budget · week of {weekRangeLabel(monday)}
         </h2>
         <table className="w-full max-w-md text-sm">
           <tbody>
-            <tr className="border-b border-gray-light/60">
+            {/* Allowance leads. It is the constraint; scheduled cost is the
+                thing being fitted into it, so it reads top-down as budget,
+                spend, difference. Rendered only when the month is configured:
+                a $0 allowance would assert the location may spend nothing,
+                which is a very different claim from "nobody set a budget". */}
+            {netWeekAllowance !== null && budget ? (
+              <tr className="border-b border-gray-light/60">
+                <td className="py-1.5 pr-4 text-splash-navy">
+                  Weekly allowance
+                  {budget.unbudgetedDays > 0 ? (
+                    <span
+                      className="ml-1 text-xs font-medium text-amber-700"
+                      title="This week crosses into a month with no labor budget set, so those days contribute no allowance and this figure is a floor."
+                    >
+                      · {budget.unbudgetedDays} of 7 days unbudgeted
+                    </span>
+                  ) : null}
+                  {/* The salaried row used to carry this warning. Without it,
+                      a manager missing a pay rate in Beekeeper would silently
+                      inflate the allowance with no visible tell, so the tell
+                      moves here — phrased as a count, never a dollar. */}
+                  {salaried.unrated > 0 ? (
+                    <span
+                      className="ml-1 text-xs font-medium text-amber-700"
+                      title="Someone on the fixed staffing baseline has no pay rate in Beekeeper, so less has been subtracted than should be. This allowance is higher than the real one."
+                    >
+                      · {salaried.unrated} missing a pay rate
+                    </span>
+                  ) : null}
+                </td>
+                <td
+                  className={`py-1.5 text-right font-semibold tabular-nums ${
+                    netWeekAllowance < 0 ? "text-amber-700" : "text-splash-navy"
+                  }`}
+                >
+                  {fmtMoney(netWeekAllowance)}
+                </td>
+              </tr>
+            ) : null}
+            <tr
+              className={
+                netWeekAllowance !== null
+                  ? "border-b border-gray-light/60"
+                  : undefined
+              }
+            >
               <td className="py-1.5 pr-4 text-splash-navy">
-                Hourly (scheduled)
+                Scheduled
                 {weekUnrated > 0 ? (
-                  <span className="ml-1 text-xs font-medium text-amber-700">
+                  <span
+                    className="ml-1 text-xs font-medium text-amber-700"
+                    title="These shifts have no pay rate in Beekeeper and count as $0, so the scheduled figure is a floor rather than an estimate."
+                  >
                     · {weekUnrated} unrated
                   </span>
                 ) : null}
@@ -1239,101 +1297,31 @@ export function ScheduleWeekGrid({
                 {fmtMoney(weekVariable)}
               </td>
             </tr>
-            <tr className="border-b border-gray-light/60">
-              <td className="py-1.5 pr-4 text-splash-navy">
-                Salaried (fixed)
-                {salaried.unrated > 0 ? (
-                  <span className="ml-1 text-xs font-medium text-amber-700">
-                    · {salaried.unrated} unrated
-                  </span>
-                ) : null}
-              </td>
-              <td className="py-1.5 text-right font-semibold tabular-nums text-splash-navy">
-                {fmtMoney(salaried.weekly)}
-              </td>
-            </tr>
-            <tr className={netWeekAllowance !== null ? "border-b border-gray-light/60" : undefined}>
-              <td className="pr-4 pt-2 font-bold text-splash-navy">
-                Week total
-              </td>
-              <td className="pt-2 text-right font-bold tabular-nums text-splash-navy">
-                {fmtMoney(weekTotal)}
-              </td>
-            </tr>
-            {/* Budget rows appear only when the month is configured. An
-                unconfigured month renders nothing at all — a $0 allowance would
-                claim the location may spend nothing, which is a real and very
-                different statement from "nobody set a budget".
-
-                The allowance shown is NET of the salaried baseline, matching
-                the day columns: it is what remains for hourly labor. The
-                over/under is therefore hourly-vs-net, which is the same
-                number the old all-in-vs-gross form produced — netting moves
-                the salaried term from one side of the subtraction to the
-                other, it does not change the difference. */}
             {netWeekAllowance !== null && budget ? (
-              <>
-                <tr className="border-b border-gray-light/60">
-                  <td className="py-1.5 pr-4 pt-2 text-splash-navy">
-                    Hourly allowance
-                    <span
-                      className="ml-1 text-xs font-medium text-splash-navy/60"
-                      title={`This location's week share of the monthly labor budget (${fmtMoney(budget.weekAllowance ?? 0)}) less the salaried baseline (${fmtMoney(salaried.weekly)}). What is left to spend on hourly labor.`}
-                    >
-                      · net of salaried
-                    </span>
-                    {budget.unbudgetedDays > 0 ? (
-                      <span
-                        className="ml-1 text-xs font-medium text-amber-700"
-                        title="This week crosses into a month with no labor budget set, so those days contribute no allowance and this figure is a floor."
-                      >
-                        · {budget.unbudgetedDays} of 7 days unbudgeted
-                      </span>
-                    ) : null}
-                  </td>
-                  <td
-                    className={`py-1.5 pt-2 text-right font-semibold tabular-nums ${
-                      netWeekAllowance < 0 ? "text-amber-700" : "text-splash-navy"
-                    }`}
-                  >
-                    {fmtMoney(netWeekAllowance)}
-                  </td>
-                </tr>
-                <tr>
-                  <td className="pr-4 pt-2 font-bold text-splash-navy">
-                    {weekVariable > netWeekAllowance ? "Over by" : "Remaining"}
-                  </td>
-                  <td className="pt-2 text-right font-bold tabular-nums text-splash-navy">
-                    {fmtMoney(Math.abs(netWeekAllowance - weekVariable))}
-                  </td>
-                </tr>
-              </>
+              <tr>
+                <td className="pr-4 pt-2 font-bold text-splash-navy">
+                  {weekVariable > netWeekAllowance ? "Over by" : "Under by"}
+                </td>
+                <td className="pt-2 text-right font-bold tabular-nums text-splash-navy">
+                  {fmtMoney(Math.abs(netWeekAllowance - weekVariable))}
+                </td>
+              </tr>
             ) : null}
           </tbody>
         </table>
-        <p className="mt-2 max-w-md text-xs text-splash-navy/60">
-          Salaried staff are priced at rate x {SALARY_WEEK_HOURS}h and do not
-          change when their shifts do. Hourly shifts longer than 6h have a
-          30-minute unpaid meal break taken out, so a 7:30&nbsp;AM&ndash;4&nbsp;PM
-          shift counts as 8h of hours and of dollars alike. Shifts flagged as
-          unrated have no pay rate in Beekeeper and count as $0, so the total is
-          a floor rather than an estimate.
-        </p>
         {netWeekAllowance !== null && budget ? (
-          <p className="mt-1 max-w-md text-xs text-splash-navy/60">
+          <p className="mt-2 max-w-md text-xs text-splash-navy/60">
             The allowance is this location&rsquo;s monthly labor budget split
             evenly across the days of the month
             {budget.months.length > 1
               ? " — a week spanning two months draws each day from its own month"
               : ""}
-            . That budget covers all labor, so the salaried baseline is
-            subtracted from it here and the remainder is compared to the hourly
-            line: the figure above is the dollars still available for hourly
-            labor, not the location&rsquo;s total. Over or under comes out the
-            same either way — netting only puts both sides of the comparison
-            under the schedule writer&rsquo;s control.
+            , less the fixed staffing baseline that is already committed before
+            anyone is scheduled. What is shown is the dollars still available to
+            schedule against, not the location&rsquo;s total labor cost. Shifts
+            longer than 6h have a 30-minute unpaid meal break taken out.
             {netWeekAllowance < 0
-              ? " This week the salaried baseline alone exceeds the budget, so the allowance is negative and any hourly hour is over."
+              ? " This week the fixed baseline alone exceeds the budget, so the allowance is negative and any scheduled hour is over."
               : ""}
           </p>
         ) : null}
