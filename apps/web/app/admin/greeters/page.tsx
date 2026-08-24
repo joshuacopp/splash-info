@@ -47,9 +47,10 @@
 // whose row you were on at the first scroll right, and parked the horizontal
 // scrollbar three screens below wherever you were reading. The Site column is
 // gone from all three because the group heading IS the site. The pieces that
-// have to move together are groupBySite, SiteGroupBlock and TableWrap's
-// `scrollBox` — and `scrollBox` is opt-in precisely because tables (5) and (6)
-// share TableWrap, are short, and are deliberately left ungrouped and unpinned.
+// have to move together are groupBySite and SiteGroupBlock (both now in
+// _lib/site-groups, shared with the report view) and TableWrap's `scrollBox` —
+// and `scrollBox` is opt-in precisely because tables (5) and (6) share
+// TableWrap, are short, and are deliberately left ungrouped and unpinned.
 //
 // The three submission forms used to be stacked cards below the tables, which
 // made the page a long scroll of forms nobody was using at that moment. They're
@@ -96,6 +97,14 @@ import {
   scanTier
 } from "./_lib/grading";
 import { SUCCESS_COPY } from "./_lib/copy";
+// The grouping helpers moved to _lib when the report view was collapsed the
+// same way — see the note at the top of that file for why they're shared.
+import {
+  compareCaptureDesc,
+  groupBySite,
+  nameKey,
+  SiteGroupBlock
+} from "./_lib/site-groups";
 import {
   RedirectForm,
   type RedirectResult
@@ -2011,125 +2020,14 @@ function FrozenTd({
 
 /* ------------------------------------------------------------
  * Grouping the tables by site
+ *
+ * groupBySite, compareCaptureDesc, nameKey and SiteGroupBlock moved to
+ * ./_lib/site-groups when the report view's greeter table was collapsed the
+ * same way — imported at the top of this file. They are shared rather than
+ * copied because the A-Z / capture-descending ordering is a rule the operators
+ * asked for, and the two pages disagreeing about where a greeter sits would
+ * make both look wrong.
  * ------------------------------------------------------------ */
-
-/**
- * One site's worth of rows, rendered as one collapsible block.
- *
- * KEYED ON site_number, NOT location_code. The number is what every other
- * system joins on; the code is a slug that has been observed to differ between
- * tables for the same site, and a site that arrived spelled two ways would
- * silently split into two blocks that each look complete. The code rides along
- * for the heading and for the A-Z ordering only.
- */
-interface SiteGroup<T> {
-  siteNumber: number;
-  locationCode: string;
-  rows: T[];
-}
-
-/**
- * Bucket rows by site, A-Z by location code, each bucket ordered by `within`.
- *
- * Callers render one <table> PER GROUP rather than one table with group-header
- * rows, for two reasons: <details> cannot legally wrap a <tbody>, and a table
- * per group gets its own sticky <thead> for free.
- *
- * The input array is not mutated — each group owns a fresh array — because the
- * lists this runs over are also the ones the edit and chooser id lookups search.
- */
-function groupBySite<T extends { site_number: number; location_code: string }>(
-  rows: readonly T[],
-  within: (a: T, b: T) => number
-): SiteGroup<T>[] {
-  const bySite = new Map<number, SiteGroup<T>>();
-  for (const row of rows) {
-    const found = bySite.get(row.site_number);
-    if (found) {
-      found.rows.push(row);
-    } else {
-      bySite.set(row.site_number, {
-        siteNumber: row.site_number,
-        locationCode: row.location_code,
-        rows: [row]
-      });
-    }
-  }
-  const groups = [...bySite.values()];
-  groups.sort((a, b) => a.locationCode.localeCompare(b.locationCode));
-  for (const group of groups) group.rows.sort(within);
-  return groups;
-}
-
-/**
- * Capture % descending, WITH NULLS LAST.
- *
- * Written out rather than `(b.capture ?? 0) - (a.capture ?? 0)` or a bare
- * subtraction, both of which put the greeters with no measurable capture rate
- * at the top of their site — the naive version reads as "these are the best
- * performers" when it means "we could not grade these at all". A greeter with
- * no denominator is not a leader.
- */
-function compareCaptureDesc(a: number | null, b: number | null): number {
-  if (a === null && b === null) return 0;
-  if (a === null) return 1;
-  if (b === null) return -1;
-  return b - a;
-}
-
-/** Sorting on a display name that a bad row could still deliver empty. */
-function nameKey(value: string | null): string {
-  return value ?? "";
-}
-
-/**
- * One site's collapsible block: a heading, then that site's own table.
- *
- * `open` IS TRUE ONLY WHEN THIS IS THE ONLY GROUP. Somebody who has filtered
- * down to one site has already said what they want to look at, and making them
- * click a disclosure triangle to see it is pure click tax. Past one group the
- * default flips, because the reason the grouping exists is that a 400-row
- * table is unreadable in one piece.
- *
- * THE SITE NUMBER LIVES HERE NOW. It used to be a mono sub-line under the
- * location code in every row's Site cell; the Site column is gone because the
- * heading IS the site, so the number came up here rather than being dropped.
- *
- * KNOWN LIMITATION, DELIBERATELY NOT SOLVED: which blocks are open resets on
- * every filter change and every navigation. This is a native <details> inside a
- * server component and nothing outside the DOM remembers its state. Persisting
- * it means a client component plus localStorage — considered, deferred, and not
- * worth converting this page for.
- */
-function SiteGroupBlock<T>({
-  group,
-  open,
-  children
-}: {
-  group: SiteGroup<T>;
-  open: boolean;
-  children: ReactNode;
-}) {
-  const count = group.rows.length;
-  // The separator is border-b + last:border-b-0, NOT border-t + first:. These
-  // <details> are not the card's first child — the card's own title block is —
-  // so a `first:` rule would never match, and the first group would double up
-  // with the title block's bottom border.
-  return (
-    <details open={open} className="border-b border-gray-light last:border-b-0">
-      <summary className="cursor-pointer list-item px-5 py-3 text-sm font-semibold text-splash-navy marker:text-splash-navy/50 hover:bg-splash-navy/5">
-        {group.locationCode}
-        <span className="ml-2 font-mono text-xs font-normal text-splash-navy/60">
-          {group.siteNumber}
-        </span>
-        <span className="ml-2 text-xs font-normal text-splash-navy/60">
-          {count === 1 ? "1 row" : `${count} rows`}
-        </span>
-      </summary>
-      {children}
-    </details>
-  );
-}
 
 function Card({
   title,

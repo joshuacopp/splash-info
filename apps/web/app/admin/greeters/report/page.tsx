@@ -85,14 +85,26 @@ import {
   TrendCell
 } from "../_lib/grading";
 import { SUCCESS_COPY } from "../_lib/copy";
+// Shared with /admin/greeters so a greeter sits in the same place on both
+// screens — see the note at the top of that module.
 import {
+  compareCaptureDesc,
+  groupBySite,
+  SiteGroupBlock
+} from "../_lib/site-groups";
+import {
+  CHART,
   ChartFrame,
   RankBars,
+  seriesStyle,
+  SiteLegend,
   TrendChart,
   VolumeScatter,
   type RankRow,
   type ScatterPoint,
-  type TrendPoint
+  type SeriesStyle,
+  type TrendPoint,
+  type TrendSeries
 } from "./_components/Charts";
 import {
   bySite,
@@ -101,8 +113,7 @@ import {
   delta,
   totals,
   type DayTotals,
-  type SiteTotals,
-  type Totals
+  type SiteTotals
 } from "./_lib/aggregate";
 import {
   isoAdd,
@@ -415,6 +426,84 @@ export default async function GreeterReportPage({ searchParams }: PageProps) {
     .filter((s): s is string => s !== null)
     .join(" and ");
 
+  // What the two by-day charts are actually drawn from. `windowDays` has
+  // already been narrowed by the location filter and by RD/RM — but NOT by the
+  // greeter filter, which by design touches the greeter tables only and leaves
+  // site figures whole. So the greeter box is deliberately absent here.
+  //
+  // Captioning these "company-wide" under a filter is a plain falsehood, and
+  // the expensive kind: the chart still looks company-wide, so a filtered
+  // number gets read aloud in a call as if it were the whole business. Same
+  // reasoning as managerNote above — the filter is in force whether or not the
+  // caption admits it, so the caption admits it.
+  //
+  // Location wins when both are set: it is the narrower of the two, and naming
+  // both ("binghamton · 122, sites under Regional Director X") says nothing the
+  // site code did not already say.
+  const chartScope =
+    filterLocationLabel !== undefined
+      ? filterLocationLabel
+      : managerNote
+        ? `Sites under ${managerNote}`
+        : "Company-wide";
+
+  // THE colour order for every per-site mark on this page — the two by-day
+  // lines, the legend that keys them, and the scatter dots. One list, built
+  // once, so all three cannot disagree about which site owns which ink.
+  //
+  // SORTED BY SITE NUMBER, NEVER BY A RATE. seriesStyle() assigns colour purely
+  // by index — nothing in it looks at the site — so the ordering passed in IS
+  // the colour assignment. Sorting by capture rate (as `sitesWorstFirst` does,
+  // correctly, for the ranking bars) would hand a site blue this week and red
+  // the next simply because it stopped being worst, and two screenshots of this
+  // chart a week apart would stop being comparable. A site's ink has to be a
+  // property of the site, not of how it happened to be doing at render time.
+  // Site number is the only key here that never moves.
+  const chartSites = [...sites].sort((a, b) => a.site_number - b.site_number);
+  const chartInks = chartSites.map((site, i) => ({ site, style: seriesStyle(i) }));
+
+  const legendItems = chartInks.map(({ site, style }) => ({
+    key: String(site.location_id),
+    label: `${site.location_code} · ${site.site_number}`,
+    style
+  }));
+
+  // location_id -> ink, for the scatter. Built from the SAME chartInks list
+  // rather than re-derived, so a dot and its site's line can never end up on
+  // different indexes.
+  const siteStyles = new Map<number, SeriesStyle>(
+    chartInks.map(({ site, style }): [number, SeriesStyle] => [
+      site.location_id,
+      style
+    ])
+  );
+
+  // One goal line per chart, drawn only when it's true of everybody on it —
+  // see sharedGoal().
+  const captureGoalLine = sharedGoal(chartSites, (s) => s.capture_goal_pct);
+  const dobGoalLine = sharedGoal(chartSites, (s) => s.dob_goal);
+
+  const captureSeries = siteSeries(
+    chartInks,
+    siteList,
+    windowDays,
+    (r) => r.capture_pct,
+    (r) =>
+      `${num(r.sign_ups)} sign ups / ${num(
+        (r.wash_sales ?? 0) + (r.sign_ups ?? 0)
+      )} opportunities`
+  );
+  const dobSeries = siteSeries(
+    chartInks,
+    siteList,
+    windowDays,
+    (r) => r.dob,
+    (r) =>
+      `${money((r.package_dollars ?? 0) + (r.extras_dollars ?? 0))} over ${num(
+        r.wash_sales
+      )} wash sales`
+  );
+
   // The URL the void buttons return to: this exact screen, drill-through and
   // all. Built from link({}) rather than assembled by hand so it can't drift
   // from what every other link on the page considers "here".
@@ -643,52 +732,53 @@ export default async function GreeterReportPage({ searchParams }: PageProps) {
         <div className="mb-6 grid grid-cols-1 gap-4 lg:grid-cols-2">
           <ChartFrame
             title="Capture rate by day"
-            caption="Company-wide, weighted by volume. Sign ups over wash sales plus sign ups, so it tops out at 100%. The line breaks on days with nothing to measure, and on days nobody reported, rather than being drawn through them."
+            caption={`${chartScope} — one line per site, not a blend. Sign ups over wash sales plus sign ups, so it tops out at 100%. A site's line breaks on days it had nothing to measure, and on days it didn't report at all, rather than being drawn through them.`}
           >
             <TrendChart
-              points={trendPoints(windowDays, (d) => d.capture_pct, (d) =>
-                `${num(d.sign_ups)} sign ups / ${num(
-                  (d.wash_sales ?? 0) + (d.sign_ups ?? 0)
-                )} opportunities`
-              )}
-              goal={now.capture_goal_pct}
+              series={captureSeries}
+              goal={captureGoalLine}
               unit="pct"
             />
           </ChartFrame>
 
           <ChartFrame
             title="D.O.B. by day"
-            caption="Package and extras dollars per wash sale, company-wide."
+            caption={`${chartScope} — one line per site, not a blend. Package and extras dollars per wash sale. A site's line breaks on days it sold no washes, and on days it didn't report at all, rather than being drawn through them.`}
           >
-            <TrendChart
-              points={trendPoints(windowDays, (d) => d.dob, (d) =>
-                `${money(d.package_dollars + d.extras_dollars)} over ${num(d.wash_sales)} wash sales`
-              )}
-              goal={now.dob_goal}
-              unit="money"
-              colour="#3dbeee"
-            />
+            <TrendChart series={dobSeries} goal={dobGoalLine} unit="money" />
           </ChartFrame>
         </div>
 
+        {/* ONE key for THREE charts, deliberately placed between the by-day
+            lines it colours and the scatter below that it also colours. A
+            second legend down there would invite the reader to assume the two
+            sets of colours mean different things; no legend down there at all
+            would send them hunting. */}
+        {legendItems.length === 0 ? null : (
+          <>
+            <SiteLegend items={legendItems} />
+            <p className="-mt-2 mb-6 text-[11px] text-splash-navy/60">
+              One colour per site, keyed to both by-day charts above and to the
+              dots in Volume against capture rate below.
+            </p>
+          </>
+        )}
+
         <div className="mb-6 grid grid-cols-1 gap-4">
-          <ChartFrame
-            title="Capture rate by site"
-            caption="Worst first. The vertical mark on each bar is that site's own goal — goal windows are per site, so a single shared line would grade everyone against whichever site came first. Click a bar to open the site."
-          >
+          <ChartFrame title="Capture rate by site">
             <RankBars rows={rankRows(sitesWorstFirst, selectedSite, link)} unit="pct" />
           </ChartFrame>
 
           <ChartFrame
             title="Volume against capture rate"
-            caption={`Each dot is one greeter for the period: wash sales across, capture rate up. Dots on the left are working small numbers — a low rate there is arithmetic, not performance. Hollow dots have fewer than ${LOW_SAMPLE_DAYS} graded days. Click a dot to open the greeter.`}
+            caption={`Each dot is one greeter for the period: wash sales across, capture rate up. Colour is the greeter's location, keyed to the legend above — grey dots are greeters at sites outside the current filter, left on screen as context. Dots on the left are working small numbers — a low rate there is arithmetic, not performance. Hollow dots have fewer than ${LOW_SAMPLE_DAYS} graded days. Click a dot to open the greeter.`}
           >
             {/* EVERY greeter, not the preset's filtered set. The whole point of
                 this chart is to separate "low capture because they're bad" from
                 "low capture on nine cars", and on Top performers the filtered set
                 contains nobody below the line to make that judgement about. */}
             <VolumeScatter
-              points={scatterPoints(allGreeters, link)}
+              points={scatterPoints(allGreeters, siteStyles, link)}
               goal={now.capture_goal_pct}
             />
           </ChartFrame>
@@ -847,17 +937,85 @@ function fillWindow(days: DayTotals[], from: string, to: string): WindowDay[] {
   return out;
 }
 
-function trendPoints(
-  series: WindowDay[],
-  pick: (d: Totals) => number | null,
-  note: (d: Totals) => string
-): TrendPoint[] {
-  return series.map(({ iso, day }) => ({
-    date: iso,
-    label: iso.slice(5),
-    value: day === null ? null : pick(day),
-    note: day === null ? "no site reported this day" : note(day)
-  }));
+/** A site and the ink it wears on every chart — see chartInks at the call site. */
+interface SiteInk {
+  site: SiteTotals;
+  style: SeriesStyle;
+}
+
+/**
+ * One TrendSeries per site, all the same length and all in the same date order.
+ *
+ * THAT SAMENESS IS THE CONTRACT, not a nicety. TrendChart's x axis is
+ * POSITIONAL — point i is drawn in slot i, and the axis labels are read off
+ * series[0] — so every series is a full walk of `windowDays`, nulls and all.
+ * Mapping over a site's OWN rows instead would drop the days it didn't report,
+ * shortening its array and sliding every day after the gap one slot to the
+ * left. Nothing would look broken: the line would still be smooth and still
+ * land inside the plot, just silently misdated against every other site on the
+ * chart. Hence the per-site date index below and the walk over the window.
+ *
+ * A missing day and a null metric both produce value: null, which TrendChart
+ * renders as a BREAK rather than interpolating across. That is load-bearing —
+ * joining the ends would draw a trend through a day nobody reported, which is
+ * the exact failure this scorecard exists to surface.
+ */
+function siteSeries(
+  inks: SiteInk[],
+  rows: LocationPeriodRow[],
+  windowDays: WindowDay[],
+  pick: (r: LocationPeriodRow) => number | null,
+  note: (r: LocationPeriodRow) => string
+): TrendSeries[] {
+  return inks.map(({ site, style }) => {
+    const byDate = new Map(
+      daysForSite(rows, site.location_id).map((r) => [r.business_date, r])
+    );
+    const points: TrendPoint[] = windowDays.map(({ iso }) => {
+      const row = byDate.get(iso);
+      return {
+        date: iso,
+        label: iso.slice(5),
+        value: row ? pick(row) : null,
+        note: row ? note(row) : "this site didn't report"
+      };
+    });
+    return {
+      key: String(site.location_id),
+      label: `${site.location_code} · ${site.site_number}`,
+      style,
+      points
+    };
+  });
+}
+
+/**
+ * The goal every site on the chart actually carries, or null when they differ.
+ *
+ * TrendChart draws ONE reference line for the whole chart. With a line per site
+ * that line is only honest when the sites agree, and the same reasoning already
+ * governs the ranking bars: goal windows are per site, so a single shared line
+ * would grade everyone against whichever site came first. Disagreement isn't an
+ * error — it's two regions on different targets, or a goal that changed part way
+ * through the window — so the answer is to draw no line rather than pick one and
+ * let sixteen sites be measured against a target one of them was given.
+ *
+ * Any site missing the goal outright also collapses this to null: a line drawn
+ * from the sites that have one would be read as applying to the ones that don't.
+ */
+function sharedGoal(
+  sites: SiteTotals[],
+  pick: (s: SiteTotals) => number | null
+): number | null {
+  if (sites.length === 0) return null;
+  let agreed: number | null = null;
+  for (const s of sites) {
+    const g = pick(s);
+    if (g === null) return null;
+    if (agreed === null) agreed = g;
+    else if (agreed !== g) return null;
+  }
+  return agreed;
 }
 
 function rankRows(
@@ -882,18 +1040,28 @@ function rankRows(
   }));
 }
 
+/**
+ * One dot per greeter, coloured by their LOCATION rather than their tier.
+ *
+ * GREY IS A FEATURE, NOT A MISSING COLOUR. This chart is deliberately fed every
+ * greeter in the company even when the page is filtered to one site or one
+ * region — see the note at its call site — so most dots on a filtered view
+ * belong to locations that aren't in the legend and have no ink to inherit.
+ * Muting them is the whole effect: the sites under the current filter light up
+ * in their legend colours and everyone else recedes into the backdrop that makes
+ * "is this rate small numbers or bad performance" answerable at a glance.
+ * Dropping the unstyled dots instead would delete the comparison.
+ */
 function scatterPoints(
   rows: GreeterPeriodReportRow[],
+  styles: Map<number, SeriesStyle>,
   link: (patch: Record<string, string>) => string
 ): ScatterPoint[] {
   return rows.map((r) => ({
     key: `${r.beekeeper_user_id}-${r.location_id}`,
     x: r.wash_sales ?? 0,
     y: r.capture_pct,
-    tier:
-      r.capture_pct === null || r.capture_goal_pct === null
-        ? null
-        : captureTier(r.capture_pct, r.capture_goal_pct),
+    style: styles.get(r.location_id) ?? { colour: CHART.muted },
     hover: `${r.greeter_name} · ${r.location_code} · ${pct(
       r.capture_pct
     )} capture on ${num(r.wash_sales)} wash sales · ${r.days_over_goal} of ${
@@ -928,6 +1096,37 @@ function GreeterTable({
         ? "Underperformers"
         : "Greeters in the window";
 
+  // Sites A-Z, greeters within a site by capture % descending — the same two
+  // orderings /admin/greeters uses, so a greeter sits in the same place on
+  // whichever screen you opened.
+  //
+  // LOW SAMPLE STILL WINS THE FIRST COMPARISON, ahead of capture %. sortGreeters()
+  // puts those greeters at the bottom of the flat list and this card's own
+  // subtitle promises they "sit at the bottom"; grouping without carrying that
+  // tier in would float a two-day 100% back above someone with fifty graded days
+  // inside every site, and make the subtitle a lie.
+  const groups = groupBySite(rows, (a, b) => {
+    if (a.low_sample !== b.low_sample) return a.low_sample ? 1 : -1;
+    const byCapture = compareCaptureDesc(a.capture_pct, b.capture_pct);
+    if (byCapture !== 0) return byCapture;
+    return a.greeter_name.localeCompare(b.greeter_name);
+  });
+
+  // Sites holding the drilled-into greeter, forced open below whatever the
+  // collapse default would have been. The row tint is the only confirmation
+  // that clicking a name did anything, and a tinted row inside a shut <details>
+  // is invisible — the reader sees the drill-through card appear at the bottom
+  // of the page while the table above it looks untouched, which reads as a bug.
+  //
+  // A SET, not one site number: the same person can be rostered at two
+  // locations and gets a highlighted row at each, so both blocks have to open.
+  const openSites = new Set<number>();
+  if (selectedPerson !== null) {
+    for (const r of rows) {
+      if (r.beekeeper_user_id === selectedPerson) openSites.add(r.site_number);
+    }
+  }
+
   return (
     <Card
       title={`${title} · ${rows.length}`}
@@ -946,11 +1145,21 @@ function GreeterTable({
             : "Nobody meets this threshold in this window — which is either good news or a sign the days aren't being reported."}
         </EmptyNote>
       ) : (
+        groups.map((group) => (
+        <SiteGroupBlock
+          key={group.siteNumber}
+          group={group}
+          open={groups.length === 1 || openSites.has(group.siteNumber)}
+        >
+        {/* One <table> per group, not one table with group-header rows:
+            <details> cannot legally wrap a <tbody>. */}
         <TableWrap>
           <thead className={THEAD_CLS}>
             <tr>
               <th className="px-4 py-3">Greeter</th>
-              <th className="px-4 py-3">Site</th>
+              {/* No Site column — the group heading IS the site, and it carries
+                  the site number that used to be the second line of this
+                  column's cell. */}
               <th className="px-4 py-3">Days</th>
               <th className="px-4 py-3">Over goal</th>
               <th className="px-4 py-3">Under goal</th>
@@ -969,7 +1178,7 @@ function GreeterTable({
             </tr>
           </thead>
           <tbody className={TBODY_CLS}>
-            {rows.map((r) => {
+            {group.rows.map((r) => {
               const selected = selectedPerson === r.beekeeper_user_id;
               return (
                 <tr
@@ -984,12 +1193,6 @@ function GreeterTable({
                       {r.greeter_name}
                     </Link>
                     {r.low_sample ? <LowSampleTag row={r} /> : null}
-                  </td>
-                  <td className="px-4 py-3 text-splash-navy/80">
-                    <div>{r.location_code}</div>
-                    <div className="font-mono text-xs text-splash-navy/60">
-                      {r.site_number}
-                    </div>
                   </td>
                   {/* Graded days, not days logged — a day with no wash sales
                       AND no sign ups has no capture rate and can't be over or
@@ -1040,6 +1243,8 @@ function GreeterTable({
             })}
           </tbody>
         </TableWrap>
+        </SiteGroupBlock>
+        ))
       )}
     </Card>
   );
