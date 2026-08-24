@@ -87,11 +87,45 @@ function daysBetween(a: string, b: string): number {
   );
 }
 
-/** Duration of a shift in minutes, spanning midnight via endDate. */
+/** Duration of a shift in minutes, spanning midnight via endDate.
+ *
+ *  CAVEAT (pre-existing, deliberately not fixed here): this is WALL-CLOCK
+ *  minutes. An overnight that crosses a DST boundary is off by an hour in
+ *  whichever direction the clock moved, so it is mispriced. Every consumer
+ *  below inherits that, including the meal-break threshold. */
 function shiftDurationMinutes(s: ShiftView): number {
   const startMin = s.startHour * 60 + s.startMinute;
   const endMin = s.endHour * 60 + s.endMinute;
   return daysBetween(s.startDate, s.endDate) * 1440 + endMin - startMin;
+}
+
+/** Unpaid meal break deducted from a long shift, in minutes. */
+const MEAL_BREAK_MINUTES = 30;
+
+/** The break applies to a shift running STRICTLY longer than this. An exactly
+ *  6h shift keeps all 360 of its minutes; 361 drops to 331. */
+const MEAL_BREAK_THRESHOLD_MINUTES = 360;
+
+/** PAID minutes for one shift: scheduled clock time less the unpaid meal break
+ *  a shift over 6h has to take. 7:30a-4:00p is 510 clock minutes and 480 paid.
+ *
+ *  This is the number every hours label AND every dollar figure on the grid is
+ *  built from, so the day column, the per-employee table and the cost math can
+ *  never disagree about how long a shift was.
+ *
+ *  It is a separate function rather than a redefinition of
+ *  shiftDurationMinutes because "how long is this person on the property" is a
+ *  real and different question — coverage, overlap, the chip's own time label —
+ *  and a future caller asking it should not silently be handed payroll's
+ *  answer. The break is deducted once per SHIFT, not per day: two 4h shifts on
+ *  one day are two short shifts, and neither earns a break.
+ *
+ *  Inherits the DST caveat above: the threshold is tested against wall-clock
+ *  minutes, exactly as the pricing already was, so this neither fixes nor
+ *  worsens that case. */
+function paidMinutes(s: ShiftView): number {
+  const raw = shiftDurationMinutes(s);
+  return raw > MEAL_BREAK_THRESHOLD_MINUTES ? raw - MEAL_BREAK_MINUTES : raw;
 }
 
 /** Compact hours label: 480 -> "8", 510 -> "8.5", 495 -> "8.25". */
@@ -122,14 +156,50 @@ function fmtHours(min: number): string {
  * staff too (confirmed against the tenant: 42.00 ~ $87k/yr for a GM), which is
  * why the same number is multiplied by hours in both branches.
  *
- * AGAINST THE BUDGET, THE SPLIT CLOSES BACK UP. site_monthly_targets.labor_budget
- * is all-in labor dollars — it was set with the salaried managers already in it.
- * So the figure compared to an allowance is variable + the salaried baseline,
- * even though the two are shown apart everywhere else. A day's share of the
- * baseline is salaried.weekly / 7, matching the worker's even-by-calendar-day
- * proration of the budget itself; dividing by 5 or by "open days" on one side
- * of that comparison and not the other is how the two halves silently stop
- * meaning the same thing.
+ * PAID TIME, NOT CLOCK TIME. A single shift running over 6h (strictly more
+ * than 360 minutes — an exact 6h keeps all of it) loses 30 minutes of paid
+ * time to an unpaid meal break. That deduction lives in paidMinutes(), one
+ * layer above the raw shiftDurationMinutes(), and EVERY consumer on this grid
+ * goes through it: the day column's "Nh scheduled", the per-employee table,
+ * and the dollar math. Deducting in the money path only would have been the
+ * cheap fix and the wrong one — the writer would read 8.5h next to 8h of pay
+ * and reasonably conclude one of the two was lying. The break is per SHIFT,
+ * not per day: two 4h shifts in a day are two short shifts and neither earns
+ * one. shiftDurationMinutes() is deliberately left alone so that a caller who
+ * genuinely wants clock presence (coverage, overlap) can still ask for it.
+ *
+ * AGAINST THE BUDGET, THE SPLIT DOES NOT CLOSE BACK UP — IT MOVES SIDES.
+ * site_monthly_targets.labor_budget is all-in labor dollars: it was set with
+ * the salaried managers already in it. The old form honoured that by ADDING a
+ * day's share of the baseline to spend and comparing the sum to the raw
+ * allowance ("$909 of $774"). Arithmetically fine, behaviourally bad: it
+ * buried a cost the schedule writer cannot influence inside the one number
+ * they are being asked to steer, so a day read as over budget because of a
+ * manager's salary and no amount of dragging shifts would fix it.
+ *
+ * So the baseline is now SUBTRACTED from the allowance instead: the same day
+ * reads "$669 of $534". Both sides of that comparison are now hourly, and an
+ * allowance means "dollars left for hourly labor" — something the writer can
+ * actually act on. The variance is untouched (669 - 534 == 909 - 774 == 135);
+ * only which side of the subtraction the salaried term sits on has changed.
+ * The week card is netted identically so the two framings cannot drift.
+ *
+ * A day's share of the baseline is still salaried.weekly / 7, matching the
+ * worker's even-by-calendar-day proration of the budget itself; dividing by 5
+ * or by "open days" on one side of that comparison and not the other is how
+ * the two halves silently stop meaning the same thing.
+ *
+ * A NET ALLOWANCE MAY GO NEGATIVE, and it is left negative rather than clamped
+ * at $0. If the managers alone outspend the day's slice, the day is over
+ * before a single hourly shift exists, and that is the true statement; a
+ * clamp to zero would both hide it and break the variance identity above.
+ * It renders as "-$66" in amber with a tooltip saying so.
+ *
+ * NULL IS NOT ZERO, still and always. An unbudgeted month yields a null
+ * allowance and renders NOTHING — netting a baseline out of "no budget set"
+ * would manufacture a negative allowance out of thin air, so the null check
+ * happens first and short-circuits. unbudgetedDays keeps flagging partial
+ * weeks, where the week figure is a floor.
  * ============================================================ */
 
 /** Hours a salaried employee's weekly baseline is priced at. */
@@ -142,10 +212,52 @@ function isSalaried(payType: string | null | undefined): boolean {
 }
 
 /** Whole-dollar money label. Cents are noise at this scale and would wrap the
- *  narrow day columns. */
+ *  narrow day columns. Negatives render "-$66", not "$-66": a net allowance can
+ *  legitimately go below zero once the salaried baseline is taken out of it,
+ *  and that has to read as a deficit rather than as a typo. */
 function fmtMoney(dollars: number): string {
-  return `$${Math.round(dollars).toLocaleString("en-US")}`;
+  const n = Math.round(dollars);
+  const sign = n < 0 ? "-" : "";
+  return `${sign}$${Math.abs(n).toLocaleString("en-US")}`;
 }
+
+/** Dollars a day may run past its net hourly allowance before the line stops
+ *  being a nudge and becomes a problem. Inclusive on both ends of the amber
+ *  band: a day landing EXACTLY on its allowance is already amber, not green —
+ *  spending the last dollar means there is no room left for the shift that
+ *  gets added tomorrow, and the operator asked to see that coming. */
+const BUDGET_OVER_TOLERANCE = 20;
+
+type BudgetBand = "under" | "at" | "over";
+
+/** Which band a day's hourly spend falls in against its net hourly allowance.
+ *
+ *  A null allowance has NO band. An unbudgeted month is not "under budget", it
+ *  is unknown, and the day line renders nothing at all rather than a reassuring
+ *  green — same contract the rest of the budget path holds to.
+ *
+ *  The test is on the VARIANCE (spent - net), which is the real dollars over
+ *  whatever the sign of net. A negative allowance — salaried managers alone
+ *  past the day's slice — therefore needs no special case: at net -$66 even
+ *  $0 of hourly is $66 over and lands in "over" on its own, while a net of
+ *  -$10 with nothing scheduled is $10 over and amber, which is the honest
+ *  reading of a day that is barely past its slice. Clamping or hard-coding
+ *  negative net to red would have broken that gradient for no gain. */
+function budgetBand(spent: number, net: number | null): BudgetBand | null {
+  if (net === null) return null;
+  if (spent < net) return "under";
+  return spent <= net + BUDGET_OVER_TOLERANCE ? "at" : "over";
+}
+
+/** Tone per band. Amber is the warning color this file already uses; green and
+ *  red sit on the same 700 step so the three read as one scale rather than
+ *  three borrowed palettes. Red alone adds weight and a wash, so the worst days
+ *  are still the ones that jump out on a black-and-white printout. */
+const BUDGET_BAND_CLASS: Record<BudgetBand, string> = {
+  under: "text-green-700",
+  at: "text-amber-700",
+  over: "bg-red-50 font-semibold text-red-700",
+};
 
 /** Format an unavailability marker's time range. Times are "HH:MM" 24h strings
  *  straight off the form; a blank on either end means the employee didn't scope
@@ -428,15 +540,17 @@ export function ScheduleWeekGrid({
     return map;
   }, [days, shifts]);
 
-  // Worked minutes bucketed by day (non-working markers excluded) — powers the
-  // per-column daily total under "+ Add".
+  // PAID minutes bucketed by day (non-working markers excluded) — powers the
+  // per-column daily total under "+ Add". Paid, not clock: the unpaid meal
+  // break is already out, so this line and the dollar line below it are two
+  // views of the same minutes.
   const dailyMinutes = useMemo(() => {
     const map = new Map<string, number>();
     for (const d of days) map.set(d, 0);
     for (const s of shifts) {
       if (!isWorkingShift(s)) continue;
       const cur = map.get(s.startDate);
-      if (cur !== undefined) map.set(s.startDate, cur + shiftDurationMinutes(s));
+      if (cur !== undefined) map.set(s.startDate, cur + paidMinutes(s));
     }
     return map;
   }, [days, shifts]);
@@ -459,7 +573,7 @@ export function ScheduleWeekGrid({
         cell.unrated += 1;
         continue;
       }
-      cell.variable += (shiftDurationMinutes(s) / 60) * s.rate;
+      cell.variable += (paidMinutes(s) / 60) * s.rate;
     }
     return map;
   }, [days, shifts]);
@@ -504,28 +618,50 @@ export function ScheduleWeekGrid({
   }, [budget]);
 
   /** One day's share of the flat weekly salaried baseline. Divided by 7, not by
-   *  a workweek: the budget it is measured against was prorated across all
-   *  seven calendar days too. */
+   *  a workweek: the budget it is netted out of was prorated across all seven
+   *  calendar days too. */
   const salariedDaily = useMemo(() => salaried.weekly / 7, [salaried.weekly]);
 
-  /** All-in scheduled cost for a day — the only figure comparable to an
-   *  allowance, because the budget includes salaried staff. */
-  const daySpend = useCallback(
-    (date: string) => (dailyCost.get(date)?.variable ?? 0) + salariedDaily,
-    [dailyCost, salariedDaily]
+  /** A day's allowance with the salaried baseline already taken out — the
+   *  dollars actually available for HOURLY labor. Null stays null: an
+   *  unconfigured month has no allowance to net anything out of, and must not
+   *  become a negative one. May be negative when it is a number, and that is
+   *  meaningful rather than a bug — see the note on the day line. */
+  const netAllowanceByDay = useCallback(
+    (date: string): number | null => {
+      const gross = allowanceByDay.get(date);
+      return typeof gross === "number" ? gross - salariedDaily : null;
+    },
+    [allowanceByDay, salariedDaily]
+  );
+
+  /** Hourly-only scheduled cost for a day — the figure now compared to the net
+   *  allowance, and the only half of payroll the writer can move. */
+  const dayHourly = useCallback(
+    (date: string) => dailyCost.get(date)?.variable ?? 0,
+    [dailyCost]
   );
 
   const weekTotal = weekVariable + salaried.weekly;
 
-  // Worked minutes per employee for the visible week — powers the summary
-  // panel. Keyed by userId; "" collects open/unassigned shifts.
+  /** The week card's allowance, netted the same way the day lines are so the
+   *  two framings cannot drift apart. Null-safe on the same contract. */
+  const netWeekAllowance =
+    typeof budget?.weekAllowance === "number"
+      ? budget.weekAllowance - salaried.weekly
+      : null;
+
+  // PAID minutes per employee for the visible week — powers the summary panel.
+  // Keyed by userId; "" collects open/unassigned shifts. Same meal-break
+  // deduction as the day columns and the cost math, so an employee's row here
+  // is exactly the hours they will be paid for.
   const weeklyByUser = useMemo(() => {
     const inWeek = new Set(days);
     const map = new Map<string, number>();
     for (const s of shifts) {
       if (!inWeek.has(s.startDate) || !isWorkingShift(s)) continue;
       const key = s.userId || "";
-      map.set(key, (map.get(key) ?? 0) + shiftDurationMinutes(s));
+      map.set(key, (map.get(key) ?? 0) + paidMinutes(s));
     }
     return map;
   }, [days, shifts]);
@@ -789,7 +925,16 @@ export function ScheduleWeekGrid({
     form.endHour * 60 + form.endMinute <= form.startHour * 60 + form.startMinute;
 
   return (
-    <div>
+    <>
+      {/* EVERY on-screen affordance lives inside this one wrapper, and the
+          wrapper is display:none in print. That containment is deliberate and
+          is the whole safety argument: the dollar figures, the allowance
+          lines, the payroll table and the per-employee hours are not hidden
+          one-by-one (a list that would rot the first time someone adds a
+          number), they are excluded as a block. The printed page is built
+          from a separate, explicit subtree below that can only ever say
+          name / title / time. */}
+      <div className="print:hidden">
       <div className="mb-4 flex flex-wrap items-end justify-between gap-3">
         <div>
           <p className="mb-1 text-xs font-semibold uppercase tracking-[0.18em] text-sudsy-blue">
@@ -838,6 +983,14 @@ export function ScheduleWeekGrid({
           className="ml-auto rounded-splash-md border border-gray-light bg-white px-4 py-2 text-sm font-semibold text-splash-navy hover:bg-gray-light/40 disabled:opacity-50"
         >
           {copying ? "Copying…" : "Copy week → next"}
+        </button>
+        <button
+          type="button"
+          onClick={() => window.print()}
+          className="rounded-splash-md border border-gray-light bg-white px-4 py-2 text-sm font-semibold text-splash-navy hover:bg-gray-light/40"
+          title="Print the staff-facing week schedule — names, shift titles and times only. Pay rates, dollar costs and budget lines are never printed."
+        >
+          Print schedule
         </button>
         <button
           type="button"
@@ -965,20 +1118,52 @@ export function ScheduleWeekGrid({
                       ) : null}
                     </div>
                   ) : null}
-                  {/* All-in spend against this day's slice of the monthly
-                      budget. Deliberately a second line rather than a
-                      replacement for the hourly figure above: they answer
-                      different questions, and the left number here includes the
-                      salaried share while the one above pointedly does not. */}
-                  {typeof allowanceByDay.get(date) === "number" ? (
-                    <div
-                      className="text-center text-[11px] tabular-nums text-splash-navy/70"
-                      title={`Scheduled hourly plus this day's share of the salaried baseline (${fmtMoney(salariedDaily)}), against 1/${budget?.months.find((m) => m.month === `${date.slice(0, 7)}-01`)?.daysInMonth ?? 30} of the month's labor budget.`}
-                    >
-                      {fmtMoney(daySpend(date))} of{" "}
-                      {fmtMoney(allowanceByDay.get(date) ?? 0)}
-                    </div>
-                  ) : null}
+                  {/* Hourly spend against this day's HOURLY allowance: the
+                      month's slice with the salaried baseline already netted
+                      out. Both sides of this comparison are now things the
+                      schedule writer can move, which is the whole point — the
+                      old form buried an unmovable manager cost inside the
+                      number they were being asked to steer. The variance is
+                      unchanged by the netting, only its framing. */}
+                  {(() => {
+                    const net = netAllowanceByDay(date);
+                    const spent = dayHourly(date);
+                    const band = budgetBand(spent, net);
+                    if (net === null || band === null) return null;
+                    const over = spent - net;
+                    const daysInMonth =
+                      budget?.months.find(
+                        (m) => m.month === `${date.slice(0, 7)}-01`
+                      )?.daysInMonth ?? 30;
+                    return (
+                      <div
+                        className={`rounded-splash-md text-center text-[11px] tabular-nums ${BUDGET_BAND_CLASS[band]}`}
+                        title={
+                          (net < 0
+                            ? `Salaried staff alone (${fmtMoney(salariedDaily)}/day) already exceed this day's 1/${daysInMonth} slice of the monthly labor budget, so there are no hourly dollars left before a single shift is written. Any hourly spend is over.`
+                            : `Scheduled hourly cost against 1/${daysInMonth} of the month's labor budget, less this day's share of the salaried baseline (${fmtMoney(salariedDaily)}). What is left for hourly labor.`) +
+                          (band === "under"
+                            ? ` Under by ${fmtMoney(net - spent)}.`
+                            : band === "at"
+                              ? ` ${fmtMoney(over)} over the allowance, within the ${fmtMoney(BUDGET_OVER_TOLERANCE)} tolerance.`
+                              : ` Over by ${fmtMoney(over)}, past the ${fmtMoney(BUDGET_OVER_TOLERANCE)} tolerance.`)
+                        }
+                      >
+                        {fmtMoney(spent)} of {fmtMoney(net)}
+                        {/* The band is never carried by color alone: the label
+                            below states it in words and the dollar figure is
+                            the threshold itself, so a printout or a colorblind
+                            reader loses nothing. */}
+                        <span className="ml-1 font-medium">
+                          {band === "under"
+                            ? `· ${fmtMoney(net - spent)} left`
+                            : Math.round(over) === 0
+                              ? "· at budget"
+                              : `· ${fmtMoney(over)} over`}
+                        </span>
+                      </div>
+                    );
+                  })()}
                 </div>
               </div>
             );
@@ -1067,7 +1252,7 @@ export function ScheduleWeekGrid({
                 {fmtMoney(salaried.weekly)}
               </td>
             </tr>
-            <tr className={typeof budget?.weekAllowance === "number" ? "border-b border-gray-light/60" : undefined}>
+            <tr className={netWeekAllowance !== null ? "border-b border-gray-light/60" : undefined}>
               <td className="pr-4 pt-2 font-bold text-splash-navy">
                 Week total
               </td>
@@ -1078,12 +1263,25 @@ export function ScheduleWeekGrid({
             {/* Budget rows appear only when the month is configured. An
                 unconfigured month renders nothing at all — a $0 allowance would
                 claim the location may spend nothing, which is a real and very
-                different statement from "nobody set a budget". */}
-            {typeof budget?.weekAllowance === "number" ? (
+                different statement from "nobody set a budget".
+
+                The allowance shown is NET of the salaried baseline, matching
+                the day columns: it is what remains for hourly labor. The
+                over/under is therefore hourly-vs-net, which is the same
+                number the old all-in-vs-gross form produced — netting moves
+                the salaried term from one side of the subtraction to the
+                other, it does not change the difference. */}
+            {netWeekAllowance !== null && budget ? (
               <>
                 <tr className="border-b border-gray-light/60">
                   <td className="py-1.5 pr-4 pt-2 text-splash-navy">
-                    Budget allowance
+                    Hourly allowance
+                    <span
+                      className="ml-1 text-xs font-medium text-splash-navy/60"
+                      title={`This location's week share of the monthly labor budget (${fmtMoney(budget.weekAllowance ?? 0)}) less the salaried baseline (${fmtMoney(salaried.weekly)}). What is left to spend on hourly labor.`}
+                    >
+                      · net of salaried
+                    </span>
                     {budget.unbudgetedDays > 0 ? (
                       <span
                         className="ml-1 text-xs font-medium text-amber-700"
@@ -1093,16 +1291,20 @@ export function ScheduleWeekGrid({
                       </span>
                     ) : null}
                   </td>
-                  <td className="py-1.5 pt-2 text-right font-semibold tabular-nums text-splash-navy">
-                    {fmtMoney(budget.weekAllowance)}
+                  <td
+                    className={`py-1.5 pt-2 text-right font-semibold tabular-nums ${
+                      netWeekAllowance < 0 ? "text-amber-700" : "text-splash-navy"
+                    }`}
+                  >
+                    {fmtMoney(netWeekAllowance)}
                   </td>
                 </tr>
                 <tr>
                   <td className="pr-4 pt-2 font-bold text-splash-navy">
-                    {weekTotal > budget.weekAllowance ? "Over by" : "Remaining"}
+                    {weekVariable > netWeekAllowance ? "Over by" : "Remaining"}
                   </td>
                   <td className="pt-2 text-right font-bold tabular-nums text-splash-navy">
-                    {fmtMoney(Math.abs(budget.weekAllowance - weekTotal))}
+                    {fmtMoney(Math.abs(netWeekAllowance - weekVariable))}
                   </td>
                 </tr>
               </>
@@ -1111,19 +1313,28 @@ export function ScheduleWeekGrid({
         </table>
         <p className="mt-2 max-w-md text-xs text-splash-navy/60">
           Salaried staff are priced at rate x {SALARY_WEEK_HOURS}h and do not
-          change when their shifts do. Shifts flagged as unrated have no pay
-          rate in Beekeeper and count as $0, so the total is a floor rather than
-          an estimate.
+          change when their shifts do. Hourly shifts longer than 6h have a
+          30-minute unpaid meal break taken out, so a 7:30&nbsp;AM&ndash;4&nbsp;PM
+          shift counts as 8h of hours and of dollars alike. Shifts flagged as
+          unrated have no pay rate in Beekeeper and count as $0, so the total is
+          a floor rather than an estimate.
         </p>
-        {typeof budget?.weekAllowance === "number" ? (
+        {netWeekAllowance !== null && budget ? (
           <p className="mt-1 max-w-md text-xs text-splash-navy/60">
             The allowance is this location&rsquo;s monthly labor budget split
             evenly across the days of the month
             {budget.months.length > 1
               ? " — a week spanning two months draws each day from its own month"
               : ""}
-            . It covers all labor, salaried included, which is why it is
-            compared to the week total rather than to the hourly line.
+            . That budget covers all labor, so the salaried baseline is
+            subtracted from it here and the remainder is compared to the hourly
+            line: the figure above is the dollars still available for hourly
+            labor, not the location&rsquo;s total. Over or under comes out the
+            same either way — netting only puts both sides of the comparison
+            under the schedule writer&rsquo;s control.
+            {netWeekAllowance < 0
+              ? " This week the salaried baseline alone exceeds the budget, so the allowance is negative and any hourly hour is over."
+              : ""}
           </p>
         ) : null}
       </div>
@@ -1144,6 +1355,159 @@ export function ScheduleWeekGrid({
           onCopy={copyFormToDays}
         />
       ) : null}
+      </div>
+
+      {/* Staff-facing printout. Same `days` and same `shiftsByDay` the grid
+          renders from, so the printed order is not merely similar to the
+          on-screen order, it is the identical already-sorted array. */}
+      <SchedulePrintSheet
+        locationName={locationName}
+        monday={monday}
+        days={days}
+        shiftsByDay={shiftsByDay}
+      />
+    </>
+  );
+}
+
+/* ============================================================
+ * Print sheet
+ *
+ * The wall copy. Managers pin this in the break room, so it is a DIFFERENT
+ * document from the grid above rather than a restyling of it: the grid is a
+ * budgeting instrument (hourly dollars, allowances, over/under bands, payroll
+ * totals, per-employee hours) and none of that may be legible to staff. Pay
+ * rates and labor budgets are admin-visibility data and a printed page
+ * carrying them is a real incident, not an aesthetic one.
+ *
+ * The safety property is structural, not a checklist. Two rules:
+ *
+ *   1. Everything the component renders on screen sits inside ONE
+ *      `print:hidden` wrapper, so the whole budgeting surface leaves the page
+ *      as a block. A number added to the grid tomorrow inherits that.
+ *   2. This subtree names its fields explicitly — userName, title, the two
+ *      fmt12 times, the +1 overnight flag — and touches nothing else on
+ *      ShiftView. `rate` and `payType` ride along on every shift object and
+ *      are simply never read here.
+ *
+ * `display: none` is the mechanism on both sides, and that matters: an element
+ * with display:none generates no boxes at all, so it is absent from paged
+ * media and from the text layer of a print-to-PDF. Had the grid been pushed
+ * off-canvas, clipped, sized to zero or made transparent it would still be in
+ * the box tree and a PDF's text layer would carry every dollar figure. It is
+ * not hidden, it is not rendered.
+ *
+ * ORDER. Rendered straight from the grid's own `shiftsByDay` map, which is
+ * already sorted by start time. There is no second sort here to drift from it.
+ *
+ * The unavailability overlay is deliberately NOT printed: those markers are
+ * approved time-off requests, not shifts, and a wall page is the wrong place
+ * to publish who asked for which day off.
+ * ============================================================ */
+
+/** Print-only page rules Tailwind cannot express.
+ *
+ *  LANDSCAPE, because seven columns down a portrait page gives each day about
+ *  an inch and names wrap to gibberish. Landscape at Letter gives ~1.4in a
+ *  column, which holds a full name and a "7:30 AM – 4 PM" range.
+ *
+ *  The site header is a direct child of <body> and would otherwise print a
+ *  navy banner across the top of every wall copy. Scoped to a <style> inside
+ *  this component rather than globals.css so the rule exists only while the
+ *  schedule grid is mounted.
+ *
+ *  The explicit display rule on the sheet is belt-and-braces: `hidden
+ *  print:block` already does it, but that relies on Tailwind emitting the
+ *  print variant after the base utility. If it ever did not, the failure would
+ *  be a blank page rather than a leak — safe, but useless — so the id rule
+ *  pins it. */
+const PRINT_SHEET_CSS = `
+@media print {
+  @page { size: landscape; margin: 0.4in; }
+  body > header { display: none !important; }
+  #schedule-print-sheet { display: block !important; }
+}
+`;
+
+function SchedulePrintSheet({
+  locationName,
+  monday,
+  days,
+  shiftsByDay
+}: {
+  locationName: string;
+  monday: string;
+  days: string[];
+  /** The grid's own by-day buckets, already sorted by start time. */
+  shiftsByDay: Map<string, ShiftView[]>;
+}) {
+  return (
+    <div id="schedule-print-sheet" className="hidden print:block">
+      <style>{PRINT_SHEET_CSS}</style>
+
+      <h1 className="text-xl font-bold text-black">{locationName} Schedule</h1>
+      <p className="mb-3 text-sm text-black">
+        Week of {weekRangeLabel(monday)}
+      </p>
+
+      {/* A table, not the on-screen grid: table-layout:fixed gives seven equal
+          columns that a print engine will not collapse, and a long day breaks
+          down its own column instead of pushing the others out of the page. */}
+      <table className="w-full table-fixed border-collapse text-black">
+        <thead>
+          <tr>
+            {days.map((date) => {
+              const { weekday, label } = dayHeader(date);
+              return (
+                <th
+                  key={date}
+                  className="border border-black/40 px-1 py-1 text-center text-xs font-bold"
+                >
+                  {weekday} {label}
+                </th>
+              );
+            })}
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            {days.map((date) => {
+              const list = shiftsByDay.get(date) ?? [];
+              return (
+                <td
+                  key={date}
+                  className="border border-black/40 p-1 align-top"
+                >
+                  {list.length === 0 ? (
+                    <span className="text-[10px] text-black/50">—</span>
+                  ) : (
+                    list.map((s) => (
+                      <div
+                        key={s.id}
+                        className="mb-1 break-inside-avoid border-b border-black/15 pb-1 last:mb-0 last:border-0 last:pb-0"
+                      >
+                        <span className="block text-[11px] font-bold leading-tight">
+                          {s.userName}
+                        </span>
+                        {s.title ? (
+                          <span className="block text-[10px] leading-tight">
+                            {s.title}
+                          </span>
+                        ) : null}
+                        <span className="block text-[10px] leading-tight">
+                          {fmt12(s.startHour, s.startMinute)} –{" "}
+                          {fmt12(s.endHour, s.endMinute)}
+                          {s.endDate !== s.startDate ? " +1" : ""}
+                        </span>
+                      </div>
+                    ))
+                  )}
+                </td>
+              );
+            })}
+          </tr>
+        </tbody>
+      </table>
     </div>
   );
 }

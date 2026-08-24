@@ -118,8 +118,10 @@ function Shell({ children }: { children: React.ReactNode }) {
 }
 
 function BackLink() {
+  // print:hidden — the wall copy of the schedule carries the schedule and
+  // nothing else; app navigation on a break-room page is noise.
   return (
-    <div className="mb-3 text-sm">
+    <div className="mb-3 text-sm print:hidden">
       <Link href="/schedule" className="text-splash-blue hover:underline">
         ← All locations
       </Link>
