@@ -265,6 +265,34 @@ function SidebarContent({ onNavigate }) {
         </div>
       </Link>
 
+      {/* Way back out to the tools hub.
+
+          A plain <a>, not a <Link>, and that is not a style choice: the router is
+          mounted with basename="/inventory" (main.jsx), so <Link to="/admin/dashboard">
+          would resolve to /inventory/admin/dashboard and 404 against this worker's
+          assets. This has to be a real navigation because /admin/dashboard is a
+          different worker entirely — same origin, so the SSO cookie rides along and
+          the user lands signed in.
+
+          /admin/dashboard rather than /admin because there is no bare /admin page;
+          it's DEFAULT_AUTHED_LANDING in apps/web/middleware.ts, i.e. the same place
+          login sends you. */}
+      <div className="px-3 pb-3">
+        <a
+          href="/admin/dashboard"
+          className="flex items-center gap-2 rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-xs font-bold text-slate-300 transition hover:bg-white/10 hover:text-white"
+        >
+          <svg className="h-3.5 w-3.5 shrink-0" viewBox="0 0 20 20" fill="currentColor">
+            <path
+              fillRule="evenodd"
+              d="M12.707 5.293a1 1 0 010 1.414L9.414 10l3.293 3.293a1 1 0 01-1.414 1.414l-4-4a1 1 0 010-1.414l4-4a1 1 0 011.414 0z"
+              clipRule="evenodd"
+            />
+          </svg>
+          Splash Tools
+        </a>
+      </div>
+
       <div className="px-3 pb-2">
         <NavLink
           to="/"
@@ -380,6 +408,16 @@ export default function Layout() {
           />
           <span className="truncate text-sm font-bold text-slate-900">Chemical Inventory</span>
         </Link>
+        {/* Same escape hatch as the sidebar's — repeated here because on mobile
+            the sidebar is behind the hamburger, and "get me out of this app" is
+            not something to make someone open a drawer for. Right-aligned so it
+            never squeezes the wordmark. */}
+        <a
+          href="/admin/dashboard"
+          className="ml-auto shrink-0 rounded-lg border border-slate-200 px-2.5 py-1.5 text-xs font-bold text-slate-600 hover:bg-slate-50"
+        >
+          Splash Tools
+        </a>
       </div>
       {mobileOpen && (
         <div className="fixed inset-0 z-40 lg:hidden">
