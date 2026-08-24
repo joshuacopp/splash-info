@@ -40,6 +40,17 @@
 // rather than 0%. Folding no-shows into the percentage would both hide the
 // sites that are genuinely scanning badly and misattribute the cause.
 //
+// THE THREE DATA TABLES (7-9) ARE GROUPED BY SITE, one collapsible <details>
+// and one <table> per site, with the header row and the leading one or two
+// columns pinned. They run 13 to 18 columns wide and hundreds of rows long: in
+// one piece they lost their header on the first scroll down, lost track of
+// whose row you were on at the first scroll right, and parked the horizontal
+// scrollbar three screens below wherever you were reading. The Site column is
+// gone from all three because the group heading IS the site. The pieces that
+// have to move together are groupBySite, SiteGroupBlock and TableWrap's
+// `scrollBox` — and `scrollBox` is opt-in precisely because tables (5) and (6)
+// share TableWrap, are short, and are deliberately left ungrouped and unpinned.
+//
 // The three submission forms used to be stacked cards below the tables, which
 // made the page a long scroll of forms nobody was using at that moment. They're
 // now behind buttons (SubmitPanels), sitting above the tables where they're
@@ -816,6 +827,63 @@ export default async function GreetersPage({ searchParams }: PageProps) {
   // the month every site would be told next month's budget is already live.
   const thisMonth = `${today.slice(0, 7)}-01`;
 
+  /* ----------------------------------------------------------
+   * Table grouping
+   * ---------------------------------------------------------- */
+
+  /**
+   * Each greeter's capture % FOR THE WHOLE FILTERED RANGE, keyed exactly the way
+   * the rollup is keyed: person plus site. A greeter who covers two sites gets
+   * two figures and is ranked separately inside each site's block, which is the
+   * only reason the site is in the key.
+   *
+   * "Daily rows" needs this because a day row carries only that day's capture %,
+   * and ordering a greeter's whole block by one arbitrary day of it would move
+   * people around every time the date filter changed. Both lists come back from
+   * the same request with the same filters, so a day row with no entry here
+   * means the two result sets disagreed — that greeter sorts last rather than
+   * throwing, same as a greeter with no measurable rate.
+   */
+  const captureByGreeterSite = new Map<string, number | null>();
+  for (const r of rollupList) {
+    captureByGreeterSite.set(
+      `${r.beekeeper_user_id}|${r.site_number}`,
+      r.capture_pct
+    );
+  }
+
+  const rollupGroups = groupBySite(rollupList, (a, b) => {
+    const byCapture = compareCaptureDesc(a.capture_pct, b.capture_pct);
+    if (byCapture !== 0) return byCapture;
+    return nameKey(a.greeter_name).localeCompare(nameKey(b.greeter_name));
+  });
+
+  const dayGroups = groupBySite(dayList, (a, b) => {
+    const byCapture = compareCaptureDesc(
+      captureByGreeterSite.get(`${a.beekeeper_user_id}|${a.site_number}`) ??
+        null,
+      captureByGreeterSite.get(`${b.beekeeper_user_id}|${b.site_number}`) ?? null
+    );
+    if (byCapture !== 0) return byCapture;
+    // THE IDENTITY TIEBREAK IS LOAD-BEARING, not cosmetic. Two greeters can tie
+    // on capture % — and every ungraded greeter at a site ties at null — after
+    // which the date sort below would shuffle their days into one
+    // undifferentiated list with no way to tell whose is whose.
+    if (a.beekeeper_user_id !== b.beekeeper_user_id) {
+      return (
+        nameKey(a.greeter_name).localeCompare(nameKey(b.greeter_name)) ||
+        a.beekeeper_user_id.localeCompare(b.beekeeper_user_id)
+      );
+    }
+    return b.business_date.localeCompare(a.business_date);
+  });
+
+  // No greeter tier here: a site-wide row IS the site, so newest day first is
+  // the whole ordering.
+  const locationDayGroups = groupBySite(locationDayList, (a, b) =>
+    b.business_date.localeCompare(a.business_date)
+  );
+
   return (
     <section className="mx-auto w-full max-w-[1200px] px-5 py-9">
       <ActionAlert message={actionError} />
@@ -1304,86 +1372,106 @@ export default async function GreetersPage({ searchParams }: PageProps) {
         {rollupList.length === 0 ? (
           <EmptyNote>No greeter days match these filters.</EmptyNote>
         ) : (
-          <TableWrap>
-            <thead className={THEAD_CLS}>
-              <tr>
-                <th className="px-4 py-3">Greeter</th>
-                <th className="px-4 py-3">Site</th>
-                <th className="px-4 py-3">Days</th>
-                <th className="px-4 py-3">Hours</th>
-                <th className="px-4 py-3">Wash sales</th>
-                <th className="px-4 py-3">WS / hr</th>
-                <th className="px-4 py-3">Rewashes</th>
-                <th className="px-4 py-3">Package $</th>
-                <th className="px-4 py-3">Extras $</th>
-                <th className="px-4 py-3">D.O.B.</th>
-                <th className="px-4 py-3">Sign ups</th>
-                <th className="px-4 py-3">Reacts</th>
-                <th className="px-4 py-3">Reviews</th>
-                <th className="px-4 py-3">Capture %</th>
-              </tr>
-            </thead>
-            <tbody className={TBODY_CLS}>
-              {rollupList.map((r) => (
-                <tr key={`${r.beekeeper_user_id}-${r.site_number}`}>
-                  <td className="px-4 py-3 font-semibold">{r.greeter_name}</td>
-                  <td className="px-4 py-3 text-splash-navy/80">
-                    <div>{r.location_code}</div>
-                    <div className="font-mono text-xs text-splash-navy/60">
-                      {r.site_number}
-                    </div>
-                  </td>
-                  <td className="px-4 py-3 text-splash-navy/80">
-                    {r.days_logged}
-                  </td>
-                  {/* Only days with a shift window logged contribute here, so
-                      this can be blank while Days is not. */}
-                  <td className="px-4 py-3 text-splash-navy/80">
-                    {hours(r.hours_worked)}
-                  </td>
-                  <td className="px-4 py-3 text-splash-navy/80">
-                    {num(r.wash_sales)}
-                  </td>
-                  <td className="px-4 py-3 text-splash-navy/80">
-                    {hours(r.wash_sales_per_hour)}
-                  </td>
-                  <td className="px-4 py-3 text-splash-navy/80">
-                    {num(r.rewashes)}
-                  </td>
-                  <td className="px-4 py-3 text-splash-navy/80">
-                    {money(r.package_dollars)}
-                  </td>
-                  <td className="px-4 py-3 text-splash-navy/80">
-                    {money(r.extras_dollars)}
-                  </td>
-                  <td className="px-4 py-3 font-semibold">
-                    {dobCell(r.dob)}
-                    {goalSuffix(r.dob_goal)}
-                  </td>
-                  <td className="px-4 py-3 text-splash-navy/80">
-                    {num(r.sign_ups)}
-                  </td>
-                  {/* Reactivations. Sits next to sign ups because that is where
-                      a reader looks for it, NOT because it is part of the same
-                      number — capture % counts sign ups only. */}
-                  <td className="px-4 py-3 text-splash-navy/80">
-                    {num(r.reactivations)}
-                  </td>
-                  {/* A count of reviews collected, not a rating. Summed and
-                      shown; it grades nothing. */}
-                  <td className="px-4 py-3 text-splash-navy/80">
-                    {num(r.google_reviews)}
-                  </td>
-                  <td className="px-4 py-3">
-                    <CaptureCell
-                      value={r.capture_pct}
-                      goal={r.capture_goal_pct}
-                    />
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </TableWrap>
+          rollupGroups.map((group) => (
+            <SiteGroupBlock
+              key={group.siteNumber}
+              group={group}
+              open={rollupGroups.length === 1}
+            >
+              <TableWrap scrollBox>
+                <thead className={THEAD_CLS}>
+                  <tr>
+                    {/* Greeter alone is frozen. Freezing two here would take
+                        Days with it, and Days is a column nobody navigates by. */}
+                    <th
+                      className={frozenTh({
+                        left: "left-0",
+                        width: "w-[180px]",
+                        edge: true
+                      })}
+                    >
+                      Greeter
+                    </th>
+                    <th className={TH_CLS}>Days</th>
+                    <th className={TH_CLS}>Hours</th>
+                    <th className={TH_CLS}>Wash sales</th>
+                    <th className={TH_CLS}>WS / hr</th>
+                    <th className={TH_CLS}>Rewashes</th>
+                    <th className={TH_CLS}>Package $</th>
+                    <th className={TH_CLS}>Extras $</th>
+                    <th className={TH_CLS}>D.O.B.</th>
+                    <th className={TH_CLS}>Sign ups</th>
+                    <th className={TH_CLS}>Reacts</th>
+                    <th className={TH_CLS}>Reviews</th>
+                    <th className={TH_CLS}>Capture %</th>
+                  </tr>
+                </thead>
+                <tbody className={TBODY_CLS}>
+                  {group.rows.map((r) => (
+                    <tr key={`${r.beekeeper_user_id}-${r.site_number}`}>
+                      <td
+                        className={frozenTd({
+                          left: "left-0",
+                          width: "w-[180px]",
+                          edge: true,
+                          extra: "font-semibold"
+                        })}
+                      >
+                        {r.greeter_name}
+                      </td>
+                      <td className="px-4 py-3 text-splash-navy/80">
+                        {r.days_logged}
+                      </td>
+                      {/* Only days with a shift window logged contribute here,
+                          so this can be blank while Days is not. */}
+                      <td className="px-4 py-3 text-splash-navy/80">
+                        {hours(r.hours_worked)}
+                      </td>
+                      <td className="px-4 py-3 text-splash-navy/80">
+                        {num(r.wash_sales)}
+                      </td>
+                      <td className="px-4 py-3 text-splash-navy/80">
+                        {hours(r.wash_sales_per_hour)}
+                      </td>
+                      <td className="px-4 py-3 text-splash-navy/80">
+                        {num(r.rewashes)}
+                      </td>
+                      <td className="px-4 py-3 text-splash-navy/80">
+                        {money(r.package_dollars)}
+                      </td>
+                      <td className="px-4 py-3 text-splash-navy/80">
+                        {money(r.extras_dollars)}
+                      </td>
+                      <td className="px-4 py-3 font-semibold">
+                        {dobCell(r.dob)}
+                        {goalSuffix(r.dob_goal)}
+                      </td>
+                      <td className="px-4 py-3 text-splash-navy/80">
+                        {num(r.sign_ups)}
+                      </td>
+                      {/* Reactivations. Sits next to sign ups because that is
+                          where a reader looks for it, NOT because it is part of
+                          the same number — capture % counts sign ups only. */}
+                      <td className="px-4 py-3 text-splash-navy/80">
+                        {num(r.reactivations)}
+                      </td>
+                      {/* A count of reviews collected, not a rating. Summed and
+                          shown; it grades nothing. */}
+                      <td className="px-4 py-3 text-splash-navy/80">
+                        {num(r.google_reviews)}
+                      </td>
+                      <td className="px-4 py-3">
+                        <CaptureCell
+                          value={r.capture_pct}
+                          goal={r.capture_goal_pct}
+                        />
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </TableWrap>
+            </SiteGroupBlock>
+          ))
         )}
       </Card>
 
@@ -1392,119 +1480,164 @@ export default async function GreetersPage({ searchParams }: PageProps) {
         {dayList.length === 0 ? (
           <EmptyNote>Nothing logged for these filters yet.</EmptyNote>
         ) : (
-          <TableWrap>
-            <thead className={THEAD_CLS}>
-              <tr>
-                <th className="px-4 py-3">Date</th>
-                <th className="px-4 py-3">Greeter</th>
-                <th className="px-4 py-3">Site</th>
-                <th className="px-4 py-3">Shift</th>
-                <th className="px-4 py-3">Hours</th>
-                <th className="px-4 py-3">Wash sales</th>
-                <th className="px-4 py-3">WS / hr</th>
-                <th className="px-4 py-3">Rewashes</th>
-                <th className="px-4 py-3">Package $</th>
-                <th className="px-4 py-3">Extras $</th>
-                <th className="px-4 py-3">D.O.B.</th>
-                <th className="px-4 py-3">Sign ups</th>
-                <th className="px-4 py-3">Reacts</th>
-                <th className="px-4 py-3">Reviews</th>
-                <th className="px-4 py-3">Capture %</th>
-                <th className={STICKY_TH_CLS}>Actions</th>
-              </tr>
-            </thead>
-            <tbody className={TBODY_CLS}>
-              {dayList.map((r) => (
-                // Tinted rather than faded for a voided row. `opacity` on the
-                // <tr> would take the Restore button down with the numbers, and
-                // that button is the only way back.
-                <tr
-                  key={r.id}
-                  className={r.voided_at ? "bg-splash-deny/[0.04]" : undefined}
-                >
-                  <td className="px-4 py-3 font-mono text-xs text-splash-navy/80">
-                    <span className={r.voided_at ? "line-through" : undefined}>
-                      {r.business_date}
-                    </span>
-                    {r.voided_at ? (
-                      <VoidedBadge email={r.voided_by_email} />
-                    ) : null}
-                  </td>
-                  <td className="px-4 py-3 font-semibold">
-                    {r.greeter_name ?? "—"}
-                  </td>
-                  <td className="px-4 py-3 text-splash-navy/80">
-                    <div>{r.location_code}</div>
-                    <div className="font-mono text-xs text-splash-navy/60">
-                      {r.site_number}
-                    </div>
-                  </td>
-                  <td className="whitespace-nowrap px-4 py-3 text-xs text-splash-navy/80">
-                    {shiftCell(r.shift_start, r.shift_end)}
-                  </td>
-                  <td className="px-4 py-3 text-splash-navy/80">
-                    {hours(r.hours_worked)}
-                  </td>
-                  <td className="px-4 py-3 text-splash-navy/80">
-                    {num(r.wash_sales)}
-                  </td>
-                  <td className="px-4 py-3 text-splash-navy/80">
-                    {hours(r.wash_sales_per_hour)}
-                  </td>
-                  <td className="px-4 py-3 text-splash-navy/80">
-                    {num(r.rewashes)}
-                  </td>
-                  <td className="px-4 py-3 text-splash-navy/80">
-                    {money(r.package_dollars)}
-                  </td>
-                  <td className="px-4 py-3 text-splash-navy/80">
-                    {money(r.extras_dollars)}
-                  </td>
-                  <td className="px-4 py-3 font-semibold">
-                    {dobCell(r.dob)}
-                    {goalSuffix(r.dob_goal)}
-                  </td>
-                  <td className="px-4 py-3 text-splash-navy/80">
-                    {num(r.sign_ups)}
-                  </td>
-                  {/* Reactivations. Sits next to sign ups because that is where
-                      a reader looks for it, NOT because it is part of the same
-                      number — capture % counts sign ups only. */}
-                  <td className="px-4 py-3 text-splash-navy/80">
-                    {num(r.reactivations)}
-                  </td>
-                  {/* A count of reviews collected, not a rating. Displayed and
-                      nothing more. */}
-                  <td className="px-4 py-3 text-splash-navy/80">
-                    {num(r.google_reviews)}
-                  </td>
-                  <td className="px-4 py-3">
-                    <CaptureCell
-                      value={r.capture_pct}
-                      goal={r.capture_goal_pct}
-                    />
-                  </td>
-                  <td className={stickyTd(r.voided_at !== null)}>
-                    <DayRowActions
-                      id={r.id}
-                      editHref={editHref("edit_day", r.id)}
-                      voided={r.voided_at !== null}
-                      voidAction={voidDayAction}
-                      restoreAction={restoreDayAction}
-                      returnTo={returnPath}
-                      // The missing-list clause is CONDITIONAL and says so.
-                      // greeter_missing_days() flags a day only when the site
-                      // has no live greeter rows left for it, so voiding one of
-                      // three greeters changes nothing there. Stating it flatly
-                      // would be a consequence the feature doesn't carry, and
-                      // people stop reading confirms that overstate.
-                      confirmText={`Void ${r.greeter_name}'s day at ${r.location_code} on ${r.business_date}?\n\nThe row is kept but struck out: it drops out of every report and rollup. If it was the last greeter logged for that site's day, the day goes back onto the missing-submissions list until someone logs it again. You can restore it from this table.`}
-                    />
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </TableWrap>
+          dayGroups.map((group) => (
+            <SiteGroupBlock
+              key={group.siteNumber}
+              group={group}
+              open={dayGroups.length === 1}
+            >
+              <TableWrap scrollBox>
+                <thead className={THEAD_CLS}>
+                  <tr>
+                    {/* Date and Greeter are both frozen: this table is read by
+                        scrolling right to a metric, and either one alone leaves
+                        the other question ("whose? when?") unanswered. The
+                        w-[120px] here is what left-[120px] below is measured
+                        against — see frozenTh. */}
+                    <th
+                      className={frozenTh({
+                        left: "left-0",
+                        width: "w-[120px]"
+                      })}
+                    >
+                      Date
+                    </th>
+                    <th
+                      className={frozenTh({
+                        left: "left-[120px]",
+                        width: "w-[180px]",
+                        edge: true
+                      })}
+                    >
+                      Greeter
+                    </th>
+                    <th className={TH_CLS}>Shift</th>
+                    <th className={TH_CLS}>Hours</th>
+                    <th className={TH_CLS}>Wash sales</th>
+                    <th className={TH_CLS}>WS / hr</th>
+                    <th className={TH_CLS}>Rewashes</th>
+                    <th className={TH_CLS}>Package $</th>
+                    <th className={TH_CLS}>Extras $</th>
+                    <th className={TH_CLS}>D.O.B.</th>
+                    <th className={TH_CLS}>Sign ups</th>
+                    <th className={TH_CLS}>Reacts</th>
+                    <th className={TH_CLS}>Reviews</th>
+                    <th className={TH_CLS}>Capture %</th>
+                    <th className={STICKY_TH_CLS}>Actions</th>
+                  </tr>
+                </thead>
+                <tbody className={TBODY_CLS}>
+                  {group.rows.map((r) => (
+                    // Tinted rather than faded for a voided row. `opacity` on
+                    // the <tr> would take the Restore button down with the
+                    // numbers, and that button is the only way back.
+                    //
+                    // The tint is on the <tr>, so the FROZEN cells have to
+                    // repaint it as an opaque hex themselves — a translucent
+                    // sticky cell lets the scrolling columns show through it.
+                    <tr
+                      key={r.id}
+                      className={
+                        r.voided_at ? "bg-splash-deny/[0.04]" : undefined
+                      }
+                    >
+                      <td
+                        className={frozenTd({
+                          left: "left-0",
+                          width: "w-[120px]",
+                          voided: r.voided_at !== null,
+                          extra: "font-mono text-xs text-splash-navy/80"
+                        })}
+                      >
+                        <span
+                          className={r.voided_at ? "line-through" : undefined}
+                        >
+                          {r.business_date}
+                        </span>
+                        {r.voided_at ? (
+                          <VoidedBadge email={r.voided_by_email} />
+                        ) : null}
+                      </td>
+                      <td
+                        className={frozenTd({
+                          left: "left-[120px]",
+                          width: "w-[180px]",
+                          edge: true,
+                          voided: r.voided_at !== null,
+                          extra: "font-semibold"
+                        })}
+                      >
+                        {r.greeter_name ?? "—"}
+                      </td>
+                      <td className="whitespace-nowrap px-4 py-3 text-xs text-splash-navy/80">
+                        {shiftCell(r.shift_start, r.shift_end)}
+                      </td>
+                      <td className="px-4 py-3 text-splash-navy/80">
+                        {hours(r.hours_worked)}
+                      </td>
+                      <td className="px-4 py-3 text-splash-navy/80">
+                        {num(r.wash_sales)}
+                      </td>
+                      <td className="px-4 py-3 text-splash-navy/80">
+                        {hours(r.wash_sales_per_hour)}
+                      </td>
+                      <td className="px-4 py-3 text-splash-navy/80">
+                        {num(r.rewashes)}
+                      </td>
+                      <td className="px-4 py-3 text-splash-navy/80">
+                        {money(r.package_dollars)}
+                      </td>
+                      <td className="px-4 py-3 text-splash-navy/80">
+                        {money(r.extras_dollars)}
+                      </td>
+                      <td className="px-4 py-3 font-semibold">
+                        {dobCell(r.dob)}
+                        {goalSuffix(r.dob_goal)}
+                      </td>
+                      <td className="px-4 py-3 text-splash-navy/80">
+                        {num(r.sign_ups)}
+                      </td>
+                      {/* Reactivations. Sits next to sign ups because that is
+                          where a reader looks for it, NOT because it is part of
+                          the same number — capture % counts sign ups only. */}
+                      <td className="px-4 py-3 text-splash-navy/80">
+                        {num(r.reactivations)}
+                      </td>
+                      {/* A count of reviews collected, not a rating. Displayed
+                          and nothing more. */}
+                      <td className="px-4 py-3 text-splash-navy/80">
+                        {num(r.google_reviews)}
+                      </td>
+                      <td className="px-4 py-3">
+                        <CaptureCell
+                          value={r.capture_pct}
+                          goal={r.capture_goal_pct}
+                        />
+                      </td>
+                      <td className={stickyTd(r.voided_at !== null)}>
+                        <DayRowActions
+                          id={r.id}
+                          editHref={editHref("edit_day", r.id)}
+                          voided={r.voided_at !== null}
+                          voidAction={voidDayAction}
+                          restoreAction={restoreDayAction}
+                          returnTo={returnPath}
+                          // The missing-list clause is CONDITIONAL and says so.
+                          // greeter_missing_days() flags a day only when the
+                          // site has no live greeter rows left for it, so
+                          // voiding one of three greeters changes nothing
+                          // there. Stating it flatly would be a consequence the
+                          // feature doesn't carry, and people stop reading
+                          // confirms that overstate.
+                          confirmText={`Void ${r.greeter_name}'s day at ${r.location_code} on ${r.business_date}?\n\nThe row is kept but struck out: it drops out of every report and rollup. If it was the last greeter logged for that site's day, the day goes back onto the missing-submissions list until someone logs it again. You can restore it from this table.`}
+                        />
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </TableWrap>
+            </SiteGroupBlock>
+          ))
         )}
       </Card>
 
@@ -1516,139 +1649,167 @@ export default async function GreetersPage({ searchParams }: PageProps) {
         {locationDayList.length === 0 ? (
           <EmptyNote>No site-wide days match these filters.</EmptyNote>
         ) : (
-          <TableWrap>
-            <thead className={THEAD_CLS}>
-              <tr>
-                <th className="px-4 py-3">Date</th>
-                <th className="px-4 py-3">Site</th>
-                <th className="px-4 py-3">Total cars</th>
-                <th className="px-4 py-3">Wash sales</th>
-                <th className="px-4 py-3">Scanned %</th>
-                {/* Both unscannable-car columns sit immediately right of the
-                    rate they reduce, so the arithmetic is legible across the
-                    row instead of needing an explanation. */}
-                <th className="px-4 py-3">House acct</th>
-                <th className="px-4 py-3">Rewashes</th>
-                <th className="px-4 py-3">Package $</th>
-                <th className="px-4 py-3">Extras $</th>
-                <th className="px-4 py-3">D.O.B.</th>
-                <th className="px-4 py-3">Sign ups</th>
-                <th className="px-4 py-3">Reacts</th>
-                <th className="px-4 py-3">Reviews</th>
-                <th className="px-4 py-3">Cancels</th>
-                <th className="px-4 py-3">Net</th>
-                <th className="px-4 py-3">Members</th>
-                <th className="px-4 py-3">Capture %</th>
-                {/* Churn sits AFTER the graded pair on purpose. Put it beside
-                    Members and the next person to touch this table will give it
-                    a goal to match its neighbours; it has none, and shouldn't. */}
-                <th className="px-4 py-3">Churn %</th>
-                <th className={STICKY_TH_CLS}>Actions</th>
-              </tr>
-            </thead>
-            <tbody className={TBODY_CLS}>
-              {locationDayList.map((r) => (
-                <tr
-                  key={r.id}
-                  className={r.voided_at ? "bg-splash-deny/[0.04]" : undefined}
-                >
-                  <td className="px-4 py-3 font-mono text-xs text-splash-navy/80">
-                    <span className={r.voided_at ? "line-through" : undefined}>
-                      {r.business_date}
-                    </span>
-                    {r.voided_at ? (
-                      <VoidedBadge email={r.voided_by_email} />
-                    ) : null}
-                  </td>
-                  <td className="px-4 py-3 text-splash-navy/80">
-                    <div>{r.location_code}</div>
-                    <div className="font-mono text-xs text-splash-navy/60">
-                      {r.site_number}
-                    </div>
-                  </td>
-                  <td className="px-4 py-3 text-splash-navy/80">
-                    {num(r.total_cars)}
-                  </td>
-                  <td className="px-4 py-3 text-splash-navy/80">
-                    {num(r.wash_sales)}
-                  </td>
-                  <td className="px-4 py-3">
-                    <ScanCell
-                      row={scanByDay.get(`${r.business_date}|${r.location_id}`)}
-                    />
-                  </td>
-                  <td className="px-4 py-3 text-splash-navy/80">
-                    {num(r.house_accounts)}
-                  </td>
-                  <td className="px-4 py-3 text-splash-navy/80">
-                    {num(r.rewashes)}
-                  </td>
-                  <td className="px-4 py-3 text-splash-navy/80">
-                    {money(r.package_dollars)}
-                  </td>
-                  <td className="px-4 py-3 text-splash-navy/80">
-                    {money(r.extras_dollars)}
-                  </td>
-                  <td className="px-4 py-3 font-semibold">
-                    {dobCell(r.dob)}
-                    {goalSuffix(r.dob_goal)}
-                  </td>
-                  <td className="px-4 py-3 text-splash-navy/80">
-                    {num(r.sign_ups)}
-                  </td>
-                  {/* Reactivations. Sits next to sign ups because that is where
-                      a reader looks for it, NOT because it is part of the same
-                      number — capture % counts sign ups only. */}
-                  <td className="px-4 py-3 text-splash-navy/80">
-                    {num(r.reactivations)}
-                  </td>
-                  {/* A count of reviews collected, not a rating. */}
-                  <td className="px-4 py-3 text-splash-navy/80">
-                    {num(r.google_reviews)}
-                  </td>
-                  <td className="px-4 py-3 text-splash-navy/80">
-                    {num(r.cancellations)}
-                  </td>
-                  {/* sign ups plus reactivations minus cancellations, computed
-                      in Postgres. All three inputs are columns above. */}
-                  <td className="px-4 py-3 text-splash-navy/80">
-                    {num(r.net_members)}
-                  </td>
-                  {/* A level, not a daily amount — the member roll as of this
-                      day, graded against the month-end goal. */}
-                  <td className="px-4 py-3 font-semibold">
-                    {num(r.total_members)}
-                    {goalSuffix(r.member_goal_month_end)}
-                  </td>
-                  <td className="px-4 py-3">
-                    <CaptureCell
-                      value={r.capture_pct}
-                      goal={r.capture_goal_pct}
-                    />
-                  </td>
-                  {/* Self-reported, ungraded, and DAY-GRAIN ONLY. It appears
-                      here and on the report's site-day table, and nowhere that
-                      covers more than one day — the row carries no numerator or
-                      denominator, so it can't be re-derived over a range, and a
-                      flat average of daily percentages would be a lie. */}
-                  <td className="px-4 py-3 text-splash-navy/80">
-                    {pct(r.churn_pct)}
-                  </td>
-                  <td className={stickyTd(r.voided_at !== null)}>
-                    <DayRowActions
-                      id={r.id}
-                      editHref={editHref("edit_location_day", r.id)}
-                      voided={r.voided_at !== null}
-                      voidAction={voidLocationDayAction}
-                      restoreAction={restoreLocationDayAction}
-                      returnTo={returnPath}
-                      confirmText={`Void the site-wide totals for ${r.location_code} on ${r.business_date}?\n\nThe row is kept but struck out: it drops out of every report, the Scanned % for that day loses its denominator, and the day goes back onto the missing-submissions list. The greeters' own rows for that day are NOT affected. You can restore it from this table.`}
-                    />
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </TableWrap>
+          locationDayGroups.map((group) => (
+            <SiteGroupBlock
+              key={group.siteNumber}
+              group={group}
+              open={locationDayGroups.length === 1}
+            >
+              <TableWrap scrollBox>
+                <thead className={THEAD_CLS}>
+                  <tr>
+                    {/* Date alone. There is one row per day here, so the date
+                        IS the row's identity — nothing else needs freezing. */}
+                    <th
+                      className={frozenTh({
+                        left: "left-0",
+                        width: "w-[120px]",
+                        edge: true
+                      })}
+                    >
+                      Date
+                    </th>
+                    <th className={TH_CLS}>Total cars</th>
+                    <th className={TH_CLS}>Wash sales</th>
+                    <th className={TH_CLS}>Scanned %</th>
+                    {/* Both unscannable-car columns sit immediately right of the
+                        rate they reduce, so the arithmetic is legible across the
+                        row instead of needing an explanation. */}
+                    <th className={TH_CLS}>House acct</th>
+                    <th className={TH_CLS}>Rewashes</th>
+                    <th className={TH_CLS}>Package $</th>
+                    <th className={TH_CLS}>Extras $</th>
+                    <th className={TH_CLS}>D.O.B.</th>
+                    <th className={TH_CLS}>Sign ups</th>
+                    <th className={TH_CLS}>Reacts</th>
+                    <th className={TH_CLS}>Reviews</th>
+                    <th className={TH_CLS}>Cancels</th>
+                    <th className={TH_CLS}>Net</th>
+                    <th className={TH_CLS}>Members</th>
+                    <th className={TH_CLS}>Capture %</th>
+                    {/* Churn sits AFTER the graded pair on purpose. Put it
+                        beside Members and the next person to touch this table
+                        will give it a goal to match its neighbours; it has
+                        none, and shouldn't. */}
+                    <th className={TH_CLS}>Churn %</th>
+                    <th className={STICKY_TH_CLS}>Actions</th>
+                  </tr>
+                </thead>
+                <tbody className={TBODY_CLS}>
+                  {group.rows.map((r) => (
+                    <tr
+                      key={r.id}
+                      className={
+                        r.voided_at ? "bg-splash-deny/[0.04]" : undefined
+                      }
+                    >
+                      <td
+                        className={frozenTd({
+                          left: "left-0",
+                          width: "w-[120px]",
+                          edge: true,
+                          voided: r.voided_at !== null,
+                          extra: "font-mono text-xs text-splash-navy/80"
+                        })}
+                      >
+                        <span
+                          className={r.voided_at ? "line-through" : undefined}
+                        >
+                          {r.business_date}
+                        </span>
+                        {r.voided_at ? (
+                          <VoidedBadge email={r.voided_by_email} />
+                        ) : null}
+                      </td>
+                      <td className="px-4 py-3 text-splash-navy/80">
+                        {num(r.total_cars)}
+                      </td>
+                      <td className="px-4 py-3 text-splash-navy/80">
+                        {num(r.wash_sales)}
+                      </td>
+                      <td className="px-4 py-3">
+                        <ScanCell
+                          row={scanByDay.get(
+                            `${r.business_date}|${r.location_id}`
+                          )}
+                        />
+                      </td>
+                      <td className="px-4 py-3 text-splash-navy/80">
+                        {num(r.house_accounts)}
+                      </td>
+                      <td className="px-4 py-3 text-splash-navy/80">
+                        {num(r.rewashes)}
+                      </td>
+                      <td className="px-4 py-3 text-splash-navy/80">
+                        {money(r.package_dollars)}
+                      </td>
+                      <td className="px-4 py-3 text-splash-navy/80">
+                        {money(r.extras_dollars)}
+                      </td>
+                      <td className="px-4 py-3 font-semibold">
+                        {dobCell(r.dob)}
+                        {goalSuffix(r.dob_goal)}
+                      </td>
+                      <td className="px-4 py-3 text-splash-navy/80">
+                        {num(r.sign_ups)}
+                      </td>
+                      {/* Reactivations. Sits next to sign ups because that is
+                          where a reader looks for it, NOT because it is part of
+                          the same number — capture % counts sign ups only. */}
+                      <td className="px-4 py-3 text-splash-navy/80">
+                        {num(r.reactivations)}
+                      </td>
+                      {/* A count of reviews collected, not a rating. */}
+                      <td className="px-4 py-3 text-splash-navy/80">
+                        {num(r.google_reviews)}
+                      </td>
+                      <td className="px-4 py-3 text-splash-navy/80">
+                        {num(r.cancellations)}
+                      </td>
+                      {/* sign ups plus reactivations minus cancellations,
+                          computed in Postgres. All three inputs are columns
+                          above. */}
+                      <td className="px-4 py-3 text-splash-navy/80">
+                        {num(r.net_members)}
+                      </td>
+                      {/* A level, not a daily amount — the member roll as of
+                          this day, graded against the month-end goal. */}
+                      <td className="px-4 py-3 font-semibold">
+                        {num(r.total_members)}
+                        {goalSuffix(r.member_goal_month_end)}
+                      </td>
+                      <td className="px-4 py-3">
+                        <CaptureCell
+                          value={r.capture_pct}
+                          goal={r.capture_goal_pct}
+                        />
+                      </td>
+                      {/* Self-reported, ungraded, and DAY-GRAIN ONLY. It
+                          appears here and on the report's site-day table, and
+                          nowhere that covers more than one day — the row
+                          carries no numerator or denominator, so it can't be
+                          re-derived over a range, and a flat average of daily
+                          percentages would be a lie. */}
+                      <td className="px-4 py-3 text-splash-navy/80">
+                        {pct(r.churn_pct)}
+                      </td>
+                      <td className={stickyTd(r.voided_at !== null)}>
+                        <DayRowActions
+                          id={r.id}
+                          editHref={editHref("edit_location_day", r.id)}
+                          voided={r.voided_at !== null}
+                          voidAction={voidLocationDayAction}
+                          restoreAction={restoreLocationDayAction}
+                          returnTo={returnPath}
+                          confirmText={`Void the site-wide totals for ${r.location_code} on ${r.business_date}?\n\nThe row is kept but struck out: it drops out of every report, the Scanned % for that day loses its denominator, and the day goes back onto the missing-submissions list. The greeters' own rows for that day are NOT affected. You can restore it from this table.`}
+                        />
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </TableWrap>
+            </SiteGroupBlock>
+          ))
         )}
       </Card>
 
@@ -1671,31 +1832,232 @@ const THEAD_CLS =
   "bg-splash-navy/5 text-left text-xs font-semibold uppercase tracking-wider text-splash-navy/70";
 const TBODY_CLS = "divide-y divide-gray-light text-splash-navy";
 
-// PINNED ACTIONS COLUMN.
+// PINNED CELLS — HEADER ROW, LEADING COLUMNS, ACTIONS COLUMN.
 //
-// Edit and Void are the last cell of a 16- and 19-column table. On any laptop
-// that put them a full screen-width past the right edge, behind a scrollbar
-// sitting at the TOP of the card where nobody looks — the buttons shipped, and
-// were reported as missing. Pinning the column keeps them on screen at every
-// scroll position, which is the only reason anyone finds them.
+// Three pins with one shared set of hazards, so one shared block of constants.
+//
+// WHY THE ACTIONS COLUMN IS PINNED. Edit and Void are the last cell of a 15-
+// and an 18-column table. On any laptop that put them a full screen-width past
+// the right edge, behind a scrollbar sitting at the TOP of the card where
+// nobody looks — the buttons shipped, and were reported as missing.
+//
+// WHY THE LEADING COLUMNS ARE PINNED. The same table from the other end:
+// scrolling right far enough to read Capture % took Greeter and Date off the
+// screen, so the number you were looking at belonged to nobody.
+//
+// WHY THE HEADER IS PINNED, AND WHAT IT COSTS. See TableWrap's `scrollBox`:
+// sticky resolves against the nearest scrolling ancestor, so the header only
+// stays put because the wrapper caps its own height. Un-cap it and every
+// `top-0` below silently stops doing anything.
 //
 // THE BACKGROUNDS ARE FLATTENED HEXES, not the bg-splash-navy/5 and
 // bg-splash-deny/[0.04] tints the same cells would otherwise inherit. A
 // translucent sticky cell is see-through, so the columns sliding underneath
-// would read straight through the buttons. #f4f3f6 is splash-navy at 5% over
-// white; #fef6f6 is splash-deny at 4% over white. If either token moves in
-// tailwind.base.cjs these have to be recomputed by hand — nothing checks them.
+// read straight through it. #f4f3f6 is splash-navy at 5% over white; #fef6f6 is
+// splash-deny at 4% over white. If either token moves in tailwind.base.cjs
+// these have to be recomputed by hand — nothing checks them.
 //
-// The divider is an inset shadow rather than a border because Tailwind's
-// preflight sets border-collapse: collapse, and collapsed borders do not travel
-// with a sticky cell in Chrome. The shadow does.
-const STICKY_EDGE = "shadow-[inset_1px_0_0_#dbdbdb]";
-const STICKY_TH_CLS = `sticky right-0 z-20 bg-[#f4f3f6] px-4 py-3 ${STICKY_EDGE}`;
-const STICKY_TD_CLS = `sticky right-0 z-10 whitespace-nowrap px-4 py-3 ${STICKY_EDGE}`;
+// THE RULES ARE INSET SHADOWS, NOT BORDERS. Tailwind's preflight sets
+// border-collapse: collapse, and collapsed borders do not travel with a sticky
+// cell in Chrome. Neither does the `divide-y` row rule on <tbody>, which is why
+// every pinned cell paints its own bottom line — without it the frozen columns
+// become one unbroken strip of text down a 400-row table, which defeats the
+// point of freezing them. #dbdbdb is `gray-light`, hard-coded for the same
+// reason the tints are.
+//
+// Z-ORDER. A cell pinned on ONE axis only has to clear the ordinary cells
+// sliding under it: header 20, body 10. A cell pinned on BOTH — a corner, where
+// the header row crosses a frozen column — has to clear both of those, hence
+// 30. Give a corner the plain header value and the frozen body cells scroll
+// over the top of it.
+
+/** Ordinary header cell in a scroll-box table. */
+const TH_CLS =
+  "sticky top-0 z-20 bg-[#f4f3f6] px-4 py-3 shadow-[inset_0_-1px_0_#dbdbdb]";
+
+/** Actions header: a corner (top + right), so z-30 and a divider on its left. */
+const STICKY_TH_CLS =
+  "sticky right-0 top-0 z-30 bg-[#f4f3f6] px-4 py-3 shadow-[inset_1px_0_0_#dbdbdb,inset_0_-1px_0_#dbdbdb]";
+const STICKY_TD_CLS =
+  "sticky right-0 z-10 whitespace-nowrap px-4 py-3 shadow-[inset_1px_0_0_#dbdbdb,inset_0_-1px_0_#dbdbdb]";
 
 /** The pinned cell paints its own opaque background — see STICKY_TD_CLS. */
 function stickyTd(voided: boolean): string {
   return `${STICKY_TD_CLS} ${voided ? "bg-[#fef6f6]" : "bg-white"}`;
+}
+
+/**
+ * A frozen leading column, header half.
+ *
+ * THE `left` OFFSET IS HARD-CODED AND THE `width` EXISTS TO MAKE IT TRUE. CSS
+ * gives a second frozen column no way to ask how wide the first one rendered,
+ * so "Daily rows" pins Date at left-0 with w-[120px] purely so that Greeter can
+ * pin at left-[120px]. Change one number without the other and the two frozen
+ * columns overlap — nothing fails, no test catches it, it just looks wrong.
+ *
+ * The widths also assume these tables stay WIDER than their scroll box, which
+ * at 13-18 columns they are. If one is ever narrowed until it fits, auto table
+ * layout hands the leftover width out to every column including the frozen
+ * ones, and the offset drifts by however much it handed the first one.
+ *
+ * `edge` marks the OUTER column of the frozen block — the only one that draws a
+ * vertical divider, so a two-column freeze reads as one pinned unit rather than
+ * as a little table of its own.
+ */
+function frozenTh(o: { left: string; width: string; edge?: boolean }): string {
+  return [
+    "sticky top-0 z-30 bg-[#f4f3f6] px-4 py-3",
+    o.left,
+    o.width,
+    o.edge
+      ? "shadow-[inset_-1px_0_0_#dbdbdb,inset_0_-1px_0_#dbdbdb]"
+      : "shadow-[inset_0_-1px_0_#dbdbdb]"
+  ].join(" ");
+}
+
+/** Body half of frozenTh — same offsets, opaque background, z-10. */
+function frozenTd(o: {
+  left: string;
+  width: string;
+  edge?: boolean;
+  voided?: boolean;
+  /** Type styling the unfrozen version of this cell used to carry. */
+  extra?: string;
+}): string {
+  return [
+    // break-words, because the fixed width above is only honoured while the
+    // cell's longest unbreakable token fits inside it.
+    "sticky z-10 break-words px-4 py-3",
+    o.left,
+    o.width,
+    o.voided ? "bg-[#fef6f6]" : "bg-white",
+    o.edge
+      ? "shadow-[inset_-1px_0_0_#dbdbdb,inset_0_-1px_0_#dbdbdb]"
+      : "shadow-[inset_0_-1px_0_#dbdbdb]",
+    o.extra ?? ""
+  ].join(" ");
+}
+
+/* ------------------------------------------------------------
+ * Grouping the tables by site
+ * ------------------------------------------------------------ */
+
+/**
+ * One site's worth of rows, rendered as one collapsible block.
+ *
+ * KEYED ON site_number, NOT location_code. The number is what every other
+ * system joins on; the code is a slug that has been observed to differ between
+ * tables for the same site, and a site that arrived spelled two ways would
+ * silently split into two blocks that each look complete. The code rides along
+ * for the heading and for the A-Z ordering only.
+ */
+interface SiteGroup<T> {
+  siteNumber: number;
+  locationCode: string;
+  rows: T[];
+}
+
+/**
+ * Bucket rows by site, A-Z by location code, each bucket ordered by `within`.
+ *
+ * Callers render one <table> PER GROUP rather than one table with group-header
+ * rows, for two reasons: <details> cannot legally wrap a <tbody>, and a table
+ * per group gets its own sticky <thead> for free.
+ *
+ * The input array is not mutated — each group owns a fresh array — because the
+ * lists this runs over are also the ones editHref's lookups search.
+ */
+function groupBySite<T extends { site_number: number; location_code: string }>(
+  rows: readonly T[],
+  within: (a: T, b: T) => number
+): SiteGroup<T>[] {
+  const bySite = new Map<number, SiteGroup<T>>();
+  for (const row of rows) {
+    const found = bySite.get(row.site_number);
+    if (found) {
+      found.rows.push(row);
+    } else {
+      bySite.set(row.site_number, {
+        siteNumber: row.site_number,
+        locationCode: row.location_code,
+        rows: [row]
+      });
+    }
+  }
+  const groups = [...bySite.values()];
+  groups.sort((a, b) => a.locationCode.localeCompare(b.locationCode));
+  for (const group of groups) group.rows.sort(within);
+  return groups;
+}
+
+/**
+ * Capture % descending, WITH NULLS LAST.
+ *
+ * Written out rather than `(b.capture ?? 0) - (a.capture ?? 0)` or a bare
+ * subtraction, both of which put the greeters with no measurable capture rate
+ * at the top of their site — the naive version reads as "these are the best
+ * performers" when it means "we could not grade these at all". A greeter with
+ * no denominator is not a leader.
+ */
+function compareCaptureDesc(a: number | null, b: number | null): number {
+  if (a === null && b === null) return 0;
+  if (a === null) return 1;
+  if (b === null) return -1;
+  return b - a;
+}
+
+/** Sorting on a display name that a bad row could still deliver empty. */
+function nameKey(value: string | null): string {
+  return value ?? "";
+}
+
+/**
+ * One site's collapsible block: a heading, then that site's own table.
+ *
+ * `open` IS TRUE ONLY WHEN THIS IS THE ONLY GROUP. Somebody who has filtered
+ * down to one site has already said what they want to look at, and making them
+ * click a disclosure triangle to see it is pure click tax. Past one group the
+ * default flips, because the reason the grouping exists is that a 400-row
+ * table is unreadable in one piece.
+ *
+ * THE SITE NUMBER LIVES HERE NOW. It used to be a mono sub-line under the
+ * location code in every row's Site cell; the Site column is gone because the
+ * heading IS the site, so the number came up here rather than being dropped.
+ *
+ * KNOWN LIMITATION, DELIBERATELY NOT SOLVED: which blocks are open resets on
+ * every filter change and every navigation. This is a native <details> inside a
+ * server component and nothing outside the DOM remembers its state. Persisting
+ * it means a client component plus localStorage — considered, deferred, and not
+ * worth converting this page for.
+ */
+function SiteGroupBlock<T>({
+  group,
+  open,
+  children
+}: {
+  group: SiteGroup<T>;
+  open: boolean;
+  children: ReactNode;
+}) {
+  const count = group.rows.length;
+  // The separator is border-b + last:border-b-0, NOT border-t + first:. These
+  // <details> are not the card's first child — the card's own title block is —
+  // so a `first:` rule would never match, and the first group would double up
+  // with the title block's bottom border.
+  return (
+    <details open={open} className="border-b border-gray-light last:border-b-0">
+      <summary className="cursor-pointer list-item px-5 py-3 text-sm font-semibold text-splash-navy marker:text-splash-navy/50 hover:bg-splash-navy/5">
+        {group.locationCode}
+        <span className="ml-2 font-mono text-xs font-normal text-splash-navy/60">
+          {group.siteNumber}
+        </span>
+        <span className="ml-2 text-xs font-normal text-splash-navy/60">
+          {count === 1 ? "1 row" : `${count} rows`}
+        </span>
+      </summary>
+      {children}
+    </details>
+  );
 }
 
 function Card({
@@ -2502,9 +2864,28 @@ function MissingSubmissionsPanel({
   );
 }
 
-function TableWrap({ children }: { children: ReactNode }) {
+/**
+ * `scrollBox` IS OPT-IN AND MUST STAY THAT WAY. It caps the height so the
+ * wrapper becomes its own scroll box in BOTH axes, which is the only thing the
+ * `top-0` header cells and the `left-0` frozen columns can resolve against —
+ * position: sticky pins to the nearest scrolling ancestor, and with the page as
+ * the scroller the header simply scrolls away with everything else. It also
+ * drags the horizontal scrollbar up from the bottom of a 400-row table, three
+ * screens below wherever you are, to the bottom of the visible card.
+ *
+ * The default is off because the goal-windows and monthly-targets tables share
+ * this helper: they are a handful of rows with nothing sticky in them, and a
+ * height cap would give them a scrollbar and a clipped card for nothing.
+ */
+function TableWrap({
+  children,
+  scrollBox = false
+}: {
+  children: ReactNode;
+  scrollBox?: boolean;
+}) {
   return (
-    <div className="overflow-x-auto">
+    <div className={scrollBox ? "max-h-[70vh] overflow-auto" : "overflow-x-auto"}>
       <table className="min-w-full divide-y divide-gray-light text-sm">
         {children}
       </table>
