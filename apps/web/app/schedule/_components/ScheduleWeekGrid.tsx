@@ -1423,11 +1423,28 @@ export function ScheduleWeekGrid({
  *  pins it. */
 const PRINT_SHEET_CSS = `
 @media print {
-  @page { size: landscape; margin: 0.4in; }
+  /*  margin:0 is load-bearing, not cosmetic. Chrome/Edge suppress the browser's
+   *  own print headers and footers (date/time, document title, page URL, page
+   *  number) only when the @page margin is zero — those four items are painted
+   *  by the browser into the page margin box, so no selector can reach them.
+   *  Zeroing the sheet margin removes the box they live in. The 0.4in then has
+   *  to come back as padding on our own root, or the table runs into the
+   *  printer's unprintable edge. */
+  @page { size: landscape; margin: 0; }
   body > header { display: none !important; }
-  #schedule-print-sheet { display: block !important; }
+  #schedule-print-sheet { display: block !important; padding: 0.4in; }
 }
 `;
+
+/** Location names come from the Beekeeper org unit and often already end in
+ *  "Schedule" (e.g. "Vestal - 134 Schedule"), which made the printed heading
+ *  read "... Schedule Schedule". Append the word only when it is not already
+ *  the last one. */
+function printTitle(locationName: string): string {
+  return /\bschedule\s*$/i.test(locationName)
+    ? locationName
+    : `${locationName} Schedule`;
+}
 
 function SchedulePrintSheet({
   locationName,
@@ -1445,7 +1462,7 @@ function SchedulePrintSheet({
     <div id="schedule-print-sheet" className="hidden print:block">
       <style>{PRINT_SHEET_CSS}</style>
 
-      <h1 className="text-xl font-bold text-black">{locationName} Schedule</h1>
+      <h1 className="text-xl font-bold text-black">{printTitle(locationName)}</h1>
       <p className="mb-3 text-sm text-black">
         Week of {weekRangeLabel(monday)}
       </p>
