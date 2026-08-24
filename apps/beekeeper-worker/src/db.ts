@@ -42,10 +42,15 @@ export interface BeekeeperUserRow {
 /** Single source of truth for the beekeeper_users select list. Every read of
  *  that table goes through this constant so a column can't be added to the row
  *  type and then silently omitted from one of the queries — which would surface
- *  as an undefined rate on some code paths and a real number on others. */
+ *  as an undefined rate on some code paths and a real number on others.
+ *
+ *  Keep this a SINGLE string literal. postgrest-js parses the select list at
+ *  the type level; `"a," + "b"` widens to `string`, which the parser reports
+ *  back as `GenericStringError[]`, and that breaks the
+ *  `data as BeekeeperUserRow[]` cast at every call site (TS2352 — fails the
+ *  Cloudflare deploy typecheck gate). */
 const USER_COLUMNS =
-  "id,tenantuserid,display_name,firstname,lastname,org_unit_ids,rate,pay_type," +
-  "suspended,employment_status,synced_at";
+  "id,tenantuserid,display_name,firstname,lastname,org_unit_ids,rate,pay_type,suspended,employment_status,synced_at";
 
 export interface BeekeeperScheduleRow {
   schedule_id: string;
