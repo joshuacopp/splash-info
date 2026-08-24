@@ -31,7 +31,8 @@ import {
   listMappedSchedules,
   nameFromRow,
   resolveScheduleByLocationCode,
-  type BeekeeperScheduleRow
+  type BeekeeperScheduleRow,
+  type BeekeeperUserRow
 } from "./db.js";
 import { scheduleGate, userCanAccessLocation } from "./auth.js";
 import { runBeekeeperSync } from "./sync.js";
@@ -111,9 +112,19 @@ export async function handleListLocations(request: Request, env: Env): Promise<R
 
 /**
  * GET /api/loc/{location_code}/context
- *   200 { locationCode, scheduleId, name, roster: [{ id, name }] }
+ *   200 { locationCode, scheduleId, name, roster: [{ id, name, rate, payType }] }
  * The UI's first call — resolves the location and loads the assignable roster
  * (cache-built, so employees with no current shifts are still assignable).
+ *
+ * PAY DATA ON THIS RESPONSE: `rate` and `payType` are Beekeeper
+ * admin-visibility fields and they do ship to the browser. That is deliberate —
+ * the grid re-prices the week live as the manager moves shifts around, and a
+ * server-computed total would be stale the moment anything changed. The blast
+ * radius is bounded by the gate this handler already runs: scheduleGate
+ * authenticates, and userCanAccessLocation restricts the caller to their own
+ * locations, so a manager only ever receives rates for their own roster. If pay
+ * ever has to be hidden from someone who can still edit the schedule, THIS is
+ * the line that must change — a UI-side toggle would not be sufficient.
  */
 export async function handleContext(
   request: Request,
@@ -131,7 +142,14 @@ export async function handleContext(
     locationCode: schedule.location_code,
     scheduleId: schedule.schedule_id,
     name: schedule.name,
-    roster: roster.map((r) => ({ id: r.id, name: nameFromRow(r, r.id) }))
+    roster: roster.map((r) => ({
+      id: r.id,
+      name: nameFromRow(r, r.id),
+      // null, never 0 — an unentered rate is unknown cost, and the grid
+      // surfaces it as an "unrated" count rather than a cheap-looking day.
+      rate: typeof r.rate === "number" ? r.rate : null,
+      payType: r.pay_type ?? null
+    }))
   });
 }
 
@@ -144,6 +162,21 @@ interface ShiftView {
   /** "" for an open/unassigned shift. */
   userId: string;
   userName: string;
+  /**
+   * Pay rate of the assigned user at read time; null when the shift is open,
+   * the user has no rate entered, or the user is missing from the cache.
+   *
+   * This is the ONLY per-shift cost input the grid uses. It is resolved here,
+   * from the same cache row that produced userName, rather than joined
+   * client-side against the roster: a shift can outlive its user's membership
+   * in the location (someone transfers, the shift stays), and a roster join
+   * would silently drop those to "unrated" while this does not. The roster's
+   * own `rate` serves a different purpose — pricing salaried staff who may have
+   * no shifts at all — so the two are not redundant.
+   */
+  rate: number | null;
+  /** Beekeeper payType of the assigned user: "Salary" | "Hourly" | null. */
+  payType: string | null;
   title: string;
   /** metadata.color round-tripped from Beekeeper (hex string, or undefined). */
   color?: string;
@@ -159,7 +192,10 @@ interface ShiftView {
   endMinute: number;
 }
 
-function toShiftView(shift: BeekeeperShift, userName: string): ShiftView {
+function toShiftView(
+  shift: BeekeeperShift,
+  user: BeekeeperUserRow | undefined
+): ShiftView {
   const s = utcIsoToLocalParts(shift.start);
   const e = utcIsoToLocalParts(shift.end);
   const color =
@@ -167,7 +203,9 @@ function toShiftView(shift: BeekeeperShift, userName: string): ShiftView {
   return {
     id: shift.id,
     userId: shift.userId ?? "",
-    userName,
+    userName: nameFromRow(user, shift.userId),
+    rate: typeof user?.rate === "number" ? user.rate : null,
+    payType: user?.pay_type ?? null,
     title: shift.title,
     color,
     startUtc: shift.start,
@@ -218,10 +256,8 @@ export async function handleListShifts(
         })
       : shifts;
 
-  const names = await getUsersByIds(sb, inWindow.map((s) => s.userId));
-  const views = inWindow.map((s) =>
-    toShiftView(s, nameFromRow(names.get(s.userId ?? ""), s.userId))
-  );
+  const users = await getUsersByIds(sb, inWindow.map((s) => s.userId));
+  const views = inWindow.map((s) => toShiftView(s, users.get(s.userId ?? "")));
   return json({ shifts: views });
 }
 

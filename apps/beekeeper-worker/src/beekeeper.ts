@@ -55,6 +55,28 @@ export interface BeekeeperSchedule {
 }
 
 
+/**
+ * One entry of a user's `custom_fields`. Beekeeper returns these as an ARRAY of
+ * objects keyed by `key` — NOT as a keyed map — so reading one is a find(), not
+ * a property access. See `customField` below.
+ *
+ * `visibility` is "public" or "admin", and that distinction is load-bearing:
+ * GET /users/{id} strips every admin-visibility entry, while GET /users?limit=
+ * returns all of them with the same bot token. Verified against both a tablet
+ * "Location Profile" account and a human General Manager, so it is a property
+ * of the endpoint, not of the user or the token. Anything read out of here must
+ * therefore come from listUsers/listAllUsers, which is what the sync path uses.
+ */
+export interface BeekeeperCustomField {
+  key: string;
+  label?: string;
+  required?: boolean;
+  type?: string;
+  value?: unknown;
+  visibility?: "public" | "admin" | string;
+  editable?: boolean;
+}
+
 export interface BeekeeperUser {
   id: string;
   tenantuserid?: string;
@@ -63,6 +85,64 @@ export interface BeekeeperUser {
   lastname?: string;
   /** Location UUIDs the user belongs to. */
   org_unit_ids?: string[];
+  /**
+   * Beekeeper-native deactivation flag (top level, NOT a custom field, and
+   * present on every user on both endpoints). Distinct from `state`, which
+   * tracks the login lifecycle ("created" | "invited" | "active") and says
+   * nothing about employment — a never-onboarded new hire is "created" and
+   * very much still on payroll.
+   */
+  suspended?: boolean;
+  /** ISO timestamp of suspension, null while active. */
+  suspended_at?: string | null;
+  /** Present on LIST reads only — see BeekeeperCustomField. */
+  custom_fields?: BeekeeperCustomField[];
+}
+
+/** Raw entry for `key`, or undefined. Note that "the field does not exist" and
+ *  "this endpoint stripped it" are indistinguishable here. */
+export function customField(
+  user: BeekeeperUser,
+  key: string
+): BeekeeperCustomField | undefined {
+  if (!Array.isArray(user.custom_fields)) return undefined;
+  return user.custom_fields.find((f) => f && f.key === key);
+}
+
+/**
+ * Numeric custom field, or null when unset / blank / unparseable.
+ *
+ * Beekeeper declares `rate` as type "number" but has been seen returning
+ * numeric values as JSON strings on some profiles, so a numeric string is
+ * accepted. An empty string maps to null, NOT to 0: an unentered rate is
+ * unknown cost, and collapsing it to zero is exactly what would make an
+ * unpriced day look cheap instead of incomplete.
+ */
+export function customFieldNumber(
+  user: BeekeeperUser,
+  key: string
+): number | null {
+  const raw = customField(user, key)?.value;
+  if (raw === null || raw === undefined) return null;
+  if (typeof raw === "number") return Number.isFinite(raw) ? raw : null;
+  if (typeof raw === "string") {
+    const trimmed = raw.trim();
+    if (!trimmed) return null;
+    const n = Number(trimmed);
+    return Number.isFinite(n) ? n : null;
+  }
+  return null;
+}
+
+/** String custom field, trimmed, or null when unset/blank. */
+export function customFieldString(
+  user: BeekeeperUser,
+  key: string
+): string | null {
+  const raw = customField(user, key)?.value;
+  if (typeof raw !== "string") return null;
+  const trimmed = raw.trim();
+  return trimmed || null;
 }
 
 

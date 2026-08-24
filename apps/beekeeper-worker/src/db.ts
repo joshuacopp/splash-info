@@ -3,7 +3,12 @@
 
 import { createServiceClient, type SupabaseClient } from "@splash/db-supabase";
 import type { Env } from "./env.js";
-import type { BeekeeperSchedule, BeekeeperUser } from "./beekeeper.js";
+import {
+  customFieldNumber,
+  customFieldString,
+  type BeekeeperSchedule,
+  type BeekeeperUser
+} from "./beekeeper.js";
 
 export function sbClient(env: Env): SupabaseClient {
   return createServiceClient(env);
@@ -20,7 +25,27 @@ export interface BeekeeperUserRow {
   firstname: string | null;
   lastname: string | null;
   org_unit_ids: string[];
+  /** Pay rate from Beekeeper's admin-visibility `rate` custom field. null means
+   *  never entered, which is NOT the same as 0 — see USER_COLUMNS. */
+  rate: number | null;
+  /** Beekeeper `payType`. Observed values: "Salary", "Hourly". */
+  pay_type: string | null;
+  /** Beekeeper-native deactivation flag. See isRosterEligible. */
+  suspended: boolean | null;
+  /** Beekeeper `employmentStatus` custom field. Observed: "Active", null. */
+  employment_status: string | null;
+  /** Last time the sync touched this row. Written on every upsert, so a row
+   *  that stops advancing is a user who fell out of the tenant listing. */
+  synced_at: string | null;
 }
+
+/** Single source of truth for the beekeeper_users select list. Every read of
+ *  that table goes through this constant so a column can't be added to the row
+ *  type and then silently omitted from one of the queries — which would surface
+ *  as an undefined rate on some code paths and a real number on others. */
+const USER_COLUMNS =
+  "id,tenantuserid,display_name,firstname,lastname,org_unit_ids,rate,pay_type," +
+  "suspended,employment_status,synced_at";
 
 export interface BeekeeperScheduleRow {
   schedule_id: string;
@@ -107,7 +132,7 @@ export async function getUsersByIds(
   if (distinct.length === 0) return new Map();
   const { data, error } = await sb
     .from("beekeeper_users")
-    .select("id,tenantuserid,display_name,firstname,lastname,org_unit_ids")
+    .select(USER_COLUMNS)
     .in("id", distinct);
   if (error) throw new Error(`getUsersByIds: ${error.message}`);
   const out = new Map<string, BeekeeperUserRow>();
@@ -120,10 +145,108 @@ export async function getUsersByIds(
  * ============================================================ */
 
 /**
+ * How far BEHIND THE MOST RECENT SYNC a user's row may fall before the person
+ * is treated as gone. The sync runs daily, so 2 means a user has to be absent
+ * from two consecutive tenant listings — enough to ride out one transient
+ * pagination hiccup, short enough that a manager isn't scheduling a ghost for a
+ * week.
+ *
+ * Measured against the newest row rather than the wall clock ON PURPOSE. If the
+ * cutoff were `now - 2 days`, a sync that stopped running — expired token,
+ * broken cron, Beekeeper outage — would age every row past it simultaneously
+ * and empty the assignable roster at every location in the company. Comparing
+ * rows to each other makes that failure inert: if nothing is syncing, nothing
+ * is fresh, the newest row ages in lockstep with the rest, and nobody is
+ * dropped. The filter only bites when the sync is demonstrably alive and has
+ * chosen not to return someone.
+ */
+const ROSTER_STALE_DAYS = 2;
+
+/**
+ * Whether a cached user still counts as employed here.
+ *
+ * This matters beyond a tidy dropdown: the schedule grid derives the salaried
+ * payroll baseline from the ROSTER, not from shifts, so a departed GM left in
+ * this list keeps adding rate x 40 to the week total forever — a wrong number
+ * on a screen whose entire job is to be a correct number.
+ *
+ * Three independent signals, any one of which disqualifies, because none of
+ * them is individually trustworthy in this tenant (checked against the full
+ * 2026-08-22 user dump, where all ~100 users are suspended:false and
+ * employmentStatus "Active" — so neither field has ever been observed in its
+ * off state and neither can be confirmed to fire on offboarding):
+ *
+ *   suspended         Beekeeper-native, set by the platform rather than typed
+ *                     by an admin, so it is the one least likely to be
+ *                     forgotten. Only `true` disqualifies.
+ *   employment_status Admin-typed free text. Only a non-empty value that is not
+ *                     "Active" disqualifies — blank means "nobody filled it in",
+ *                     which must not silently delete a real employee.
+ *   synced_at         The one that actually fires, and the reason the other two
+ *                     are not enough. VERIFIED 2026-08-23 against the live
+ *                     tenant: GET /users EXCLUDES suspended users entirely.
+ *                     Carter Mullen (suspended 2026-08-06, org_unit_ids still
+ *                     containing Batavia) returns suspended:true from
+ *                     GET /users/{id} but is simply absent from
+ *                     GET /users?org_unit_id=<batavia>, which returned exactly
+ *                     the 8 people the Beekeeper location UI shows. So the sync
+ *                     can never observe suspended:true — a suspended user does
+ *                     not come back flagged, they stop coming back at all, and
+ *                     the upsert-only sync leaves their row frozen with stale
+ *                     org_unit_ids. Falling out of the listing IS the signal.
+ *
+ * The suspended and employment_status checks are kept anyway: they cost nothing,
+ * they catch the case same-day rather than after ROSTER_STALE_DAYS, and if
+ * Beekeeper ever starts including deactivated users in the listing (or the
+ * tenant starts maintaining employmentStatus) they begin working on their own.
+ *
+ * A null synced_at passes: rows predate the column and must not vanish before
+ * the first sync writes it.
+ *
+ * `latestSyncMs` is the newest synced_at among the rows being considered — see
+ * ROSTER_STALE_DAYS for why the comparison is row-relative and not wall-clock.
+ */
+export function isRosterEligible(
+  row: BeekeeperUserRow,
+  latestSyncMs: number | null
+): boolean {
+  if (row.suspended === true) return false;
+  const status = (row.employment_status ?? "").trim().toLowerCase();
+  if (status && status !== "active") return false;
+  if (latestSyncMs !== null && row.synced_at) {
+    const seen = Date.parse(row.synced_at);
+    if (
+      Number.isFinite(seen) &&
+      latestSyncMs - seen > ROSTER_STALE_DAYS * 86_400_000
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/** Newest synced_at across a set of rows, or null when none carry one. */
+function latestSync(rows: Iterable<BeekeeperUserRow>): number | null {
+  let max: number | null = null;
+  for (const r of rows) {
+    if (!r.synced_at) continue;
+    const t = Date.parse(r.synced_at);
+    if (Number.isFinite(t) && (max === null || t > max)) max = t;
+  }
+  return max;
+}
+
+/**
  * Assignable roster for a schedule: members whose org_unit_ids contains the
- * schedule's primary location, UNION the schedule's own userIds[]. Built from
- * the cache — NOT from whoever currently appears in the grid — so employees
- * with no current shifts are still assignable.
+ * schedule's primary location, UNION the schedule's own userIds[], minus anyone
+ * isRosterEligible rejects. Built from the cache — NOT from whoever currently
+ * appears in the grid — so employees with no current shifts are still
+ * assignable.
+ *
+ * The filter is deliberately NOT applied in getUsersByIds: an existing shift
+ * assigned to someone who has since left must still render their name rather
+ * than degrade to "User 3f2a1b8c". Departed staff stop being assignable; they
+ * do not stop being history.
  */
 export async function getRoster(
   sb: SupabaseClient,
@@ -139,7 +262,7 @@ export async function getRoster(
     // array so the jsonb-containment form (cs.["uuid"]) is emitted instead.
     const { data, error } = await sb
       .from("beekeeper_users")
-      .select("id,tenantuserid,display_name,firstname,lastname,org_unit_ids")
+      .select(USER_COLUMNS)
       .contains("org_unit_ids", JSON.stringify([primaryLocationId]));
     if (error) throw new Error(`getRoster(location): ${error.message}`);
     for (const r of (data as BeekeeperUserRow[]) ?? []) byId.set(r.id, r);
@@ -151,9 +274,11 @@ export async function getRoster(
     for (const [id, r] of extra) byId.set(id, r);
   }
 
-  return [...byId.values()].sort((a, b) =>
-    nameFromRow(a, a.id).localeCompare(nameFromRow(b, b.id))
-  );
+  const rows = [...byId.values()];
+  const newest = latestSync(rows);
+  return rows
+    .filter((r) => isRosterEligible(r, newest))
+    .sort((a, b) => nameFromRow(a, a.id).localeCompare(nameFromRow(b, b.id)));
 }
 
 /* ============================================================
@@ -216,6 +341,17 @@ export async function upsertBeekeeperUsers(
       firstname: u.firstname ?? null,
       lastname: u.lastname ?? null,
       org_unit_ids: Array.isArray(u.org_unit_ids) ? u.org_unit_ids : [],
+      // Both live in Beekeeper's admin-visibility custom_fields, which only the
+      // LIST endpoint returns. This sync runs off listAllUsers(), so they are
+      // present. If the sync is ever repointed at GET /users/{id} these go
+      // null for the entire tenant without any error being raised.
+      rate: customFieldNumber(u, "rate"),
+      pay_type: customFieldString(u, "payType"),
+      employment_status: customFieldString(u, "employmentStatus"),
+      // Top-level, not a custom field — Beekeeper's own deactivation flag.
+      // Defaults to false rather than null so an older payload shape does not
+      // read as "unknown" and quietly change roster eligibility.
+      suspended: typeof u.suspended === "boolean" ? u.suspended : false,
       synced_at: new Date().toISOString()
     }));
   if (rows.length === 0) return 0;
