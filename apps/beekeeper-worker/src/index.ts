@@ -6,6 +6,7 @@
 // or same-origin browser fetches (interactive writes). Surfaces:
 //   1. GET  /api/locations          — accessible location picker data
 //   2. /api/loc/{location_code}/*   — the JSON API the UI talks to
+//      (context | shifts | unavailability | budget)
 //   3. POST /api/sync-users         — manual cache refill (super_admin / allowlist)
 //
 // The `scheduled` handler runs the daily cache sync (cron in wrangler.toml),
@@ -21,7 +22,8 @@ import {
   handleListShifts,
   handleListUnavailability,
   handleSyncUsers,
-  handleUpdateShift
+  handleUpdateShift,
+  handleWeekBudget
 } from "./handlers.js";
 import { runBeekeeperSync } from "./sync.js";
 import { ROUTE_PREFIX } from "./routePrefix.js";
@@ -64,6 +66,11 @@ export default {
 
           if (rest.length === 1 && rest[0] === "context" && method === "GET") {
             return handleContext(request, env, locationCode);
+          }
+
+          // GET /budget?monday=YYYY-MM-DD — labor allowance for that week.
+          if (rest.length === 1 && rest[0] === "budget" && method === "GET") {
+            return handleWeekBudget(request, env, locationCode);
           }
 
           // GET /shifts overlay: approved employee unavailability for the week.

@@ -81,6 +81,37 @@ export interface UnavailabilityMarker {
   end: string;
 }
 
+/** One day's slice of its month's labor budget (GET .../budget days[]).
+ *
+ *  `allowance` is null when that day's month has no budget configured. That is
+ *  NOT zero — render it as "no budget set", never as an instant overage. */
+export interface DayAllowance {
+  date: string;
+  month: string;
+  allowance: number | null;
+}
+
+/** A month touched by the visible week, carried so a null allowance can be
+ *  explained rather than silently omitted. */
+export interface MonthBudget {
+  month: string;
+  laborBudget: number | null;
+  daysInMonth: number;
+}
+
+/** GET /schedule/api/loc/{code}/budget?monday={YYYY-MM-DD}
+ *
+ *  The worker owns the proration: labor_budget / days in that day's month,
+ *  summed day by day so a week straddling two months draws correctly from
+ *  each. `weekAllowance` is a FLOOR when `unbudgetedDays > 0`. */
+export interface WeekBudget {
+  siteNumber: number | null;
+  days: DayAllowance[];
+  weekAllowance: number | null;
+  unbudgetedDays: number;
+  months: MonthBudget[];
+}
+
 export type ScheduleResult<T> =
   | { kind: "ok"; data: T }
   | { kind: "denied" } // 401 or 403
@@ -171,6 +202,15 @@ export function fetchScheduleShifts(
   const qs = `start=${encodeURIComponent(startIso)}&end=${encodeURIComponent(endIso)}`;
   return beekeeperGet<{ shifts: ShiftView[] }>(
     `/schedule/api/loc/${encodeURIComponent(locationCode)}/shifts?${qs}`
+  );
+}
+
+export function fetchScheduleBudget(
+  locationCode: string,
+  monday: string
+): Promise<ScheduleResult<WeekBudget>> {
+  return beekeeperGet<WeekBudget>(
+    `/schedule/api/loc/${encodeURIComponent(locationCode)}/budget?monday=${encodeURIComponent(monday)}`
   );
 }
 

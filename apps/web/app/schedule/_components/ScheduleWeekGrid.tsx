@@ -13,7 +13,8 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import type {
   RosterMember,
   ShiftView,
-  UnavailabilityMarker
+  UnavailabilityMarker,
+  WeekBudget
 } from "../_lib/worker-fetch";
 
 /* ============================================================
@@ -120,6 +121,15 @@ function fmtHours(min: number): string {
  * Beekeeper's `rate` custom field is an HOURLY-EQUIVALENT figure for salaried
  * staff too (confirmed against the tenant: 42.00 ~ $87k/yr for a GM), which is
  * why the same number is multiplied by hours in both branches.
+ *
+ * AGAINST THE BUDGET, THE SPLIT CLOSES BACK UP. site_monthly_targets.labor_budget
+ * is all-in labor dollars — it was set with the salaried managers already in it.
+ * So the figure compared to an allowance is variable + the salaried baseline,
+ * even though the two are shown apart everywhere else. A day's share of the
+ * baseline is salaried.weekly / 7, matching the worker's even-by-calendar-day
+ * proration of the budget itself; dividing by 5 or by "open days" on one side
+ * of that comparison and not the other is how the two halves silently stop
+ * meaning the same thing.
  * ============================================================ */
 
 /** Hours a salaried employee's weekly baseline is priced at. */
@@ -300,6 +310,7 @@ export function ScheduleWeekGrid({
   const [saving, setSaving] = useState(false);
   const [copying, setCopying] = useState(false);
   const [unavail, setUnavail] = useState<UnavailabilityMarker[]>([]);
+  const [budget, setBudget] = useState<WeekBudget | null>(null);
 
   const apiBase = `/schedule/api/loc/${encodeURIComponent(locationCode)}`;
   const days = useMemo(() => weekDates(monday), [monday]);
@@ -375,6 +386,27 @@ export function ScheduleWeekGrid({
   useEffect(() => {
     void loadUnavailability(monday);
   }, [monday, loadUnavailability]);
+
+  // Labor budget allowance for the visible week. Same posture as the
+  // unavailability overlay: not SSR'd, reloaded on every week change, and fails
+  // soft. A budget that will not load leaves the comparison off the screen
+  // entirely rather than showing an allowance of $0, which would read as "you
+  // are massively over" when the truth is "we do not know".
+  const loadBudget = useCallback(
+    async (mon: string) => {
+      try {
+        const data = await api(`${apiBase}/budget?monday=${encodeURIComponent(mon)}`);
+        setBudget(data as unknown as WeekBudget);
+      } catch {
+        setBudget(null);
+      }
+    },
+    [api, apiBase]
+  );
+
+  useEffect(() => {
+    void loadBudget(monday);
+  }, [monday, loadBudget]);
 
   const unavailByDay = useMemo(() => {
     const map = new Map<string, UnavailabilityMarker[]>();
@@ -458,6 +490,32 @@ export function ScheduleWeekGrid({
     () => days.reduce((sum, d) => sum + (dailyCost.get(d)?.unrated ?? 0), 0),
     [days, dailyCost]
   );
+
+  /* ---- Budget comparison -------------------------------------------------
+   * Everything below is null-safe on purpose: no budget row for the month is a
+   * normal, supported state, and it must render as an absent comparison rather
+   * than as a zero allowance. */
+
+  /** Allowance dollars keyed by ET date, from the worker's proration. */
+  const allowanceByDay = useMemo(() => {
+    const map = new Map<string, number | null>();
+    for (const d of budget?.days ?? []) map.set(d.date, d.allowance);
+    return map;
+  }, [budget]);
+
+  /** One day's share of the flat weekly salaried baseline. Divided by 7, not by
+   *  a workweek: the budget it is measured against was prorated across all
+   *  seven calendar days too. */
+  const salariedDaily = useMemo(() => salaried.weekly / 7, [salaried.weekly]);
+
+  /** All-in scheduled cost for a day — the only figure comparable to an
+   *  allowance, because the budget includes salaried staff. */
+  const daySpend = useCallback(
+    (date: string) => (dailyCost.get(date)?.variable ?? 0) + salariedDaily,
+    [dailyCost, salariedDaily]
+  );
+
+  const weekTotal = weekVariable + salaried.weekly;
 
   // Worked minutes per employee for the visible week — powers the summary
   // panel. Keyed by userId; "" collects open/unassigned shifts.
@@ -907,6 +965,20 @@ export function ScheduleWeekGrid({
                       ) : null}
                     </div>
                   ) : null}
+                  {/* All-in spend against this day's slice of the monthly
+                      budget. Deliberately a second line rather than a
+                      replacement for the hourly figure above: they answer
+                      different questions, and the left number here includes the
+                      salaried share while the one above pointedly does not. */}
+                  {typeof allowanceByDay.get(date) === "number" ? (
+                    <div
+                      className="text-center text-[11px] tabular-nums text-splash-navy/70"
+                      title={`Scheduled hourly plus this day's share of the salaried baseline (${fmtMoney(salariedDaily)}), against 1/${budget?.months.find((m) => m.month === `${date.slice(0, 7)}-01`)?.daysInMonth ?? 30} of the month's labor budget.`}
+                    >
+                      {fmtMoney(daySpend(date))} of{" "}
+                      {fmtMoney(allowanceByDay.get(date) ?? 0)}
+                    </div>
+                  ) : null}
                 </div>
               </div>
             );
@@ -995,14 +1067,46 @@ export function ScheduleWeekGrid({
                 {fmtMoney(salaried.weekly)}
               </td>
             </tr>
-            <tr>
+            <tr className={typeof budget?.weekAllowance === "number" ? "border-b border-gray-light/60" : undefined}>
               <td className="pr-4 pt-2 font-bold text-splash-navy">
                 Week total
               </td>
               <td className="pt-2 text-right font-bold tabular-nums text-splash-navy">
-                {fmtMoney(weekVariable + salaried.weekly)}
+                {fmtMoney(weekTotal)}
               </td>
             </tr>
+            {/* Budget rows appear only when the month is configured. An
+                unconfigured month renders nothing at all — a $0 allowance would
+                claim the location may spend nothing, which is a real and very
+                different statement from "nobody set a budget". */}
+            {typeof budget?.weekAllowance === "number" ? (
+              <>
+                <tr className="border-b border-gray-light/60">
+                  <td className="py-1.5 pr-4 pt-2 text-splash-navy">
+                    Budget allowance
+                    {budget.unbudgetedDays > 0 ? (
+                      <span
+                        className="ml-1 text-xs font-medium text-amber-700"
+                        title="This week crosses into a month with no labor budget set, so those days contribute no allowance and this figure is a floor."
+                      >
+                        · {budget.unbudgetedDays} of 7 days unbudgeted
+                      </span>
+                    ) : null}
+                  </td>
+                  <td className="py-1.5 pt-2 text-right font-semibold tabular-nums text-splash-navy">
+                    {fmtMoney(budget.weekAllowance)}
+                  </td>
+                </tr>
+                <tr>
+                  <td className="pr-4 pt-2 font-bold text-splash-navy">
+                    {weekTotal > budget.weekAllowance ? "Over by" : "Remaining"}
+                  </td>
+                  <td className="pt-2 text-right font-bold tabular-nums text-splash-navy">
+                    {fmtMoney(Math.abs(budget.weekAllowance - weekTotal))}
+                  </td>
+                </tr>
+              </>
+            ) : null}
           </tbody>
         </table>
         <p className="mt-2 max-w-md text-xs text-splash-navy/60">
@@ -1011,6 +1115,17 @@ export function ScheduleWeekGrid({
           rate in Beekeeper and count as $0, so the total is a floor rather than
           an estimate.
         </p>
+        {typeof budget?.weekAllowance === "number" ? (
+          <p className="mt-1 max-w-md text-xs text-splash-navy/60">
+            The allowance is this location&rsquo;s monthly labor budget split
+            evenly across the days of the month
+            {budget.months.length > 1
+              ? " — a week spanning two months draws each day from its own month"
+              : ""}
+            . It covers all labor, salaried included, which is why it is
+            compared to the week total rather than to the hourly line.
+          </p>
+        ) : null}
       </div>
 
       {form ? (

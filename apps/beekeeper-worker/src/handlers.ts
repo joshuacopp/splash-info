@@ -34,6 +34,7 @@ import {
   type BeekeeperScheduleRow,
   type BeekeeperUserRow
 } from "./db.js";
+import { buildWeekBudget } from "./budget.js";
 import { scheduleGate, userCanAccessLocation } from "./auth.js";
 import { runBeekeeperSync } from "./sync.js";
 import {
@@ -550,6 +551,54 @@ export async function handleDeleteShift(
  * email in SYNC_ADMIN_EMAILS. Uses scheduleGate for authn, then an extra
  * authorization check (a schedule/pricing grant alone is NOT enough).
  */
+/* ============================================================
+ * Read: labor budget allowance for a week
+ * ============================================================ */
+
+/** "YYYY-MM-DD". Rejects shapes Date would happily coerce ("2026-8-1"). */
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+/**
+ * GET /api/loc/{location_code}/budget?monday={YYYY-MM-DD}
+ *   200 WeekBudget
+ *
+ * The spending allowance for the seven days starting at `monday`, derived from
+ * site_monthly_targets.labor_budget. See budget.ts for the proration rule.
+ *
+ * A SEPARATE ENDPOINT from /context on purpose: the allowance depends on which
+ * week is on screen (a week can straddle two months with different budgets),
+ * and the grid switches weeks client-side without re-running SSR. Folding it
+ * into /shifts was the other option and was rejected because that window is
+ * deliberately padded by a day on each side, which would drag in an eighth day
+ * from a neighbouring month.
+ *
+ * `monday` is trusted only for its shape. It is NOT snapped to a real Monday —
+ * the seven days are simply taken from wherever it points, so the endpoint is
+ * useful for any seven-day run and the grid stays the one place that decides
+ * what a week means.
+ */
+export async function handleWeekBudget(
+  request: Request,
+  env: Env,
+  locationCode: string
+): Promise<Response> {
+  const g = await gateAndResolve(request, env, locationCode);
+  if (!g.ok) return g.response;
+
+  const monday = new URL(request.url).searchParams.get("monday") ?? "";
+  if (!DATE_RE.test(monday)) {
+    return jsonError(400, "monday must be YYYY-MM-DD");
+  }
+
+  const dates = Array.from({ length: 7 }, (_, i) => addDays(monday, i));
+  const budget = await buildWeekBudget(g.ctx.sb, locationCode, dates);
+  return json(budget);
+}
+
+/* ============================================================
+ * Write: manual cache sync
+ * ============================================================ */
+
 export async function handleSyncUsers(request: Request, env: Env): Promise<Response> {
   if (!isOriginAllowed(request)) return jsonError(403, "bad origin");
   const gate = await scheduleGate(request, env);
