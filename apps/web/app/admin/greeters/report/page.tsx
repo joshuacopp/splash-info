@@ -100,6 +100,7 @@ import {
   SiteLegend,
   TrendChart,
   VolumeScatter,
+  type LegendItem,
   type RankRow,
   type ScatterPoint,
   type SeriesStyle,
@@ -465,6 +466,44 @@ export default async function GreeterReportPage({ searchParams }: PageProps) {
     ])
   );
 
+  // The scatter's OWN key, sat directly above its dots.
+  //
+  // It repeats the site chips rather than pointing up the page at the shared
+  // legend, because the ranking chart sits between the two and a key a full
+  // chart away is a key nobody walks back to — the dots just read as unlabelled
+  // colour. Repeating is the cheaper failure: both keys are built from
+  // `chartInks`, so they cannot disagree about which site owns which ink, and
+  // the mark differs (`mark="dot"`) precisely so nobody reads them as two
+  // separate colour systems.
+  //
+  // The last two chips explain the scatter's two non-site marks, which no line
+  // chart has and which the shared legend therefore can't carry. Grey is
+  // conditional: this chart deliberately plots EVERY greeter, so grey means
+  // "outside the current filter" and doesn't exist when nothing is filtered
+  // out. Explaining a mark that isn't on screen just makes the reader hunt for
+  // it.
+  const hasOffFilterDots = allGreeters.some(
+    (r) => !siteStyles.has(r.location_id)
+  );
+  const scatterLegendItems: LegendItem[] = [
+    ...legendItems,
+    ...(hasOffFilterDots
+      ? [
+          {
+            key: "off-filter",
+            label: "Other sites",
+            style: { colour: CHART.muted }
+          }
+        ]
+      : []),
+    {
+      key: "low-sample",
+      label: `Under ${LOW_SAMPLE_DAYS} graded days`,
+      style: { colour: CHART.muted },
+      hollow: true
+    }
+  ];
+
   // One goal line per chart, drawn only when it's true of everybody on it —
   // see sharedGoal().
   const captureGoalLine = sharedGoal(chartSites, (s) => s.capture_goal_pct);
@@ -730,16 +769,17 @@ export default async function GreeterReportPage({ searchParams }: PageProps) {
           </ChartFrame>
         </div>
 
-        {/* ONE key for THREE charts, deliberately placed between the by-day
-            lines it colours and the scatter below that it also colours. A
-            second legend down there would invite the reader to assume the two
-            sets of colours mean different things; no legend down there at all
-            would send them hunting. */}
+        {/* Keys the two by-day charts above it, and nothing else.
+            This was briefly the single key for the scatter as well, on the
+            theory that two keys would read as two colour systems. It doesn't
+            survive contact with the page: the ranking chart sits between here
+            and the dots, so by the time you reach them this key is off screen.
+            The scatter now carries its own — see the note where it's built. */}
         {legendItems.length === 0 ? null : (
           <>
             <SiteLegend items={legendItems} />
             <p className="-mt-2 mb-6 text-[11px] text-splash-navy/60">
-              Keys the two charts above and the dots below.
+              Keys the two charts above.
             </p>
           </>
         )}
@@ -751,8 +791,16 @@ export default async function GreeterReportPage({ searchParams }: PageProps) {
 
           <ChartFrame
             title="Volume against capture rate"
-            caption={`Each dot is one greeter for the period: wash sales across, capture rate up. Colour is the greeter's location, keyed to the legend above — grey dots are greeters at sites outside the current filter, left on screen as context. Dots on the left are working small numbers — a low rate there is arithmetic, not performance. Hollow dots have fewer than ${LOW_SAMPLE_DAYS} graded days. Click a dot to open the greeter.`}
+            caption="Each dot is one greeter: wash sales across, capture rate up. Dots on the left are working small numbers — a low rate there is arithmetic, not performance. Click a dot to open the greeter."
           >
+            {/* The key sits ABOVE the plot, not below it, so it's the first
+                thing under the caption and reads before the dots do. Everything
+                it says used to be prose in that caption; a chip beside the mark
+                it names beats a sentence describing the mark from four lines
+                away. What's left in the caption is the one thing no swatch can
+                show — that the left edge of this chart is a sample-size
+                problem, not a performance one. */}
+            <SiteLegend items={scatterLegendItems} mark="dot" />
             {/* EVERY greeter, not the preset's filtered set. The whole point of
                 this chart is to separate "low capture because they're bad" from
                 "low capture on nine cars", and on Top performers the filtered set

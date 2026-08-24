@@ -127,38 +127,67 @@ export function ChartEmpty({ children }: { children: ReactNode }) {
   );
 }
 
+export interface LegendItem {
+  key: string;
+  label: string;
+  style: SeriesStyle;
+  /**
+   * `mark="dot"` only: draw the swatch hollow, matching a low-sample dot in
+   * VolumeScatter. Ignored by the line mark, where a hollow line is nothing.
+   */
+  hollow?: boolean;
+}
+
 /**
- * Colour key for the per-site series, shared by the trend lines and the scatter.
+ * Colour key for the per-site series.
  *
- * The swatch is a real SVG line rather than a coloured square so a dashed
- * series LOOKS dashed here too — with 12+ sites the dash is half the identity
- * of a series, and a solid chip would make two sites look like the same one.
+ * THE SWATCH HAS TO MATCH THE MARK IT EXPLAINS. `mark="line"` draws a real SVG
+ * line, dash and all, because with 12+ sites the dash is half the identity of a
+ * series and a solid chip would make two sites look like one. `mark="dot"`
+ * draws a circle at VolumeScatter's own radii and its own hollow treatment, so
+ * a reader can match a chip to a dot without translating between shapes.
  *
  * The chip layout is Tailwind because it's HTML, same as CaptureLegend; only
- * the swatch is SVG, where the literal hex rule applies.
+ * the swatch is SVG, where the literal-hex rule applies.
  */
 export function SiteLegend({
-  items
+  items,
+  mark = "line"
 }: {
-  items: { key: string; label: string; style: SeriesStyle }[];
+  items: LegendItem[];
+  mark?: "line" | "dot";
 }) {
   if (items.length === 0) return null;
   return (
     <div className="mb-4 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-splash-navy/70">
       {items.map((it) => (
         <span key={it.key} className="inline-flex items-center gap-1.5">
-          <svg width={14} height={4} viewBox="0 0 14 4" aria-hidden="true">
-            <line
-              x1={0}
-              x2={14}
-              y1={2}
-              y2={2}
-              stroke={it.style.colour}
-              strokeWidth={2}
-              strokeLinecap="round"
-              {...(it.style.dash ? { strokeDasharray: it.style.dash } : {})}
-            />
-          </svg>
+          {mark === "dot" ? (
+            <svg width={12} height={12} viewBox="0 0 12 12" aria-hidden="true">
+              <circle
+                cx={6}
+                cy={6}
+                r={it.hollow ? 4 : 5}
+                fill={it.hollow ? "#ffffff" : it.style.colour}
+                stroke={it.style.colour}
+                strokeWidth={it.hollow ? 1.5 : 0}
+                opacity={0.9}
+              />
+            </svg>
+          ) : (
+            <svg width={14} height={4} viewBox="0 0 14 4" aria-hidden="true">
+              <line
+                x1={0}
+                x2={14}
+                y1={2}
+                y2={2}
+                stroke={it.style.colour}
+                strokeWidth={2}
+                strokeLinecap="round"
+                {...(it.style.dash ? { strokeDasharray: it.style.dash } : {})}
+              />
+            </svg>
+          )}
           <span className="font-semibold">{it.label}</span>
         </span>
       ))}
