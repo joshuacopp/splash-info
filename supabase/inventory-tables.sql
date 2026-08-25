@@ -130,6 +130,16 @@ create table inventory.inventory_entries (
   -- <= 1, matching location_products: NewVisit.jsx seeds this from the
   -- location's discount, so a free product would fail on submit. Same note.
   discount            numeric not null default 0 check (discount >= 0 and discount <= 1),
+  -- Price snapshot (migration: inventory-entry-price-snapshot.sql). Captured
+  -- server-side at submit and immutable after: editing a visit preserves it,
+  -- and repricing the product does not touch it. Without this, cost was derived
+  -- from products.price_per_ml as it stands right now, so one price change
+  -- retroactively restated every visit that ever used the chemical.
+  -- Nullable, not `default 0`: 0 is a legal price (see the 100%-discount rows),
+  -- so a zero default would silently price a chemical at free and nothing
+  -- downstream would catch it. NULL means "no snapshot" and readers fall back
+  -- to the product's current price, i.e. the old behaviour.
+  price_per_ml        numeric check (price_per_ml >= 0),
   -- equipment tracking (migration 0005): a location meters with a colored tip
   -- OR a versadial number 1-32, never both; injector color identifies flow rate.
   metering_type       text check (metering_type in ('tip','versadial')),
@@ -201,7 +211,11 @@ create or replace view inventory.inventory_entry_calc as
     ie.product_id,
     sv.location_code,
     p.name  as product_name,
-    p.price_per_ml,
+    -- The snapshot first, the live product price only as a fallback for rows
+    -- filed before the snapshot column existed. coalesce rather than a straight
+    -- swap so an un-snapshotted row costs out exactly as it does today instead
+    -- of NULL, which would poison every sum built on this view.
+    coalesce(ie.price_per_ml, p.price_per_ml) as price_per_ml,
     ie.starting_qty_gal,
     ie.qty_delivered_gal,
     ie.reservoir_count_gal,
@@ -210,8 +224,9 @@ create or replace view inventory.inventory_entry_calc as
     ie.discount,
     (ie.starting_qty_gal + ie.qty_delivered_gal - ie.ending_qty_gal)               as usage_gal,
     inventory.gal_to_ml(ie.starting_qty_gal + ie.qty_delivered_gal - ie.ending_qty_gal)
-      * p.price_per_ml * (1 - ie.discount)                                         as cost,
-    inventory.gal_to_ml(ie.ending_qty_gal) * p.price_per_ml * (1 - ie.discount)    as on_hand_value,
+      * coalesce(ie.price_per_ml, p.price_per_ml) * (1 - ie.discount)              as cost,
+    inventory.gal_to_ml(ie.ending_qty_gal)
+      * coalesce(ie.price_per_ml, p.price_per_ml) * (1 - ie.discount)              as on_hand_value,
     lp.target_ml_per_car,
     vt.total_wash_count,
     case when vt.total_wash_count > 0

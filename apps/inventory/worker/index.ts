@@ -30,6 +30,8 @@ import { json, jsonError } from "@splash/http";
 import type { SupabaseClient } from "@splash/db-supabase";
 import { canWriteInventory, inventoryGate, isInventoryAdmin, userCanAccessLocation } from "./auth.js";
 import {
+  ApiError,
+  bulkUpdateProductPrices,
   createVisit,
   deleteVisit,
   getVisitLocationCode,
@@ -177,6 +179,42 @@ export default {
         return json(await upsertProduct(sb, await readJson(request)));
       }
 
+      // POST /api/products/prices — bulk price update (admin only).
+      //
+      // Separate from POST /api/products rather than a mode of it, because the
+      // two have genuinely different shapes: that one upserts ONE whole product
+      // (and creates new ones), this one moves the price on many EXISTING ones
+      // and touches no other column. Folding them together would mean a body
+      // that means "create a product" and "reprice forty" depending on a flag.
+      //
+      // Admin-only for the same reason the single-product route is: products are
+      // GLOBAL and unscoped, so there is no location check to make here — a
+      // two-site inventory_admin repricing a chemical reprices it for every site
+      // in the company. Worth knowing before widening this tier.
+      //
+      // Repricing is NOT retroactive, but only because of the price snapshot.
+      // Each inventory_entries row stores the price_per_ml it was filed at
+      // (supabase/inventory-entry-price-snapshot.sql) and calc.js prefers that
+      // over the product's current price, so this endpoint changes what future
+      // visits cost and nothing that has already been reported.
+      //
+      // That snapshot is a hard prerequisite for this route, not a nicety. Run
+      // against a database where the migration has not been applied, the first
+      // reprice here silently restates the chemical cost, blended CPC and
+      // delivery value of every visit ever filed for the products it touches —
+      // including ones already emailed to site managers — and the old prices are
+      // gone for good, because nothing recorded them.
+      if (sub === "products" && segments.length === 3 && segments[2] === "prices") {
+        if (method !== "POST") return jsonError(405, "method not allowed");
+        if (!isInventoryAdmin(session)) return jsonError(403, "admin only");
+        // Optional-chained: readJson happily returns a literal `null` for a body
+        // of "null", and `body.prices` on that is a TypeError — a 500 for what
+        // is plainly a caller mistake. `undefined` falls through to the
+        // "No price changes were submitted" 400 below.
+        const body = await readJson<{ prices?: unknown }>(request);
+        return json(await bulkUpdateProductPrices(sb, body?.prices));
+      }
+
       // POST /api/package-config — body { locationId, payload }
       if (sub === "package-config" && segments.length === 2) {
         if (method !== "POST") return jsonError(405, "method not allowed");
@@ -263,6 +301,10 @@ export default {
 
       return jsonError(404, "not found");
     } catch (err) {
+      // ApiError means the caller got it wrong — a bad price, an unknown id —
+      // and carries the status to say so. Everything else is ours and is a 500.
+      // Not logged at error level, because a mistyped price is not an incident.
+      if (err instanceof ApiError) return jsonError(err.status, err.message);
       console.error("inventory-worker request failed:", url.pathname, err);
       return jsonError(500, err instanceof Error ? err.message : "server error");
     }

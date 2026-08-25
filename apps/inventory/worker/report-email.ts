@@ -59,7 +59,8 @@ export interface ReportEntry {
   cost: number;
   onHandValue: number;
   /** Value of what was DROPPED OFF this visit — qty_delivered_gal priced at the
-   *  product's rate, discount applied. Independent of `cost`, which prices what
+   *  rate the entry was filed at (its price snapshot, not the product's current
+   *  price), discount applied. Independent of `cost`, which prices what
    *  was CONSUMED (starting + delivered − ending). A visit with a big delivery
    *  and light usage shows a large deliveredValue and a small cost, which is
    *  the whole point of reporting both. */

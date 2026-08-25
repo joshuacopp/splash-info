@@ -37,6 +37,25 @@ import { attachPrevDeltas, buildIndex, computeVisit } from "../src/lib/calc.js";
 const SCHEMA = "inventory";
 const inv = (sb: SupabaseClient) => sb.schema(SCHEMA);
 
+/**
+ * An error the CALLER caused, carrying the status that should be sent back.
+ *
+ * Everything else thrown out of this module lands in index.ts's catch and
+ * becomes a 500 with the message attached, which is right for "the database is
+ * down" and wrong for "you typed a negative price". The bulk price editor makes
+ * that distinction matter: it submits the whole edited price list at once, and an
+ * admin who fat-fingers one of them needs to be told which one, not handed a
+ * red server error.
+ */
+export class ApiError extends Error {
+  readonly status: number;
+  constructor(message: string, status = 400) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+  }
+}
+
 function newId(): string {
   return crypto.randomUUID();
 }
@@ -350,13 +369,46 @@ async function selectAll(sb: SupabaseClient, table: string): Promise<Array<Recor
 // ---------------------------------------------------------------------------
 // Visits
 // ---------------------------------------------------------------------------
-function mapEntryRow(e: Record<string, unknown>, visitId: string) {
+/**
+ * Price snapshot resolution for one entry.
+ *
+ * `snapshotFor` is asked first and the CURRENT product price is only a
+ * fallback, because the two callers need different things from this and the
+ * difference is the whole point of the column:
+ *
+ *  - createVisit has no prior snapshot, so this resolves to today's price.
+ *  - updateVisit passes the prices already stored on the visit, so correcting a
+ *    miscounted reservoir on a two-year-old visit re-writes the row WITHOUT
+ *    re-pricing it. Otherwise every edit would quietly restate that visit's
+ *    cost at today's prices — the exact thing the snapshot exists to prevent,
+ *    reintroduced through the back door, and worse than the original problem
+ *    because it would hit one visit at a time with no warning.
+ *
+ * The client's own number is never consulted. NewVisit.jsx has a price in hand
+ * (it renders live cost as you type) and sending it would be the obvious
+ * shortcut, but it is a browser-supplied figure that decides what the company
+ * is told a visit cost. Resolved server-side from `products`, always.
+ */
+type PriceLookup = (productId: string) => number | null;
+
+function mapEntryRow(
+  e: Record<string, unknown>,
+  visitId: string,
+  snapshotFor: PriceLookup,
+  currentFor: PriceLookup
+) {
   const num = (v: unknown) => Number(v) || 0;
   const nullableNum = (v: unknown) => (v == null || v === "" ? null : Number(v) || 0);
+  const productId = String(e.product_id ?? "");
+  const price = snapshotFor(productId) ?? currentFor(productId);
   return {
     id: newId(),
     site_visit_id: visitId,
     product_id: e.product_id,
+    // Null only if the product vanished between load and submit, which the
+    // on-delete-restrict FK makes near-impossible. Readers fall back to the
+    // live product price for a null, i.e. the pre-snapshot behaviour.
+    price_per_ml: price,
     starting_qty_gal: num(e.starting_qty_gal),
     qty_delivered_gal: num(e.qty_delivered_gal),
     reservoir_count_gal: e.reservoir_count_gal == null ? null : num(e.reservoir_count_gal),
@@ -369,6 +421,71 @@ function mapEntryRow(e: Record<string, unknown>, visitId: string) {
     injector_color: e.injector_color || null,
     injector_gpm: nullableNum(e.injector_gpm)
   };
+}
+
+/**
+ * Today's price for each product, straight from inventory.products.
+ *
+ * Scoped by `.in("id", ids)` rather than reading the whole table: the payload
+ * names its products, and a visit touches a handful of them.
+ *
+ * A product whose price is NULL or unparseable is deliberately left OUT of the
+ * map rather than defaulted to 0. The caller distinguishes "no price known"
+ * (null -> the entry stores NULL -> readers fall back to the live product row,
+ * i.e. exactly today's behaviour) from "the price is zero", which is a real
+ * value here. Collapsing them would write a free chemical into history.
+ */
+async function currentPriceLookup(
+  sb: SupabaseClient,
+  productIds: unknown[]
+): Promise<PriceLookup> {
+  const ids = Array.from(new Set(productIds.map((p) => String(p ?? "")).filter(Boolean)));
+  if (!ids.length) return () => null;
+  const { data, error } = await inv(sb).from("products").select("id, price_per_ml").in("id", ids);
+  if (error) throw new Error(`Failed loading product prices: ${error.message}`);
+  const m = new Map<string, number>();
+  for (const r of (data || []) as Array<Record<string, unknown>>) {
+    const n = Number(r.price_per_ml);
+    if (r.price_per_ml != null && Number.isFinite(n)) m.set(String(r.id), n);
+  }
+  return (id) => (m.has(id) ? (m.get(id) as number) : null);
+}
+
+/**
+ * The prices ALREADY pinned to a visit's entries, keyed by product.
+ *
+ * This is what makes an edit non-destructive. updateVisit deletes every entry
+ * and re-inserts from the payload, so without this read the re-insert would
+ * price the whole visit at today's rates — silently restating a visit that may
+ * already have been emailed out, and doing it one visit at a time where nobody
+ * would notice a pattern.
+ *
+ * Must be called BEFORE the delete, obviously, but also before any other write
+ * in the update: after the delete these rows do not exist.
+ *
+ * Keyed by product rather than by entry id because the client does not round-
+ * trip entry ids — the payload is a fresh list — so product is the only stable
+ * identity across the delete/insert. One product appears at most once per
+ * visit; if that were ever violated, first row wins, and both would carry the
+ * same snapshot anyway.
+ *
+ * Entries predating the backfill hold NULL and are left out of the map, so they
+ * fall through to the current price and get their snapshot on this write.
+ */
+async function visitSnapshotLookup(sb: SupabaseClient, visitId: string): Promise<PriceLookup> {
+  const { data, error } = await inv(sb)
+    .from("inventory_entries")
+    .select("product_id, price_per_ml")
+    .eq("site_visit_id", visitId);
+  if (error) throw new Error(`Failed loading existing entry prices: ${error.message}`);
+  const m = new Map<string, number>();
+  for (const r of (data || []) as Array<Record<string, unknown>>) {
+    const key = String(r.product_id ?? "");
+    if (!key || m.has(key)) continue;
+    const n = Number(r.price_per_ml);
+    if (r.price_per_ml != null && Number.isFinite(n)) m.set(key, n);
+  }
+  return (id) => (m.has(id) ? (m.get(id) as number) : null);
 }
 
 function mapWashCounts(list: unknown, visitId: string) {
@@ -404,9 +521,14 @@ export async function createVisit(sb: SupabaseClient, payload: Record<string, un
     water_hardness_gpg: reading(payload.water_hardness_gpg),
     tds_ppm: reading(payload.tds_ppm)
   };
-  const entries = ((payload.entries as Array<Record<string, unknown>>) || []).map((e) =>
-    mapEntryRow(e, visitId)
+  const payloadEntries = (payload.entries as Array<Record<string, unknown>>) || [];
+  // A brand-new visit has nothing to preserve, so there is no snapshot lookup —
+  // every entry prices at today's product price and is frozen there.
+  const currentFor = await currentPriceLookup(
+    sb,
+    payloadEntries.map((e) => e.product_id)
   );
+  const entries = payloadEntries.map((e) => mapEntryRow(e, visitId, () => null, currentFor));
   const washCounts = mapWashCounts(payload.washCounts, visitId);
 
   const { error: vErr } = await inv(sb).from("site_visits").insert(visit);
@@ -435,9 +557,17 @@ export async function updateVisit(
     water_hardness_gpg: reading(payload.water_hardness_gpg),
     tds_ppm: reading(payload.tds_ppm)
   };
-  const entries = ((payload.entries as Array<Record<string, unknown>>) || []).map((e) =>
-    mapEntryRow(e, visitId)
+  const payloadEntries = (payload.entries as Array<Record<string, unknown>>) || [];
+  // Read the existing snapshots FIRST — the delete below destroys them. A
+  // product already on the visit keeps the price it was filed at; one being
+  // added now has no history and prices at today's rate, which is correct: it
+  // is being recorded for the first time.
+  const snapshotFor = await visitSnapshotLookup(sb, visitId);
+  const currentFor = await currentPriceLookup(
+    sb,
+    payloadEntries.map((e) => e.product_id)
   );
+  const entries = payloadEntries.map((e) => mapEntryRow(e, visitId, snapshotFor, currentFor));
   const washCounts = mapWashCounts(payload.washCounts, visitId);
 
   const { error: vErr } = await inv(sb).from("site_visits").update(visitPatch).eq("id", visitId);
@@ -480,17 +610,133 @@ export async function getVisitLocationCode(
 // Products
 // ---------------------------------------------------------------------------
 export async function upsertProduct(sb: SupabaseClient, product: Record<string, unknown>) {
+  // Validated rather than coerced, matching bulkUpdateProductPrices below.
+  // `Number(x) || 0` maps null, "", false and [] all to 0, and 0 is a LEGAL
+  // price here, so nothing downstream would ever flag it — a blank box would
+  // write a free chemical and look deliberate. That was survivable while the
+  // price was read live and a correction fixed history along with it. Now the
+  // price is snapshotted onto every entry filed afterwards, so a silent 0
+  // becomes permanent in the record of each of those visits.
+  const rawPrice = product.price_per_ml;
+  const isNumeric =
+    typeof rawPrice === "number" || (typeof rawPrice === "string" && rawPrice.trim() !== "");
+  const price = isNumeric ? Number(rawPrice) : NaN;
+  if (!Number.isFinite(price) || price < 0) {
+    throw new ApiError("Price must be a number of 0 or more");
+  }
   const row = {
     id: product.id || newId(),
     name: String(product.name || "").trim(),
-    price_per_ml: Number(product.price_per_ml) || 0,
+    price_per_ml: price,
     unit_type: product.unit_type ? String(product.unit_type).trim() : null,
     description: product.description ? String(product.description).trim() : null
   };
-  if (!row.name) throw new Error("Product name is required");
+  if (!row.name) throw new ApiError("Product name is required");
   const { error } = await inv(sb).from("products").upsert(row);
   if (error) throw new Error(error.message);
   return row;
+}
+
+/**
+ * Bulk price update — one read, one write.
+ *
+ * Deliberately NOT a partial upsert. `inventory.products.name` is NOT NULL
+ * (inventory-tables.sql:53), so upserting `{ id, price_per_ml }` on its own
+ * would fail the constraint on an INSERT path and, more subtly, is a shape
+ * that only stays safe as long as nobody relaxes that column. Instead we read
+ * the rows being touched, merge the new price onto the FULL row, and upsert
+ * those — every NOT NULL column is present and `created_at` is left out of the
+ * payload entirely, so ON CONFLICT DO UPDATE never rewrites it.
+ *
+ * The read doubles as id validation. An id that isn't in `products` simply
+ * isn't in the result, and we reject the whole batch rather than quietly
+ * inserting a nameless product at that id — which a blind upsert would do.
+ *
+ * All-or-nothing on validation, but NOT transactional on the write: this goes
+ * through PostgREST, so the upsert is one statement and therefore atomic in
+ * itself, while the read that precedes it is a separate round trip. A product
+ * deleted in the gap would be re-inserted from the row we read. That is a
+ * two-admins-at-once race on a table nobody deletes from, and the alternative
+ * is an RPC; noted rather than solved.
+ */
+export async function bulkUpdateProductPrices(
+  sb: SupabaseClient,
+  updates: unknown
+): Promise<{ updated: number; products: Array<Record<string, unknown>> }> {
+  if (!Array.isArray(updates) || updates.length === 0) {
+    throw new ApiError("No price changes were submitted");
+  }
+  // A ceiling well above the real product list (dozens), so it can only ever be
+  // hit by something that is not the editor. Without it a single request can
+  // pin an id list of arbitrary length into a PostgREST `in.(...)` filter.
+  if (updates.length > 500) {
+    throw new ApiError("Too many price changes in one request");
+  }
+
+  // Keyed by id rather than kept as a list: upserting the same primary key
+  // twice in one statement is a hard Postgres error ("ON CONFLICT DO UPDATE
+  // command cannot affect row a second time"), and a client that somehow sends
+  // a duplicate deserves last-write-wins, not a 500.
+  const wanted = new Map<string, number>();
+  for (const u of updates as Array<Record<string, unknown>>) {
+    const id = String(u?.id ?? "").trim();
+    if (!id) throw new ApiError("A price change was submitted with no product id");
+    // Shape-checked here rather than left to Postgres. `products.id` is a uuid,
+    // and a non-uuid reaches PostgREST as a 22P02 invalid-input-syntax error,
+    // which surfaces as a 500 — an unhelpful way to say "that isn't a product".
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) {
+      throw new ApiError(`Not a valid product id: ${id}`);
+    }
+    // Deliberately NOT `Number(u.price_per_ml)`. Number() maps null, "", false
+    // and [] all to 0, so a client that omits a price or sends a null would
+    // silently zero the product's cost — and a zero price is a legal value here,
+    // so nothing downstream would catch it. Require a number or a non-blank
+    // numeric string and reject everything else.
+    const raw = u?.price_per_ml;
+    const isNumeric =
+      typeof raw === "number" || (typeof raw === "string" && raw.trim() !== "");
+    const price = isNumeric ? Number(raw) : NaN;
+    // The range check is also enforced by the column's `check (price_per_ml >= 0)`,
+    // but a CHECK violation arrives as an opaque 23514 naming the constraint and
+    // not the row — useless when forty products went up at once.
+    if (!Number.isFinite(price)) {
+      throw new ApiError(`Price for product ${id} is not a number`);
+    }
+    if (price < 0) {
+      throw new ApiError(`Price for product ${id} is negative`);
+    }
+    wanted.set(id, price);
+  }
+
+  const ids = [...wanted.keys()];
+  const { data, error } = await inv(sb)
+    .from("products")
+    .select("id, name, price_per_ml, unit_type, description")
+    .in("id", ids);
+  if (error) throw new Error(error.message);
+
+  const existing = (data || []) as Array<Record<string, unknown>>;
+  if (existing.length !== ids.length) {
+    const found = new Set(existing.map((r) => String(r.id)));
+    const missing = ids.filter((id) => !found.has(id));
+    throw new ApiError(
+      `Unknown product id${missing.length === 1 ? "" : "s"}: ${missing.join(", ")}`
+    );
+  }
+
+  // Drop no-op rows. The client already filters to edited rows, but it decides
+  // that by comparing strings and this compares numbers — "0.0060" and "0.006"
+  // look different up there and are the same price down here. Writing them
+  // anyway would inflate the "updated" count the admin is told about.
+  const rows = existing
+    .map((r) => ({ ...r, price_per_ml: wanted.get(String(r.id))! }))
+    .filter((r, i) => Number(existing[i]!.price_per_ml) !== r.price_per_ml);
+
+  if (!rows.length) return { updated: 0, products: [] };
+
+  const { error: upErr } = await inv(sb).from("products").upsert(rows);
+  if (upErr) throw new Error(upErr.message);
+  return { updated: rows.length, products: rows };
 }
 
 // ---------------------------------------------------------------------------

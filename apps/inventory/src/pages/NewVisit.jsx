@@ -8,6 +8,7 @@ import { draftKey, loadDraft, saveDraft, clearDraft, formatAge, SAVE_DEBOUNCE_MS
 import { Banner, EmptyState, SectionTitle, Toast, Pill } from '../components/ui'
 import { LocationHeader } from './LocationDashboard'
 import { fmtCurrency, fmtGal, fmtNumber, fmtDate, todayIso, num } from '../lib/format'
+import { handleGridEnter } from '../lib/gridnav'
 
 // Doubles as the edit form: mounted at .../visit/:visitId/edit it pre-fills
 // from that visit's own stored values and calls updateVisit instead of
@@ -33,11 +34,23 @@ export default function NewVisit() {
     const lastEnding = {}
     const lastMlPerCar = {}
     const lastEquipment = {}
+    // Price and discount as this visit was FILED, populated only when editing.
+    // Both are stored on the entry, and the worker preserves the price across
+    // the edit's delete/re-insert, so seeding the form from the current product
+    // and location rows would make the live cost the tech watches while typing
+    // disagree with the cost that is actually saved. Empty for a new visit,
+    // which is right: there is nothing filed yet to preserve.
+    const filedPrice = {}
+    const filedDiscount = {}
     const source = isEdit ? editingVisit : lastVisit ? computeVisit(dataset, idx, lastVisit.id) : null
     if (source) {
       for (const e of source.entries) {
         lastEnding[e.productId] = isEdit ? e.startingQtyGal : e.endingQtyGal
         lastMlPerCar[e.productId] = e.actualMlPerCar
+        if (isEdit) {
+          filedPrice[e.productId] = e.pricePerMl
+          filedDiscount[e.productId] = e.discount
+        }
       }
     }
 
@@ -79,8 +92,8 @@ export default function NewVisit() {
           productId: lp.product_id,
           name: p ? p.name : '(unknown)',
           description: p ? p.description : null,
-          pricePerMl: p ? num(p.price_per_ml) : 0,
-          discount: num(lp.discount),
+          pricePerMl: filedPrice[lp.product_id] ?? (p ? num(p.price_per_ml) : 0),
+          discount: filedDiscount[lp.product_id] ?? num(lp.discount),
           targetMlPerCar: lp.target_ml_per_car != null ? num(lp.target_ml_per_car) : null,
           starting: lastEnding[lp.product_id] ?? 0,
           lastMlPerCar: isEdit ? null : lastMlPerCar[lp.product_id] ?? null,
@@ -281,71 +294,25 @@ export default function NewVisit() {
     { cost: 0 }
   )
 
-  // Enter walks DOWN a column; Tab walks ACROSS a row.
+  // Enter walks DOWN a column; Tab walks ACROSS a row. The mechanics live in
+  // lib/gridnav.js (shared with the bulk price editor); what matters here is why
+  // this form has it at all.
   //
-  // Two problems solved at once. First, a <form> with a submit button submits on
-  // Enter from any single-line input — on a page whose whole job is typing a few
-  // dozen numbers, a tech reaching for Tab and hitting Enter instead filed a
-  // half-empty visit, and for a NEW visit that also queues the report email, so
-  // the mistake leaves the building. Second, the natural way to fill this sheet
-  // is one column at a time: read every reservoir off the shelf, then every
-  // floor count. Tab already does the row direction for free, because the DOM
-  // order inside a <tbody> is row-major; Enter is the one that needed code.
+  // A <form> with a submit button submits on Enter from any single-line input —
+  // on a page whose whole job is typing a few dozen numbers, a tech reaching for
+  // Tab and hitting Enter instead filed a half-empty visit, and for a NEW visit
+  // that also queues the report email, so the mistake leaves the building.
+  // gridnav preventDefault()s unconditionally, so Enter can never submit here;
+  // saving is the Save button only. The column-walk on top of that matches how
+  // the sheet is actually filled — every reservoir off the shelf, then every
+  // floor count — while Tab keeps the row direction for free.
   //
-  // The lookup is a DOM query taken at keypress time, deliberately not a cached
-  // array of refs. Products get added, removed and reordered per location, and a
-  // cached grid goes stale SILENTLY — it still has an entry at that index, it
-  // just points at the wrong chemical. Querying live cannot be stale, and it
-  // handles the equipment table's conditional cells (a row shows a tip-colour
-  // box, a versadial number, or neither) without any special casing: a cell that
-  // isn't rendered simply isn't in the list.
-  //
-  // At the bottom of a column, Enter jumps to the top of the next column in the
-  // same grid — the order you'd actually work in. Column order is read off the
-  // DOM too (first appearance wins), so it tracks the table rather than a list
-  // here that someone has to remember to update. At the very last cell it stops.
-  //
-  // Enter still behaves normally everywhere it should: textareas take a newline
-  // (the browser never implicit-submits from one), and buttons and links fire on
-  // Enter through the click path, not this one. Saving is the Save button only.
+  // Cells opt in with data-grid / data-col: "counts" (delivered / reservoir /
+  // floor), "equip" (setting / injectorColor / injectorGpm) and "washes". The
+  // equipment table's tip-colour and versadial inputs deliberately share the
+  // "setting" column key, because they occupy one table column.
   function onFormKeyDown(e) {
-    if (e.key !== 'Enter' || e.shiftKey || e.ctrlKey || e.metaKey || e.altKey) return
-    const el = e.target
-    const tag = el?.tagName
-    if (tag === 'TEXTAREA' || tag === 'BUTTON' || tag === 'A') return
-    // A <select> uses Enter to commit an open dropdown; leave it alone.
-    if (tag === 'SELECT') return
-
-    // Suppress the submit first and unconditionally. Everything below is a
-    // best-effort convenience, and none of it is allowed to be the reason an
-    // accidental Enter files a visit.
-    e.preventDefault()
-
-    const grid = el?.dataset?.grid
-    const col = el?.dataset?.col
-    if (!grid || !col) return
-
-    const cells = Array.from(e.currentTarget.querySelectorAll(`[data-grid="${grid}"]`)).filter(
-      (n) => !n.disabled
-    )
-    const inCol = cells.filter((n) => n.dataset.col === col)
-    const i = inCol.indexOf(el)
-    if (i === -1) return
-
-    let next = inCol[i + 1]
-    if (!next) {
-      const order = []
-      for (const n of cells) if (!order.includes(n.dataset.col)) order.push(n.dataset.col)
-      const nextCol = order[order.indexOf(col) + 1]
-      next = nextCol ? cells.find((n) => n.dataset.col === nextCol) : undefined
-    }
-    if (!next) return
-
-    next.focus()
-    // Select rather than just focus: every one of these cells is prefilled with
-    // a carried-forward or placeholder value, and typing over a selection is
-    // what the tech means. Focusing alone would append to the old number.
-    if (typeof next.select === 'function') next.select()
+    handleGridEnter(e, e.currentTarget)
   }
 
   async function onSubmit(e) {

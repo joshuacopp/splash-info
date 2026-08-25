@@ -1,9 +1,21 @@
 // ---------------------------------------------------------------------------
-// Calculation engine. Mirrors the SQL views in supabase/migrations exactly.
-// All derived values are computed on read; nothing derived is ever stored.
+// Calculation engine. All derived values are computed on read; nothing derived
+// is ever stored.
+//
+// THIS is what the app and the visit report email render from — the worker
+// selects the raw tables and calls in here. The SQL views in
+// supabase/inventory-tables.sql state the same model for anything querying the
+// database directly, and are kept in step deliberately, but they are not the
+// authority and they are not identical. Known divergences, so nobody "fixes"
+// one to match the other by accident:
+//   - OVER_TARGET_FACTOR is 1.3 here, 1.15 in inventory_entry_calc.
+//   - blended_target_cpc in visit_summary reads packages.target_cpc, a column
+//     savePackageConfig always writes NULL; here it is derived from package
+//     composition. The view's figure is effectively dead.
 //
 // v2 additions: per-entry discounts, package composition (computed target CPC),
 // usage trends across visits, YTD network stats, stale-site detection.
+// v3: per-entry price snapshot — see computeVisit.
 // ---------------------------------------------------------------------------
 import { num } from './format'
 
@@ -79,7 +91,20 @@ export function buildIndex(ds) {
 // Target CPC for a package, computed from its composition:
 //   Σ uses × target_ml_per_car × price_per_ml × (1 − location discount)
 // Falls back to the stored target_cpc when no composition rows exist.
-export function packageTargetCpc(idx, pkg) {
+//
+// `basisByProductId` is optional: { [productId]: { price, discount } }, the
+// price and discount a specific visit was actually costed at. It exists so a
+// visit can hold its target and its actual on the SAME basis. Actuals read the
+// per-entry snapshot of both; if targets kept reading the live product price and
+// the live location discount, then repricing a chemical — or renegotiating a
+// discount — would move the target line on every historical visit while the
+// actual line stayed put. The gap between the two is the only number anyone acts
+// on, and it would change for a reason that has nothing to do with how the site
+// performed.
+//
+// Omit the argument and this behaves exactly as it always has, at today's price
+// and today's discount, which is what a configuration screen wants.
+export function packageTargetCpc(idx, pkg, basisByProductId) {
   const comp = idx.packageProducts[pkg.id]
   if (!comp || !comp.length) {
     return pkg.target_cpc != null ? num(pkg.target_cpc) : null
@@ -90,8 +115,14 @@ export function packageTargetCpc(idx, pkg) {
     const lp = idx.locationProduct[`${pkg.location_id}|${pp.product_id}`]
     if (!product) continue
     const targetMl = lp && lp.target_ml_per_car != null ? num(lp.target_ml_per_car) : 0
-    const discount = lp ? num(lp.discount) : 0
-    total += num(pp.uses) * targetMl * num(product.price_per_ml) * (1 - discount)
+    // A product in the package that this visit never touched has no basis of its
+    // own, so each field falls back independently to the live configuration —
+    // the same fallback the entry itself would use.
+    const basis = basisByProductId ? basisByProductId[pp.product_id] : undefined
+    const price = basis && basis.price != null ? num(basis.price) : num(product.price_per_ml)
+    const discount =
+      basis && basis.discount != null ? num(basis.discount) : lp ? num(lp.discount) : 0
+    total += num(pp.uses) * targetMl * price * (1 - discount)
   }
   return total
 }
@@ -133,7 +164,16 @@ export function computeVisit(ds, idx, visitId) {
   const entryRows = idx.entriesByVisit[visitId] || []
   const entries = entryRows.map((e) => {
     const product = idx.productById[e.product_id]
-    const price = product ? num(product.price_per_ml) : 0
+    // The snapshot taken when the visit was filed, falling back to the live
+    // product price only when there isn't one (an entry predating the
+    // price_per_ml migration). Reading the product row first is what made a
+    // reprice retroactive: every past visit's chemical cost, blended CPC and
+    // delivery value moved the moment a price changed, including visits already
+    // emailed to a site manager. `!= null` and not a truthy test — 0 is a real,
+    // stored price (see the 100%-discount rows), and `|| product.price` would
+    // quietly un-freeze exactly those.
+    const price =
+      e.price_per_ml != null ? num(e.price_per_ml) : product ? num(product.price_per_ml) : 0
     const discount = num(e.discount)
     const usageGal = num(e.starting_qty_gal) + num(e.qty_delivered_gal) - num(e.ending_qty_gal)
     const usageMl = usageGal * GAL_TO_ML
@@ -192,6 +232,18 @@ export function computeVisit(ds, idx, visitId) {
     }
   })
   const entriesByProductId = Object.fromEntries(entries.map((e) => [e.productId, e]))
+  // The basis THIS visit was costed at, for the target side to share.
+  //
+  // Built from the raw rows, not from `entries`, so that only a genuine stored
+  // snapshot lands here. `entries[].pricePerMl` fabricates a 0 when the product
+  // row is missing, and 0 is a legal price — passing that through would price
+  // the chemical free on the target side instead of falling back to the live
+  // product row, which is what an absent basis is supposed to mean.
+  const basisByProductId = {}
+  for (const e of entryRows) {
+    if (e.price_per_ml == null) continue
+    basisByProductId[e.product_id] = { price: num(e.price_per_ml), discount: num(e.discount) }
+  }
 
   const packages = washRows
     .map((w) => {
@@ -200,7 +252,7 @@ export function computeVisit(ds, idx, visitId) {
         packageId: w.package_id,
         name: pkg ? pkg.name : '—',
         isAddon: pkg?.package_type === 'addon',
-        targetCpc: pkg ? packageTargetCpc(idx, pkg) : null,
+        targetCpc: pkg ? packageTargetCpc(idx, pkg, basisByProductId) : null,
         actualCpc: pkg ? packageActualCpc(idx, pkg, entriesByProductId) : null,
         washCount: num(w.wash_count),
         pct: totalWashCount > 0 && pkg?.package_type !== 'addon' ? num(w.wash_count) / totalWashCount : 0,

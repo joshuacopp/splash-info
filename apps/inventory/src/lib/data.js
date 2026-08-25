@@ -41,6 +41,15 @@ export async function upsertProduct(product) {
   return apiPost('/products', product) // -> row
 }
 
+// Bulk price update. `prices` is [{ id, price_per_ml }] and should contain ONLY
+// the products whose price actually changed — the server writes every row it is
+// handed. Sending the whole list would rewrite untouched prices at whatever
+// precision the UI happened to render them at, and price_per_ml is a plain
+// `numeric` carrying ~12 decimal places that no display format shows in full.
+export async function bulkUpdateProductPrices(prices) {
+  return apiPost('/products/prices', { prices }) // -> { updated, products }
+}
+
 // ---------------------------------------------------------------------------
 // Package configuration (per location)
 // payload: {
