@@ -370,49 +370,34 @@ async function selectAll(sb: SupabaseClient, table: string): Promise<Array<Recor
 // Visits
 // ---------------------------------------------------------------------------
 /**
- * Price snapshot resolution for one entry.
+ * Coerces one entry from the payload into the shape inventory.save_visit reads.
  *
- * `snapshotFor` is asked first and the CURRENT product price is only a
- * fallback, because the two callers need different things from this and the
- * difference is the whole point of the column:
+ * NOTE what is absent: a price. The client has one in hand — NewVisit.jsx
+ * renders live cost as you type — and forwarding it would be the obvious
+ * shortcut, but that is a browser-supplied figure deciding what the company is
+ * told a visit cost. The price is resolved inside the function, from the
+ * visit's existing snapshot first and `products` second, and the payload has no
+ * say in it.
  *
- *  - createVisit has no prior snapshot, so this resolves to today's price.
- *  - updateVisit passes the prices already stored on the visit, so correcting a
- *    miscounted reservoir on a two-year-old visit re-writes the row WITHOUT
- *    re-pricing it. Otherwise every edit would quietly restate that visit's
- *    cost at today's prices — the exact thing the snapshot exists to prevent,
- *    reintroduced through the back door, and worse than the original problem
- *    because it would hit one visit at a time with no warning.
- *
- * The client's own number is never consulted. NewVisit.jsx has a price in hand
- * (it renders live cost as you type) and sending it would be the obvious
- * shortcut, but it is a browser-supplied figure that decides what the company
- * is told a visit cost. Resolved server-side from `products`, always.
+ * Coerced here rather than left to the SQL casts so that a junk value from a
+ * malformed client becomes 0, as it always has, instead of a Postgres cast
+ * error surfacing as a 500. Blanks that mean "not recorded" (the physical
+ * counts, the equipment fields) stay null — a null and a zero are different
+ * facts for those, and the schema keeps them apart on purpose.
  */
-type PriceLookup = (productId: string) => number | null;
-
-function mapEntryRow(
-  e: Record<string, unknown>,
-  visitId: string,
-  snapshotFor: PriceLookup,
-  currentFor: PriceLookup
-) {
+function mapEntryPayload(e: Record<string, unknown>) {
   const num = (v: unknown) => Number(v) || 0;
   const nullableNum = (v: unknown) => (v == null || v === "" ? null : Number(v) || 0);
-  const productId = String(e.product_id ?? "");
-  const price = snapshotFor(productId) ?? currentFor(productId);
   return {
-    id: newId(),
-    site_visit_id: visitId,
     product_id: e.product_id,
-    // Null only if the product vanished between load and submit, which the
-    // on-delete-restrict FK makes near-impossible. Readers fall back to the
-    // live product price for a null, i.e. the pre-snapshot behaviour.
-    price_per_ml: price,
     starting_qty_gal: num(e.starting_qty_gal),
     qty_delivered_gal: num(e.qty_delivered_gal),
-    reservoir_count_gal: e.reservoir_count_gal == null ? null : num(e.reservoir_count_gal),
-    floor_count_gal: e.floor_count_gal == null ? null : num(e.floor_count_gal),
+    // nullableNum, not `== null ? null : num(...)`: an empty string has to land
+    // as NULL too. The SPA always sends numbers here (the form derives ending
+    // from reservoir + floor, so a blank box is a real 0), but "" from any other
+    // caller must not become a counted zero — see the schema note on these two.
+    reservoir_count_gal: nullableNum(e.reservoir_count_gal),
+    floor_count_gal: nullableNum(e.floor_count_gal),
     ending_qty_gal: num(e.ending_qty_gal),
     discount: num(e.discount),
     metering_type: e.metering_type || null,
@@ -423,80 +408,77 @@ function mapEntryRow(
   };
 }
 
-/**
- * Today's price for each product, straight from inventory.products.
- *
- * Scoped by `.in("id", ids)` rather than reading the whole table: the payload
- * names its products, and a visit touches a handful of them.
- *
- * A product whose price is NULL or unparseable is deliberately left OUT of the
- * map rather than defaulted to 0. The caller distinguishes "no price known"
- * (null -> the entry stores NULL -> readers fall back to the live product row,
- * i.e. exactly today's behaviour) from "the price is zero", which is a real
- * value here. Collapsing them would write a free chemical into history.
- */
-async function currentPriceLookup(
-  sb: SupabaseClient,
-  productIds: unknown[]
-): Promise<PriceLookup> {
-  const ids = Array.from(new Set(productIds.map((p) => String(p ?? "")).filter(Boolean)));
-  if (!ids.length) return () => null;
-  const { data, error } = await inv(sb).from("products").select("id, price_per_ml").in("id", ids);
-  if (error) throw new Error(`Failed loading product prices: ${error.message}`);
-  const m = new Map<string, number>();
-  for (const r of (data || []) as Array<Record<string, unknown>>) {
-    const n = Number(r.price_per_ml);
-    if (r.price_per_ml != null && Number.isFinite(n)) m.set(String(r.id), n);
-  }
-  return (id) => (m.has(id) ? (m.get(id) as number) : null);
-}
-
-/**
- * The prices ALREADY pinned to a visit's entries, keyed by product.
- *
- * This is what makes an edit non-destructive. updateVisit deletes every entry
- * and re-inserts from the payload, so without this read the re-insert would
- * price the whole visit at today's rates — silently restating a visit that may
- * already have been emailed out, and doing it one visit at a time where nobody
- * would notice a pattern.
- *
- * Must be called BEFORE the delete, obviously, but also before any other write
- * in the update: after the delete these rows do not exist.
- *
- * Keyed by product rather than by entry id because the client does not round-
- * trip entry ids — the payload is a fresh list — so product is the only stable
- * identity across the delete/insert. One product appears at most once per
- * visit; if that were ever violated, first row wins, and both would carry the
- * same snapshot anyway.
- *
- * Entries predating the backfill hold NULL and are left out of the map, so they
- * fall through to the current price and get their snapshot on this write.
- */
-async function visitSnapshotLookup(sb: SupabaseClient, visitId: string): Promise<PriceLookup> {
-  const { data, error } = await inv(sb)
-    .from("inventory_entries")
-    .select("product_id, price_per_ml")
-    .eq("site_visit_id", visitId);
-  if (error) throw new Error(`Failed loading existing entry prices: ${error.message}`);
-  const m = new Map<string, number>();
-  for (const r of (data || []) as Array<Record<string, unknown>>) {
-    const key = String(r.product_id ?? "");
-    if (!key || m.has(key)) continue;
-    const n = Number(r.price_per_ml);
-    if (r.price_per_ml != null && Number.isFinite(n)) m.set(key, n);
-  }
-  return (id) => (m.has(id) ? (m.get(id) as number) : null);
-}
-
-function mapWashCounts(list: unknown, visitId: string) {
+function mapWashCounts(list: unknown) {
   return ((list as Array<Record<string, unknown>>) || [])
     .filter((w) => w.package_id)
     .map((w) => ({
-      id: newId(),
-      site_visit_id: visitId,
       package_id: w.package_id,
       wash_count: Math.round(Number(w.wash_count) || 0)
     }));
+}
+
+/**
+ * The single write path for a visit, create and edit alike.
+ *
+ * Everything happens inside inventory.save_visit (supabase/
+ * inventory-save-visit-rpc.sql) because an edit is a REPLACE — the client posts
+ * the full entry list, so the stored entries are deleted and re-inserted — and
+ * that was four unrelated PostgREST calls with no transaction around them. A
+ * failure between the delete and the insert left the visit stripped.
+ *
+ * Survivable while every value on an entry also sat in the browser tab that
+ * submitted it. price_per_ml broke that: it is captured server-side and is the
+ * only record anywhere of what a chemical cost that day, so a half-finished
+ * edit destroyed it for good. Same reasoning puts the snapshot READ inside the
+ * function too — reading prices from here, then deleting, then inserting leaves
+ * a window in which a bulk reprice can be mistaken for the filed price.
+ */
+async function saveVisit(
+  sb: SupabaseClient,
+  visitId: string,
+  payload: Record<string, unknown>,
+  create: boolean
+) {
+  const { error } = await inv(sb).rpc("save_visit", {
+    p_visit_id: visitId,
+    p_visit: {
+      // The SPA sends the location code in `location_id`. Ignored on an edit:
+      // the function will not move a visit between sites.
+      location_code: payload.location_id,
+      visit_date: payload.visit_date,
+      submitter: payload.submitter || null,
+      notes: payload.notes || null,
+      water_hardness_gpg: reading(payload.water_hardness_gpg),
+      tds_ppm: reading(payload.tds_ppm)
+    },
+    p_entries: ((payload.entries as Array<Record<string, unknown>>) || []).map(mapEntryPayload),
+    p_wash_counts: mapWashCounts(payload.washCounts),
+    p_create: create
+  });
+  // The function is one transaction, so anything it rejects rolls the whole
+  // visit back and the client is free to fix and resubmit. Worth translating
+  // the codes: `error.message` on its own is Postgres prose naming a constraint,
+  // and rethrowing it bare made every one of these a red 500 on a mistake the
+  // person filing the visit can actually correct.
+  if (error) {
+    const known: Record<string, string> = {
+      // Safe to name the cause: site_visits has no unique constraint beyond its
+      // primary key (a fresh randomUUID), so the only 23505 reachable from here
+      // is unique (site_visit_id, product_id) or unique (site_visit_id,
+      // package_id) — i.e. the payload listed the same chemical or package
+      // twice. Add a unique on site_visits and this message stops being true.
+      "23505": "The same chemical or wash package was submitted twice on this visit",
+      // on-delete-restrict FKs: names a product or package that no longer exists.
+      "23503": "This visit refers to a chemical or package that no longer exists",
+      "23502": "An entry was submitted with no chemical selected",
+      "22P02": "An entry contained a value that is not a number",
+      "23514": "An entry contained a value outside the range the field allows"
+    };
+    const friendly = error.code ? known[error.code] : undefined;
+    if (friendly) throw new ApiError(`${friendly}. Nothing was saved.`);
+    throw new Error(error.message);
+  }
+  return { visitId };
 }
 
 // Water readings arrive as strings from the form. `|| 0` is deliberately NOT
@@ -511,80 +493,26 @@ const reading = (v: unknown) => {
 
 /** payload: { location_id, visit_date, submitter, notes, water_hardness_gpg, tds_ppm, entries[], washCounts[] } */
 export async function createVisit(sb: SupabaseClient, payload: Record<string, unknown>) {
-  const visitId = newId();
-  const visit = {
-    id: visitId,
-    location_code: payload.location_id, // SPA sends the code in location_id
-    visit_date: payload.visit_date,
-    submitter: payload.submitter || null,
-    notes: payload.notes || null,
-    water_hardness_gpg: reading(payload.water_hardness_gpg),
-    tds_ppm: reading(payload.tds_ppm)
-  };
-  const payloadEntries = (payload.entries as Array<Record<string, unknown>>) || [];
-  // A brand-new visit has nothing to preserve, so there is no snapshot lookup —
-  // every entry prices at today's product price and is frozen there.
-  const currentFor = await currentPriceLookup(
-    sb,
-    payloadEntries.map((e) => e.product_id)
-  );
-  const entries = payloadEntries.map((e) => mapEntryRow(e, visitId, () => null, currentFor));
-  const washCounts = mapWashCounts(payload.washCounts, visitId);
-
-  const { error: vErr } = await inv(sb).from("site_visits").insert(visit);
-  if (vErr) throw new Error(vErr.message);
-  if (entries.length) {
-    const { error } = await inv(sb).from("inventory_entries").insert(entries);
-    if (error) throw new Error(error.message);
-  }
-  if (washCounts.length) {
-    const { error } = await inv(sb).from("wash_counts").insert(washCounts);
-    if (error) throw new Error(error.message);
-  }
-  return { visitId };
+  // A brand-new visit has no prior snapshot, so every entry prices at the
+  // product's current price and is frozen there.
+  return saveVisit(sb, newId(), payload, true);
 }
 
-/** Replaces a visit's own fields plus its full set of entries/wash_counts. */
+/**
+ * Replaces a visit's own fields plus its full set of entries/wash_counts.
+ *
+ * A product already on the visit keeps the price it was filed at; one being
+ * added by this edit has no history and prices at today's rate, which is right
+ * — it is being recorded for the first time. Both happen inside the function,
+ * in one transaction, so a failure part-way leaves the visit exactly as it was
+ * rather than stripped of the only copy of its prices.
+ */
 export async function updateVisit(
   sb: SupabaseClient,
   visitId: string,
   payload: Record<string, unknown>
 ) {
-  const visitPatch = {
-    visit_date: payload.visit_date,
-    submitter: payload.submitter || null,
-    notes: payload.notes || null,
-    water_hardness_gpg: reading(payload.water_hardness_gpg),
-    tds_ppm: reading(payload.tds_ppm)
-  };
-  const payloadEntries = (payload.entries as Array<Record<string, unknown>>) || [];
-  // Read the existing snapshots FIRST — the delete below destroys them. A
-  // product already on the visit keeps the price it was filed at; one being
-  // added now has no history and prices at today's rate, which is correct: it
-  // is being recorded for the first time.
-  const snapshotFor = await visitSnapshotLookup(sb, visitId);
-  const currentFor = await currentPriceLookup(
-    sb,
-    payloadEntries.map((e) => e.product_id)
-  );
-  const entries = payloadEntries.map((e) => mapEntryRow(e, visitId, snapshotFor, currentFor));
-  const washCounts = mapWashCounts(payload.washCounts, visitId);
-
-  const { error: vErr } = await inv(sb).from("site_visits").update(visitPatch).eq("id", visitId);
-  if (vErr) throw new Error(vErr.message);
-  const { error: delE } = await inv(sb).from("inventory_entries").delete().eq("site_visit_id", visitId);
-  if (delE) throw new Error(delE.message);
-  const { error: delW } = await inv(sb).from("wash_counts").delete().eq("site_visit_id", visitId);
-  if (delW) throw new Error(delW.message);
-  if (entries.length) {
-    const { error } = await inv(sb).from("inventory_entries").insert(entries);
-    if (error) throw new Error(error.message);
-  }
-  if (washCounts.length) {
-    const { error } = await inv(sb).from("wash_counts").insert(washCounts);
-    if (error) throw new Error(error.message);
-  }
-  return { visitId };
+  return saveVisit(sb, visitId, payload, false);
 }
 
 export async function deleteVisit(sb: SupabaseClient, visitId: string) {

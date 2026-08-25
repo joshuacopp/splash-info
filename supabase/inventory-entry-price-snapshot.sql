@@ -1,16 +1,22 @@
 -- ============================================================================
 -- Snapshot the chemical price onto each inventory entry.
 --
--- RUN THIS FIRST -- before deploying the worker, and before anyone uses the
--- bulk price editor. Two separate reasons, both hard:
+-- RUN THIS FIRST -- it is step 1 of 3, in this order:
 --
---   1. The worker now writes price_per_ml on every entry insert (worker/db.ts,
---      mapEntryRow). Against a database without this column PostgREST rejects
---      the insert outright, so filing OR editing any visit fails. Since deploys
---      go out on a git push, the SQL has to be applied before the push lands.
---   2. Until it has run there is no record anywhere of what a chemical cost on
---      the day of a visit, and the first price change destroys that information
---      permanently.
+--   1. THIS FILE                          (adds the column, backfills, views)
+--   2. inventory-save-visit-rpc.sql       (the function that reads the column)
+--   3. git push                           (CI deploys the worker that calls it)
+--
+-- Two separate reasons the order is hard:
+--
+--   1. Step 2 will not compile against a database without this column -- the
+--      function body selects and inserts price_per_ml -- and the deployed worker
+--      writes every visit through that function, so getting the order wrong
+--      means filing OR editing any visit fails outright. Deploys go out on a git
+--      push, so both SQL files have to be applied before the push lands.
+--   2. Until this file has run there is no record anywhere of what a chemical
+--      cost on the day of a visit, and the first price change destroys that
+--      information permanently.
 --
 -- WHY
 --
@@ -62,7 +68,8 @@ alter table inventory.inventory_entries
 
 comment on column inventory.inventory_entries.price_per_ml is
   'Price per ml as of the visit, captured server-side at submit. Immutable once '
-  'set: editing a visit preserves it (worker/db.ts updateVisit), and changing '
+  'set: editing a visit deletes and re-inserts its entries but carries the '
+  'snapshot across (inventory.save_visit), and changing '
   'inventory.products.price_per_ml does not touch it. NULL means no snapshot, '
   'in which case readers fall back to the product''s current price.';
 
