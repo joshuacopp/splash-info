@@ -110,13 +110,74 @@ export function customField(
 }
 
 /**
+ * Parse a human-typed money string into a non-negative number, or null.
+ *
+ * WHY THIS EXISTS: Beekeeper's "number" custom-field type only accepts whole
+ * integers, which cannot express an $18.50 rate. The `rate` field was therefore
+ * recreated as a TEXT field, and text means operators type whatever looks right
+ * to them — "$18.50", "18,50", "18.50/hr". Raw `Number()` returns NaN for every
+ * one of those, and NaN lands as null, which the scheduler renders as "unrated"
+ * and prices at $0. A whole location can silently read as free labor because
+ * someone typed a dollar sign.
+ *
+ * WHY IT IS STILL STRICT: the tolerance is a fixed list of decorations that get
+ * stripped, followed by a whitelist match on what remains. It is deliberately
+ * NOT "pull the first number out of the string". A range like "16-18" or a note
+ * like "18 starting 9/1" must stay null — guessing which number an ambiguous
+ * entry meant is how a wrong pay rate ships and never gets noticed. Rejecting
+ * shows up as an explicit unrated flag on the schedule, which someone fixes.
+ *
+ * Negatives are rejected rather than passed through: beekeeper_users.rate
+ * carries a `rate >= 0` CHECK, and a negative would throw on upsert and fail
+ * the entire 500-row chunk for every other user in it.
+ */
+function parseMoneyish(input: string): number | null {
+  // Strip all whitespace, including the non-breaking and narrow-no-break
+  // spaces that arrive when a value is pasted out of a spreadsheet or a PDF.
+  let t = input.replace(/[\s\u00a0\u202f]/g, "");
+  if (!t) return null;
+
+  // Currency decoration, leading or trailing.
+  t = t.replace(/^(?:\$|usd)/i, "").replace(/(?:\$|usd)$/i, "");
+  // Rate-unit suffixes: "/hr", "/hour", "/h", "hr", "hour".
+  t = t.replace(/\/?(?:hours?|hrs?|h)$/i, "");
+  if (!t) return null;
+
+  const hasDot = t.includes(".");
+  const hasComma = t.includes(",");
+  if (hasComma) {
+    if (hasDot) {
+      // "1,200.50" — comma can only be a thousands separator here.
+      t = t.replace(/,/g, "");
+    } else if (/^\d+,\d{1,2}$/.test(t)) {
+      // "18,50" — European decimal comma. One or two trailing digits only, so
+      // "1,200" is not silently reinterpreted as one and two tenths.
+      t = t.replace(",", ".");
+    } else if (/^\d{1,3}(?:,\d{3})+$/.test(t)) {
+      // "1,200" — thousands grouping.
+      t = t.replace(/,/g, "");
+    } else {
+      // Anything else with a comma is ambiguous. Reject.
+      return null;
+    }
+  }
+
+  // Whitelist: digits, optional single decimal point, nothing else. This is
+  // what keeps the stripping above from turning garbage into a plausible
+  // number — no exponent, no sign, no stray characters survive to Number().
+  if (!/^\d+(?:\.\d+)?$/.test(t)) return null;
+
+  const n = Number(t);
+  return Number.isFinite(n) ? n : null;
+}
+
+/**
  * Numeric custom field, or null when unset / blank / unparseable.
  *
- * Beekeeper declares `rate` as type "number" but has been seen returning
- * numeric values as JSON strings on some profiles, so a numeric string is
- * accepted. An empty string maps to null, NOT to 0: an unentered rate is
- * unknown cost, and collapsing it to zero is exactly what would make an
- * unpriced day look cheap instead of incomplete.
+ * An empty string maps to null, NOT to 0: an unentered rate is unknown cost,
+ * and collapsing it to zero is exactly what would make an unpriced day look
+ * cheap instead of incomplete. Same reasoning applies to anything parseMoneyish
+ * refuses — see its note on why rejecting beats guessing.
  */
 export function customFieldNumber(
   user: BeekeeperUser,
@@ -125,12 +186,7 @@ export function customFieldNumber(
   const raw = customField(user, key)?.value;
   if (raw === null || raw === undefined) return null;
   if (typeof raw === "number") return Number.isFinite(raw) ? raw : null;
-  if (typeof raw === "string") {
-    const trimmed = raw.trim();
-    if (!trimmed) return null;
-    const n = Number(trimmed);
-    return Number.isFinite(n) ? n : null;
-  }
+  if (typeof raw === "string") return parseMoneyish(raw);
   return null;
 }
 
