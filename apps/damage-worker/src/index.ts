@@ -998,9 +998,9 @@ async function getContactRoster(env: Env, session: Session, url: URL): Promise<R
  * Brief 67 (2026-05-07) extended the response shape:
  *   - by_location[].avg_days_open: number | null — average age in days of
  *     currently-open claims at that location (NULL when zero open claims).
- *   - by_damage_type_approved[].cost: number — sum of Quote + Receipt
- *     amounts for approved-family claims, grouped by damage_type. Mirrors
- *     the global Repair Cost rollup but split by damage_type.
+ *   - by_damage_type_approved[].cost: number — cost basis summed across
+ *     approved-family claims, grouped by damage_type. Mirrors the global
+ *     Repair Cost rollup but split by damage_type.
  *   - by_location_drilldown: 5-bucket per-(location, damage_type) split
  *     (open / denied / approved / closed_approved / closed_other). The
  *     apps/web renderer aggregates `denied + closed_approved + closed_other`
@@ -1008,10 +1008,14 @@ async function getContactRoster(env: Env, session: Session, url: URL): Promise<R
  *     for the operator-facing "Approved" view, matching the per-location
  *     table's column semantics.
  *
- * Brief 67 also reframes the cost rollup: receipts are paid out, approved
- * quotes are committed; both are real spend, so summing them is the
- * intended behavior (operator confirmed 2026-05-07). The earlier "v2
- * limitation" framing is dropped.
+ * Cost basis (2026-08-27, supersedes Brief 67). Brief 67 claimed "receipts are
+ * paid out, approved quotes are committed; both are real spend, so summing them
+ * is the intended behavior." The second half was never implemented: the rollups
+ * summed every Quote row and never once looked at approved_quote_id, so
+ * competing bids on a single claim all counted as spend. Every rollup below now
+ * goes through claimCostExpr — receipt total, else approved_amount, else zero.
+ * There is no known exposure until a quote is approved or a receipt is uploaded
+ * (operator confirmed 2026-08-27).
  * ============================================================ */
 
 type ReportingWindow =
@@ -1260,16 +1264,41 @@ async function getReporting(env: Env, session: Session, url: URL): Promise<Respo
       AND deleted_at IS NULL
       AND claim_status = 'Closed — Denied'
   `;
+  // Cost basis, single source of truth for every rollup below.
+  //
+  //   1. sum of Receipt amounts, if any   — money that actually left
+  //   2. else claims.approved_amount      — the figure committed at quote approval
+  //   3. else zero
+  //
+  // Unapproved quotes are NOT spend. 'Approved — Pending Quotes' means the
+  // *claim* was approved (liability accepted), not a quote — quote approval is
+  // two transitions later and is the only thing that sets approved_amount /
+  // approved_quote_id. Summing raw Quote rows therefore counted every competing
+  // bid on a claim as if all of them had been paid: one LeRay claim reported
+  // $5,866.02 (three bids from two shops, one duplicate upload, plus the
+  // receipt) against $1,862.46 actually spent. A receipt supersedes the quote
+  // it pays, so it wins outright rather than adding to it.
+  //
+  // Correlated subquery rather than a JOIN so a claim contributes exactly one
+  // value no matter how many documents hang off it. That also removes the row
+  // multiplication the old LEFT JOIN versions had to defend against with
+  // COUNT(DISTINCT ...).
+  const claimCostExpr = (c: string) => `COALESCE(
+        (SELECT SUM(r.amount)
+           FROM claim_photos r
+          WHERE r.claim_id = ${c}.claim_id
+            AND r.deleted_at IS NULL
+            AND r.photo_type = 'Receipt'
+            AND r.amount IS NOT NULL),
+        ${c}.approved_amount,
+        0
+      )`;
   const costSql = `
-    SELECT COALESCE(SUM(cp.amount), 0) AS cost
-    FROM claim_photos cp
-    JOIN claims c ON c.claim_id = cp.claim_id
+    SELECT COALESCE(SUM(${claimCostExpr("c")}), 0) AS cost
+    FROM claims c
     WHERE c.submitted_at BETWEEN ?1 AND ?2
       AND c.location_code IN (${inPlaceholders})
       AND c.deleted_at IS NULL
-      AND cp.deleted_at IS NULL
-      AND cp.photo_type IN ('Quote', 'Receipt')
-      AND cp.amount IS NOT NULL
       AND (
         c.claim_status LIKE 'Approved —%'
         OR c.claim_status = 'Closed — Paid'
@@ -1320,15 +1349,11 @@ async function getReporting(env: Env, session: Session, url: URL): Promise<Respo
     GROUP BY location_code
   `;
   const byLocationCostSql = `
-    SELECT c.location_code, COALESCE(SUM(cp.amount), 0) AS cost
-    FROM claim_photos cp
-    JOIN claims c ON c.claim_id = cp.claim_id
+    SELECT c.location_code, COALESCE(SUM(${claimCostExpr("c")}), 0) AS cost
+    FROM claims c
     WHERE c.submitted_at BETWEEN ?1 AND ?2
       AND c.location_code IN (${inPlaceholders})
       AND c.deleted_at IS NULL
-      AND cp.deleted_at IS NULL
-      AND cp.photo_type IN ('Quote', 'Receipt')
-      AND cp.amount IS NOT NULL
       AND (
         c.claim_status LIKE 'Approved —%'
         OR c.claim_status = 'Closed — Paid'
@@ -1360,23 +1385,17 @@ async function getReporting(env: Env, session: Session, url: URL): Promise<Respo
     GROUP BY damage_type
     ORDER BY n DESC
   `;
-  // Brief 67: by_damage_type_approved gains a `cost` column. LEFT JOIN
-  // claim_photos so claims without any photos still surface with cost = 0;
-  // COUNT(DISTINCT claim_id) because the join multiplies rows when a claim
-  // has multiple photos. cp.deleted_at goes in the JOIN clause to preserve
-  // LEFT JOIN semantics on photo-less claims.
+  // Brief 67: by_damage_type_approved gains a `cost` column. The old version
+  // LEFT JOINed claim_photos and needed COUNT(DISTINCT claim_id) to undo the
+  // row multiplication; claimCostExpr is a correlated subquery, so there is no
+  // join, no multiplication, and photo-less claims naturally fall through to
+  // cost = 0.
   const byDamageTypeApprovedSql = `
     SELECT
       COALESCE(c.damage_type, '(none)') AS damage_type,
-      COUNT(DISTINCT c.claim_id) AS n,
-      COALESCE(
-        SUM(CASE WHEN cp.photo_type IN ('Quote', 'Receipt')
-                 AND cp.amount IS NOT NULL
-                 THEN cp.amount END),
-        0
-      ) AS cost
+      COUNT(*) AS n,
+      COALESCE(SUM(${claimCostExpr("c")}), 0) AS cost
     FROM claims c
-    LEFT JOIN claim_photos cp ON cp.claim_id = c.claim_id AND cp.deleted_at IS NULL
     WHERE c.submitted_at BETWEEN ?1 AND ?2
       AND c.location_code IN (${inPlaceholders})
       AND c.deleted_at IS NULL
@@ -1433,15 +1452,9 @@ async function getReporting(env: Env, session: Session, url: URL): Promise<Respo
         ELSE 'closed_other'
       END AS outcome_bucket,
       COALESCE(c.damage_type, '(none)') AS damage_type,
-      COUNT(DISTINCT c.claim_id) AS n,
-      COALESCE(
-        SUM(CASE WHEN cp.photo_type IN ('Quote', 'Receipt')
-                 AND cp.amount IS NOT NULL
-                 THEN cp.amount END),
-        0
-      ) AS cost
+      COUNT(*) AS n,
+      COALESCE(SUM(${claimCostExpr("c")}), 0) AS cost
     FROM claims c
-    LEFT JOIN claim_photos cp ON cp.claim_id = c.claim_id AND cp.deleted_at IS NULL
     WHERE c.submitted_at BETWEEN ?1 AND ?2
       AND c.location_code IN (${inPlaceholders})
       AND c.deleted_at IS NULL
