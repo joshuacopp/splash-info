@@ -1,11 +1,18 @@
-// Brief 42 — MaintainX work-order creation helper.
+// Brief 42 — damage claim → MaintainX work order.
 //
-// Single responsibility: format and POST a Work Order to the MaintainX
-// REST API. Returns a structured result object — never throws (fetch
-// errors are caught and surfaced as ok:false). Caller decides what to do
-// with failures: handleClaimSubmission swallows them and writes an
-// activity-log entry; Brief 43's GM-side modal will surface the error
-// inline.
+// What lives here is the DOMAIN half only: how a ClaimRow becomes a title,
+// a description and an assignee list. The HTTP half — building the request,
+// POSTing it, parsing the id out of whatever envelope MaintainX returns,
+// and never throwing — moved to `@splash/maintainx` when that client was
+// deduplicated out of this worker and splash-workorders.
+//
+// This file stays because the shared client must not import `ClaimRow`. A
+// MaintainX client that knows what a damage claim is cannot be used by the
+// chemical-inventory app, which was the whole point of extracting it.
+//
+// The exported surface is deliberately unchanged from the pre-extraction
+// version — `createMaintainXWorkOrder(input): Promise<MaintainXResult>` with
+// the same CreateInput fields — so index.ts's two call sites did not move.
 //
 // Assignee IDs are encoded as module-level const arrays so they're
 // grep-able when an assignee leaves the company:
@@ -19,39 +26,34 @@
 //                    assignees)
 
 import type { ClaimRow } from "@splash/types/claims";
+import {
+  createMaintainXWorkOrder as createWorkOrder,
+  type CreateWorkOrderResult,
+  type MaintainXAssignee
+} from "@splash/maintainx";
 
 /** Production assignees — paged on real customer-claim submissions.
  *  Every object MUST include `type: "USER"`; MaintainX 400s otherwise
- *  with `assignees.0.type` fieldPath (confirmed 2026-05-06, Brief 46). */
-const ASSIGNEES_PRODUCTION = [
+ *  with `assignees.0.type` fieldPath (confirmed 2026-05-06, Brief 46).
+ *  The `MaintainXAssignee` annotation is what now makes the compiler
+ *  enforce that, rather than MaintainX enforcing it at runtime. */
+const ASSIGNEES_PRODUCTION: readonly MaintainXAssignee[] = [
   { type: "USER", id: 409112 }, // Brett Sullivan (bsullivan@splashcarwashes.com)
   { type: "USER", id: 426577 }  // Scott Butler   (scott.butler@splashcarwashes.com)
-] as const;
+];
 
 /** Test assignee — Josh only. Used for dev/staging probes. */
-const ASSIGNEES_TEST = [
+const ASSIGNEES_TEST: readonly MaintainXAssignee[] = [
   { type: "USER", id: 443948 }  // Josh Copp (josh.copp@splashcarwashes.com)
-] as const;
+];
 
-function assigneesByMode(
-  mode: "production" | "test"
-): ReadonlyArray<{ type: "USER"; id: number }> {
+function assigneesByMode(mode: "production" | "test"): readonly MaintainXAssignee[] {
   return mode === "production" ? ASSIGNEES_PRODUCTION : ASSIGNEES_TEST;
 }
 
-/** Cap on the body text echoed back in the error string when MaintainX
- *  returns a non-2xx — keeps activity-log entries from bloating. */
-const ERROR_BODY_MAX_BYTES = 2 * 1024;
-
-export interface MaintainXResult {
-  ok: boolean;
-  workOrderId: number | null;
-  error: string | null;
-  /** HTTP status (or 0 if request never sent / network error). */
-  status: number;
-  /** Compact payload echoed back for audit/log purposes. */
-  request: Record<string, unknown>;
-}
+/** Unchanged result shape. Aliased rather than redeclared so the two stay
+ *  in lockstep; index.ts imports this name at three places. */
+export type MaintainXResult = CreateWorkOrderResult;
 
 interface CreateInput {
   claim: ClaimRow;
@@ -119,118 +121,29 @@ function buildDescription(claim: ClaimRow, appsWebBaseUrl: string): string {
   ].join("\n");
 }
 
-function buildPayload(input: CreateInput): Record<string, unknown> {
-  const title = buildTitle(input.locationPretty, input.claim);
-  const description = buildDescription(input.claim, input.appsWebBaseUrl);
-  const assignees = assigneesByMode(input.mode);
-  const body: Record<string, unknown> = {
-    title,
-    description,
-    priority: "HIGH",
-    categories: ["Vehicle Damage"],
-    assignees
-  };
-  if (input.maintainxLocationId != null) {
-    body.locationId = input.maintainxLocationId;
-  }
-  return body;
-}
-
 /**
- * Extract the created Work Order ID from a MaintainX response body. The
- * API response shape isn't formally locked in this repo yet — try the
- * top-level `id` first (MaintainX docs example), then `workOrder.id`,
- * then `data.id`. Returns null if none parse.
+ * Format and POST a damage claim to MaintainX as a Work Order.
+ *
+ * Never throws — the shared client catches fetch errors and surfaces them
+ * as `ok: false`. Caller decides what to do with failures:
+ * handleClaimSubmission swallows them and writes an activity-log entry;
+ * the GM-side modal surfaces the error inline.
  */
-function extractWorkOrderId(body: unknown): number | null {
-  if (!body || typeof body !== "object") return null;
-  const obj = body as Record<string, unknown>;
-  const candidates: unknown[] = [
-    obj.id,
-    (obj.workOrder as { id?: unknown } | undefined)?.id,
-    (obj.data as { id?: unknown } | undefined)?.id
-  ];
-  for (const c of candidates) {
-    if (typeof c === "number" && Number.isFinite(c)) return c;
-    if (typeof c === "string" && /^\d+$/.test(c)) return Number.parseInt(c, 10);
-  }
-  return null;
-}
-
 export async function createMaintainXWorkOrder(
   input: CreateInput
 ): Promise<MaintainXResult> {
-  const body = buildPayload(input);
-  const url = `${input.baseUrl.replace(/\/$/, "")}/workorders`;
-
-  let res: Response;
-  try {
-    res = await fetch(url, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${input.apiKey}`
-      },
-      body: JSON.stringify(body),
-      signal: input.signal
-    });
-  } catch (e) {
-    return {
-      ok: false,
-      workOrderId: null,
-      error: e instanceof Error ? e.message : String(e),
-      status: 0,
-      request: body
-    };
-  }
-
-  if (!res.ok) {
-    let errText = "";
-    try {
-      errText = await res.text();
-    } catch {
-      // ignore — we'll surface the bare status
-    }
-    const truncated = errText.slice(0, ERROR_BODY_MAX_BYTES);
-    return {
-      ok: false,
-      workOrderId: null,
-      error: `MX ${res.status}: ${truncated}`,
-      status: res.status,
-      request: body
-    };
-  }
-
-  let parsed: unknown = null;
-  try {
-    parsed = await res.json();
-  } catch {
-    // Non-JSON body on a 2xx — surface as a parse failure but keep status.
-    return {
-      ok: false,
-      workOrderId: null,
-      error: `MX ${res.status}: response was not valid JSON`,
-      status: res.status,
-      request: body
-    };
-  }
-
-  const workOrderId = extractWorkOrderId(parsed);
-  if (workOrderId == null) {
-    return {
-      ok: false,
-      workOrderId: null,
-      error: `MX ${res.status}: response missing recognizable work order id (tried id, workOrder.id, data.id)`,
-      status: res.status,
-      request: body
-    };
-  }
-
-  return {
-    ok: true,
-    workOrderId,
-    error: null,
-    status: res.status,
-    request: body
-  };
+  return createWorkOrder({
+    title: buildTitle(input.locationPretty, input.claim),
+    description: buildDescription(input.claim, input.appsWebBaseUrl),
+    priority: "HIGH",
+    categories: ["Vehicle Damage"],
+    assignees: assigneesByMode(input.mode),
+    // Passed through as-is: the shared client omits the field entirely when
+    // null, so an unmapped site still files a work order, just without a
+    // location. That was the pre-extraction behaviour.
+    locationId: input.maintainxLocationId,
+    apiKey: input.apiKey,
+    baseUrl: input.baseUrl,
+    signal: input.signal
+  });
 }

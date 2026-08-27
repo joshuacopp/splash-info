@@ -14,6 +14,7 @@
     "@splash/auth": "workspace:*",
     "@splash/db-supabase": "workspace:*",
     "@splash/http": "workspace:*",
+    "@splash/maintainx": "workspace:*",
     "@splash/types": "workspace:*"
   },
   "devDependencies": {

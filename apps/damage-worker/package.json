@@ -15,6 +15,7 @@
     "@splash/db-d1": "workspace:*",
     "@splash/db-supabase": "workspace:*",
     "@splash/http": "workspace:*",
+    "@splash/maintainx": "workspace:*",
     "@splash/storage-r2": "workspace:*",
     "@splash/types": "workspace:*",
     "file-type": "^19.6.0",

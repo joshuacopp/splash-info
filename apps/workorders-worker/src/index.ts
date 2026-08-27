@@ -45,7 +45,7 @@ import {
   uploadMaintainXWorkRequestFile,
   type RawWorkOrder,
   type RawWorkRequest
-} from "./maintainx.js";
+} from "@splash/maintainx";
 import { runMaintainXUserTeamSync, type SyncResult } from "./sync.js";
 
 interface Env extends SupabaseEnv {
