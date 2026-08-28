@@ -36,6 +36,7 @@ import type {
   ExpenseCategory,
   ExpenseEntryInsert,
   ExpenseEntryRow,
+  ExpenseEntryUpdate,
   ExpenseLaborRateInsert,
   ExpenseLaborRateRow,
   ExpenseListFilters,
@@ -329,6 +330,34 @@ export async function listExpenses(
   return (data ?? []) as unknown as ExpenseEntryRow[];
 }
 
+/**
+ * One entry by id, for the edit form to prefill from and for the worker to
+ * scope-check an edit against.
+ *
+ * INCLUDES VOIDED ROWS, which every other read here refuses. Both callers need
+ * them: the worker has to be able to answer "voided" rather than "not found",
+ * and a prefill that 404s on a voided row sends somebody looking for a line they
+ * can see sitting in the log. This is the reason the filter is not folded into
+ * the shared query path — it is a genuine exception, and it is scoped to
+ * single-row lookups where a voided row cannot silently land in a total.
+ *
+ * Returns null rather than throwing when the id matches nothing. A caller
+ * looking a row up by an id from a URL is asking a question, not asserting the
+ * row exists; the RPC is where "not found" becomes an error.
+ */
+export async function getExpenseEntry(
+  client: SupabaseClient,
+  id: string
+): Promise<ExpenseEntryRow | null> {
+  const { data, error } = await client
+    .from("expense_entry")
+    .select(ENTRY_COLS)
+    .eq("id", id)
+    .maybeSingle();
+  if (error) throw error;
+  return (data as unknown as ExpenseEntryRow | null) ?? null;
+}
+
 /* ============================================================
  * Entries — writes
  * ============================================================ */
@@ -401,6 +430,75 @@ export async function insertExpenseEntry(
   // a hard error rather than returning a half-typed row.
   if (data == null) {
     throw new Error("insert_expense_entry returned no row");
+  }
+  return data as unknown as ExpenseEntryRow;
+}
+
+/**
+ * Correct a posted entry. Every field is rewritten; see ExpenseEntryUpdate.
+ *
+ * AN RPC FOR THE SAME REASON THE INSERT IS ONE. An edit that moves the row's
+ * site or date moves it into a different PO sequence, so it has to take the same
+ * `pg_advisory_xact_lock` and mint the next number inside the same transaction
+ * as the write. A read-then-update from here would drop the lock between the two
+ * and hand two concurrent edits the same sequence number.
+ *
+ * THE PO IS REISSUED ONLY WHEN THE NAMESPACE MOVES — i.e. when `location_id` or
+ * `business_date` actually changes. Fixing a typo in the initials rebuilds the
+ * PO string around the same `po_seq`; it does not consume a new number. Note
+ * that a move LEAVES A GAP in the old day's sequence and the number printed on
+ * the original paper invoice no longer resolves. That was accepted deliberately
+ * (see the header of supabase/expense-edit-02.sql) as the price of editable
+ * dates and sites.
+ *
+ * HOURLY ROWS ARE RE-PRICED FROM THE NEW DATE, not from the rate already stored
+ * on the row. Once the date is editable, carrying the old rate forward produces
+ * a row dated the 21st priced at the 20th's rate, which can neither explain
+ * itself nor satisfy the expense_entry_labor_amount_matches CHECK. As on insert,
+ * `input.amount` is ignored on the hourly path — pass 0.
+ *
+ * NOT-FOUND AND ALREADY-VOIDED ARE RAISED, NOT RETURNED. Unlike
+ * voidExpenseEntry, which probes on its cold path, the RPC knows both cases
+ * itself and raises P0002 and 22023 respectively — the worker's translatePgError
+ * turns those into a 404 and a 409. There is nothing for a second round trip
+ * here to discover.
+ *
+ * The location triple is the DESTINATION, and must come from
+ * resolveExpenseLocationKey() like the insert's. Checking that the caller may
+ * write to the row's CURRENT location is the worker's job and cannot be done
+ * here: this function has no scope to check against, and an edit that only
+ * validated the destination would let a location admin pull another site's row
+ * into their own.
+ */
+export async function updateExpenseEntry(
+  client: SupabaseClient,
+  input: ExpenseEntryUpdate
+): Promise<ExpenseEntryRow> {
+  const { data, error } = await client.rpc("update_expense_entry", {
+    p_id: input.id,
+    p_business_date: input.business_date,
+    p_location_id: input.location_id,
+    p_site_number: input.site_number,
+    p_location_code: input.location_code,
+    // Same one-word rename as the insert: column `po_initials`, param
+    // `p_initials`.
+    p_initials: input.po_initials,
+    p_method: input.method ?? null,
+    p_description: input.description ?? null,
+    p_category_key: input.category_key,
+    p_amount: input.amount,
+    p_updated_by: input.updated_by,
+    p_updated_by_email: input.updated_by_email,
+    p_labor_hours: input.labor_hours ?? null,
+    p_mechanic_key: input.mechanic_key ?? null
+  });
+  if (error) throw error;
+
+  // RETURNS expense_entry, so this is a single object. Null would mean the
+  // function returned nothing, which it has no path to do — every failure it
+  // knows about is a RAISE.
+  if (data == null) {
+    throw new Error("update_expense_entry returned no row");
   }
   return data as unknown as ExpenseEntryRow;
 }

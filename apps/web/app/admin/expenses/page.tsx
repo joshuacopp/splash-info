@@ -298,6 +298,22 @@ export default async function ExpensesPage({ searchParams }: PageProps) {
   const today = localDay(Date.now());
   const todayIsInMonth = today.slice(0, 7) === month.slice(0, 7);
 
+  // URL-DRIVEN EDIT, matching /admin/greeters. `?edit_id=` opens the form
+  // seeded from that row; the close control is a <Link> back to the unadorned
+  // view, so the back button closes it and nothing needs client state.
+  //
+  // Found IN THE ALREADY-FETCHED LIST rather than re-fetched by id. The row is
+  // on screen — a sixth request would be a second copy of the same data, free to
+  // disagree with the table behind the form. The consequence is that `edit_id`
+  // only resolves against the CURRENT filters: an id from a different month
+  // silently opens nothing, which is right, because editing a row you can't see
+  // is how the wrong row gets edited.
+  //
+  // `edit_id` is deliberately absent from `returnQs` (built from the filters
+  // alone), so a successful save lands back on the list with the form closed.
+  const editId = firstParam(sp.edit_id).trim();
+  const editRow = editId ? entries.find((e) => e.id === editId) ?? null : null;
+
   return (
     <section className="mx-auto w-full max-w-[1200px] px-5 py-9">
       <ActionAlert message={actionError} />
@@ -545,26 +561,90 @@ export default async function ExpensesPage({ searchParams }: PageProps) {
         ))
       )}
 
-      {/* Entry form */}
-      <Card
-        title="Log an expense"
-        subtitle="One purchase, one category, one amount — or, for maintenance labor, the hours billed. The PO number is assigned when you save."
-      >
-        <ExpenseEntryForm
-          action={submitExpenseAction}
-          categories={categories}
-          laborRates={laborRates}
-          returnQs={returnQs}
-          defaultDate={todayIsInMonth ? today : ""}
-          defaultLocationId={locationIdNum}
-          defaultLocationLabel={filterLocationLabel}
-          dateNote={
-            todayIsInMonth
-              ? undefined
-              : `You are viewing ${monthLabel(month)}, which isn't the current month — pick the date deliberately.`
+      {/* Entry form — or the edit form, when ?edit_id= names a visible row.
+          ONE CARD, NOT TWO STACKED. Rendering both would put two identically
+          named field sets on the page at once, and the operator's next click
+          after "Edit" would have even odds of landing in the wrong one.
+
+          The wrapper exists only to carry #expense-form, which the table's Edit
+          links target: the form sits above the grid, so without the fragment a
+          click near the bottom of a long month looks like it did nothing. */}
+      <div id="expense-form" className="scroll-mt-4">
+      {editRow ? (
+        <Card
+          title={`Correct ${editRow.po_number}`}
+          subtitle="Every field can be changed. Moving the date or the site re-issues the PO number, because the number is built from both — the new one is shown when you save."
+          action={
+            <Link
+              href={returnPath}
+              className="text-xs font-semibold text-splash-navy/70 underline underline-offset-2 hover:text-splash-navy"
+            >
+              Cancel
+            </Link>
           }
-        />
-      </Card>
+        >
+          {/* key={id} because the form seeds three useState values from `edit`
+              and useState only reads its initial value once — without this,
+              opening a second row's editor would keep the first row's category
+              and hours on screen. */}
+          <ExpenseEntryForm
+            key={editRow.id}
+            action={submitExpenseAction}
+            categories={categories}
+            laborRates={laborRates}
+            returnQs={returnQs}
+            defaultDate={editRow.business_date}
+            edit={{
+              id: editRow.id,
+              po_number: editRow.po_number,
+              business_date: editRow.business_date,
+              location_id: editRow.location_id,
+              // Same shape the filter picker round-trips, so the box doesn't
+              // change wording depending on how it was populated.
+              location_label: `${editRow.location_code} · ${editRow.site_number}`,
+              po_initials: editRow.po_initials,
+              category_key: editRow.category_key,
+              method: editRow.method,
+              description: editRow.description,
+              amount: editRow.amount,
+              labor_hours: editRow.labor_hours
+            }}
+          />
+        </Card>
+      ) : (
+        <Card
+          title="Log an expense"
+          subtitle="One purchase, one category, one amount — or, for maintenance labor, the hours billed. The PO number is assigned when you save."
+        >
+          <ExpenseEntryForm
+            action={submitExpenseAction}
+            categories={categories}
+            laborRates={laborRates}
+            returnQs={returnQs}
+            defaultDate={todayIsInMonth ? today : ""}
+            defaultLocationId={locationIdNum}
+            defaultLocationLabel={filterLocationLabel}
+            dateNote={
+              todayIsInMonth
+                ? undefined
+                : `You are viewing ${monthLabel(month)}, which isn't the current month — pick the date deliberately.`
+            }
+          />
+        </Card>
+      )}
+      {/* An id that matched nothing. Says so rather than silently rendering the
+          create form, which would look like the Edit link simply didn't work. */}
+      {editId && !editRow ? (
+        <p className="-mt-4 mb-6 text-xs text-splash-navy/60">
+          That entry isn&rsquo;t in the current view — it may be voided, in
+          another month, or filtered out.{" "}
+          <Link href={returnPath} className="underline underline-offset-2">
+            Clear
+          </Link>
+          .
+        </p>
+      ) : null}
+      </div>
 
       {/*
         Budget editor, COLLAPSED BY DEFAULT.
@@ -614,7 +694,7 @@ export default async function ExpensesPage({ searchParams }: PageProps) {
                 <th className="px-4 py-3">Description</th>
                 <th className="px-4 py-3">Category</th>
                 <th className="px-4 py-3 text-right">Amount</th>
-                <th className="px-4 py-3">Void</th>
+                <th className="px-4 py-3">Actions</th>
               </tr>
             </thead>
             <tbody className={TBODY_CLS}>
@@ -673,8 +753,20 @@ export default async function ExpensesPage({ searchParams }: PageProps) {
                       </div>
                     ) : null}
                   </td>
+                  {/* Edit is a plain <Link>, not a button: it only changes the
+                      URL, so it is shareable, back-button-closable, and needs
+                      no client state. `#expense-form` because the form is above
+                      the grid. */}
                   <td className="px-4 py-3">
-                    <VoidCell id={e.id} po={e.po_number} returnQs={returnQs} />
+                    <div className="flex items-center gap-3">
+                      <Link
+                        href={`${returnPath}&edit_id=${e.id}#expense-form`}
+                        className="text-xs font-semibold text-splash-blue underline underline-offset-2 hover:text-splash-blue-dark"
+                      >
+                        Edit
+                      </Link>
+                      <VoidCell id={e.id} po={e.po_number} returnQs={returnQs} />
+                    </div>
                   </td>
                 </tr>
               ))}
@@ -893,6 +985,21 @@ function successCopy(
     return po
       ? `Expense saved. PO number ${po} — write this on the invoice.`
       : "Expense saved.";
+  }
+  // Deliberately NOT the same copy as `entry`. "Write this on the invoice" is
+  // wrong advice for a correction: the invoice already has a number on it, and
+  // the only case where anything needs writing is the one where moving the date
+  // or the site forced a new one. Naming BOTH numbers is the point — the
+  // operator has to find the old one on paper before they can amend it.
+  if (key === "entry_edit") {
+    const po = firstParam(sp.po).trim();
+    const prev = firstParam(sp.prev_po).trim();
+    if (prev && po) {
+      return `Entry corrected. Moving it re-issued the PO: ${prev} is now ${po} — mark the invoice.`;
+    }
+    return po
+      ? `Entry corrected. PO number ${po} is unchanged.`
+      : "Entry corrected.";
   }
   if (key === "void") {
     return "Entry voided. It is out of the totals; the PO number stays on the record.";

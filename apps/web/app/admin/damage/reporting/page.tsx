@@ -425,9 +425,11 @@ export default async function DamageReportingPage({ searchParams }: PageProps) {
       </section>
 
       <p className="mt-6 text-xs text-splash-navy/60">
-        Cost = approved quote amounts + receipt amounts on Approved-family
-        claims. Both are real spend — receipts are money paid out, approved
-        quotes are money committed — so summing them captures total exposure.
+        Cost = receipts where a repair has been paid for, otherwise the approved
+        quote amount. Quotes that are still awaiting approval do not count —
+        there is no committed spend until a quote is approved or a receipt is
+        uploaded, so competing estimates on the same claim are never added
+        together.
       </p>
     </section>
   );

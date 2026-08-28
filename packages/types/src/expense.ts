@@ -222,13 +222,18 @@ export interface ExpenseEntryRow extends ExpenseEntryInsert {
   po_seq: number;
 
   /**
-   * The rate the row was PRICED AT, stamped at insert. Null on any non-hourly
-   * entry.
+   * The rate the row was PRICED AT. Null on any non-hourly entry.
    *
-   * Stored rather than looked up so a rate change in November cannot restate
-   * August. A CHECK enforces `amount = round(labor_hours * labor_rate, 2)`, so
-   * the row can always explain its own dollar figure and the three can never
-   * drift apart.
+   * Stored rather than looked up at read time so a rate change in November
+   * cannot restate August. A CHECK enforces
+   * `amount = round(labor_hours * labor_rate, 2)`, so the row can always explain
+   * its own dollar figure and the three can never drift apart.
+   *
+   * RE-RESOLVED ON EDIT, because an edit can move `business_date`. The stamp is
+   * "the rate in force on the date this row claims", not "the rate on the day
+   * somebody first typed it in" — a row dated the 21st carrying the 20th's rate
+   * could not explain itself, and would fail the CHECK above. See
+   * update_expense_entry() in supabase/expense-edit-02.sql.
    */
   labor_rate: number | null;
 
@@ -250,6 +255,37 @@ export interface ExpenseEntryRow extends ExpenseEntryInsert {
   updated_at: string;
   updated_by: string | null;
   updated_by_email: string | null;
+}
+
+/**
+ * A correction to a posted entry.
+ *
+ * EVERY FIELD IS SENT, NOT JUST THE CHANGED ONES. This is a whole-row replace,
+ * because the form that produces it is the same form that creates an entry and
+ * it submits every input it has. A partial-patch shape would need the RPC to
+ * distinguish "field omitted" from "field cleared to null", which for `method`
+ * and `description` — both legitimately nullable — is a distinction FormData
+ * cannot make.
+ *
+ * `po_number` and `po_seq` are absent for the same reason they are absent from
+ * `ExpenseEntryInsert`: the database assigns them. On an edit it also decides
+ * whether to REASSIGN them. Moving an entry to a different site or a different
+ * date moves it into a different `(location_id, business_date, po_seq)`
+ * namespace, so it is allocated a fresh sequence there; changing only the
+ * initials rebuilds the printed string and keeps the sequence. Either way the
+ * caller finds out what the number became by reading it off the returned row.
+ *
+ * The location triple is the DESTINATION. The worker checks the caller's scope
+ * against both this and the row's current location, so an edit can neither push
+ * a row out of the caller's scope nor pull one in.
+ */
+export interface ExpenseEntryUpdate
+  extends Omit<ExpenseEntryInsert, "created_by" | "created_by_email"> {
+  id: string;
+  /** The editor, from the session. Lands in `updated_by`; `created_by` is never
+   *  touched, so the row keeps saying who originally posted it. */
+  updated_by: string;
+  updated_by_email: string;
 }
 
 /* ============================================================

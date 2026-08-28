@@ -9,7 +9,10 @@
 // Owned routes (post-prefix-strip, all gated by index.ts before dispatch):
 //   GET  /api/expenses/categories                 -> { categories }
 //   GET  /api/expenses/entries       filters      -> { entries }
-//   POST /api/expenses/entries                    -> { entry }   201
+//   POST /api/expenses/entries       no body id   -> { entry }   201
+//   POST /api/expenses/entries       body id      -> { entry, updated,
+//                                                     reissued,
+//                                                     previous_po_number }
 //   POST /api/expenses/entries/void               -> { entry }
 //   GET  /api/expenses/budgets       month req.   -> { budgets }
 //   POST /api/expenses/budgets                    -> { budget, corrected }
@@ -57,6 +60,9 @@
 // carries one is ignored silently — not 400'd. A stale form field or a caller
 // echoing a row back is not an attack worth failing a purchase over, and
 // nothing downstream can act on the value: it is never read out of the body.
+// This holds on the EDIT path too, where the row already has a PO: whether it
+// keeps that number or gets a new one is decided by update_expense_entry() from
+// whether the site or date moved, never from anything the client sent.
 //
 // AND THE CLIENT NEVER SENDS A LABOR DOLLAR AMOUNT. Maintenance labor is
 // entered as HOURS; insert_expense_entry() looks the rate up and multiplies,
@@ -78,6 +84,7 @@ import type { Session } from "@splash/auth";
 import {
   copyExpenseBudgetMonth,
   createServiceClient,
+  getExpenseEntry,
   insertExpenseEntry,
   insertExpenseLaborRate,
   listExpenseBudgets,
@@ -86,6 +93,7 @@ import {
   listExpenseMonthRollup,
   listExpenses,
   resolveExpenseLocationKey,
+  updateExpenseEntry,
   upsertExpenseBudget,
   voidExpenseEntry,
   type SupabaseEnv
@@ -94,6 +102,7 @@ import { json as jsonResponse } from "@splash/http";
 import type {
   ExpenseBudgetInsert,
   ExpenseEntryInsert,
+  ExpenseEntryUpdate,
   ExpenseLaborRateInsert,
   ExpenseListFilters,
   ExpenseLocationKey
@@ -146,9 +155,11 @@ export async function handleExpenseRoute(
 ): Promise<Response | null> {
   const scope = locationScopeFor(session);
 
-  // Writes: authorise by location_id against the SESSION scope alone.
+  // Writes: authorise by location_id against the SESSION scope alone. The
+  // entries POST covers create AND edit, branching on an optional body `id` —
+  // see apiWriteEntry, which checks scope twice on the edit path.
   if (pathname === "/api/expenses/entries" && method === "POST") {
-    return apiCreateEntry(request, env, session, scope);
+    return apiWriteEntry(request, env, session, scope);
   }
   if (pathname === "/api/expenses/entries/void" && method === "POST") {
     return apiVoidEntry(request, env, session);
@@ -435,7 +446,24 @@ async function apiRollup(
  * ============================================================ */
 
 /**
- * Create an entry. The database mints the PO number.
+ * Create OR correct an entry. The database mints the PO number.
+ *
+ * ONE ENDPOINT, BRANCHING ON AN OPTIONAL `id` — the same shape as
+ * POST /api/greeter/days, and for the same reason: create and edit validate
+ * identically, and a second route would be a second copy of every rule above,
+ * free to drift from this one the first time a field is added. `id` present
+ * means "correct this row"; absent means "file a new one".
+ *
+ * TWO SCOPE CHECKS ON THE EDIT PATH, NOT ONE. resolveWritableLocation() only
+ * proves the caller may write to the DESTINATION. On an edit that changes the
+ * location, that leaves the row's CURRENT site unchecked — and a location admin
+ * could pull another site's expense into their own, which both removes the money
+ * from a log they don't own and is invisible from that side. So the old row is
+ * read and checked too, and the caller must hold both. (Contrast apiVoidEntry,
+ * which checks neither: a void needs a uuid it could only have got from its own
+ * scoped list, and it can't move money between sites.) The second check answers
+ * 404, not 403, and shares its body with the genuine not-found — see the note at
+ * the branch.
  *
  * EVERY VALUE MAY ARRIVE AS A STRING. The Next.js server action forwards form
  * values unparsed on purpose — one place that knows how to coerce is better
@@ -464,7 +492,7 @@ async function apiRollup(
  * hours" rather than "amount is required" on a labor line. The database remains
  * the authority on whether that was the right field for the category.
  */
-async function apiCreateEntry(
+async function apiWriteEntry(
   request: Request,
   env: Env,
   session: Session,
@@ -517,7 +545,20 @@ async function apiCreateEntry(
   // are wrong hours rather than an ordinary purchase, and routing them to the
   // amount validator would answer a bad hours box with a complaint about a field
   // the labor form doesn't render.
-  const laborHours = toNumOrNull(body.labor_hours);
+  //
+  // ROUNDED TO THE COLUMN'S PRECISION BEFORE ANYTHING ELSE LOOKS AT IT.
+  // `labor_hours` is numeric(8,2), so 2.125 is STORED as 2.13 — but the RPCs
+  // price from the argument they were handed, not from what the column kept.
+  // The row would then carry hours, a rate and an amount that no longer satisfy
+  // `amount = round(hours * rate, 2)`, and the CHECK constraint
+  // expense_entry_labor_amount_matches rejects it with 23514 — which
+  // translatePgError deliberately does not translate, so the operator gets a
+  // bare 500 for typing three decimal places. Rounding here, above the > 0
+  // guard, makes the two agree by construction and still rejects hours that
+  // round away to nothing.
+  const laborHoursRaw = toNumOrNull(body.labor_hours);
+  const laborHours =
+    laborHoursRaw == null ? null : Math.round(laborHoursRaw * 100) / 100;
   const isLaborBody = body.labor_hours != null && body.labor_hours !== "";
 
   let amount: number;
@@ -562,6 +603,82 @@ async function apiCreateEntry(
   const resolved = await resolveWritableLocation(env, locationId, scope);
   if (!resolved.ok) return resolved.response;
 
+  const sb = createServiceClient(env);
+
+  // Present means edit. Read the existing row before writing anything, both to
+  // check the caller's scope against where the row IS (see the header) and so a
+  // stale edit form gets a 404 rather than a confusing partial write.
+  const id = trimOrNull(body.id);
+  if (id) {
+    const existing = await getExpenseEntry(sb, id);
+
+    // ONE ANSWER FOR "GONE" AND FOR "NOT YOURS", ON PURPOSE. Splitting these
+    // into a 404 and a 403 would turn the endpoint into an existence oracle:
+    // feed it uuids and the status code tells you which ones name real rows at
+    // sites you can't see. The operator-facing case is the same either way —
+    // the row is not in the log they are looking at — so the copy is written to
+    // be true of both.
+    if (!existing || !inScope(scope, existing.location_code)) {
+      return jsonResponse(
+        {
+          error: "not found",
+          reason:
+            "That entry isn't in your log any more. Reload — it may have been " +
+            "voided or moved while this form was open."
+        },
+        404
+      );
+    }
+    // Voided is refused by the RPC too (it is the authority, so no other caller
+    // can route around it). Answering here as well keeps the message specific
+    // and saves a round trip on the one case a stale page reliably produces.
+    if (existing.voided_at) {
+      return jsonResponse(
+        {
+          error: "entry is voided",
+          reason:
+            "This entry was voided" +
+            (existing.voided_by_email ? ` by ${existing.voided_by_email}` : "") +
+            ". Restore it before editing it."
+        },
+        409
+      );
+    }
+
+    const update: ExpenseEntryUpdate = {
+      id,
+      business_date: businessDate,
+      ...resolved.key,
+      po_initials: initials,
+      method: trimOrNull(body.method),
+      description: trimOrNull(body.description),
+      category_key: categoryKey,
+      amount,
+      labor_hours: isLaborBody ? laborHours : null,
+      mechanic_key: isLaborBody ? trimOrNull(body.mechanic_key) : null,
+      updated_by: session.userId,
+      updated_by_email: session.email
+    };
+
+    try {
+      const entry = await updateExpenseEntry(sb, update);
+      // `reissued` so the page can say "the PO changed to X — mark the invoice"
+      // rather than making the operator diff two numbers. Computed here from the
+      // before/after rather than returned by the RPC, because the RPC's job is
+      // the row and this is a statement about the edit.
+      return jsonResponse({
+        entry,
+        updated: true,
+        reissued: entry.po_number !== existing.po_number,
+        previous_po_number: existing.po_number
+      });
+    } catch (err) {
+      const translated = translatePgError(err);
+      if (translated) return translated;
+      throw err;
+    }
+  }
+
   const row: ExpenseEntryInsert = {
     business_date: businessDate,
     ...resolved.key,
@@ -584,7 +701,6 @@ async function apiCreateEntry(
     created_by_email: session.email
   };
 
-  const sb = createServiceClient(env);
   try {
     const entry = await insertExpenseEntry(sb, row);
     return jsonResponse({ entry }, 201);
@@ -948,7 +1064,7 @@ function translatePgError(err: unknown): Response | null {
   // insert_expense_entry() for all four labor mismatches. The first two are
   // pre-checked above, so reaching here on those means the two copies of the
   // rule disagreed; the labor ones are NOT pre-checked and this is their
-  // intended exit — see apiCreateEntry, which deliberately leaves the database
+  // intended exit — see apiWriteEntry, which deliberately leaves the database
   // as the authority on what a category accepts.
   //
   // The RPC's messages are written to be read by the person who filled the form
@@ -957,7 +1073,26 @@ function translatePgError(err: unknown): Response | null {
   // verbatim. Don't replace them with a generic string; the actionable half of
   // that sentence is the half a generic string throws away.
   if (e.code === "22023") {
+    // One 22023 is not a bad value at all: update_expense_entry() uses it to
+    // refuse an edit to a voided row. That is a state conflict, not a malformed
+    // field, and 400 would send the operator looking for the box they got wrong
+    // when the fix is to restore the row first. Matched on the message because
+    // plpgsql gives a RAISE one SQLSTATE and this function shares it with the
+    // labor validations; if these ever need to be told apart more finely, the
+    // RPC should start using distinct codes rather than this string growing.
+    if (/is voided/.test(text)) {
+      return jsonResponse({ error: "entry is voided", reason: e.message ?? "" }, 409);
+    }
     return jsonResponse({ error: "invalid value", reason: e.message ?? "" }, 400);
+  }
+
+  // P0002 no_data_found — raised by update_expense_entry() when the id matches
+  // nothing. Nothing else on this module raises it, and no constraint produces
+  // it, so it is unambiguous. 404 rather than the 400 its siblings get: the body
+  // was well-formed and the row simply isn't there, which for an edit form
+  // usually means somebody else voided or the page is stale.
+  if (e.code === "P0002") {
+    return jsonResponse({ error: "not found", reason: e.message ?? "" }, 404);
   }
 
   // 23503 foreign_key_violation — only reachable via category_key, the one FK
@@ -1011,16 +1146,25 @@ function translatePgError(err: unknown): Response | null {
     return jsonResponse({ error: "invalid value", reason: e.message ?? "" }, 400);
   }
 
-  // 23505 unique_violation on expense_entry_po_seq_unique means two inserts got
+  // 23505 unique_violation on expense_entry_po_seq_unique means two writes got
   // the same sequence for one site-day — the exact race the advisory lock in
-  // next_expense_po() exists to prevent, so it should be unreachable. 409 with
-  // a retry hint rather than a 500: the user can just submit again, and the
-  // line stays in the log for whoever has to work out how the lock was bypassed.
+  // next_expense_po() exists to prevent, so it should be unreachable from either
+  // the insert or the edit's re-mint. 409 with a retry hint rather than a 500:
+  // the user can just submit again, and the line stays in the log for whoever
+  // has to work out how the lock was bypassed.
+  //
+  // The copy covers BOTH paths deliberately. It used to say "two entries were
+  // saved", which on an edit that moved a row to another site-day describes
+  // something the operator didn't do and can't picture. "Saved at the same
+  // moment" is true of a new entry and of a move, and "try again" is the fix for
+  // both.
   if (e.code === "23505" && text.includes("expense_entry_po_seq")) {
     return jsonResponse(
       {
         error: "PO number collision",
-        reason: "Two entries were saved for this site and date at once. Try again."
+        reason:
+          "Two entries hit this site and date at the same moment, so the PO " +
+          "sequence collided. Nothing was saved — try again."
       },
       409
     );

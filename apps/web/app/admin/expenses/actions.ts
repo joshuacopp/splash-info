@@ -56,6 +56,9 @@ const BANNER_PARAMS = [
   "action_error",
   "success",
   "po",
+  // The PO an edit replaced, when moving the row's site or date re-issued it.
+  // Only set when it actually changed — see submitExpenseAction.
+  "prev_po",
   "created",
   "corrected"
 ];
@@ -85,9 +88,20 @@ function backTo(formData: FormData, extra: Record<string, string>): string {
  * without a `return` in front of it now falls through and posts the invalid
  * body to the worker, so the pattern is `if (!x) return fail(...)` everywhere,
  * without exception.
+ *
+ * `extra` EXISTS FOR THE EDIT FORM. `return_qs` carries the page's filters and
+ * nothing else — deliberately, so a successful save closes the editor. That
+ * makes the default failure behaviour wrong on an edit: it would land back on
+ * the CREATE card with an error banner, the editor shut and everything the
+ * operator retyped gone. submitExpenseAction passes `edit_id` back through here
+ * so a rejected correction reopens on the row it was correcting.
  */
-function fail(formData: FormData, message: string): RedirectResult {
-  return { redirectTo: backTo(formData, { action_error: message }) };
+function fail(
+  formData: FormData,
+  message: string,
+  extra: Record<string, string> = {}
+): RedirectResult {
+  return { redirectTo: backTo(formData, { ...extra, action_error: message }) };
 }
 
 /**
@@ -108,6 +122,22 @@ function poNumberOf(body: unknown): string | null {
   return typeof po === "string" && po ? po : null;
 }
 
+/**
+ * The PO an edit displaced, or null when it kept its number.
+ *
+ * Reads `reissued` rather than diffing the two POs here, because the worker
+ * already made that comparison against the row as it was BEFORE the write —
+ * which is the only place both values existed at once.
+ */
+function replacedPoOf(body: unknown): string | null {
+  if (!body || typeof body !== "object") return null;
+  const b = body as { reissued?: unknown; previous_po_number?: unknown };
+  if (b.reissued !== true) return null;
+  return typeof b.previous_po_number === "string" && b.previous_po_number
+    ? b.previous_po_number
+    : null;
+}
+
 /** `{ created }` off the copy response, as a string for the query param. */
 function createdCountOf(body: unknown): string | null {
   if (!body || typeof body !== "object") return null;
@@ -126,7 +156,18 @@ function wasCorrected(body: unknown): boolean {
 }
 
 /**
- * Log one purchase.
+ * Log one purchase — or correct one.
+ *
+ * A HIDDEN `id` IS THE WHOLE DIFFERENCE. The edit form is the same component
+ * with the same fields and the same validation; the worker's single POST
+ * branches on the id's presence. There is deliberately no second action here,
+ * because every rule below would then exist twice.
+ *
+ * ON AN EDIT THE PO MAY BE RE-ISSUED. Changing the site or the purchase date
+ * moves the row into a different PO sequence, so the database mints a new
+ * number and the one on the paper invoice stops matching. That was accepted
+ * knowingly (Josh, 2026-08-28, choosing editable-everything over a frozen
+ * date/site); the banner names both numbers so the invoice can be annotated.
  *
  * ONE ROW IS ONE CATEGORY AND ONE AMOUNT — or, on an hourly category, one
  * category and a number of HOURS, which the database turns into the amount. Two
@@ -146,11 +187,27 @@ function wasCorrected(body: unknown): boolean {
 export async function submitExpenseAction(
   formData: FormData
 ): Promise<RedirectResult> {
+  // READ FIRST, BEFORE ANY VALIDATION, even though it is only used at the very
+  // end: every `fail()` below has to be able to reopen the editor, and one read
+  // above the guards is cheaper than remembering to move it later. Absent on the
+  // create form. Not validated for shape — it goes straight to a uuid column,
+  // and a malformed one is a 404 from the worker rather than anything a user
+  // typed.
+  const id = strOrNull(formData, "id");
+  // ANNOTATED, not inferred: the ternary's false arm infers as
+  // `{ edit_id?: undefined }`, which is not assignable to an index signature of
+  // `string` under exactOptionalPropertyTypes-adjacent checking.
+  const keepOpen: Record<string, string> = id ? { edit_id: id } : {};
+
   const businessDate = strField(formData, "business_date");
-  if (!businessDate) return fail(formData, "Pick a purchase date before saving.");
+  if (!businessDate) {
+    return fail(formData, "Pick a purchase date before saving.", keepOpen);
+  }
 
   const locationId = strField(formData, "location_id");
-  if (!locationId) return fail(formData, "Pick a location before saving.");
+  if (!locationId) {
+    return fail(formData, "Pick a location before saving.", keepOpen);
+  }
 
   // The PO can't be built without these, so a blank here fails at the database
   // with SQLSTATE 22023 rather than anything a user could act on.
@@ -158,13 +215,15 @@ export async function submitExpenseAction(
   if (!initials) {
     return fail(
       formData,
-      "Enter your initials — the PO number is built from them and can't be assigned without them."
+      "Enter your initials — the PO number is built from them and can't be assigned without them.",
+      keepOpen
     );
   }
   if (!/^[A-Za-z]{1,4}$/.test(initials)) {
     return fail(
       formData,
-      "Initials must be 1–4 letters: no spaces, digits or punctuation."
+      "Initials must be 1–4 letters: no spaces, digits or punctuation.",
+      keepOpen
     );
   }
   // NOT uppercased here. insert_expense_entry() does it on the way in, and
@@ -172,7 +231,9 @@ export async function submitExpenseAction(
   // eventually disagree.
 
   const categoryKey = strField(formData, "category_key");
-  if (!categoryKey) return fail(formData, "Pick a category before saving.");
+  if (!categoryKey) {
+    return fail(formData, "Pick a category before saving.", keepOpen);
+  }
 
   // WHICH FIELD IS PRESENT IS THE BRANCH, and it is decided by the form: an
   // hourly category renders `labor_hours` and UNMOUNTS `amount`, so only one of
@@ -196,11 +257,13 @@ export async function submitExpenseAction(
   if (!laborHours && !amount) {
     return fail(
       formData,
-      "Enter an amount. Refunds and credits go in as a negative number."
+      "Enter an amount. Refunds and credits go in as a negative number.",
+      keepOpen
     );
   }
 
   const result = await performancePostJson("/pertrack/api/expenses/entries", {
+    ...(id ? { id } : {}),
     business_date: businessDate,
     location_id: locationId,
     po_initials: initials,
@@ -218,11 +281,27 @@ export async function submitExpenseAction(
     labor_hours: laborHours || null
   });
 
-  if (!result.ok) return fail(formData, result.error);
+  // Covers the worker's 403/404/409 as well as validation: a correction the
+  // database refused must come back with the editor still open.
+  if (!result.ok) return fail(formData, result.error, keepOpen);
 
   const po = poNumberOf(result.body);
 
   revalidatePath(LIST_PATH);
+  if (id) {
+    const prevPo = replacedPoOf(result.body);
+    return {
+      redirectTo: backTo(formData, {
+        // A separate success key rather than reusing "entry": the create banner
+        // says "write this number on the invoice", which is wrong advice for a
+        // correction that kept its number and dangerously incomplete for one
+        // that didn't.
+        success: "entry_edit",
+        ...(po ? { po } : {}),
+        ...(prevPo ? { prev_po: prevPo } : {})
+      })
+    };
+  }
   return {
     redirectTo: backTo(formData, {
       success: "entry",

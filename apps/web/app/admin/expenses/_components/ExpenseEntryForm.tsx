@@ -1,5 +1,15 @@
 // The entry form — one purchase, one category, one amount.
 //
+// ALSO THE EDIT FORM, as of 2026-08-28. Pass `edit` and it corrects that row
+// instead of filing a new one; the only wire difference is a hidden `id`, which
+// is what the worker branches on. One component rather than two because create
+// and edit ask identical questions — the labor branch, the category grouping and
+// the signed-amount rule would otherwise exist in two places and diverge on the
+// first change to either.
+//
+// SEEDING RELIES ON THE CALLER REMOUNTING (key={row.id}). Three fields are React
+// state, and useState only reads its initial value once.
+//
 // A CLIENT COMPONENT AS OF 2026-08-21. It used to be a server component, and
 // the note that stood here said "nothing needs state". That stopped being true
 // when maintenance labor arrived: the category now decides which fields the rest
@@ -69,6 +79,43 @@ export interface LaborRateOption {
   mechanic_key: string | null;
   effective_from: string;
   rate_per_hour: number;
+}
+
+/**
+ * The row being corrected, when this form is an edit rather than an entry.
+ *
+ * ITS PRESENCE IS THE MODE SWITCH — there is no separate `mode` prop. One
+ * component for both because create and edit ask the identical questions, and
+ * the moment they are two components the labor branch, the category grouping and
+ * the negative-amount rule all exist twice.
+ *
+ * `location_label` is carried because LocationPicker is a typeahead over an
+ * endpoint: given only an id it renders an empty box, and an edit form whose
+ * site box looks unset invites somebody to re-pick it — which is exactly the
+ * change that re-issues the PO.
+ *
+ * `po_number` is here to be DISPLAYED, never posted. The worker ignores a PO in
+ * the body on the edit path for the same reason it does on create.
+ *
+ * NO `mechanic_key`, DELIBERATELY BUT TEMPORARILY. Nothing in this form collects
+ * a mechanic yet, so every row's is null and an edit re-posting null changes
+ * nothing. The day a mechanic picker is added it must be seeded HERE as well as
+ * rendered, or every edit will silently clear the row's mechanic and reprice the
+ * hours at the company-wide rate — see expense_labor_rate_for(), which falls
+ * back to the company row when the key is null.
+ */
+export interface ExpenseEditSeed {
+  id: string;
+  po_number: string;
+  business_date: string;
+  location_id: number;
+  location_label: string;
+  po_initials: string;
+  category_key: string;
+  method: string | null;
+  description: string | null;
+  amount: number;
+  labor_hours: number | null;
 }
 
 /**
@@ -159,7 +206,8 @@ export function ExpenseEntryForm({
   defaultDate,
   defaultLocationId,
   defaultLocationLabel,
-  dateNote
+  dateNote,
+  edit
 }: {
   action: (formData: FormData) => Promise<RedirectResult>;
   categories: CategoryOption[];
@@ -174,15 +222,30 @@ export function ExpenseEntryForm({
   defaultLocationLabel?: string;
   /** Rendered under the date when the default was deliberately left blank. */
   dateNote?: ReactNode;
+  /** Present = correcting that row. Absent = filing a new one. */
+  edit?: ExpenseEditSeed;
 }) {
   const groups = groupCategories(categories);
 
+  // SEEDED FROM `edit`, WHICH ONLY WORKS BECAUSE THE CALLER REMOUNTS. useState
+  // reads its argument once; opening a second row's editor without a changing
+  // `key` would leave the first row's category and hours on screen. The page
+  // passes key={row.id} for exactly this reason — same arrangement as the
+  // greeter day editor.
+  //
   // The date is state, not just a defaultValue, because the hourly preview has
   // to reprice when it changes: the rate is the one in force on the PURCHASE
   // date, and this form is used to backdate.
-  const [businessDate, setBusinessDate] = useState(defaultDate);
-  const [categoryKey, setCategoryKey] = useState("");
-  const [hours, setHours] = useState("");
+  const [businessDate, setBusinessDate] = useState(
+    edit ? edit.business_date : defaultDate
+  );
+  // Category MUST be seeded, not merely defaultValue'd: `hourly` derives from it
+  // and decides which of amount/labor_hours is even mounted. An unseeded edit of
+  // a labor row would render the dollar box and post an amount the RPC refuses.
+  const [categoryKey, setCategoryKey] = useState(edit?.category_key ?? "");
+  const [hours, setHours] = useState(
+    edit?.labor_hours != null ? String(edit.labor_hours) : ""
+  );
 
   const selected = categories.find((c) => c.key === categoryKey) ?? null;
   const hourly = selected?.billed_by_hours ?? false;
@@ -194,9 +257,23 @@ export function ExpenseEntryForm({
       ? Math.round(hoursNum * rate * 100) / 100
       : null;
 
+  // Moving the date moves the row into a different PO sequence, so the number
+  // gets re-minted and whatever is written on the paper invoice stops matching.
+  // Warned about LIVE rather than after the fact because "the PO changed" is
+  // recoverable while you still have the invoice in your hand.
+  //
+  // The site can do the same thing and is deliberately NOT watched here:
+  // LocationPicker is uncontrolled, and lifting it into state to catch a warning
+  // would change how the create path behaves too. The static line below covers
+  // it, and the confirmation names the new number either way.
+  const dateMoved = edit != null && businessDate !== edit.business_date;
+
   return (
     <RedirectForm action={action} className="flex flex-col gap-4 px-5 py-5">
       <input type="hidden" name="return_qs" value={returnQs} />
+      {/* The only thing that tells the worker this is a correction. Absent on
+          the create form, so one route serves both. */}
+      {edit ? <input type="hidden" name="id" value={edit.id} /> : null}
 
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
         <label className="flex flex-col gap-1">
@@ -212,10 +289,18 @@ export function ExpenseEntryForm({
           {/* The date is not just a date: it is the YYYYMMDD inside the PO and
               the day the sequence counts within. Backdating an entry allocates
               the next number for THAT day, not for today. */}
-          <span className={HINT_CLS}>
-            {dateNote ??
-              "Also the date inside the PO number, and the day its sequence counts within."}
-          </span>
+          {dateMoved ? (
+            <span className="text-[11px] font-semibold leading-snug text-splash-deny">
+              Moving the date re-issues the PO number — {edit?.po_number} will be
+              replaced and the number on the paper invoice won&rsquo;t match. The
+              new one is on the confirmation.
+            </span>
+          ) : (
+            <span className={HINT_CLS}>
+              {dateNote ??
+                "Also the date inside the PO number, and the day its sequence counts within."}
+            </span>
+          )}
         </label>
 
         <div className="flex flex-col gap-1">
@@ -223,12 +308,14 @@ export function ExpenseEntryForm({
           <LocationPicker
             name="location_id"
             required
-            defaultValue={defaultLocationId}
-            defaultLabel={defaultLocationLabel}
+            defaultValue={edit ? edit.location_id : defaultLocationId}
+            defaultLabel={edit ? edit.location_label : defaultLocationLabel}
             placeholder="Search by site number, name, or code…"
           />
           <span className={HINT_CLS}>
-            The site number in front of the PO comes from here.
+            {edit
+              ? "The site number in front of the PO comes from here — changing the site re-issues the number."
+              : "The site number in front of the PO comes from here."}
           </span>
         </div>
 
@@ -246,6 +333,7 @@ export function ExpenseEntryForm({
             title="1–4 letters"
             placeholder="JC"
             autoComplete="off"
+            defaultValue={edit?.po_initials ?? ""}
             className={`${INPUT_CLS} uppercase`}
           />
           {/*
@@ -259,15 +347,30 @@ export function ExpenseEntryForm({
             write on a paper invoice. The real number is echoed back in the
             success banner instead.
           */}
-          <span className={HINT_CLS}>
-            The PO number is assigned when you save:{" "}
-            <span className="font-mono">
-              site-YYYYMMDD{"{initials}"}
-              {"{n}"}
+          {edit ? (
+            // On an edit the number is no longer a mystery, so showing the
+            // format instead of the actual PO would be withholding the one fact
+            // the operator is holding a piece of paper about. Correcting the
+            // initials alone rebuilds the string around the SAME sequence — the
+            // row does not move — which is why this says "rewritten" rather than
+            // the "re-issued" the date and site warnings use.
+            <span className={HINT_CLS}>
+              This entry is{" "}
+              <span className="font-mono">{edit.po_number}</span>. Fixing the
+              initials rewrites the number in place; it keeps its position in the
+              day&rsquo;s sequence.
             </span>
-            , e.g. <span className="font-mono">196-20260820JC1</span>. You&rsquo;ll
-            see the full number on the confirmation.
-          </span>
+          ) : (
+            <span className={HINT_CLS}>
+              The PO number is assigned when you save:{" "}
+              <span className="font-mono">
+                site-YYYYMMDD{"{initials}"}
+                {"{n}"}
+              </span>
+              , e.g. <span className="font-mono">196-20260820JC1</span>.
+              You&rsquo;ll see the full number on the confirmation.
+            </span>
+          )}
         </label>
 
         <label className="flex flex-col gap-1">
@@ -324,6 +427,11 @@ export function ExpenseEntryForm({
               list="expense-method-suggestions"
               placeholder="Company Card"
               autoComplete="off"
+              // Not `edit?.method ?? ""` folded with the create path by
+              // accident: a labor row stores method NULL, and if the category is
+              // later corrected to a non-hourly one this field mounts empty,
+              // which is the honest starting state.
+              defaultValue={edit?.method ?? ""}
               className={INPUT_CLS}
             />
             <datalist id="expense-method-suggestions">
@@ -347,6 +455,7 @@ export function ExpenseEntryForm({
             placeholder={
               hourly ? "What was worked on, and by whom" : "Vendor and what was bought"
             }
+            defaultValue={edit?.description ?? ""}
             className={INPUT_CLS}
           />
           <span className={HINT_CLS}>
@@ -404,6 +513,14 @@ export function ExpenseEntryForm({
               // hint. A min of 0 would make a returned pump impossible to record.
               inputMode="decimal"
               placeholder="0.00"
+              // Seeded only from a row that was NOT hourly. On a labor row
+              // `amount` is hours × rate, computed by the database — pre-filling
+              // it here would offer that figure as a dollar amount to type over
+              // the moment somebody re-categorised the row, which is how a
+              // labor cost gets re-filed as a purchase at the same number.
+              defaultValue={
+                edit && edit.labor_hours == null ? String(edit.amount) : ""
+              }
               className={INPUT_CLS}
             />
             <span className={HINT_CLS}>
@@ -416,7 +533,7 @@ export function ExpenseEntryForm({
       </div>
 
       <div className="mt-1">
-        <SavingButton>Save expense</SavingButton>
+        <SavingButton>{edit ? "Save changes" : "Save expense"}</SavingButton>
       </div>
     </RedirectForm>
   );

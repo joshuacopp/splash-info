@@ -35,22 +35,34 @@ export const TBODY_CLS = "divide-y divide-gray-light text-splash-navy";
 export const BTN_CLS =
   "inline-flex items-center gap-1.5 rounded-splash-sm bg-splash-blue px-5 py-2.5 text-sm font-bold text-white shadow-splash-btn transition-colors hover:bg-splash-blue-dark";
 
+/**
+ * `action` is a local addition, NOT copied from greeters — it renders
+ * right-aligned in the header row and exists so the edit-expense card can carry
+ * its own Cancel link without growing a second header bar above the form. It is
+ * optional and unused by every other caller, so cards that don't pass it render
+ * byte-identical to the greeters original.
+ */
 export function Card({
   title,
   subtitle,
+  action,
   children
 }: {
   title: string;
   subtitle?: string;
+  action?: ReactNode;
   children: ReactNode;
 }) {
   return (
     <div className="mb-6 overflow-hidden rounded-splash-lg border border-gray-light bg-white shadow-splash-card">
-      <div className="border-b border-gray-light px-5 py-4">
-        <h2 className="text-lg font-bold text-splash-navy">{title}</h2>
-        {subtitle ? (
-          <p className="mt-1 text-xs text-splash-navy/60">{subtitle}</p>
-        ) : null}
+      <div className="flex items-start justify-between gap-4 border-b border-gray-light px-5 py-4">
+        <div>
+          <h2 className="text-lg font-bold text-splash-navy">{title}</h2>
+          {subtitle ? (
+            <p className="mt-1 text-xs text-splash-navy/60">{subtitle}</p>
+          ) : null}
+        </div>
+        {action ? <div className="shrink-0">{action}</div> : null}
       </div>
       {children}
     </div>

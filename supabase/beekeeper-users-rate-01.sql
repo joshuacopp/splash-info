@@ -15,6 +15,9 @@
 --     { "key": "rate", "label": "Rate", "required": false, "type": "number",
 --       "value": 42, "visibility": "admin", "editable": true }
 --
+--   SUPERSEDED 2026-08-26 — `rate` is now a TEXT field, "type": "text", and its
+--   value arrives as a STRING ("18.50"). See the note below.
+--
 --   Sixteen entries per user. Nine are visibility "public"; seven are
 --   visibility "admin" — workLocationDashDescription, payType,
 --   employmentStatus, middle_initial, post_id, csa_y_or_n, and rate.
@@ -28,9 +31,27 @@
 --   no extra requests are needed to populate these columns.
 --
 -- WHY numeric(10,2) AND NOT integer:
---   Beekeeper types the field as "number" and does not constrain the scale, so
---   an operator can enter 18.75. Storing integer would silently truncate to 18
---   and understate every week that person is scheduled.
+--   Storing integer would silently truncate 18.75 to 18 and understate every
+--   week that person is scheduled.
+--
+--   CORRECTION 2026-08-26 — the original note here claimed Beekeeper's "number"
+--   type does not constrain the scale. That was WRONG: it accepts whole
+--   integers only, which is why no half-dollar rate could be entered at all.
+--   The field's type cannot be changed in place, so on 2026-08-26 the integer
+--   `rate` field was DELETED and recreated as a TEXT field, same key (`rate`),
+--   same admin visibility, and all 36 populated rates were re-entered by hand.
+--   Verified end to end the same day: 18.50 entered in Beekeeper lands here as
+--   18.50.
+--
+--   DO NOT "FIX" THE BEEKEEPER FIELD BACK TO TYPE number. It looks like the
+--   tidier choice and it silently removes the ability to express cents. The
+--   text field is deliberate.
+--
+--   Because the value now arrives as a string typed by a human, beekeeper.ts
+--   parses it through `parseMoneyish`, which tolerates "$18.50", "18,50",
+--   "18.50/hr" and stray whitespace, and REJECTS anything ambiguous ("16-18")
+--   to null rather than guessing. Null renders as an explicit unrated flag on
+--   the schedule; a guess would ship a wrong pay rate silently.
 --
 -- WHY NULLABLE, AND WHY NO DEFAULT:
 --   Most of the tenant has not been backfilled yet (at Vestal, 2 of 11 users
