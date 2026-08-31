@@ -108,6 +108,37 @@ export async function enrollTotpFactor(
 }
 
 /**
+ * Delete ONE of the calling user's own factors. User-scoped (Bearer = the
+ * user's own access token) — this is the user removing something they created,
+ * not an admin acting on someone else, so it deliberately does NOT touch the
+ * service_role admin surface below.
+ *
+ * The reason this exists: GoTrue rejects a second enroll with
+ * `A factor with the friendly name "…" for this user already exists` when the
+ * new factor's name matches an existing one. We send no friendly_name, so an
+ * abandoned unverified factor (scanned the QR, closed the tab) collides with
+ * every future enroll on the empty string and wedges the user out of
+ * enrollment permanently. The enroll handler clears its own leftovers with
+ * this. GoTrue also caps a user at 10 factors, which the same cleanup keeps
+ * from creeping up.
+ *
+ * Throws on failure like everything else in this file — the caller decides
+ * whether a failed delete is fatal.
+ */
+export async function unenrollFactor(
+  env: SupabaseEnv,
+  accessToken: string,
+  factorId: string
+): Promise<void> {
+  if (!factorId) throw new Error("factorId required");
+  const r = await fetch(`${env.SUPABASE_URL}/auth/v1/factors/${factorId}`, {
+    method: "DELETE",
+    headers: userHeaders(env, accessToken)
+  });
+  if (!r.ok) return gotrueError(r, `unenroll failed (${factorId})`);
+}
+
+/**
  * Create a challenge for an existing factor. Returns the challenge id, which
  * pairs with the user's 6-digit code in verifyFactor(). Challenges are
  * short-lived (GoTrue expires them in ~5 min).

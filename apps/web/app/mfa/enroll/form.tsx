@@ -13,9 +13,14 @@
 // Same-origin in prod (apps/web + dashboard-worker share splashcarwashes.info);
 // dev proxies /api/mfa/* to the worker via next.config.mjs rewrites.
 //
-// The "Start" button is explicit rather than auto-firing on mount: each enroll
-// call creates a new unverified factor, and GoTrue caps at 10 per user, so we
-// avoid piling up throwaway factors on stray page loads/refreshes.
+// The "Start" button is explicit rather than auto-firing on mount because the
+// user needs a beat to install an app first — landing on a QR they can't scan
+// yet is a worse first screen, and a stray page load or refresh shouldn't
+// silently mint a factor and invalidate the QR someone is mid-scan on.
+// Factor PILEUP is no longer part of the reason: /api/mfa/enroll now deletes
+// the caller's leftover unverified factors before creating a new one, so
+// abandoned enrollments neither collide on the (empty) friendly name nor creep
+// toward GoTrue's cap of 10 per user.
 
 import { useState, type FormEvent } from "react";
 
@@ -23,7 +28,15 @@ const CODE_LENGTH = 6;
 
 /** Authenticator apps we suggest, so users aren't left to "figure it out."
  *  Any RFC-6238 TOTP app works; these are the common, free, cross-platform
- *  ones. Links point at each app's official landing/store page. */
+ *  ones. Links point at each app's official landing/store page.
+ *
+ *  Keep every entry PHONE-ONLY, and link only to the vendor's own page. Authy
+ *  used to be listed here as "iOS, Android & desktop" — Twilio killed the Authy
+ *  desktop apps (EOL March 2024, accounts force-logged-out that August), so
+ *  staff who read "desktop" went searching for a download that no longer
+ *  exists, landed on third-party installer sites, and picked up Wave Browser
+ *  adware from a pre-checked bundle offer. Suggesting anything with a dead or
+ *  unofficial desktop download is how that happens; don't reintroduce one. */
 const AUTHENTICATOR_APPS: ReadonlyArray<{ name: string; note: string; url: string }> = [
   {
     name: "Google Authenticator",
@@ -34,11 +47,6 @@ const AUTHENTICATOR_APPS: ReadonlyArray<{ name: string; note: string; url: strin
     name: "Microsoft Authenticator",
     note: "iOS & Android",
     url: "https://www.microsoft.com/en-us/security/mobile-authenticator-app"
-  },
-  {
-    name: "Authy",
-    note: "iOS, Android & desktop",
-    url: "https://authy.com/download/"
   },
   {
     name: "1Password",

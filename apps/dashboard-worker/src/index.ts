@@ -66,6 +66,7 @@ import {
   requiresPasswordChange,
   resolveMfaEnrollment,
   supabasePasswordLogin,
+  unenrollFactor,
   userCompleteForcedReset
 } from "@splash/auth";
 import type { SupabaseEnv } from "@splash/db-supabase";
@@ -437,6 +438,10 @@ async function handleForcedReset(request: Request, env: Env): Promise<Response> 
  * Purely additive: an unverified factor protects nothing and is invisible to
  * hasVerifiedFactor(), so this changes nothing about the caller's login or any
  * gated page until they complete /api/mfa/enroll/verify.
+ *
+ * First prunes the caller's own leftover unverified factors — see the block
+ * comment on that loop for why an abandoned enrollment otherwise wedges the
+ * user out of MFA permanently.
  */
 async function handleMfaEnroll(request: Request, env: Env): Promise<Response> {
   const auth = await authenticate(request, env);
@@ -450,6 +455,45 @@ async function handleMfaEnroll(request: Request, env: Env): Promise<Response> {
 
   const form = await readForm(request);
   const friendlyName = (form.get("friendly_name") ?? "").trim() || undefined;
+
+  // Clear the caller's own UNVERIFIED factors before creating a new one.
+  //
+  // Why this is necessary: GoTrue refuses an enroll whose friendly_name matches
+  // an existing factor's ("A factor with the friendly name \"\" for this user
+  // already exists"). We send no friendly_name, so every factor is stored with
+  // an empty one and the SECOND enroll always collides with the first. Anyone
+  // who started enrollment and walked away — closed the tab, scanned the QR but
+  // never typed the code, hit refresh — was locked out of enrollment forever,
+  // with no way back except an admin reset. Unverified factors also count
+  // toward GoTrue's cap of 10 per user, so they creep toward a second wall.
+  //
+  // Why deleting them is safe: an unverified factor protects nothing. It is
+  // invisible to hasVerifiedFactor(), so no gate anywhere consults it, and it
+  // cannot be the factor anyone authenticates with — verification is what
+  // activates it, and this user never got there. The status filter is the whole
+  // safety argument: DO NOT widen it to all factors. A verified factor is a
+  // user's working second device, and someone enrolling a SECOND authenticator
+  // hits this exact path — deleting verified factors here would silently strip
+  // MFA off them mid-flow.
+  //
+  // Why it's best-effort: the prune is a repair, not a precondition. If listing
+  // or deleting fails we swallow it and enroll anyway — the worst outcome is
+  // the same collision error the user already gets today, which is no
+  // regression, whereas letting it throw would turn a hiccup in cleanup into a
+  // 500 on a working enrollment. Deliberately swallowed; please leave it.
+  try {
+    const existing = await listFactors(env, accessToken);
+    for (const factor of existing) {
+      if (factor.status !== "unverified") continue;
+      try {
+        await unenrollFactor(env, accessToken, factor.id);
+      } catch {
+        // One stubborn factor shouldn't abort the rest of the sweep.
+      }
+    }
+  } catch {
+    // Couldn't read the factor list — fall through and let the enroll try.
+  }
 
   try {
     const result = await enrollTotpFactor(env, accessToken, friendlyName);
