@@ -364,10 +364,45 @@ export default async function DamageClaimsListPage({ searchParams }: PageProps) 
     ([, a], [, b]) => a.localeCompare(b)
   );
 
+  // Quick filter: "my open claims" = lifecycle=Open with every other filter
+  // cleared. The claims worker already scopes each response to the signed-in
+  // user's dcLocations (global for admin/super_admin), so this pill alone
+  // yields "open claims at my scoped locations". Treat it as active only when
+  // the URL is exactly that view, so re-clicking it reads as a no-op/return.
+  const openClaimsActive =
+    lifecycleParam === "Open" &&
+    locationParam === "All" &&
+    statusParam === "All" &&
+    !search &&
+    !rdEmailParam &&
+    !rmEmailParam &&
+    !submittedFromParam &&
+    !submittedToParam;
+
   return (
     <section className="mx-auto w-full max-w-[1100px] px-5 py-9">
       <DamageTabs active="claims" />
       <PageBanner />
+
+      {/* Quick filters — one-click views layered on top of the full filter
+          form below. "My open claims" is lifecycle=Open with everything else
+          reset; the worker scopes it to the signed-in user's locations. */}
+      <div className="mb-4 flex flex-wrap items-center gap-2">
+        <span className="text-xs font-semibold uppercase tracking-wider text-splash-navy/50">
+          Quick filters
+        </span>
+        <Link
+          href="/admin/damage?lifecycle=Open"
+          aria-pressed={openClaimsActive}
+          className={`inline-flex items-center gap-1.5 rounded-full px-3.5 py-1.5 text-xs font-bold transition-colors ${
+            openClaimsActive
+              ? "bg-splash-blue text-white shadow-splash-btn"
+              : "bg-splash-navy/10 text-splash-navy hover:bg-splash-navy/20"
+          }`}
+        >
+          My open claims
+        </Link>
+      </div>
 
       {/* Filter bar — pure server-rendered GET form. */}
       <form

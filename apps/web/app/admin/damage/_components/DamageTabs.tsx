@@ -13,7 +13,7 @@
 import Link from "next/link";
 
 interface DamageTabsProps {
-  active: "claims" | "reporting";
+  active: "claims" | "reporting" | "car-counts";
 }
 
 export function DamageTabs({ active }: DamageTabsProps) {
@@ -24,6 +24,11 @@ export function DamageTabs({ active }: DamageTabsProps) {
         href="/admin/damage/reporting"
         label="Reporting"
         active={active === "reporting"}
+      />
+      <Tab
+        href="/admin/damage/car-counts"
+        label="Car Counts"
+        active={active === "car-counts"}
       />
     </nav>
   );

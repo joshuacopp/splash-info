@@ -13,3 +13,4 @@
 export * from "./claims.js";
 export * from "./photos.js";
 export * from "./activity.js";
+export * from "./car-counts.js";

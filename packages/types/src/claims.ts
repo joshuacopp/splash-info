@@ -380,3 +380,27 @@ export interface ClaimActivityRow {
   actor_name: string;
   created_at: string;
 }
+
+/**
+ * Row shape of the `car_counts` D1 table — manually-entered tunnel (car)
+ * counts stored as inclusive date ranges per location. Used as the
+ * denominator for the cost-per-car reporting metric.
+ *
+ * A single-day entry has `start_date === end_date`. Ranges for a given
+ * location must not overlap (enforced on write in the damage worker via
+ * findOverlappingCarCount).
+ *
+ * Source: apps/damage-worker/migrations/0001_car_counts.sql.
+ */
+export interface CarCountRow {
+  id: number;
+  location_code: string;
+  /** 'YYYY-MM-DD' inclusive. */
+  start_date: string;
+  /** 'YYYY-MM-DD' inclusive; equals start_date for a single day. */
+  end_date: string;
+  cars: number;
+  note: string | null;
+  updated_by: string | null;
+  updated_at: string;
+}

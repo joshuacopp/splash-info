@@ -96,21 +96,26 @@ import {
   type ClaimsListFilters,
   countClaims,
   countPhotosOfType,
+  deleteCarCount,
   determinationToClaimStatus,
+  findOverlappingCarCount,
   getClaimById,
   getClaimByIdempotencyKey,
   insertDocPhoto,
   lifecycleForStatus,
   listActivityForClaim,
+  listCarCounts,
   listClaimLocations,
   listClaims,
   listPhotosForClaim,
   logActivity,
   logNote,
   softDeletePhoto,
+  sumCarsInWindow,
   touchClaim,
   updateDocMetadata,
   updateMaintainXWorkOrderId,
+  upsertCarCount,
   writeClaimBatch,
   type ClaimInsert
 } from "@splash/db-d1";
@@ -571,6 +576,29 @@ async function dispatchManageApi(
     return getReporting(env, session, new URL(request.url));
   }
 
+  // Car counts — manually-entered tunnel (car) counts stored as inclusive
+  // date ranges per location; denominator for the cost-per-car metric. All
+  // dc_role-scoped via damageScopeForSession. Under the bound /manage/api/*
+  // prefix, so no new wrangler.toml route is needed.
+  //
+  // GET  /manage/api/car-counts          — list (scoped)
+  // POST /manage/api/car-counts          — create/update (overlap-rejected)
+  // POST /manage/api/car-counts/delete   — hard delete (scoped)
+  if (subParts.length === 1 && subParts[0] === "car-counts" && method === "GET") {
+    return getCarCounts(env, session);
+  }
+  if (subParts.length === 1 && subParts[0] === "car-counts" && method === "POST") {
+    return handleUpsertCarCount(request, env, session);
+  }
+  if (
+    subParts.length === 2 &&
+    subParts[0] === "car-counts" &&
+    subParts[1] === "delete" &&
+    method === "POST"
+  ) {
+    return handleDeleteCarCount(request, env, session);
+  }
+
   // /manage/api/claim/{id}/...
   if (subParts[0] === "claim" && subParts[1]) {
     const claimId = decodeURIComponent(subParts[1]);
@@ -832,6 +860,137 @@ async function getClaimLocations(env: Env, session: Session): Promise<Response> 
     scope.kind === "global" ? undefined : scope.codes
   );
   return json(rows);
+}
+
+/**
+ * GET /manage/api/car-counts — list manually-entered tunnel (car) counts,
+ * dc_role-scoped. Global scope → every row; scoped → filtered to
+ * scope.codes (empty codes → []). Shape: { car_counts: [...] }.
+ */
+async function getCarCounts(env: Env, session: Session): Promise<Response> {
+  const scope = await damageScopeForSession(env, session);
+  if (scope.kind === "denied") return jsonError(403, "no damage role assigned");
+
+  const rows = await listCarCounts(
+    env.DB,
+    scope.kind === "global" ? undefined : scope.codes
+  );
+  return json({ car_counts: rows });
+}
+
+/**
+ * POST /manage/api/car-counts — create (no id) or update (id given) a
+ * car-count range. dc_role-scoped: scoped users may only write within
+ * scope.codes. Rejects overlapping ranges for the same location (409).
+ *
+ * Body: { id?, location_code, start_date, end_date, cars, note }.
+ */
+async function handleUpsertCarCount(
+  request: Request,
+  env: Env,
+  session: Session
+): Promise<Response> {
+  if (!isOriginAllowed(request)) return jsonError(403, "bad origin");
+
+  const scope = await damageScopeForSession(env, session);
+  if (scope.kind === "denied") return jsonError(403, "no damage role assigned");
+
+  // Body arrives form-encoded via apps/web's damagePostForm (readForm is
+  // content-type-aware and also accepts JSON, so direct callers still work).
+  const form = await readForm(request);
+
+  // id — optional; must be a positive integer when present.
+  let id: number | undefined;
+  const idRaw = (form.get("id") ?? "").trim();
+  if (idRaw !== "") {
+    const n = Number(idRaw);
+    if (!Number.isInteger(n) || n <= 0) return jsonError(400, "id must be a positive integer");
+    id = n;
+  }
+
+  const locationCode = (form.get("location_code") ?? "").trim();
+  if (!locationCode) return jsonError(400, "location_code is required");
+  // Scoped users may only write within their scope.
+  if (scope.kind === "scoped" && !scope.codes.includes(locationCode)) {
+    return jsonError(403, "location out of scope");
+  }
+
+  const startDate = (form.get("start_date") ?? "").trim();
+  const endDate = (form.get("end_date") ?? "").trim();
+  const dateRe = /^\d{4}-\d{2}-\d{2}$/;
+  if (!dateRe.test(startDate) || !dateRe.test(endDate)) {
+    return jsonError(400, "start_date and end_date must be 'YYYY-MM-DD'");
+  }
+  if (endDate < startDate) {
+    return jsonError(400, "end_date must be on or after start_date");
+  }
+
+  const cars = Number((form.get("cars") ?? "").trim());
+  if (!Number.isInteger(cars) || cars < 0) {
+    return jsonError(400, "cars must be an integer >= 0");
+  }
+
+  const noteRaw = (form.get("note") ?? "").trim();
+  const note = noteRaw !== "" ? noteRaw : null;
+
+  // Reject overlapping ranges for the same location (excluding self on edit).
+  const overlap = await findOverlappingCarCount(env.DB, locationCode, startDate, endDate, id);
+  if (overlap) {
+    return jsonError(
+      409,
+      `overlaps an existing entry (${overlap.start_date} to ${overlap.end_date})`
+    );
+  }
+
+  const result = await upsertCarCount(env.DB, {
+    id,
+    locationCode,
+    startDate,
+    endDate,
+    cars,
+    note,
+    updatedBy: session.email ?? null
+  });
+  return json({ ok: true, id: result.id });
+}
+
+/**
+ * POST /manage/api/car-counts/delete — hard-delete a car-count row.
+ * dc_role-scoped: scoped users may only delete a row whose location_code is
+ * in scope.codes (row is looked up first — 404 if missing, 403 if out of
+ * scope). Body: { id }.
+ */
+async function handleDeleteCarCount(
+  request: Request,
+  env: Env,
+  session: Session
+): Promise<Response> {
+  if (!isOriginAllowed(request)) return jsonError(403, "bad origin");
+
+  const scope = await damageScopeForSession(env, session);
+  if (scope.kind === "denied") return jsonError(403, "no damage role assigned");
+
+  // Body arrives form-encoded via apps/web's damagePostForm (readForm also
+  // accepts JSON, so direct callers still work).
+  const form = await readForm(request);
+  const id = Number((form.get("id") ?? "").trim());
+  if (!Number.isInteger(id) || id <= 0) {
+    return jsonError(400, "id must be a positive integer");
+  }
+
+  // Look the row up first so scoped users can't delete out-of-scope rows and
+  // a missing id 404s rather than silently succeeding.
+  const existing = await env.DB
+    .prepare("SELECT location_code FROM car_counts WHERE id = ?")
+    .bind(id)
+    .first<{ location_code: string }>();
+  if (!existing) return jsonError(404, "not found");
+  if (scope.kind === "scoped" && !scope.codes.includes(existing.location_code)) {
+    return jsonError(403, "location out of scope");
+  }
+
+  await deleteCarCount(env.DB, id);
+  return json({ ok: true });
 }
 
 /**
@@ -1102,6 +1261,28 @@ interface ReportingByLocationDrilldownRow {
   cost: number;
 }
 
+/**
+ * Damage Trends — a (location_code, damage_type) pair with an elevated
+ * count of non-deleted claims in the rolling 90-day window.
+ */
+interface ReportingTrendHotspot {
+  location_code: string;
+  location_pretty: string;
+  damage_type: string;
+  n: number;
+}
+
+/**
+ * Damage Trends — a damage_type whose last-90-day claim count runs
+ * meaningfully ahead of the rate implied by its trailing-365-day history.
+ */
+interface ReportingTrendSpike {
+  damage_type: string;
+  recent_90d: number;
+  expected_90d: number;
+  ratio: number;
+}
+
 interface ReportingResponse {
   window: ReportingWindow;
   from: string;
@@ -1122,6 +1303,28 @@ interface ReportingResponse {
   /** Brief 172 — by-cause/fault-category counts. Empty array when the
    *  D1 fault_category column is absent (pre-migration). */
   by_fault_category: ReportingByFaultCategoryRow[];
+  /** Damage Trends — location hotspots over the rolling 90-day window. */
+  trend_hotspots: ReportingTrendHotspot[];
+  /** Damage Trends — company-wide (i.e. current-scope) damage-type spikes. */
+  trend_spikes: ReportingTrendSpike[];
+  /**
+   * Cost-per-car — per in-scope location, the window's repair cost over its
+   * apportioned car (tunnel) count. `cars` is rounded to a whole number;
+   * `cost_per_car` is rounded to cents, or null when cars === 0.
+   */
+  cost_per_car_by_location: Array<{
+    location_code: string;
+    location_pretty: string;
+    repair_cost: number;
+    cars: number;
+    cost_per_car: number | null;
+  }>;
+  /** Cost-per-car — scope-wide total: report repair cost over summed cars. */
+  cost_per_car_total: {
+    repair_cost: number;
+    cars: number;
+    cost_per_car: number | null;
+  };
 }
 
 function resolveReportingWindow(window: ReportingWindow, now: Date): { from: string; to: string } {
@@ -1512,6 +1715,10 @@ async function getReporting(env: Env, session: Session, url: URL): Promise<Respo
     codes
   );
 
+  // Damage Trends — rolling 90/365-day signals over the same location scope
+  // (`codes`) the rest of the report uses; independent of the report window.
+  const trends = await readDamageTrends(env.DB, codes);
+
   const lifecycleRows = (lifecycleRes?.results ?? []) as Array<{
     bucket: string;
     n: number;
@@ -1648,6 +1855,35 @@ async function getReporting(env: Env, session: Session, url: URL): Promise<Respo
       cost: Number(r.cost) || 0
     }));
 
+  // Cost-per-car — join each in-scope location's window repair cost (from the
+  // per-location rollup above; default 0) with its apportioned car (tunnel)
+  // count over the same window. `cars` is rounded to a whole number and
+  // `cost_per_car` to cents; null when cars === 0.
+  const carsByLocation = await sumCarsInWindow(env.DB, codes, from, to);
+  const carsMap = new Map<string, number>();
+  for (const r of carsByLocation) {
+    carsMap.set(r.location_code, Number(r.cars) || 0);
+  }
+  const roundCents = (v: number) => Math.round(v * 100) / 100;
+  const costPerCarByLocation = byLocation.map((row) => {
+    const repairCost = row.repair_cost;
+    const cars = Math.round(carsMap.get(row.location_code) ?? 0);
+    return {
+      location_code: row.location_code,
+      location_pretty: row.location_pretty ?? row.location_code,
+      repair_cost: repairCost,
+      cars,
+      cost_per_car: cars > 0 ? roundCents(repairCost / cars) : null
+    };
+  });
+  const carsTotalRaw = carsByLocation.reduce((sum, r) => sum + (Number(r.cars) || 0), 0);
+  const carsTotal = Math.round(carsTotalRaw);
+  const costPerCarTotal = {
+    repair_cost: costTotal,
+    cars: carsTotal,
+    cost_per_car: carsTotal > 0 ? roundCents(costTotal / carsTotal) : null
+  };
+
   const response: ReportingResponse = {
     window,
     from,
@@ -1667,7 +1903,11 @@ async function getReporting(env: Env, session: Session, url: URL): Promise<Respo
     by_damage_type_approved: byDamageApproved,
     by_damage_type_denied: byDamageDenied,
     by_location_drilldown: byLocationDrilldown,
-    by_fault_category: byFaultCategoryRows
+    by_fault_category: byFaultCategoryRows,
+    trend_hotspots: trends.hotspots,
+    trend_spikes: trends.spikes,
+    cost_per_car_by_location: costPerCarByLocation,
+    cost_per_car_total: costPerCarTotal
   };
   return json(response);
 }
@@ -1717,6 +1957,119 @@ async function readByFaultCategory(
   }
 }
 
+// Damage Trends tunables. `TREND_SPIKE_RATIO` (recent rate vs. trailing-365
+// expectation) and `TREND_SPIKE_FLOOR` (minimum recent claims to escape
+// small-number noise) live here so they're easy to retune. Note: "company-
+// wide" spikes are computed across THE REPORT'S CURRENT SCOPE (the same
+// `codes` set the rest of getReporting uses), so a scoped rm/gm sees trends
+// for their own territory, not the whole company.
+const TREND_HOTSPOT_MIN = 3;
+const TREND_SPIKE_RATIO = 1.5;
+const TREND_SPIKE_FLOOR = 3;
+
+/**
+ * Damage Trends — two rolling-window signals over the report's current
+ * location scope (`codes`). Both queries key off `submitted_at` (always
+ * populated, unlike the nullable incident_date) and non-deleted claims.
+ *
+ * Hotspots: (location_code, damage_type) pairs with >= TREND_HOTSPOT_MIN
+ * claims in the trailing 90 days.
+ *
+ * Spikes: damage_types whose trailing-90-day count is >= TREND_SPIKE_RATIO x
+ * the count expected from the trailing-365-day rate, floored at
+ * TREND_SPIKE_FLOOR recent claims. `expected_90d` / `ratio` are derived in
+ * JS from the per-type 90/365 counts the query returns.
+ *
+ * Runs as its own pair of statements (batched together) rather than folded
+ * into getReporting's main batch, mirroring readByFaultCategory: keeps the
+ * rolling-window bindings self-contained and independent of the report's
+ * from/to window.
+ */
+async function readDamageTrends(
+  db: D1Database,
+  codes: string[]
+): Promise<{
+  hotspots: ReportingTrendHotspot[];
+  spikes: ReportingTrendSpike[];
+}> {
+  const inPlaceholders = codes.map((_, i) => `?${i + 1}`).join(",");
+
+  const hotspotsSql = `
+    SELECT
+      location_code,
+      MAX(location_pretty) AS location_pretty,
+      damage_type,
+      COUNT(*) AS n
+    FROM claims
+    WHERE deleted_at IS NULL
+      AND damage_type IS NOT NULL
+      AND submitted_at >= datetime('now','-90 days')
+      AND location_code IN (${inPlaceholders})
+    GROUP BY location_code, damage_type
+    HAVING COUNT(*) >= ${TREND_HOTSPOT_MIN}
+    ORDER BY n DESC
+  `;
+  // Per damage_type: recent (90d) and trailing (365d) non-deleted counts.
+  // expected_90d and ratio are computed in JS below so the divide-by-zero
+  // guard stays explicit.
+  const spikesSql = `
+    SELECT
+      damage_type,
+      SUM(CASE WHEN submitted_at >= datetime('now','-90 days') THEN 1 ELSE 0 END) AS recent_90d,
+      SUM(CASE WHEN submitted_at >= datetime('now','-365 days') THEN 1 ELSE 0 END) AS count_365
+    FROM claims
+    WHERE deleted_at IS NULL
+      AND damage_type IS NOT NULL
+      AND submitted_at >= datetime('now','-365 days')
+      AND location_code IN (${inPlaceholders})
+    GROUP BY damage_type
+  `;
+
+  const [hotspotsRes, spikesRes] = await db.batch([
+    db.prepare(hotspotsSql).bind(...codes),
+    db.prepare(spikesSql).bind(...codes)
+  ]);
+
+  const hotspots: ReportingTrendHotspot[] = (
+    (hotspotsRes?.results ?? []) as Array<{
+      location_code: string;
+      location_pretty: string | null;
+      damage_type: string;
+      n: number;
+    }>
+  ).map((r) => ({
+    location_code: r.location_code,
+    location_pretty: r.location_pretty ?? r.location_code,
+    damage_type: r.damage_type,
+    n: Number(r.n) || 0
+  }));
+
+  const spikes: ReportingTrendSpike[] = [];
+  for (const r of (spikesRes?.results ?? []) as Array<{
+    damage_type: string;
+    recent_90d: number;
+    count_365: number;
+  }>) {
+    const recent90 = Number(r.recent_90d) || 0;
+    if (recent90 < TREND_SPIKE_FLOOR) continue;
+    const count365 = Number(r.count_365) || 0;
+    const expected90 = count365 * 90.0 / 365.0;
+    // Divide-by-zero guard: with no trailing-365 baseline, any recent volume
+    // at/above the floor is treated as an unbounded spike.
+    const ratio = expected90 === 0 ? Infinity : recent90 / expected90;
+    if (ratio < TREND_SPIKE_RATIO) continue;
+    spikes.push({
+      damage_type: r.damage_type,
+      recent_90d: recent90,
+      expected_90d: Math.round(expected90 * 10) / 10,
+      ratio: ratio === Infinity ? Infinity : Math.round(ratio * 100) / 100
+    });
+  }
+  spikes.sort((a, b) => b.ratio - a.ratio);
+
+  return { hotspots, spikes };
+}
+
 function emptyReportingResponse(
   window: ReportingWindow,
   from: string,
@@ -1742,7 +2095,11 @@ function emptyReportingResponse(
     by_damage_type_approved: [],
     by_damage_type_denied: [],
     by_location_drilldown: [],
-    by_fault_category: []
+    by_fault_category: [],
+    trend_hotspots: [],
+    trend_spikes: [],
+    cost_per_car_by_location: [],
+    cost_per_car_total: { repair_cost: 0, cars: 0, cost_per_car: null }
   };
 }
 

@@ -99,6 +99,39 @@ interface ReportingResponse {
   /** Brief 172 — by-cause / fault-attribution counts. Empty array pre-
    *  D1 migration; renderer treats empty as "(none)" gracefully. */
   by_fault_category: Array<{ fault_category: string; count: number }>;
+  /** Damage Trends — (location, damage_type) hotspots over the rolling
+   *  90-day window (>= 3 non-deleted claims). */
+  trend_hotspots: Array<{
+    location_code: string;
+    location_pretty: string;
+    damage_type: string;
+    n: number;
+  }>;
+  /** Damage Trends — damage_types whose last-90-day volume runs ahead of
+   *  the trailing-365-day expectation. `ratio` may be Infinity when there
+   *  is no trailing baseline. */
+  trend_spikes: Array<{
+    damage_type: string;
+    recent_90d: number;
+    expected_90d: number;
+    ratio: number;
+  }>;
+  /** Cost per car — repair cost over cars counted, per location. cars comes
+   *  from the car_counts ranges overlapping the reporting window; cost_per_car
+   *  is null when cars is 0 (no counted cars means no divisor). */
+  cost_per_car_by_location: Array<{
+    location_code: string;
+    location_pretty: string;
+    repair_cost: number;
+    cars: number;
+    cost_per_car: number | null;
+  }>;
+  /** Cost per car rolled up across every scoped location. */
+  cost_per_car_total: {
+    repair_cost: number;
+    cars: number;
+    cost_per_car: number | null;
+  };
 }
 
 interface PageProps {
@@ -221,10 +254,22 @@ export default async function DamageReportingPage({ searchParams }: PageProps) {
           Overview
         </a>
         <a
+          href="#damage-trends"
+          className="text-sm font-semibold text-splash-blue hover:text-splash-blue-dark"
+        >
+          Trends
+        </a>
+        <a
           href="#by-location"
           className="text-sm font-semibold text-splash-blue hover:text-splash-blue-dark"
         >
           By Location
+        </a>
+        <a
+          href="#cost-per-car"
+          className="text-sm font-semibold text-splash-blue hover:text-splash-blue-dark"
+        >
+          Cost per Car
         </a>
         <a
           href="#by-damage-type"
@@ -393,11 +438,36 @@ export default async function DamageReportingPage({ searchParams }: PageProps) {
         </div>
       </section>
 
+      {/* Damage Trends — rolling 90/365-day alert. Sits directly below the
+          KPI overview so an emerging hotspot or spike is the first thing a
+          reviewer sees, above the standard breakdowns. */}
+      <section id="damage-trends" className="mb-8 scroll-mt-20">
+        <h2 className="mb-3 text-lg font-bold text-splash-navy">
+          Damage Trends
+        </h2>
+        <TrendAlert
+          hotspots={report.trend_hotspots}
+          spikes={report.trend_spikes}
+        />
+      </section>
+
       <section id="by-location" className="mb-8 scroll-mt-20">
         <h2 className="mb-3 text-lg font-bold text-splash-navy">By Location</h2>
         <ByLocationTableClient
           rows={report.by_location}
           drilldown={report.by_location_drilldown}
+        />
+      </section>
+
+      {/* Cost per Car — repair cost divided by cars counted, per site and in
+          total. Cars come from the car_counts ranges (managed on the Car
+          Counts tab) overlapping this window. Sites with no counted cars show
+          an em dash rather than a misleading $0 or Infinity. */}
+      <section id="cost-per-car" className="mb-8 scroll-mt-20">
+        <h2 className="mb-3 text-lg font-bold text-splash-navy">Cost per Car</h2>
+        <CostPerCarTable
+          rows={report.cost_per_car_by_location}
+          total={report.cost_per_car_total}
         />
       </section>
 
@@ -471,6 +541,162 @@ function CausePill({ cause, count }: { cause: string; count: number }) {
       <span>{cause}</span>
       <span className="font-mono text-[11px] opacity-80">{count}</span>
     </span>
+  );
+}
+
+/**
+ * Damage Trends alert. Amber-emphasised (matching the "Employee Error"
+ * CausePill vocabulary) when there are hotspots or spikes; a muted card
+ * otherwise. Hotspots and spikes render as small labelled lists.
+ */
+function TrendAlert({
+  hotspots,
+  spikes
+}: {
+  hotspots: ReportingResponse["trend_hotspots"];
+  spikes: ReportingResponse["trend_spikes"];
+}) {
+  const hasAlerts = hotspots.length > 0 || spikes.length > 0;
+
+  if (!hasAlerts) {
+    return (
+      <div className="rounded-splash-lg border border-gray-light bg-white p-5 text-sm text-splash-navy/70 shadow-splash-card">
+        No trend alerts in the last 90 days.
+      </div>
+    );
+  }
+
+  const fmtRatio = (r: number) =>
+    Number.isFinite(r) ? `${r}x` : "new";
+
+  return (
+    <div className="rounded-splash-lg border border-amber-300 bg-amber-100 p-5 shadow-splash-card ring-1 ring-amber-300">
+      <div className="grid grid-cols-1 gap-5 md:grid-cols-2">
+        <div>
+          <h3 className="mb-2 text-sm font-semibold uppercase tracking-wider text-amber-900">
+            Location hotspots
+          </h3>
+          {hotspots.length === 0 ? (
+            <p className="text-sm text-amber-900/70">None.</p>
+          ) : (
+            <ul className="space-y-1.5">
+              {hotspots.map((h) => (
+                <li
+                  key={`${h.location_code}::${h.damage_type}`}
+                  className="text-sm text-amber-900"
+                >
+                  <span className="font-semibold">{h.location_pretty}</span>
+                  {" · "}
+                  {h.damage_type}
+                  {" — "}
+                  <span className="font-mono">{h.n}</span> claims / 90d
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+
+        <div>
+          <h3 className="mb-2 text-sm font-semibold uppercase tracking-wider text-amber-900">
+            Company-wide spikes
+          </h3>
+          {spikes.length === 0 ? (
+            <p className="text-sm text-amber-900/70">None.</p>
+          ) : (
+            <ul className="space-y-1.5">
+              {spikes.map((s) => (
+                <li key={s.damage_type} className="text-sm text-amber-900">
+                  <span className="font-semibold">{s.damage_type}</span>
+                  {" — "}
+                  <span className="font-mono">{s.recent_90d}</span> in 90d vs ~
+                  <span className="font-mono">{s.expected_90d}</span> expected (
+                  <span className="font-mono">{fmtRatio(s.ratio)}</span>)
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Cost per car — one row per location plus a total footer. cost_per_car is
+ * null when cars is 0 (the worker's guard against dividing by zero); those
+ * cells render an em dash. Repair cost and cars are always shown so a reader
+ * can see WHY a rate is missing (no cars counted for the window).
+ */
+function CostPerCarTable({
+  rows,
+  total
+}: {
+  rows: ReportingResponse["cost_per_car_by_location"];
+  total: ReportingResponse["cost_per_car_total"];
+}) {
+  return (
+    <div className="overflow-hidden rounded-splash-lg border border-gray-light bg-white shadow-splash-card">
+      {rows.length === 0 ? (
+        <p className="px-4 py-3 text-sm text-splash-navy/70">
+          No cost-per-car data for this window. Add car counts on the Car Counts
+          tab to see rates here.
+        </p>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="min-w-full divide-y divide-gray-light text-sm">
+            <thead className="bg-splash-navy/5 text-left text-xs font-semibold uppercase tracking-wider text-splash-navy/70">
+              <tr>
+                <th className="px-4 py-3">Location</th>
+                <th className="px-4 py-3 text-right">Repair Cost</th>
+                <th className="px-4 py-3 text-right">Cars</th>
+                <th className="px-4 py-3 text-right">Cost / Car</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-light text-splash-navy">
+              {rows.map((row) => (
+                <tr key={row.location_code}>
+                  <td className="px-4 py-2.5">
+                    <div className="text-splash-navy">{row.location_pretty}</div>
+                    <div className="font-mono text-xs text-splash-navy/60">
+                      {row.location_code}
+                    </div>
+                  </td>
+                  <td className="px-4 py-2.5 text-right font-mono text-xs text-splash-navy/80">
+                    {formatCurrency(row.repair_cost)}
+                  </td>
+                  <td className="px-4 py-2.5 text-right font-mono text-xs text-splash-navy/80">
+                    {row.cars.toLocaleString()}
+                  </td>
+                  <td className="px-4 py-2.5 text-right font-mono text-splash-navy">
+                    {row.cost_per_car === null
+                      ? "—"
+                      : formatCurrency(row.cost_per_car)}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+            <tfoot className="border-t border-gray-light bg-splash-navy/5 text-splash-navy">
+              <tr>
+                <td className="px-4 py-3 text-xs font-semibold uppercase tracking-wider text-splash-navy/70">
+                  Total
+                </td>
+                <td className="px-4 py-3 text-right font-mono text-xs font-semibold">
+                  {formatCurrency(total.repair_cost)}
+                </td>
+                <td className="px-4 py-3 text-right font-mono text-xs font-semibold">
+                  {total.cars.toLocaleString()}
+                </td>
+                <td className="px-4 py-3 text-right font-mono font-bold">
+                  {total.cost_per_car === null
+                    ? "—"
+                    : formatCurrency(total.cost_per_car)}
+                </td>
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+      )}
+    </div>
   );
 }
 

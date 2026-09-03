@@ -162,7 +162,7 @@ routes = [
 #                          description. Today apps/web is on workers.dev / staging;
 #                          flip to the prod hostname at cutover.
 [vars]
-MAINTAINX_MODE = "test"  # CUTOVER PHASE A: change to "production" at flip (rolled back 2026-06-11)
+MAINTAINX_MODE = "production"  # LIVE 2026-09-03 (prior "test" rollback 2026-06-11 was for testing only). Routes WOs to Brett Sullivan (409112) + Scott Butler (426577).
 MAINTAINX_BASE_URL = "https://api.getmaintainx.com/v1"
 APPS_WEB_BASE_URL = "https://splashcarwashes.info"
 # Brief 102 (2026-05-11): incidents inbox copied on every customer claim
