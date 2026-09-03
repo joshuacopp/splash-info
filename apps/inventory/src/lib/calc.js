@@ -155,11 +155,51 @@ export function computeVisit(ds, idx, visitId) {
 
   const washRows = idx.washByVisit[visitId] || []
   // Add-ons (à la carte — Hot Wax, Ceramic Ala, Tire Shine, Wheel Deal, Rain X…)
-  // are not washes: excluded from total_wash_count and every CPC denominator,
-  // but still tracked as their own category.
+  // are not washes: excluded from total_wash_count, and so from blended CPC and
+  // package mix, which are per-car figures and would double-count a car that
+  // bought both. They ARE counted in the per-chemical applications denominator
+  // below — an add-on dispenses real chemical, so it belongs there.
   const isAddon = (w) => idx.packageById[w.package_id]?.package_type === 'addon'
   const totalWashCount = washRows.filter((w) => !isAddon(w)).reduce((s, w) => s + num(w.wash_count), 0)
   const totalAddonCount = washRows.filter(isAddon).reduce((s, w) => s + num(w.wash_count), 0)
+
+  // Per-chemical denominator, in APPLICATIONS — how many times that chemical was
+  // actually dispensed, not how many cars came through the site:
+  //   applications(product) = Σ over every package P whose composition contains
+  //                           the product of wash_counts[P] × uses
+  // Both wash AND add-on packages count here, unlike totalWashCount: an à la
+  // carte Hot Wax dispenses the same wax as the package that bundles it, so its
+  // consumption is already in the numerator and its applications belong in the
+  // denominator. `uses` is a real multiplier (production has rows with uses = 2),
+  // never a membership flag, so it must stay a multiplication.
+  //
+  // e.g. wax in Bubble Bath (uses 1) and in the Hot Wax add-on (uses 1), with
+  // 10 bubble baths and 3 hot waxes ⇒ denominator 13.
+  const applicationsByProductId = {}
+  const packagesMissingBom = []
+  for (const w of washRows) {
+    const count = num(w.wash_count)
+    const comp = idx.packageProducts[w.package_id]
+    if (!comp || !comp.length) {
+      // Sold, but with no bill of materials to allocate it to. Recorded rather
+      // than skipped: these silently shrink every affected chemical's
+      // denominator, so they have to be visible.
+      if (count > 0) {
+        const pkg = idx.packageById[w.package_id]
+        packagesMissingBom.push({
+          packageId: w.package_id,
+          name: pkg ? pkg.name : '(unknown package)',
+          isAddon: pkg?.package_type === 'addon',
+          washCount: count,
+        })
+      }
+      continue
+    }
+    for (const pp of comp) {
+      applicationsByProductId[pp.product_id] =
+        (applicationsByProductId[pp.product_id] || 0) + count * num(pp.uses)
+    }
+  }
 
   const entryRows = idx.entriesByVisit[visitId] || []
   const entries = entryRows.map((e) => {
@@ -183,11 +223,15 @@ export function computeVisit(ds, idx, visitId) {
 
     const lp = idx.locationProduct[`${visit.location_id}|${e.product_id}`]
     const targetMlPerCar = lp && lp.target_ml_per_car != null ? num(lp.target_ml_per_car) : null
-    const actualMlPerCar = totalWashCount > 0 ? usageMl / totalWashCount : null
+    // Divided by the applications of THIS chemical, not by every car at the
+    // location. A chemical carried by one premium package used to be spread
+    // across the whole site's traffic, which understated its real dose.
+    const applications = applicationsByProductId[e.product_id] || 0
+    const actualMlPerCar = applications > 0 ? usageMl / applications : null
     const overTarget =
       targetMlPerCar != null &&
       targetMlPerCar > 0 &&
-      totalWashCount > 0 &&
+      applications > 0 &&
       actualMlPerCar > targetMlPerCar * OVER_TARGET_FACTOR
     const hasCounts = e.reservoir_count_gal != null && e.floor_count_gal != null
     // Usage can never physically be negative — ending can't exceed what you
@@ -232,6 +276,14 @@ export function computeVisit(ds, idx, visitId) {
     }
   })
   const entriesByProductId = Object.fromEntries(entries.map((e) => [e.productId, e]))
+  // Chemical went out of the drum, but nothing sold at this visit claims to use
+  // it — no package containing it has a composition row, or the packages that do
+  // sold zero. actualMlPerCar is left null rather than divided by zero; this is
+  // the record of what that null cost us, so a hole in the BOM shows up as a
+  // question instead of as an empty cell.
+  const productsMissingDenominator = entries
+    .filter((e) => e.usageMl > 0 && !(applicationsByProductId[e.productId] > 0))
+    .map((e) => ({ productId: e.productId, name: e.name, usageMl: e.usageMl }))
   // The basis THIS visit was costed at, for the target side to share.
   //
   // Built from the raw rows, not from `entries`, so that only a genuine stored
@@ -294,6 +346,8 @@ export function computeVisit(ds, idx, visitId) {
     overTargetFlags,
     negativeUsageFlags,
     flagCount: overTargetFlags.length + negativeUsageFlags.length,
+    productsMissingDenominator,
+    packagesMissingBom,
   }
 }
 
