@@ -33,7 +33,7 @@ export default function MasterDashboard() {
         case 'ytdCpc': return r.ytdCpc ?? -1
         case 'lastCpc': return r.computed?.blendedCpc ?? -1
         case 'onHand': return r.computed?.onHandValue ?? -1
-        case 'flags': return r.computed?.flagCount ?? -1
+        case 'flags': return r.computed ? r.openFlagCount : -1
         default: return r.ytdCars
       }
     }
@@ -200,7 +200,7 @@ export default function MasterDashboard() {
                     <td className="td text-right tabular-nums">{c ? fmtCurrency(c.onHandValue, 0) : '—'}</td>
                     <td className="td text-right">
                       {c ? (
-                        c.flagCount > 0 ? <Pill tone="rose">{c.flagCount}</Pill> : <Pill tone="emerald">0</Pill>
+                        r.openFlagCount > 0 ? <Pill tone="rose">{r.openFlagCount}</Pill> : <Pill tone="emerald">0</Pill>
                       ) : (
                         '—'
                       )}

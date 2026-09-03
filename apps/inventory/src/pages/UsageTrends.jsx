@@ -98,7 +98,13 @@ export default function UsageTrends() {
                       )}
                     </td>
                     <td className="td text-right font-bold tabular-nums text-slate-400">
-                      {mode === 'ml' ? (r.targetMlPerCar != null ? fmtNumber(r.targetMlPerCar, 1) : '—') : ''}
+                      {mode === 'ml'
+                        ? r.targetMlPerCar != null
+                          ? fmtNumber(r.targetMlPerCar, 1)
+                          : '—'
+                        : r.targetCpcPerCar != null
+                          ? fmtCpc(r.targetCpcPerCar)
+                          : '—'}
                     </td>
                     {r.cells.map((cell, i) => {
                       if (!cell || (mode === 'ml' ? cell.mlPerCar == null : cell.costPerCar == null)) {

@@ -17,7 +17,7 @@
 // usage trends across visits, YTD network stats, stale-site detection.
 // v3: per-entry price snapshot — see computeVisit.
 // ---------------------------------------------------------------------------
-import { num } from './format'
+import { num, todayIso } from './format'
 
 export const GAL_TO_ML = 3785.411784
 export const OVER_TARGET_FACTOR = 1.3 // flag usage >30% over target
@@ -268,6 +268,7 @@ export function computeVisit(ds, idx, visitId) {
       usageGal,
       usageMl,
       cost,
+      applications,
       onHandValue,
       deliveredValue,
       targetMlPerCar,
@@ -415,14 +416,26 @@ export function usageTrends(ds, idx, locationId, lastN = 8) {
     const cells = computed.map((c) => {
       const e = c.entries.find((x) => x.productId === pid)
       return e
-        ? { mlPerCar: e.actualMlPerCar, costPerCar: c.totalWashCount > 0 ? e.cost / c.totalWashCount : null, overTarget: e.overTarget }
+        ? { mlPerCar: e.actualMlPerCar, costPerCar: e.applications > 0 ? e.cost / e.applications : null, overTarget: e.overTarget }
         : null
     })
+    const targetMlPerCar = lp && lp.target_ml_per_car != null ? num(lp.target_ml_per_car) : null
+    // $/car target on the SAME price/discount basis as the actual $/car cells:
+    // the entry snapshot (pricePerMl × (1 − discount)) that computeVisit costed
+    // e.cost at. Prefer the most recent visit that touched this product; fall
+    // back to the live product price when no visit has an entry for it — the
+    // same fallback computeVisit uses when there's no snapshot.
+    const latestEntry = computed.map((c) => c.entries.find((x) => x.productId === pid)).find(Boolean)
+    const price = latestEntry ? latestEntry.pricePerMl : product ? num(product.price_per_ml) : null
+    const discount = latestEntry ? latestEntry.discount : 0
+    const targetCpcPerCar =
+      targetMlPerCar != null && price != null ? targetMlPerCar * price * (1 - discount) : null
     return {
       productId: pid,
       name: product ? product.name : '(unknown)',
       description: product ? product.description : null,
-      targetMlPerCar: lp && lp.target_ml_per_car != null ? num(lp.target_ml_per_car) : null,
+      targetMlPerCar,
+      targetCpcPerCar,
       cells,
     }
   })
@@ -500,7 +513,7 @@ export function inventorySnapshot(ds, idx, asOfIso, visibleIds) {
 // Network dashboard: latest-visit + YTD rollup per location.
 // visibleIds: optional Set of location ids — restricts the rollup to a
 // non-admin, non-all-locations user's assigned sites.
-export function networkSummary(ds, idx, visibleIds) {
+export function networkSummary(ds, idx, visibleIds, today = todayIso()) {
   let locations = (ds.locations || []).filter((l) => l.active !== false)
   if (visibleIds) locations = locations.filter((l) => visibleIds.has(l.id))
 
@@ -510,6 +523,14 @@ export function networkSummary(ds, idx, visibleIds) {
     if (!maxDate || v.visit_date > maxDate) maxDate = v.visit_date
   }
   const ytdYear = maxDate ? yearOf(maxDate) : null
+
+  // Open, non-expired flag count — same semantics as the Attention page, so
+  // the dashboard's "ATTENTION" KPI and per-row Flags column agree with it:
+  // resolved flags (flag_resolutions) drop out, and a location whose latest
+  // visit is older than EXPIRE_MONTHS auto-clears to 0. EXPIRE_MONTHS and the
+  // `today` source must stay in step with Attention.jsx.
+  const EXPIRE_MONTHS = 3
+  const resolutionByKey = new Set((ds.flag_resolutions || []).map((r) => r.flag_key))
 
   const rows = locations.map((loc) => {
     const visits = idx.visitsByLocation[loc.id] || []
@@ -529,10 +550,20 @@ export function networkSummary(ds, idx, visibleIds) {
     const staleDays = latest && maxDate ? daysBetween(maxDate, latest.visit_date) : null
     const stale = latest ? staleDays > STALE_AFTER_DAYS : true
 
+    // Open (unresolved) + non-expired flag count for this location's latest
+    // visit — mirrors Attention's per-location filter.
+    let openFlagCount = 0
+    if (computed && !isOlderThanMonths(latest.visit_date, EXPIRE_MONTHS, today)) {
+      openFlagCount =
+        computed.overTargetFlags.filter((e) => !resolutionByKey.has(e.flagKeyOverTarget)).length +
+        computed.negativeUsageFlags.filter((e) => !resolutionByKey.has(e.flagKeyNegative)).length
+    }
+
     return {
       location: loc,
       latest,
       computed,
+      openFlagCount,
       ytdCars,
       ytdCost,
       ytdCpc: ytdCars > 0 ? ytdCost / ytdCars : null,
@@ -545,7 +576,7 @@ export function networkSummary(ds, idx, visibleIds) {
   const totalWashCount = withData.reduce((s, r) => s + r.computed.totalWashCount, 0)
   const totalChemicalCost = withData.reduce((s, r) => s + r.computed.chemicalCost, 0)
   const totalOnHandValue = withData.reduce((s, r) => s + r.computed.onHandValue, 0)
-  const totalFlags = withData.reduce((s, r) => s + r.computed.flagCount, 0)
+  const totalFlags = withData.reduce((s, r) => s + r.openFlagCount, 0)
   const networkBlendedCpc = totalWashCount > 0 ? totalChemicalCost / totalWashCount : null
   const targetWeighted = withData.reduce(
     (s, r) => s + (r.computed.blendedTargetCpc || 0) * r.computed.totalWashCount,
