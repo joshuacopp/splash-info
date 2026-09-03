@@ -47,9 +47,18 @@ export default function Attention() {
             })),
             ...r.computed.negativeUsageFlags.map((e) => ({ type: 'negative', flagKey: e.flagKeyNegative, entry: e })),
           ]
-      if (!items.length && !r.stale) continue
-      const openCount = items.filter((i) => !resolutionByKey[i.flagKey]).length + (r.stale ? 1 : 0)
-      out.push({ location: r.location, visit, items, stale: r.stale, staleDays: r.staleDays, latest: r.latest, openCount })
+      // Packages that sold units at this visit but list no chemicals at all, so
+      // their sales reach no chemical's per-car denominator. Deliberately NOT
+      // an entry in `items`: there is nothing here for a manager to acknowledge
+      // and sign off on, only a gap in the Package editor to fill, and it
+      // clears itself the moment the composition rows exist. So it is counted
+      // and rendered the way `stale` is — a standing condition of the site —
+      // rather than as a resolvable flag with a flag_resolutions row.
+      const missingBom = r.computed.packagesMissingBom
+      if (!items.length && !r.stale && !missingBom.length) continue
+      const openCount =
+        items.filter((i) => !resolutionByKey[i.flagKey]).length + (r.stale ? 1 : 0) + missingBom.length
+      out.push({ location: r.location, visit, items, missingBom, stale: r.stale, staleDays: r.staleDays, latest: r.latest, openCount })
     }
     out.sort((a, b) => b.openCount - a.openCount || a.location.name.localeCompare(b.location.name))
     return out
@@ -82,7 +91,16 @@ export default function Attention() {
       }
     }
     const staleOpen = groups.filter((g) => g.stale).length
-    return { overOpen, negativeOpen, excess, staleOpen }
+    // Two different numbers, both worth saying: how many packages need fixing,
+    // and how much sales volume is currently missing from the denominators.
+    // The second is what makes it urgent — a single unconfigured add-on can be
+    // tens of thousands of sales.
+    const missingBomOpen = groups.reduce((s, g) => s + g.missingBom.length, 0)
+    const missingBomSales = groups.reduce(
+      (s, g) => s + g.missingBom.reduce((t, p) => t + p.washCount, 0),
+      0
+    )
+    return { overOpen, negativeOpen, excess, staleOpen, missingBomOpen, missingBomSales }
   }, [groups, resolutionByKey])
 
   // Flat audit list — every resolved item across every visible location,
@@ -203,7 +221,7 @@ export default function Attention() {
         </div>
       ) : (
         <>
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
             <KpiCard
               label="Products over goal"
               value={fmtInt(totals.overOpen)}
@@ -215,6 +233,12 @@ export default function Attention() {
               value={fmtInt(totals.negativeOpen)}
               sub="ending exceeds starting + delivered"
               tone={totals.negativeOpen ? 'bad' : 'good'}
+            />
+            <KpiCard
+              label="Packages missing chemicals"
+              value={fmtInt(totals.missingBomOpen)}
+              sub={`${fmtInt(totals.missingBomSales)} sales missing from ml/car`}
+              tone={totals.missingBomOpen ? 'warn' : 'good'}
             />
             <KpiCard
               label="Stale sites"
@@ -343,6 +367,9 @@ function LocationGroup({ group: g, open, onToggle, resolutionByKey, canSubmit, i
         </div>
         <div className="flex items-center gap-2">
           {g.stale && <Pill tone="amber">{g.staleDays}d overdue</Pill>}
+          {g.missingBom.length > 0 && (
+            <Pill tone="blue">{g.missingBom.length} missing chemicals</Pill>
+          )}
           {openItems.length > 0 ? (
             <Pill tone="rose">{openItems.length} open</Pill>
           ) : (
@@ -366,6 +393,38 @@ function LocationGroup({ group: g, open, onToggle, resolutionByKey, canSubmit, i
             </div>
           )}
 
+          {/* Same shape as the stale callout above — a standing condition with
+              one link to the place that fixes it, not a tick box. */}
+          {g.missingBom.length > 0 && (
+            <div className="mb-3 rounded-xl bg-splash-50 px-4 py-3 text-sm text-splash-700">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <span>
+                  {g.missingBom.length} package{g.missingBom.length === 1 ? '' : 's'} sold with no
+                  chemicals configured — those sales reach no chemical&rsquo;s per-car denominator, so
+                  this site&rsquo;s ml/car reads artificially high. Resolves automatically once the
+                  chemicals are listed.
+                </span>
+                {canSubmit && (
+                  <Link
+                    to={`/location/${g.location.id}/packages`}
+                    className="shrink-0 font-bold text-splash-600 hover:text-splash-700"
+                  >
+                    Package editor →
+                  </Link>
+                )}
+              </div>
+              <ul className="mt-1.5 space-y-0.5 text-xs">
+                {g.missingBom.map((p) => (
+                  <li key={p.packageId}>
+                    <b>{p.name}</b>
+                    {p.isAddon && <span className="ml-1 font-bold uppercase text-amber-600">add-on</span>} —{' '}
+                    {fmtInt(p.washCount)} sold, 0 chemicals listed
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
           <div className="space-y-2">
             {openItems.map((item) => (
               <FlagRow
@@ -383,7 +442,7 @@ function LocationGroup({ group: g, open, onToggle, resolutionByKey, canSubmit, i
                 onConfirm={() => confirm(item)}
               />
             ))}
-            {!openItems.length && !g.stale && (
+            {!openItems.length && !g.stale && !g.missingBom.length && (
               <p className="py-2 text-sm text-slate-400">No open flags — nice work.</p>
             )}
           </div>

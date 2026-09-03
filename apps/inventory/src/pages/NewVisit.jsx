@@ -2,7 +2,13 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useData } from '../context/DataContext'
 import { useAuth } from '../context/AuthContext'
-import { latestVisitForLocation, computeVisit, GAL_TO_ML } from '../lib/calc'
+import {
+  latestVisitForLocation,
+  computeVisit,
+  applicationsByProduct,
+  GAL_TO_ML,
+  OVER_TARGET_FACTOR,
+} from '../lib/calc'
 import { createVisit, updateVisit, sendVisitReport } from '../lib/data'
 import { draftKey, loadDraft, saveDraft, clearDraft, formatAge, SAVE_DEBOUNCE_MS } from '../lib/draft'
 import { Banner, EmptyState, SectionTitle, Toast, Pill } from '../components/ui'
@@ -263,11 +269,27 @@ export default function NewVisit() {
     setPending(null)
   }
 
-  // Washes only — add-ons are excluded, matching calc.js totalWashCount. This
-  // number is also the ml/car denominator below, so counting add-ons here
-  // would make the live preview disagree with the visit once it is saved.
+  // Washes only — add-ons are excluded, matching calc.js totalWashCount. These
+  // are the headline counts on the Wash counts card; they are NOT the ml/car
+  // denominator (see applications below).
   const totalWashes = washPackages.reduce((s, p) => s + num(washes[p.id]), 0)
   const totalAddons = addonPackages.reduce((s, p) => s + num(washes[p.id]), 0)
+
+  // The ml/car denominator, straight out of calc.js rather than recomputed
+  // here. Each chemical is divided by its OWN applications — Σ over every
+  // package containing it of count × uses, add-ons included — which is what
+  // computeVisit will do the moment this is saved. Dividing by totalWashes
+  // instead (as this form used to) showed the tech a number the visit report
+  // then contradicted, and the gap grows the more premium-only chemicals a
+  // site carries.
+  const applicationsByProductId = useMemo(
+    () =>
+      applicationsByProduct(
+        idx,
+        packages.map((p) => ({ package_id: p.id, wash_count: num(washes[p.id]) }))
+      ).applicationsByProductId,
+    [idx, packages, washes]
+  )
 
   // Ending is ALWAYS reservoir + floor — never hand-typed. This makes
   // reconciliation mismatches impossible at entry time.
@@ -278,7 +300,8 @@ export default function NewVisit() {
     const ending = reservoir + floor
     const usage = r.starting + num(st.delivered) - ending
     const cost = usage * GAL_TO_ML * r.pricePerMl * (1 - r.discount)
-    const mlPerCar = totalWashes > 0 ? (usage * GAL_TO_ML) / totalWashes : null
+    const applications = applicationsByProductId[r.productId] || 0
+    const mlPerCar = applications > 0 ? (usage * GAL_TO_ML) / applications : null
     const negative = usage < -0.005
     return { reservoir, floor, ending, usage, cost, mlPerCar, negative }
   }
@@ -579,8 +602,12 @@ export default function NewVisit() {
               {productRows.map((r) => {
                 const st = rows[r.productId]
                 const cr = computeRow(r)
+                // Same threshold constant the saved visit flags on, so a row
+                // highlighted here is a row that will be flagged there.
                 const overTarget =
-                  r.targetMlPerCar && cr.mlPerCar != null && cr.mlPerCar > r.targetMlPerCar * 1.15
+                  r.targetMlPerCar &&
+                  cr.mlPerCar != null &&
+                  cr.mlPerCar > r.targetMlPerCar * OVER_TARGET_FACTOR
                 return (
                   <tr key={r.productId} className={cr.negative ? 'bg-rose-50/70 hover:bg-rose-50' : 'hover:bg-slate-50/60'}>
                     <td className="td">

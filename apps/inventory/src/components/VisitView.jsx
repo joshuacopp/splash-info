@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { KpiCard, Banner, SectionTitle, Pill, SortHeader, Delta } from './ui'
 import { meteringLabel, injectorLabel } from '../lib/calc'
 import { fmtCurrency, fmtCpc, fmtInt, fmtNumber, fmtPct, fmtGal, fmtDate } from '../lib/format'
@@ -69,8 +70,45 @@ export default function VisitView({ computed }) {
         />
       </div>
 
-      {(c.overTargetFlags.length > 0 || c.negativeUsageFlags.length > 0) && (
+      {(c.overTargetFlags.length > 0 ||
+        c.negativeUsageFlags.length > 0 ||
+        c.packagesMissingBom.length > 0) && (
         <div className="space-y-3">
+          {/* A configuration hole, not a site problem — which is why it leads.
+              Every ml/car figure below is divided by that chemical's own
+              applications, so a package that sold units but lists no chemicals
+              is missing from the denominator entirely and inflates whatever it
+              actually dispenses. Reads as a question about the package setup
+              rather than as a number nobody can reconcile. */}
+          {c.packagesMissingBom.length > 0 && (
+            <Banner
+              tone="blue"
+              title={`${c.packagesMissingBom.length} package(s) sold with no chemicals configured`}
+            >
+              <p className="mb-1 text-xs">
+                These sales aren&rsquo;t counted in any chemical&rsquo;s per-car denominator, so the
+                ml/car figures below read artificially high. Add each package&rsquo;s chemicals in the{' '}
+                <Link
+                  to={`/location/${c.visit.location_id}/packages`}
+                  className="font-bold underline underline-offset-2"
+                >
+                  Package editor
+                </Link>{' '}
+                and this visit recalculates on its own.
+              </p>
+              <ul className="mt-1 space-y-0.5">
+                {c.packagesMissingBom.map((p) => (
+                  <li key={p.packageId}>
+                    <span className="font-semibold">{p.name}</span>
+                    {p.isAddon && (
+                      <span className="ml-1.5 text-[10px] font-bold uppercase text-amber-600">add-on</span>
+                    )}{' '}
+                    — {fmtInt(p.washCount)} sold, 0 chemicals listed
+                  </li>
+                ))}
+              </ul>
+            </Banner>
+          )}
           {c.negativeUsageFlags.length > 0 && (
             <Banner tone="rose" title={`${c.negativeUsageFlags.length} product(s) show negative usage`}>
               <p className="mb-1 text-xs">

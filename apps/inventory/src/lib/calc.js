@@ -147,37 +147,28 @@ export function packageActualCpc(idx, pkg, entriesByProductId) {
   return any ? total : null
 }
 
-// Full computed view of a single visit.
-export function computeVisit(ds, idx, visitId) {
-  const visit = idx.visitById[visitId]
-  if (!visit) return null
-  const location = idx.locationById[visit.location_id] || null
-
-  const washRows = idx.washByVisit[visitId] || []
-  // Add-ons (à la carte — Hot Wax, Ceramic Ala, Tire Shine, Wheel Deal, Rain X…)
-  // are not washes: excluded from total_wash_count, and so from blended CPC and
-  // package mix, which are per-car figures and would double-count a car that
-  // bought both. They ARE counted in the per-chemical applications denominator
-  // below — an add-on dispenses real chemical, so it belongs there.
-  const isAddon = (w) => idx.packageById[w.package_id]?.package_type === 'addon'
-  const totalWashCount = washRows.filter((w) => !isAddon(w)).reduce((s, w) => s + num(w.wash_count), 0)
-  const totalAddonCount = washRows.filter(isAddon).reduce((s, w) => s + num(w.wash_count), 0)
-
-  // Per-chemical denominator, in APPLICATIONS — how many times that chemical was
-  // actually dispensed, not how many cars came through the site:
-  //   applications(product) = Σ over every package P whose composition contains
-  //                           the product of wash_counts[P] × uses
-  // Both wash AND add-on packages count here, unlike totalWashCount: an à la
-  // carte Hot Wax dispenses the same wax as the package that bundles it, so its
-  // consumption is already in the numerator and its applications belong in the
-  // denominator. `uses` is a real multiplier (production has rows with uses = 2),
-  // never a membership flag, so it must stay a multiplication.
-  //
-  // e.g. wax in Bubble Bath (uses 1) and in the Hot Wax add-on (uses 1), with
-  // 10 bubble baths and 3 hot waxes ⇒ denominator 13.
+// Per-chemical denominator, in APPLICATIONS — how many times that chemical was
+// actually dispensed, not how many cars came through the site:
+//   applications(product) = Σ over every package P whose composition contains
+//                           the product of wash_counts[P] × uses
+// Both wash AND add-on packages count here, unlike totalWashCount: an à la
+// carte Hot Wax dispenses the same wax as the package that bundles it, so its
+// consumption is already in the numerator and its applications belong in the
+// denominator. `uses` is a real multiplier (production has rows with uses = 2),
+// never a membership flag, so it must stay a multiplication.
+//
+// e.g. wax in Bubble Bath (uses 1) and in the Hot Wax add-on (uses 1), with
+// 10 bubble baths and 3 hot waxes ⇒ denominator 13.
+//
+// `washRows` is [{ package_id, wash_count }] — the stored rows for a saved
+// visit, or the numbers a tech is currently typing. Exported for that second
+// caller: the NewVisit entry form has to show the same ml/car the visit will
+// read once it is saved, and a second copy of this loop in the component is
+// exactly how the preview and the saved figure drift apart.
+export function applicationsByProduct(idx, washRows) {
   const applicationsByProductId = {}
   const packagesMissingBom = []
-  for (const w of washRows) {
+  for (const w of washRows || []) {
     const count = num(w.wash_count)
     const comp = idx.packageProducts[w.package_id]
     if (!comp || !comp.length) {
@@ -200,6 +191,27 @@ export function computeVisit(ds, idx, visitId) {
         (applicationsByProductId[pp.product_id] || 0) + count * num(pp.uses)
     }
   }
+  return { applicationsByProductId, packagesMissingBom }
+}
+
+// Full computed view of a single visit.
+export function computeVisit(ds, idx, visitId) {
+  const visit = idx.visitById[visitId]
+  if (!visit) return null
+  const location = idx.locationById[visit.location_id] || null
+
+  const washRows = idx.washByVisit[visitId] || []
+  // Add-ons (à la carte — Hot Wax, Ceramic Ala, Tire Shine, Wheel Deal, Rain X…)
+  // are not washes: excluded from total_wash_count, and so from blended CPC and
+  // package mix, which are per-car figures and would double-count a car that
+  // bought both. They ARE counted in the per-chemical applications denominator
+  // below — an add-on dispenses real chemical, so it belongs there.
+  const isAddon = (w) => idx.packageById[w.package_id]?.package_type === 'addon'
+  const totalWashCount = washRows.filter((w) => !isAddon(w)).reduce((s, w) => s + num(w.wash_count), 0)
+  const totalAddonCount = washRows.filter(isAddon).reduce((s, w) => s + num(w.wash_count), 0)
+
+  // Per-chemical applications denominator — see applicationsByProduct above.
+  const { applicationsByProductId, packagesMissingBom } = applicationsByProduct(idx, washRows)
 
   const entryRows = idx.entriesByVisit[visitId] || []
   const entries = entryRows.map((e) => {
