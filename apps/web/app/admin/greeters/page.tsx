@@ -42,7 +42,7 @@
 //
 // THE THREE DATA TABLES (7-9) ARE GROUPED BY SITE, one collapsible <details>
 // and one <table> per site, with the header row and the leading one or two
-// columns pinned. They run 13 to 17 columns wide and hundreds of rows long: in
+// columns pinned. They run 13 to 18 columns wide and hundreds of rows long: in
 // one piece they lost their header on the first scroll down, lost track of
 // whose row you were on at the first scroll right, and parked the horizontal
 // scrollbar three screens below wherever you were reading. The Site column is
@@ -1548,6 +1548,17 @@ export default async function GreetersPage({ searchParams }: PageProps) {
         )}
       </Card>
 
+      {/* DELIBERATELY HERE, not up with the two insight panels. Those run on a
+          fixed 7-day watch window regardless of the filters; this one is built
+          from the very rows in the two tables below, so it has to sit next to
+          them or its counts will read as though they covered the same week. */}
+      <NotesPanel
+        dayRows={dayList}
+        locationRows={locationDayList}
+        dayHref={(id) => rowHref("actions_day", id)}
+        locationDayHref={(id) => rowHref("actions_location_day", id)}
+      />
+
       {/* Daily rows */}
       <Card title="Daily rows">
         {dayList.length === 0 ? (
@@ -1589,6 +1600,16 @@ export default async function GreetersPage({ searchParams }: PageProps) {
                     <th className={TH_CLS}>Reviews</th>
                     <th className={TH_CLS}>Rewashes</th>
                     <th className={TH_CLS}>Shift</th>
+                    {/* LAST, AND A POINTER RATHER THAN THE TEXT. It is the one
+                        non-numeric column in a numeric grid, so anywhere else
+                        it would break the scan; and it is truncated, because
+                        the full note is read in the panel above.
+
+                        THIS COLUMN SHOWS VOIDED ROWS' NOTES AND THE PANEL DOES
+                        NOT, on purpose. The panel is a worklist — a retracted
+                        day has nothing to act on. The column is the row itself,
+                        and blanking it would look like the note was lost. */}
+                    <th className={TH_CLS}>Note</th>
                   </tr>
                 </thead>
                 <tbody className={TBODY_CLS}>
@@ -1680,6 +1701,9 @@ export default async function GreetersPage({ searchParams }: PageProps) {
                       <td className="whitespace-nowrap px-4 py-3 text-xs text-splash-navy/80">
                         {shiftCell(r.shift_start, r.shift_end)}
                       </td>
+                      <td className="px-4 py-3 text-xs text-splash-navy/70">
+                        <NoteCell text={r.comments} />
+                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -1734,6 +1758,8 @@ export default async function GreetersPage({ searchParams }: PageProps) {
                         will give it a goal to match its neighbours; it has
                         none, and shouldn't. */}
                     <th className={TH_CLS}>Churn %</th>
+                    {/* Same reasoning as the greeter table's Note column. */}
+                    <th className={TH_CLS}>Note</th>
                   </tr>
                 </thead>
                 <tbody className={TBODY_CLS}>
@@ -1837,6 +1863,9 @@ export default async function GreetersPage({ searchParams }: PageProps) {
                       <td className="px-4 py-3 text-splash-navy/80">
                         {pct(r.churn_pct)}
                       </td>
+                      <td className="px-4 py-3 text-xs text-splash-navy/70">
+                        <NoteCell text={r.comments} />
+                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -1939,7 +1968,7 @@ const TH_CLS =
 // back onto the cell and the overlap comes straight back.
 //
 // The widths still assume these tables stay WIDER than their scroll box, which
-// at 13-17 columns they are. If one is ever narrowed until it fits, auto layout
+// at 13-18 columns they are. If one is ever narrowed until it fits, auto layout
 // hands the leftover width out to every column including the frozen ones, and
 // the offset drifts by however much it handed the first one.
 
@@ -2830,6 +2859,184 @@ function MissingSubmissionsPanel({
         </table>
       </div>
     </div>
+  );
+}
+
+/**
+ * Every free-text note left on the rows below, in one readable place.
+ *
+ * THE COLUMN IS NOT ENOUGH, WHICH IS WHY BOTH EXIST. `comments` has been
+ * selected by the read path since the field shipped and rendered nowhere: the
+ * two day tables are frozen-width numeric grids inside a horizontal scroll box,
+ * and a 2000-character field cannot be read in one. The Note column added
+ * alongside this panel is a pointer — "this row has something to say" — and
+ * this panel is where it is actually read, at full width, with line breaks.
+ *
+ * BOTH GRAINS IN ONE LIST, sorted by date. The question a reader brings here is
+ * "what did people say about this week", not "what did greeters say" — a
+ * site-wide note and a greeter note about the same day belong beside each
+ * other, and the Who column is what keeps them apart.
+ *
+ * VOIDED ROWS ARE EXCLUDED. A struck-out day is a retraction, and carrying its
+ * note into a list of things to act on would have somebody chasing a number
+ * that no longer exists. The note is not lost: it is still on the row, still
+ * shown in that row's Note column, and still editable after a restore.
+ *
+ * SCOPED TO THE FILTERS, unlike the missing/underreported panels above it,
+ * because it is built from the same two arrays the tables render. That is why
+ * it is rendered down here rather than with them — see the note at the call.
+ */
+function NotesPanel({
+  dayRows,
+  locationRows,
+  dayHref,
+  locationDayHref
+}: {
+  dayRows: DayRow[];
+  locationRows: LocationDayRow[];
+  /** Row-actions link for a greeter day, so a note leads back to its row. */
+  dayHref: (id: string) => string;
+  locationDayHref: (id: string) => string;
+}) {
+  const items: {
+    key: string;
+    date: string;
+    siteNumber: number;
+    locationCode: string;
+    who: string;
+    href: string;
+    text: string;
+  }[] = [];
+
+  for (const r of dayRows) {
+    const text = r.comments?.trim();
+    if (!text || r.voided_at !== null) continue;
+    items.push({
+      key: `greeter-${r.id}`,
+      date: r.business_date,
+      siteNumber: r.site_number,
+      locationCode: r.location_code,
+      who: r.greeter_name,
+      href: dayHref(r.id),
+      text
+    });
+  }
+
+  for (const r of locationRows) {
+    const text = r.comments?.trim();
+    if (!text || r.voided_at !== null) continue;
+    items.push({
+      key: `site-${r.id}`,
+      date: r.business_date,
+      siteNumber: r.site_number,
+      locationCode: r.location_code,
+      // Not a person, and labelled so rather than left blank: a site-wide row
+      // is submitted by whoever closed the day, and attributing it to them
+      // would read as that person's own shift note.
+      who: "Site-wide",
+      href: locationDayHref(r.id),
+      text
+    });
+  }
+
+  // Newest first — a note is a thing to act on, and the oldest one in a 90-day
+  // filter is the least likely to still matter. Site then author inside a day
+  // so the same site's rows stay together.
+  items.sort(
+    (a, b) =>
+      b.date.localeCompare(a.date) ||
+      a.siteNumber - b.siteNumber ||
+      a.who.localeCompare(b.who)
+  );
+
+  if (items.length === 0) {
+    return (
+      <div className="mb-5 rounded-splash-lg border border-gray-light bg-white px-5 py-4">
+        <h2 className="text-sm font-bold text-splash-navy">Notes</h2>
+        <p className="mt-1 text-xs text-splash-navy/60">
+          Nobody left a note on the days matching these filters.
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="mb-5 overflow-hidden rounded-splash-lg border border-splash-blue/30 bg-splash-blue/[0.04] shadow-splash-card">
+      <div className="border-b border-splash-blue/20 px-5 py-4">
+        <h2 className="text-sm font-bold text-splash-navy">
+          Notes · {items.length}
+        </h2>
+        <p className="mt-1 text-xs text-splash-navy/70">
+          What greeters and closers wrote on the days below. Follows the filters
+          on this page, not the 7-day window the panels above use. The date links
+          to the row it was left on.
+        </p>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="min-w-full divide-y divide-gray-light text-sm">
+          <thead className={THEAD_CLS}>
+            <tr>
+              <th className="px-4 py-2.5">Date</th>
+              <th className="px-4 py-2.5">Site</th>
+              <th className="px-4 py-2.5">Who</th>
+              <th className="px-4 py-2.5">Note</th>
+            </tr>
+          </thead>
+          <tbody className={TBODY_CLS}>
+            {items.map((n) => (
+              <tr key={n.key} className="align-top">
+                <td className="whitespace-nowrap px-4 py-2.5 font-mono text-xs">
+                  <Link
+                    href={n.href}
+                    title={`Edit or void ${n.who} on ${n.date}`}
+                    className="text-splash-blue underline decoration-dotted underline-offset-2 transition-colors hover:text-splash-blue-dark"
+                  >
+                    {n.date}
+                  </Link>
+                </td>
+                <td className="whitespace-nowrap px-4 py-2.5 text-splash-navy/80">
+                  <div className="font-semibold">{n.locationCode}</div>
+                  <div className="font-mono text-xs text-splash-navy/60">
+                    {n.siteNumber}
+                  </div>
+                </td>
+                <td className="whitespace-nowrap px-4 py-2.5 font-semibold text-splash-navy/80">
+                  {n.who}
+                </td>
+                {/* `whitespace-pre-wrap`: the textarea accepts newlines and
+                    people use them as bullets. Collapsing them would run three
+                    separate observations into one sentence. */}
+                <td className="whitespace-pre-wrap px-4 py-2.5 text-splash-navy/80">
+                  {n.text}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * A note inside a numeric grid: present and traceable, NOT the full text.
+ *
+ * The column sits at the far right of a horizontal scroll box, so it can't be
+ * where a long note is read — that's NotesPanel. Truncating rather than
+ * wrapping is what keeps one paragraph from setting the height of every row in
+ * its table; `title` covers the short ones on hover.
+ *
+ * Trimmed before the emptiness test because the worker stores what it is given
+ * after its own trim, and a row written before that trim existed can still hold
+ * a lone space — which would render as an empty cell that isn't a dash.
+ */
+function NoteCell({ text }: { text: string | null }) {
+  const t = text?.trim();
+  if (!t) return <span className="text-splash-navy/30">—</span>;
+  return (
+    <span className="block max-w-[280px] truncate" title={t}>
+      {t}
+    </span>
   );
 }
 
