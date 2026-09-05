@@ -282,6 +282,9 @@ importers:
       '@splash/db-supabase':
         specifier: workspace:*
         version: link:../../packages/db-supabase
+      '@splash/email-shell':
+        specifier: workspace:*
+        version: link:../../packages/email-shell
       '@splash/greeter-metrics':
         specifier: workspace:*
         version: link:../../packages/greeter-metrics

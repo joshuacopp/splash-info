@@ -13,6 +13,7 @@
   "dependencies": {
     "@splash/auth": "workspace:*",
     "@splash/db-supabase": "workspace:*",
+    "@splash/email-shell": "workspace:*",
     "@splash/greeter-metrics": "workspace:*",
     "@splash/http": "workspace:*",
     "@splash/types": "workspace:*"

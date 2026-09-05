@@ -27,7 +27,8 @@ import {
 import { bySite, type SiteTotals } from "@splash/greeter-metrics";
 import type {
   GreeterDigestRecipient,
-  GreeterPeriodReportRow
+  GreeterPeriodReportRow,
+  LocationPeriodRow
 } from "@splash/types/greeter";
 
 /* ============================================================
@@ -100,15 +101,37 @@ function isoAdd(iso: string, days: number): string {
  * ============================================================ */
 
 /**
+ * One calendar day at one site, present whether or not anything was logged.
+ *
+ * EVERY DAY IN THE WINDOW GETS ONE, which is the whole point. The email's day
+ * table is a seven-row grid, and a day with no submission has to occupy a row
+ * saying so — a table that simply skips Thursday makes the reader count dates to
+ * notice, and most won't. This is where "flag the days with missing data" is
+ * actually implemented; days_missing_site and days_missing_greeters on the block
+ * are the same facts summarised for the headline.
+ */
+export interface DigestDay {
+  business_date: string;
+  /** Null when no location_daily row exists for the day. */
+  row: LocationPeriodRow | null;
+  /**
+   * Greeters who logged a shift that day. CAN BE NON-ZERO WHILE `row` IS NULL —
+   * the crew posting their shifts and the manager posting the site's day are two
+   * independent acts, and the common failure is the second one alone.
+   */
+  greeters_logged: number;
+}
+
+/**
  * One enrolled site's week, as the email renders it.
  *
  * THREE QUESTIONS IN ONE SHAPE, matching the three the digest was asked for:
- * did the site report at all (`days_missing_*`), how did the site do
- * (`totals` / `prior`), and how did its greeters do (`greeters`). They are kept
- * as separate fields rather than pre-merged because a site can fail the first
- * and still have data for the third — a week where the site never posted its own
- * numbers but four greeters posted theirs is a real and common state, and the
- * email has to say both things.
+ * did the site report at all (`days` / `days_missing_*`), how did the site do
+ * day by day against goal (`days`, plus `totals` / `prior` for the week), and
+ * how did its greeters do (`greeters`). They are kept as separate fields rather
+ * than pre-merged because a site can fail the first and still have data for the
+ * third — a week where the site never posted its own numbers but four greeters
+ * posted theirs is a real and common state, and the email has to say both.
  */
 export interface DigestSiteBlock {
   location_code: string;
@@ -119,6 +142,13 @@ export interface DigestSiteBlock {
    * nothing else.
    */
   site_number: number | null;
+  /**
+   * Every day in the window, oldest first, logged or not. Each row carries its
+   * own capture_goal_pct and dob_goal, so "vs goal" is a per-day comparison
+   * against the goal that actually covered that day rather than one goal applied
+   * across a week it may not have spanned.
+   */
+  days: DigestDay[];
   /** Null when no site day was logged. NOT a zeroed Totals: see below. */
   totals: SiteTotals | null;
   /** Null when the prior week is also empty, which suppresses every delta. */
@@ -159,11 +189,17 @@ export async function buildDigestBlocks(
   week: DigestWeek
 ): Promise<Map<string, DigestSiteBlock>> {
   const scope = [...new Set(codes)].sort();
+  const dates = datesBetween(week.from, week.to);
   const blocks = new Map<string, DigestSiteBlock>();
   for (const code of scope) {
     blocks.set(code, {
       location_code: code,
       site_number: null,
+      days: dates.map((business_date) => ({
+        business_date,
+        row: null,
+        greeters_logged: 0
+      })),
       totals: null,
       prior: null,
       days_missing_site: [],
@@ -184,6 +220,29 @@ export async function buildDigestBlocks(
     listGreeterPeriodReport(client, window, filters)
   ]);
 
+  // Fill the grid before anything else, so the summaries below can be derived
+  // from it rather than computed twice from two different sources.
+  for (const row of siteRows) {
+    const day = blocks.get(row.location_code)?.days.find(
+      (d) => d.business_date === row.business_date
+    );
+    if (!day) continue;
+    day.row = row;
+    day.greeters_logged = row.greeters_logged;
+  }
+
+  // greeter_missing_days() is the ONLY source for greeters_logged on a day with
+  // no site row: location_period_rows() has nothing to return for such a day, so
+  // without this a week where the crew reported and the manager didn't would
+  // read as a week nobody worked.
+  for (const row of missing) {
+    const block = blocks.get(row.location_code);
+    if (!block) continue;
+    block.site_number ??= row.site_number;
+    const day = block.days.find((d) => d.business_date === row.business_date);
+    if (day && day.row === null) day.greeters_logged = row.greeters_logged;
+  }
+
   for (const t of bySite(siteRows)) {
     const block = blocks.get(t.location_code);
     if (!block) continue;
@@ -201,18 +260,6 @@ export async function buildDigestBlocks(
     block.site_number ??= t.site_number;
   }
 
-  for (const row of missing) {
-    const block = blocks.get(row.location_code);
-    if (!block) continue;
-    block.site_number ??= row.site_number;
-    // greeter_missing_days() returns a day when EITHER side is absent, so both
-    // flags have to be tested — a row is not proof that both are missing.
-    if (!row.has_site_row) block.days_missing_site.push(row.business_date);
-    if (row.greeters_logged === 0) {
-      block.days_missing_greeters.push(row.business_date);
-    }
-  }
-
   for (const row of greeters) {
     const block = blocks.get(row.location_code);
     if (!block) continue;
@@ -221,8 +268,17 @@ export async function buildDigestBlocks(
   }
 
   for (const block of blocks.values()) {
-    block.days_missing_site.sort();
-    block.days_missing_greeters.sort();
+    // DERIVED FROM THE GRID, not from greeter_missing_days(). The grid covers
+    // every day of the window for every ENROLLED site, whereas that function only
+    // grids sites it treats as onboarded — so a site it has never heard of would
+    // otherwise report zero missing days while having submitted nothing all week,
+    // which is the exact inversion of the truth.
+    block.days_missing_site = block.days
+      .filter((d) => d.row === null)
+      .map((d) => d.business_date);
+    block.days_missing_greeters = block.days
+      .filter((d) => d.greeters_logged === 0)
+      .map((d) => d.business_date);
     // Worst capture first, but never a low-sample row at the top: two days and
     // both missed reads as "100% under goal" and would otherwise lead the
     // section. Same rule the report's performer lists follow.
@@ -230,6 +286,18 @@ export async function buildDigestBlocks(
   }
 
   return blocks;
+}
+
+/** Inclusive `YYYY-MM-DD` range, oldest first. */
+function datesBetween(from: string, to: string): string[] {
+  const out: string[] = [];
+  // Bounded rather than while(true): the caller is always a seven-day window, and
+  // a malformed pair must not spin. 400 is a year's worth of slack.
+  for (let cursor = from, i = 0; cursor <= to && i < 400; i++) {
+    out.push(cursor);
+    cursor = isoAdd(cursor, 1);
+  }
+  return out;
 }
 
 function compareGreeters(
