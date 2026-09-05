@@ -30,7 +30,7 @@
 // noise. Both failures are avoided by sorting rather than filtering.
 //
 // WEIGHTING: every rate on this page is recomputed from summed numerators and
-// denominators — see _lib/aggregate. Do not average a percentage column.
+// denominators — see @splash/greeter-metrics. Do not average a percentage column.
 //
 // Auth posture: performanceGetJson collapses 401/403 to null -> no-access card,
 // same as /admin/greeters. Location scoping happens worker-side.
@@ -115,7 +115,7 @@ import {
   totals,
   type DayTotals,
   type SiteTotals
-} from "./_lib/aggregate";
+} from "@splash/greeter-metrics";
 import {
   isoAdd,
   isoOrEmpty,
@@ -1356,7 +1356,7 @@ function MorningCall({
                   written on a day, so the site row shows the LATEST day's figure
                   rather than a total. Keeping them together at the end is the
                   only structural hint a reader gets that the arithmetic changes
-                  here — see trendLevels() in _lib/aggregate.
+                  here — see trendLevels() in @splash/greeter-metrics.
 
                   THE TWO ARE GRADED IN OPPOSITE DIRECTIONS. Same division, and
                   the colours mean the reverse of each other: 105% of the labor
@@ -1421,7 +1421,7 @@ function MorningCall({
                       {num(s.net_members)}
                     </td>
                     {/* A level read at the site's latest day in the window,
-                        never a sum — see memberLevel() in _lib/aggregate. */}
+                        never a sum — see memberLevel() in @splash/greeter-metrics. */}
                     <td className="px-4 py-3 font-semibold">
                       {num(s.total_members)}
                     </td>
@@ -1937,7 +1937,7 @@ function toneFor(value: number | null, goal: number | null): CaptureTier | null 
 /**
  * A change rendered in the metric's OWN units, with an explicit sign.
  *
- * Percentages arrive as points (see delta() in _lib/aggregate) and are labelled
+ * Percentages arrive as points (see delta() in @splash/greeter-metrics) and are labelled
  * "pts" so nobody reads "+3.0" on a rate as a relative 3%. Exact zero gets "±"
  * rather than "+0.0", because "no movement" and "moved up slightly" are
  * different answers and a plus sign in front of a zero implies the second.

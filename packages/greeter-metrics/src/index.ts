@@ -1,4 +1,17 @@
-// Rolling site-day rows up into the shapes the report renders.
+// Rolling site-day rows up into totals.
+//
+// MOVED HERE FROM apps/web/app/admin/greeters/report/_lib/aggregate.ts, and the
+// move is the whole reason this package exists. The weekly digest email is
+// assembled inside performance-worker, which cannot import from apps/web — but
+// the digest and the report must agree to the decimal, because the same manager
+// reads one on Monday and opens the other on Tuesday. A second copy of this
+// arithmetic living in the worker would drift, quietly, and the first symptom
+// would be somebody trusting the wrong one.
+//
+// NOTHING IN THIS PACKAGE MAY IMPORT REACT, NEXT, OR ANY BROWSER OR NODE API.
+// It runs inside the Cloudflare Workers runtime as well as in a Next server
+// component. Pure functions over plain rows, one type-only import, and it stays
+// that way.
 //
 // THE ONE RULE THAT MATTERS: every rate is recomputed from summed numerators
 // and summed denominators. Never average a column of percentages. A site that
@@ -55,7 +68,7 @@ import type { LocationPeriodRow } from "@splash/types/greeter";
  * LABOR OVER 100% IS BAD (projected to overspend the budget), REVENUE OVER 100%
  * IS GOOD (projected to beat the goal). Same arithmetic, opposite readings —
  * anything that colours or sorts these carries the direction explicitly. See
- * trendTier() in ../../_lib/grading.
+ * trendTier() in apps/web/app/admin/greeters/_lib/grading.
  */
 export interface TrendLevels {
   /** Dollars budgeted for the whole MONTH, not the window. Never summed. */
