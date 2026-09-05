@@ -1548,10 +1548,19 @@ export async function listGreeterLoggedLocationCodes(
   return [...codes].sort();
 }
 
-/** The slice of auth_unified the digest resolver needs. */
+/**
+ * The slice of auth_unified the digest resolver needs.
+ *
+ * `role` IS NULLABLE HERE even though Session.role is not, and that is not an
+ * oversight. auth_unified is a join, and a user with a user_tool_access row but
+ * no user_permissions row appears in it with a null role — there is at least one
+ * such account in production (a JotForm service address holding `pertrack`).
+ * Session never sees them because they can't sign in, but this resolver reads the
+ * view directly, so it meets them.
+ */
 interface DigestAuthRow {
-  email: string;
-  role: UserRole;
+  email: string | null;
+  role: UserRole | null;
   locations: string[] | null;
   tools: string[] | null;
 }
@@ -1610,7 +1619,11 @@ export async function listGreeterDigestRecipients(
   const recipients: GreeterDigestRecipient[] = [];
   for (const raw of authRes.data ?? []) {
     const row = raw as unknown as DigestAuthRow;
-    if (!row.email) continue;
+    // A null role means no user_permissions row at all — a tool grant hanging off
+    // an account that is not a person. Skipping on the role rather than on the
+    // empty location list is deliberate: it states the reason, and it keeps
+    // holding if such an account is ever given a location by mistake.
+    if (!row.email || row.role === null) continue;
     if (!(row.tools ?? []).includes("pertrack")) continue;
 
     const email = row.email.toLowerCase();
