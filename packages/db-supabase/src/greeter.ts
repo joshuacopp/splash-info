@@ -23,6 +23,7 @@ import type {
   GreeterDailyUpdate,
   GreeterDigestLocationInsert,
   GreeterDigestLocationRow,
+  GreeterDigestRecipient,
   GreeterDigestSuppressionInsert,
   GreeterDigestSuppressionRow,
   GreeterGoalInsert,
@@ -45,6 +46,7 @@ import type {
   SiteMonthlyTargetRow,
   SiteMonthlyTargetSnapshot
 } from "@splash/types/greeter";
+import type { UserRole } from "@splash/types/auth";
 
 /* ============================================================
  * Location resolution
@@ -1544,4 +1546,88 @@ export async function listGreeterLoggedLocationCodes(
     if (code) codes.add(code);
   }
   return [...codes].sort();
+}
+
+/** The slice of auth_unified the digest resolver needs. */
+interface DigestAuthRow {
+  email: string;
+  role: UserRole;
+  locations: string[] | null;
+  tools: string[] | null;
+}
+
+/**
+ * Everyone Monday's digest should reach, with their own slice of the enrolled
+ * sites already attached.
+ *
+ * THE THREE CONDITIONS, all required:
+ *   1. holds the `pertrack` tool grant;
+ *   2. holds a location grant on at least one ENROLLED site;
+ *   3. is not in greeter_digest_suppressions.
+ *
+ * READS auth_unified, NOT user_permissions OR user_tool_access. That is a hard
+ * rule for this codebase, not a stylistic one — see the SECURITY header on
+ * getAuthContext in ./auth-context.ts. The view is where role-is-a-MAX and
+ * tools-are-a-union actually get decided; a query against the base tables would
+ * be a second, quietly different answer to "what can this person see", and the
+ * one that mails people is the worst place to have it diverge.
+ *
+ * SUPER_ADMINS NEED NO SPECIAL CASE HERE, and this is the subtle part. Elsewhere
+ * a super_admin's scope is expressed as the ABSENCE of a filter — locationScopeFor
+ * returns undefined and the query simply doesn't narrow. There is no wildcard
+ * value to expand. So in auth_unified a pure super_admin's `locations` is empty,
+ * condition 2 fails, and they drop out on their own. Only a super_admin who ALSO
+ * holds explicit location_admin rows survives, and they survive on those rows,
+ * not on being a super_admin. Do not "fix" this by branching on role: that would
+ * mail every enrolled site's numbers to people who never asked for them, and it
+ * would do it by inventing an expansion rule that exists nowhere else.
+ *
+ * FILTERED IN TS, NOT IN POSTGREST. Three plain reads and a set intersection,
+ * because the alternative is an array-containment filter on a view column plus
+ * two `in` lists rebuilt per request, for a query that runs once a week over a
+ * couple of hundred rows. The intersection is also the only place the per-person
+ * site list gets built, so doing it here keeps one implementation of it.
+ *
+ * EMAILS ARE LOWERCASED ON BOTH SIDES before comparison. user_permissions has no
+ * lowercase CHECK — the digest tables do — so a mixed-case address there would
+ * sail past a suppression row that looks perfectly correct in the admin card.
+ * Everything in production is lowercase today; this is what keeps that from
+ * being load-bearing.
+ */
+export async function listGreeterDigestRecipients(
+  client: SupabaseClient
+): Promise<GreeterDigestRecipient[]> {
+  const [authRes, enrolled, suppressions] = await Promise.all([
+    client.from("auth_unified").select("email,role,locations,tools"),
+    listGreeterDigestLocations(client),
+    listGreeterDigestSuppressions(client)
+  ]);
+  if (authRes.error) throw authRes.error;
+
+  const enrolledCodes = new Set(enrolled.map((r) => r.location_code));
+  const blocked = new Set(suppressions.map((r) => r.email.toLowerCase()));
+
+  const recipients: GreeterDigestRecipient[] = [];
+  for (const raw of authRes.data ?? []) {
+    const row = raw as unknown as DigestAuthRow;
+    if (!row.email) continue;
+    if (!(row.tools ?? []).includes("pertrack")) continue;
+
+    const email = row.email.toLowerCase();
+    if (blocked.has(email)) continue;
+
+    const codes = [...new Set(row.locations ?? [])]
+      .filter((code) => enrolledCodes.has(code))
+      .sort();
+    // No overlap means nothing to say to them. A digest listing zero sites is
+    // worse than no digest: it reads as "your sites reported nothing".
+    if (codes.length === 0) continue;
+
+    recipients.push({ email, role: row.role, location_codes: codes });
+  }
+
+  // Sorted so a re-run of the same week produces the same order, which is what
+  // makes the send loop's idempotency key comparable between runs.
+  recipients.sort((a, b) => a.email.localeCompare(b.email));
+  return recipients;
 }

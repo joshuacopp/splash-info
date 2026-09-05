@@ -52,6 +52,11 @@
 //                   the intuitive "over goal is green" rule is exactly wrong for
 //                   labor. See supabase/greeter-labor-revenue-14.sql.
 
+// The only import in this file, and it earns its place: GreeterDigestRecipient
+// carries the role the digest was resolved under, and re-declaring the role
+// union here would let the two drift.
+import type { UserRole } from "./auth.js";
+
 /**
  * Metrics both forms collect. Split out from the two form-specific interfaces
  * below rather than being one flat shared type, because the greeter and site
@@ -931,4 +936,39 @@ export interface GreeterDigestSuppressionInsert {
 export interface GreeterDigestSuppressionRow
   extends GreeterDigestSuppressionInsert {
   created_at: string;
+}
+
+/* ============================================================
+ * Who Monday's mail goes to
+ *
+ * ONE ROW PER PERSON, NOT PER SITE. The same handful of managers hold grants on
+ * most of the estate, so grouping by location would put four separate messages
+ * in one inbox on the same morning. `location_codes` is that person's own slice
+ * of the enrolled set — already intersected, already sorted — and it is what the
+ * body iterates over.
+ *
+ * NOT A DATABASE ROW. Nothing selects this shape; it is assembled in TS from
+ * three separate reads (see listGreeterDigestRecipients in @splash/db-supabase).
+ * That is why the fields are camelCase-free but also not snake_case-faithful to
+ * any table — there is no table.
+ * ============================================================ */
+
+export interface GreeterDigestRecipient {
+  /** Lowercased before it leaves the resolver, so it can be compared to a
+   *  suppression row without either side re-normalising. */
+  email: string;
+  /**
+   * Carried for the preview route and the greeting line, NOT for access
+   * control. The resolver has already decided this person may see every code in
+   * `location_codes`; re-deriving that from the role downstream would be a
+   * second, divergent implementation of the same rule.
+   */
+  role: UserRole;
+  /**
+   * Enrolled sites this person holds a grant on. NEVER EMPTY — a recipient with
+   * an empty intersection is dropped by the resolver rather than sent a digest
+   * with nothing in it. Sorted, so two runs of the same week produce byte-equal
+   * mail and the idempotency key actually means something.
+   */
+  location_codes: string[];
 }
