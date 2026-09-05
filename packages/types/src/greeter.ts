@@ -878,3 +878,57 @@ export interface LocationPeriodRow {
   scanned_wash_sales: number;
   greeters_logged: number;
 }
+
+/* ============================================================
+ * greeter_digest_locations / greeter_digest_suppressions
+ *
+ * The Monday digest's two control tables. Neither is read by anything on the
+ * scorecard itself — only the cron and the super_admin card on /admin/greeters
+ * touch them. See supabase/greeter-digest-15.sql for why enrollment is explicit
+ * rather than derived from grants or from logged rows.
+ *
+ * NEITHER ROW HAS AN `id`, unlike every other shape in this file. Both tables
+ * are keyed on the natural value — a location code, an address — because both
+ * are sets of exactly that: a site is enrolled or it isn't, an address is
+ * suppressed or it isn't, and there is no such thing as two rows for one. A
+ * surrogate id would make a duplicate representable and force the delete path
+ * to look one up before it could act. Deletes key on the natural column.
+ * ============================================================ */
+
+export interface GreeterDigestLocationInsert {
+  /**
+   * Lowercase slug, matching greeter_daily.location_code. No foreign key backs
+   * this — nothing in the database holds a unique list of location codes (see
+   * the migration header) — so a well-formed but wrong code inserts cleanly and
+   * is caught by the card's drift panel instead.
+   */
+  location_code: string;
+  /** The super_admin who enrolled it. Null on the rows migration 15 seeded. */
+  enrolled_by_email: string | null;
+  note: string | null;
+}
+
+export interface GreeterDigestLocationRow extends GreeterDigestLocationInsert {
+  enrolled_at: string;
+}
+
+export interface GreeterDigestSuppressionInsert {
+  /**
+   * Lowercase, and enforced as such by a CHECK rather than normalised on write:
+   * the send path matches this exactly against a lowercased address, so a
+   * mixed-case row would sit in the table looking effective and suppress
+   * nobody.
+   */
+  email: string;
+  /**
+   * Free text, but write something. Six months on, this is the only way to tell
+   * whether a suppression is still wanted.
+   */
+  reason: string | null;
+  created_by_email: string | null;
+}
+
+export interface GreeterDigestSuppressionRow
+  extends GreeterDigestSuppressionInsert {
+  created_at: string;
+}

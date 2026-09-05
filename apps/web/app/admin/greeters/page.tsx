@@ -116,6 +116,8 @@ import { RowActionButton } from "./_components/RowActionButton";
 import { SavingButton } from "./_components/SavingButton";
 import { SubmitPanels } from "./_components/SubmitPanels";
 import type {
+  GreeterDigestLocationRow,
+  GreeterDigestSuppressionRow,
   GreeterGoalRow,
   SiteMonthlyTargetRow,
   VoidState
@@ -124,14 +126,37 @@ import {
   createGoalAction,
   deleteGoalAction,
   deleteMonthlyTargetAction,
+  enrollDigestLocationAction,
   restoreDayAction,
   restoreLocationDayAction,
   setMonthlyTargetAction,
   submitGreeterDayAction,
   submitLocationDayAction,
+  suppressDigestRecipientAction,
+  unenrollDigestLocationAction,
+  unsuppressDigestRecipientAction,
   voidDayAction,
   voidLocationDayAction
 } from "./actions";
+
+/**
+ * The one GET behind the weekly-digest card.
+ *
+ * THREE LISTS IN ONE RESPONSE, not three endpoints, because the card's drift
+ * panel is a comparison BETWEEN them — sites that are logging days but are not
+ * enrolled. Fetched separately they could be read a second apart and render a
+ * drift that never existed at any single moment.
+ *
+ * `logged_codes` comes from the BASE tables rather than the _live views, which
+ * is the opposite of every other read on this page. A site whose only rows were
+ * later voided still proves somebody is using the tool there, and that is the
+ * question the drift panel asks.
+ */
+interface DigestSettings {
+  locations: GreeterDigestLocationRow[];
+  suppressions: GreeterDigestSuppressionRow[];
+  logged_codes: string[];
+}
 
 /** Shape of the two `*_goal` snapshot columns, on every row of both tables. */
 interface GoalSnapshot {
@@ -631,6 +656,9 @@ export default async function GreetersPage({ searchParams }: PageProps) {
   let missingDays: MissingDayRow[] | null = null;
   let goals: GreeterGoalRow[] | null = null;
   let targets: SiteMonthlyTargetRow[] | null = null;
+  // Stays null for everybody who isn't a super_admin, and that null IS the
+  // render gate — see the fetch below.
+  let digest: DigestSettings | null = null;
   // Initialised rather than left null because fetchManagerRosters() never
   // throws or resolves null — a roster outage arrives here as EMPTY_ROSTERS, so
   // the dropdowns render empty and disabled instead of taking the page down or
@@ -650,6 +678,7 @@ export default async function GreetersPage({ searchParams }: PageProps) {
       missingDays,
       goals,
       targets,
+      digest,
       rosters
     ] = await Promise.all([
       performanceGetJson<DayRow[]>(`/pertrack/api/greeter/days${daySuffix}`),
@@ -693,6 +722,18 @@ export default async function GreetersPage({ searchParams }: PageProps) {
       performanceGetJson<SiteMonthlyTargetRow[]>(
         "/pertrack/api/greeter/monthly-targets"
       ),
+      // THE ONLY READ ON THIS PAGE THAT IS EXPECTED TO COME BACK NULL FOR A
+      // LEGITIMATE USER. The worker gates this endpoint on super_admin — a
+      // stricter test than the "pertrack" grant everything above it needs — and
+      // performanceGetJson turns that 403 into null, so a location admin who can
+      // see every other read on this page sees no digest card and no error. That
+      // is the intended behaviour, not a swallowed failure: nothing below treats
+      // `digest === null` as broken.
+      //
+      // Deliberately unscoped. Enrollment is a company-wide mailing list, and a
+      // list narrowed to the reader's own sites would make every other site look
+      // un-enrolled.
+      performanceGetJson<DigestSettings>("/pertrack/api/greeter/digest"),
       fetchManagerRosters()
     ]);
   } catch (err) {
@@ -1441,6 +1482,15 @@ export default async function GreetersPage({ searchParams }: PageProps) {
         }
         returnTo={returnPath}
       />
+
+      {/* Super_admin only, and the null check IS the gate — see the fetch. Last
+          of the configuration cards because it configures the least: goals and
+          targets change how days are graded, this only changes who gets told.
+          Not passed `narrowedTo`, unlike the two above it, because it isn't
+          narrowed: enrollment is company-wide and always shown whole. */}
+      {digest !== null && (
+        <WeeklyDigestCard settings={digest} returnTo={returnPath} />
+      )}
 
       {/* Summary */}
       <Card
@@ -2475,6 +2525,318 @@ function MonthlyTargetStatusBadge({
       Past
     </span>
   );
+}
+
+/* ------------------------------------------------------------
+ * Weekly digest — who gets Monday's email, and about which sites
+ * ------------------------------------------------------------ */
+
+/**
+ * The super_admin control panel for the Monday digest.
+ *
+ * WHY THIS CARD IS SUPER_ADMIN ONLY AND THE REST OF THE PAGE IS NOT. Every other
+ * read here is scoped: a location admin sees their own sites. This one decides
+ * what lands in other people's inboxes, at sites the reader may have nothing to
+ * do with, so it is gated a tier above the "pertrack" grant. The gate itself is
+ * in the worker; the caller only draws this card when the fetch returned a body
+ * rather than the null a 403 collapses to.
+ *
+ * TWO LISTS, NOT ONE, and they answer different questions:
+ *
+ *   ENROLLMENT is which SITES the digest reports on. It is an explicit table
+ *   rather than "every site with a logged day", because the most useful thing a
+ *   digest can say is "you submitted nothing last week" — and a list derived
+ *   from submissions can never contain the sites that submitted nothing.
+ *
+ *   SUPPRESSION is which PEOPLE never get mail, whatever they have access to.
+ *   Recipients are otherwise derived (hold pertrack + hold a permission on an
+ *   enrolled site), so there is no "add a recipient" here by design: the way to
+ *   add somebody is to grant them access, which is where that decision already
+ *   lives. Suppression is the only override, and it only ever subtracts.
+ *
+ * THE DRIFT PANEL IS FIRST because it is the only part of this card that is ever
+ * urgent. A site whose staff are filling in the tool but which nobody enrolled
+ * gets no digest at all, and nothing else on this screen would reveal that.
+ */
+function WeeklyDigestCard({
+  settings,
+  returnTo
+}: {
+  settings: DigestSettings;
+  /** The page with its current filters, posted as `return_to` on every form
+   *  here. See GoalWindowsCard's copy of this prop for why it's passed down. */
+  returnTo: string;
+}) {
+  const enrolled = settings.locations;
+  // Membership test built once rather than per row — `logged_codes` is every
+  // site that has ever logged a day, so this is O(sites) either way, but the
+  // Set makes the drift filter below read as the set difference it is.
+  const enrolledCodes = new Set(enrolled.map((r) => r.location_code));
+  const drift = settings.logged_codes.filter((c) => !enrolledCodes.has(c));
+
+  return (
+    <Card
+      title="Weekly digest"
+      subtitle="Sends Monday morning, covering the previous week. Recipients aren't listed here because they aren't set here — anyone holding scorecard access to an enrolled site gets it automatically. Enroll the sites it should report on; suppress the addresses it should skip."
+    >
+      {/* The only part of this card that can be wrong rather than merely
+          unconfigured, so it renders above both tables and only when it has
+          something to say.
+
+          Same yellow as MissingSubmissionsPanel, deliberately: both say "a site
+          is not being covered", and two different ambers for the same class of
+          problem read as two different severities. */}
+      {drift.length > 0 && (
+        <div className="mx-5 mt-5 rounded-splash-sm border border-yellow-300 bg-yellow-50 px-4 py-3">
+          <p className="text-sm font-semibold text-yellow-900">
+            {drift.length === 1
+              ? "One site is logging days but isn't on the digest."
+              : `${drift.length} sites are logging days but aren't on the digest.`}
+          </p>
+          <p className="mt-1 text-xs text-splash-navy/70">
+            Nobody is being mailed about{" "}
+            {drift.length === 1 ? "it" : "them"}. Add{" "}
+            {drift.length === 1 ? "it" : "them"} below if that&rsquo;s not
+            deliberate.
+          </p>
+          <p className="mt-2 font-mono text-xs text-splash-navy/80">
+            {drift.join(", ")}
+          </p>
+        </div>
+      )}
+
+      {/* ENROLLED SITES */}
+      <div className="border-b border-gray-light px-5 py-5">
+        <h3 className="text-sm font-bold text-splash-navy">Sites on the digest</h3>
+        <p className="mt-1 text-xs text-splash-navy/60">
+          A site with no submissions still gets a digest, and that is the point —
+          &ldquo;nothing was reported here last week&rdquo; is the message worth
+          sending. Removing a site stops the mail; it changes no submitted day.
+        </p>
+
+        {/* Posts a location_id, not a code, even though the row is keyed on the
+            code. No foreign key backs that column — nothing in the database can
+            catch a typo — so the worker resolves the id through pricing_simple
+            and the only codes that can ever be stored are ones that exist. A
+            free-text code box here would undo that. */}
+        <RedirectForm
+          action={enrollDigestLocationAction}
+          className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-end"
+        >
+          <input type="hidden" name="return_to" value={returnTo} />
+          <div className="flex flex-1 flex-col gap-1">
+            <span className={LABEL_CLS}>Add a site *</span>
+            <LocationPicker
+              name="location_id"
+              required
+              placeholder="Search by site number, name, or code…"
+            />
+          </div>
+          <label className="flex flex-1 flex-col gap-1">
+            <span className={LABEL_CLS}>Note</span>
+            <input
+              type="text"
+              name="note"
+              maxLength={500}
+              placeholder="Optional — why this site is on the list"
+              className={INPUT_CLS}
+            />
+          </label>
+          <div>
+            <SavingButton>Add site</SavingButton>
+          </div>
+        </RedirectForm>
+      </div>
+
+      {enrolled.length === 0 ? (
+        <EmptyNote>
+          No sites enrolled, so Monday&rsquo;s digest will send to nobody. Add
+          the sites it should cover above.
+        </EmptyNote>
+      ) : (
+        <TableWrap>
+          <thead className={THEAD_CLS}>
+            <tr>
+              <th className="px-4 py-3">Site</th>
+              <th className="px-4 py-3">Submissions seen</th>
+              <th className="px-4 py-3">Added</th>
+              <th className="px-4 py-3">Added by</th>
+              <th className="px-4 py-3">Note</th>
+              <th className="px-4 py-3 text-right">Remove</th>
+            </tr>
+          </thead>
+          <tbody className={TBODY_CLS}>
+            {enrolled.map((r) => (
+              <tr key={r.location_code}>
+                <td className="whitespace-nowrap px-4 py-2.5 font-semibold text-splash-navy/80">
+                  {r.location_code}
+                </td>
+                {/* NOT a count and not a date — just whether this site has ever
+                    logged anything. An enrolled site with no rows at all is
+                    usually a site that hasn't started, and telling them apart
+                    from a site that stopped is the digest's job, not this
+                    table's. */}
+                <td className="whitespace-nowrap px-4 py-2.5 text-xs">
+                  {enrolledHasLogged(settings, r.location_code) ? (
+                    <span className="text-splash-navy/60">Yes</span>
+                  ) : (
+                    <span
+                      className="font-semibold text-yellow-900"
+                      title="No day has ever been submitted for this site. It will still receive a digest — one that says nothing was reported."
+                    >
+                      Never
+                    </span>
+                  )}
+                </td>
+                <td className="whitespace-nowrap px-4 py-2.5 font-mono text-xs text-splash-navy/70">
+                  {r.enrolled_at.slice(0, 10)}
+                </td>
+                <td className="whitespace-nowrap px-4 py-2.5 text-xs text-splash-navy/70">
+                  {r.enrolled_by_email ?? "—"}
+                </td>
+                <td className="max-w-[16rem] px-4 py-2.5 text-xs text-splash-navy/70">
+                  {r.note || "—"}
+                </td>
+                <td className="whitespace-nowrap px-4 py-2.5 text-right">
+                  {/* Keyed on the CODE, not on a location id, unlike the add
+                      form above. A site whose pricing_simple row has since been
+                      retired can no longer be resolved from an id — and that is
+                      exactly the site most likely to need removing. */}
+                  <RedirectForm action={unenrollDigestLocationAction}>
+                    <input
+                      type="hidden"
+                      name="location_code"
+                      value={r.location_code}
+                    />
+                    <input type="hidden" name="return_to" value={returnTo} />
+                    <DeleteGoalButton
+                      confirmText={`Remove ${r.location_code} from the weekly digest?\n\nNobody will be mailed about this site from Monday on. Days already submitted for it are not touched, and it stays on the scorecard and every report.`}
+                    />
+                  </RedirectForm>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </TableWrap>
+      )}
+
+      {/* SUPPRESSIONS */}
+      <div className="border-y border-gray-light px-5 py-5">
+        <h3 className="text-sm font-bold text-splash-navy">
+          Suppressed addresses
+        </h3>
+        <p className="mt-1 text-xs text-splash-navy/60">
+          These never receive the digest, whatever access they hold. The address
+          isn&rsquo;t checked against any user record on purpose — a shared
+          mailbox nobody reads, and somebody who has left but whose access
+          hasn&rsquo;t been cleaned up yet, are the two cases most worth
+          suppressing, and neither would pass that check.
+        </p>
+
+        <RedirectForm
+          action={suppressDigestRecipientAction}
+          className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-end"
+        >
+          <input type="hidden" name="return_to" value={returnTo} />
+          <label className="flex flex-1 flex-col gap-1">
+            <span className={LABEL_CLS}>Email *</span>
+            {/* type="email" for the keyboard and the browser's own nudge only.
+                The real shape check is in the worker and the PG CHECK; this
+                attribute is not relied on, because a suppression that failed
+                silently would send mail somebody asked to stop. */}
+            <input
+              type="email"
+              name="email"
+              required
+              placeholder="name@splashcarwashes.com"
+              className={INPUT_CLS}
+            />
+            <span className={HINT_CLS}>
+              Stored lowercase. Suppressing an address that isn&rsquo;t a
+              recipient today is harmless — it just takes effect if they ever
+              become one.
+            </span>
+          </label>
+          <label className="flex flex-1 flex-col gap-1">
+            <span className={LABEL_CLS}>Reason</span>
+            <input
+              type="text"
+              name="reason"
+              maxLength={500}
+              placeholder="Optional — why they're off the list"
+              className={INPUT_CLS}
+            />
+          </label>
+          <div>
+            <SavingButton>Suppress</SavingButton>
+          </div>
+        </RedirectForm>
+      </div>
+
+      {settings.suppressions.length === 0 ? (
+        <EmptyNote>
+          Nobody is suppressed. Everyone holding scorecard access to an enrolled
+          site will receive Monday&rsquo;s digest.
+        </EmptyNote>
+      ) : (
+        <TableWrap>
+          <thead className={THEAD_CLS}>
+            <tr>
+              <th className="px-4 py-3">Email</th>
+              <th className="px-4 py-3">Reason</th>
+              <th className="px-4 py-3">Suppressed</th>
+              <th className="px-4 py-3">By</th>
+              <th className="px-4 py-3 text-right">Remove</th>
+            </tr>
+          </thead>
+          <tbody className={TBODY_CLS}>
+            {settings.suppressions.map((r) => (
+              <tr key={r.email}>
+                <td className="whitespace-nowrap px-4 py-2.5 font-semibold text-splash-navy/80">
+                  {r.email}
+                </td>
+                <td className="max-w-[18rem] px-4 py-2.5 text-xs text-splash-navy/70">
+                  {r.reason || "—"}
+                </td>
+                <td className="whitespace-nowrap px-4 py-2.5 font-mono text-xs text-splash-navy/70">
+                  {r.created_at.slice(0, 10)}
+                </td>
+                <td className="whitespace-nowrap px-4 py-2.5 text-xs text-splash-navy/70">
+                  {r.created_by_email ?? "—"}
+                </td>
+                <td className="whitespace-nowrap px-4 py-2.5 text-right">
+                  <RedirectForm action={unsuppressDigestRecipientAction}>
+                    <input type="hidden" name="email" value={r.email} />
+                    <input type="hidden" name="return_to" value={returnTo} />
+                    {/* Says what removing the suppression does NOT do. It grants
+                        nothing — the person still needs scorecard access to an
+                        enrolled site — and a reader undoing a suppression to
+                        "add someone back" needs to know that before they wait
+                        for a Monday that never comes. */}
+                    <DeleteGoalButton
+                      confirmText={`Stop suppressing ${r.email}?\n\nThey'll receive Monday's digest only if they hold scorecard access to an enrolled site. Removing a suppression doesn't grant access on its own.`}
+                    />
+                  </RedirectForm>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </TableWrap>
+      )}
+    </Card>
+  );
+}
+
+/**
+ * Has this enrolled site ever had a day submitted for it?
+ *
+ * Reads `logged_codes`, which the worker builds from the BASE tables rather than
+ * the _live views — so a site whose only rows were later voided answers true
+ * here. That is deliberate: the column is asking "has anyone ever used the tool
+ * at this site", and voiding a bad submission does not un-answer it.
+ */
+function enrolledHasLogged(settings: DigestSettings, code: string): boolean {
+  return settings.logged_codes.includes(code);
 }
 
 /* ------------------------------------------------------------

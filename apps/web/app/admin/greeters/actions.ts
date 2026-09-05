@@ -598,3 +598,167 @@ export async function deleteMonthlyTargetAction(
     redirectTo: `${back}${sep}success=target_deleted${n > 0 ? `&rt=${n}` : ""}`
   };
 }
+
+/* ============================================================
+ * Weekly digest — who gets the Monday email, and about which sites
+ * ============================================================
+ *
+ * These four post to endpoints the worker gates on session.role ===
+ * "super_admin", which is STRICTER than the "pertrack" tool grant every other
+ * action in this file relies on. That gate is not repeated here, for the same
+ * reason none of the actions above re-check "pertrack": the session cookie is
+ * forwarded by performancePostJson and the worker is the only place the answer
+ * is authoritative. A forged POST straight at one of these actions reaches the
+ * same 403 the card would have. The super_admin check on the page is presentation
+ * — it decides whether to draw the card, not whether the write is allowed.
+ *
+ * NOTHING HERE RE-STAMPS ANYTHING, so unlike the goal and target actions these
+ * revalidate LIST_PATH only. Enrollment and suppression change who receives mail
+ * on Monday; they touch no greeter_daily or location_daily row, so the report is
+ * exactly as fresh after one of these as it was before, and revalidating it would
+ * be a lie about what changed.
+ */
+
+/**
+ * Enroll a site in the weekly digest.
+ *
+ * Posts `location_id`, NOT a location code, even though the row is keyed on the
+ * code. The worker resolves the id through pricing_simple, so the only codes that
+ * can ever land in the table are ones that actually exist. There is no FK behind
+ * that column to catch a typo — this is the check that stands in for it, and it
+ * only works if the client keeps sending an id.
+ */
+export async function enrollDigestLocationAction(
+  formData: FormData
+): Promise<RedirectResult> {
+  /** See submitGreeterDayAction — the card sits on the filtered list too. */
+  const back = returnPath(formData);
+
+  const locationId = strField(formData, "location_id");
+  if (!locationId) {
+    return fail("Pick a location before adding it to the digest.", back);
+  }
+
+  const result = await performancePostJson(
+    "/pertrack/api/greeter/digest/locations",
+    { location_id: locationId, note: strOrNull(formData, "note") }
+  );
+
+  if (!result.ok) return fail(result.error, back);
+
+  revalidatePath(LIST_PATH);
+
+  // Enrolling a site that is already enrolled is a no-op, not an error — the
+  // worker says which happened so the banner can stop short of claiming a change
+  // that did not occur.
+  const already =
+    result.body !== null &&
+    typeof result.body === "object" &&
+    (result.body as { already_enrolled?: unknown }).already_enrolled === true;
+
+  const sep = back.includes("?") ? "&" : "?";
+  return {
+    redirectTo: `${back}${sep}success=${
+      already ? "digest_already_enrolled" : "digest_enrolled"
+    }`
+  };
+}
+
+/**
+ * Remove a site from the weekly digest.
+ *
+ * Posts `location_code`, the opposite of the enroll path above, and deliberately.
+ * A site whose pricing_simple row has since been retired can no longer be
+ * resolved from an id, and that is exactly the site most likely to need
+ * un-enrolling. Keying the delete on the stored value means a row can always be
+ * removed by the card that displays it.
+ *
+ * NO CONFIRMATION STEP HERE; the button asks on the client. See deleteGoalAction.
+ */
+export async function unenrollDigestLocationAction(
+  formData: FormData
+): Promise<RedirectResult> {
+  /** See submitGreeterDayAction. */
+  const back = returnPath(formData);
+
+  const code = strField(formData, "location_code");
+  if (!code) {
+    return fail("That site could not be identified. Reload the page.", back);
+  }
+
+  const result = await performancePostJson(
+    "/pertrack/api/greeter/digest/locations/delete",
+    { location_code: code }
+  );
+
+  if (!result.ok) return fail(result.error, back);
+
+  revalidatePath(LIST_PATH);
+
+  const sep = back.includes("?") ? "&" : "?";
+  return { redirectTo: `${back}${sep}success=digest_unenrolled` };
+}
+
+/**
+ * Stop sending the digest to one address.
+ *
+ * The address is not checked against any user record, on purpose. A departed
+ * manager whose grant has not been cleaned up, and a shared mailbox nobody reads,
+ * are the two cases worth suppressing, and both would fail a "does this person
+ * exist" test. The worker lowercases and shape-checks; that is the whole of the
+ * validation and it is enough.
+ */
+export async function suppressDigestRecipientAction(
+  formData: FormData
+): Promise<RedirectResult> {
+  /** See submitGreeterDayAction. */
+  const back = returnPath(formData);
+
+  const email = strField(formData, "email");
+  if (!email) return fail("Enter an email address to suppress.", back);
+
+  const result = await performancePostJson(
+    "/pertrack/api/greeter/digest/suppressions",
+    { email, reason: strOrNull(formData, "reason") }
+  );
+
+  if (!result.ok) return fail(result.error, back);
+
+  revalidatePath(LIST_PATH);
+
+  const sep = back.includes("?") ? "&" : "?";
+  return { redirectTo: `${back}${sep}success=digest_suppressed` };
+}
+
+/**
+ * Start sending the digest to an address again.
+ *
+ * Removing a suppression does not grant anything. The recipient still has to hold
+ * "pertrack" and a permission on an enrolled site to receive mail; this only stops
+ * the last filter from dropping them.
+ *
+ * NO CONFIRMATION STEP HERE; the button asks on the client. See deleteGoalAction.
+ */
+export async function unsuppressDigestRecipientAction(
+  formData: FormData
+): Promise<RedirectResult> {
+  /** See submitGreeterDayAction. */
+  const back = returnPath(formData);
+
+  const email = strField(formData, "email");
+  if (!email) {
+    return fail("That address could not be identified. Reload the page.", back);
+  }
+
+  const result = await performancePostJson(
+    "/pertrack/api/greeter/digest/suppressions/delete",
+    { email }
+  );
+
+  if (!result.ok) return fail(result.error, back);
+
+  revalidatePath(LIST_PATH);
+
+  const sep = back.includes("?") ? "&" : "?";
+  return { redirectTo: `${back}${sep}success=digest_unsuppressed` };
+}

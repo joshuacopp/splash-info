@@ -21,6 +21,10 @@ import type {
   GreeterDailyInsert,
   GreeterDailyRow,
   GreeterDailyUpdate,
+  GreeterDigestLocationInsert,
+  GreeterDigestLocationRow,
+  GreeterDigestSuppressionInsert,
+  GreeterDigestSuppressionRow,
   GreeterGoalInsert,
   GreeterGoalRestampResult,
   GreeterGoalRow,
@@ -1374,4 +1378,170 @@ function applyDayFilters<T extends Record<string, any>>(
   // table and opts out by default instead.
   if (!filters.include_voided) q = q.is("voided_at", null);
   return q;
+}
+
+/* ============================================================
+ * Weekly digest control tables
+ *
+ * greeter_digest_locations — which sites the Monday digest covers.
+ * greeter_digest_suppressions — which addresses it must never reach.
+ *
+ * NOTHING HERE TAKES A location_scope, unlike every other write in this module.
+ * Both tables are company-wide control data, not site data: enrolling a site
+ * decides whether it appears in OTHER people's digests, and suppressing an
+ * address stops mail to someone who may hold no locations in common with the
+ * person clicking. Narrowing these by the caller's own scope would be
+ * meaningless — which is exactly why the gate on them is a super_admin test in
+ * the worker handler rather than a scope array, the same shape the labor rate
+ * uses (apps/performance-worker/src/expense.ts).
+ *
+ * Do not add a scope parameter here later "for symmetry". The absence is the
+ * documentation that these are not location-scoped rows.
+ * ============================================================ */
+
+export async function listGreeterDigestLocations(
+  client: SupabaseClient
+): Promise<GreeterDigestLocationRow[]> {
+  const { data, error } = await client
+    .from("greeter_digest_locations")
+    .select("*")
+    .order("location_code", { ascending: true });
+  if (error) throw error;
+  return (data ?? []) as unknown as GreeterDigestLocationRow[];
+}
+
+/**
+ * Enroll a site.
+ *
+ * UPSERT, NOT INSERT, and it deliberately does NOT overwrite. Enrolling a site
+ * that is already enrolled is not an error worth surfacing — two clicks, or a
+ * stale page, and the user's intent is satisfied either way. But the existing
+ * row keeps its original enrolled_at and enrolled_by_email, because those
+ * record when the site actually joined and a second click is not a re-join.
+ *
+ * ignoreDuplicates is what makes that true; without it the upsert would
+ * silently restamp the audit columns of a row somebody else created.
+ */
+export async function insertGreeterDigestLocation(
+  client: SupabaseClient,
+  row: GreeterDigestLocationInsert
+): Promise<GreeterDigestLocationRow | null> {
+  const { data, error } = await client
+    .from("greeter_digest_locations")
+    .upsert(row, { onConflict: "location_code", ignoreDuplicates: true })
+    .select();
+  if (error) throw error;
+  // Empty when the row already existed — see above. The caller treats that as
+  // success, not as a failed write.
+  return ((data ?? [])[0] as unknown as GreeterDigestLocationRow) ?? null;
+}
+
+/**
+ * Un-enroll a site, returning the row that was removed, or null if it was
+ * already gone.
+ *
+ * KEYED ON THE CODE, because that is the primary key — there is no id to look
+ * up first. See the note on GreeterDigestLocationInsert in @splash/types.
+ *
+ * This does not touch a single greeter_daily row. Un-enrolling stops the site
+ * being mentioned in future digests; every day already logged against it stays
+ * exactly where it is and still appears on the scorecard. That asymmetry is the
+ * point — enrollment is a mailing decision, not a data one.
+ */
+export async function deleteGreeterDigestLocation(
+  client: SupabaseClient,
+  locationCode: string
+): Promise<GreeterDigestLocationRow | null> {
+  const { data, error } = await client
+    .from("greeter_digest_locations")
+    .delete()
+    .eq("location_code", locationCode)
+    .select();
+  if (error) throw error;
+  return ((data ?? [])[0] as unknown as GreeterDigestLocationRow) ?? null;
+}
+
+export async function listGreeterDigestSuppressions(
+  client: SupabaseClient
+): Promise<GreeterDigestSuppressionRow[]> {
+  const { data, error } = await client
+    .from("greeter_digest_suppressions")
+    .select("*")
+    .order("email", { ascending: true });
+  if (error) throw error;
+  return (data ?? []) as unknown as GreeterDigestSuppressionRow[];
+}
+
+/**
+ * Suppress an address.
+ *
+ * LOWERCASED HERE as well as CHECKed in Postgres. The constraint is the
+ * backstop that guarantees the table can never hold an ineffective row; this
+ * line is what stops a super_admin typing a capitalised address and getting a
+ * constraint violation instead of a suppression. Both are wanted.
+ *
+ * Same ignoreDuplicates reasoning as the enrollment upsert: re-suppressing an
+ * address must not overwrite the reason somebody else recorded.
+ */
+export async function insertGreeterDigestSuppression(
+  client: SupabaseClient,
+  row: GreeterDigestSuppressionInsert
+): Promise<GreeterDigestSuppressionRow | null> {
+  const normalised: GreeterDigestSuppressionInsert = {
+    ...row,
+    email: row.email.trim().toLowerCase()
+  };
+  const { data, error } = await client
+    .from("greeter_digest_suppressions")
+    .upsert(normalised, { onConflict: "email", ignoreDuplicates: true })
+    .select();
+  if (error) throw error;
+  return ((data ?? [])[0] as unknown as GreeterDigestSuppressionRow) ?? null;
+}
+
+export async function deleteGreeterDigestSuppression(
+  client: SupabaseClient,
+  email: string
+): Promise<GreeterDigestSuppressionRow | null> {
+  const { data, error } = await client
+    .from("greeter_digest_suppressions")
+    .delete()
+    .eq("email", email.trim().toLowerCase())
+    .select();
+  if (error) throw error;
+  return ((data ?? [])[0] as unknown as GreeterDigestSuppressionRow) ?? null;
+}
+
+/**
+ * Every location_code that has ever had a day logged against it, voided rows
+ * included.
+ *
+ * FEEDS THE DRIFT PANEL, whose question is "is a site submitting without being
+ * enrolled?" — and a site whose only submissions were later voided still
+ * answers yes to that. Somebody there is using the tool. So this reads the base
+ * tables rather than the _live views, which is the opposite of the rule the
+ * rest of this module follows, and is the one place that is correct.
+ *
+ * DEDUPED IN TS, NOT SQL. PostgREST has no DISTINCT, and both tables are in the
+ * hundreds of rows — a few hundred short strings over the wire, once, on a
+ * super_admin-only card. If either table ever reaches the tens of thousands
+ * this should become a SQL function returning distinct codes; until then a
+ * function and a migration would be more machinery than the problem.
+ */
+export async function listGreeterLoggedLocationCodes(
+  client: SupabaseClient
+): Promise<string[]> {
+  const [greeterRes, locationRes] = await Promise.all([
+    client.from("greeter_daily").select("location_code"),
+    client.from("location_daily").select("location_code")
+  ]);
+  if (greeterRes.error) throw greeterRes.error;
+  if (locationRes.error) throw locationRes.error;
+
+  const codes = new Set<string>();
+  for (const r of [...(greeterRes.data ?? []), ...(locationRes.data ?? [])]) {
+    const code = (r as { location_code: string | null }).location_code;
+    if (code) codes.add(code);
+  }
+  return [...codes].sort();
 }

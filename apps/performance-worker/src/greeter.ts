@@ -81,14 +81,21 @@
 import type { Session } from "@splash/auth";
 import {
   createServiceClient,
+  deleteGreeterDigestLocation,
+  deleteGreeterDigestSuppression,
   deleteGreeterGoal,
   deleteSiteMonthlyTarget,
   getGoalSnapshot,
   getMonthlyTargetSnapshot,
   getGreeterRoster,
+  insertGreeterDigestLocation,
+  insertGreeterDigestSuppression,
   insertGreeterGoal,
   listGreeterDays,
+  listGreeterDigestLocations,
+  listGreeterDigestSuppressions,
   listGreeterGoals,
+  listGreeterLoggedLocationCodes,
   listGreeterMissingDays,
   listGreeterPeriodReport,
   listGreeterRollup,
@@ -137,6 +144,11 @@ export function isGreeterRoute(pathname: string, method: string): boolean {
     case "/api/greeter/missing-days":
     case "/api/greeter/period-report":
     case "/api/greeter/location-rows":
+    // One GET for the whole digest card — enrollment, suppressions and the
+    // logged-code list arrive together because the card's drift panel is a
+    // comparison BETWEEN them. Three round trips could each succeed against a
+    // different moment and render a drift that never existed.
+    case "/api/greeter/digest":
       return method === "GET";
     case "/api/greeter/days":
     case "/api/greeter/location-days":
@@ -149,6 +161,10 @@ export function isGreeterRoute(pathname: string, method: string): boolean {
     case "/api/greeter/days/restore":
     case "/api/greeter/location-days/void":
     case "/api/greeter/location-days/restore":
+    case "/api/greeter/digest/locations":
+    case "/api/greeter/digest/locations/delete":
+    case "/api/greeter/digest/suppressions":
+    case "/api/greeter/digest/suppressions/delete":
       return method === "POST";
     default:
       return false;
@@ -218,6 +234,27 @@ export async function handleGreeterRoute(
     return apiRestoreDay(request, env, scope, "location");
   }
 
+  // THE FOUR DIGEST WRITES TAKE `session`, NOT `scope`, and are the only routes
+  // on this module that do. Their gate is a super_admin test inside each
+  // handler, matching apiCreateLaborRate in ./expense.ts — see the note above
+  // apiEnrollDigestLocation for why a location scope would be the wrong
+  // instrument here.
+  if (pathname === "/api/greeter/digest/locations" && method === "POST") {
+    return apiEnrollDigestLocation(request, env, session);
+  }
+  if (pathname === "/api/greeter/digest/locations/delete" && method === "POST") {
+    return apiUnenrollDigestLocation(request, env, session);
+  }
+  if (pathname === "/api/greeter/digest/suppressions" && method === "POST") {
+    return apiSuppressDigestRecipient(request, env, session);
+  }
+  if (
+    pathname === "/api/greeter/digest/suppressions/delete" &&
+    method === "POST"
+  ) {
+    return apiUnsuppressDigestRecipient(request, env, session);
+  }
+
   if (!isGreeterRoute(pathname, method)) return null;
 
   // Everything below is a read, and every read narrows by ?rd=/?rm=.
@@ -249,6 +286,13 @@ export async function handleGreeterRoute(
   }
   if (pathname === "/api/greeter/monthly-targets" && method === "GET") {
     return apiListMonthlyTargets(url, env, readScope);
+  }
+  // Below the read guard with the other reads, but pointedly NOT given
+  // readScope — it takes the session, because it is super_admin-only like its
+  // four writes. A card that showed a narrowed list would let a manager see a
+  // partial enrollment table and conclude sites were missing.
+  if (pathname === "/api/greeter/digest" && method === "GET") {
+    return apiDigestSettings(env, session);
   }
   return null;
 }
@@ -1637,6 +1681,241 @@ function isUniqueViolation(err: unknown): boolean {
     err !== null &&
     (err as { code?: string }).code === "23505"
   );
+}
+
+/* ============================================================
+ * Weekly digest settings
+ *
+ * WHY THE GATE HERE IS A ROLE TEST AND NOT A LOCATION SCOPE.
+ *
+ * Every other write on this module authorises by asking "does the caller hold
+ * the site this row belongs to". These five routes cannot ask that, because
+ * their rows do not belong to a site in that sense. Enrolling batavia_veterans
+ * decides whether it appears in OTHER people's Monday email; suppressing an
+ * address stops mail to someone who may hold no location in common with the
+ * person clicking. A location admin who happens to hold batavia_veterans has no
+ * business making either call.
+ *
+ * So the test is session.role === "super_admin", inside each handler, exactly
+ * as apiCreateLaborRate does in ./expense.ts and for the same reason: the thing
+ * being changed is company-wide, so there is no location to check.
+ *
+ * NOTE THIS IS STRICTER THAN locationScopeFor()'s full-admin tier, which also
+ * lets a dcRole admin through. Damage-claims admin is not scorecard admin.
+ * ============================================================ */
+
+/**
+ * The 403 all five digest routes return.
+ *
+ * A SENTENCE, not "forbidden". apps/web's performancePostJson surfaces `error`
+ * and drops `reason`, so this field is the entire banner the user reads. In
+ * practice a non-super_admin never sees it — the card isn't rendered for them —
+ * which is exactly why it has to be right: the only way to reach it is a
+ * hand-made POST, and the reply should say what the rule is rather than leave
+ * someone guessing at a bare status word.
+ */
+function digestForbidden(): Response {
+  return jsonResponse(
+    {
+      error:
+        "Only a super admin can change who receives the weekly digest — " +
+        "enrollment and suppression are company-wide, not per-site.",
+      reason:
+        "The scorecard itself is open to anyone with the pertrack grant. " +
+        "These two lists decide what lands in other people's inboxes, so " +
+        "holding a location is not sufficient."
+    },
+    403
+  );
+}
+
+/**
+ * Everything the digest card renders, in one read.
+ *
+ * `logged_codes` is the third list because the card's drift panel compares it
+ * against the enrolled set: a site submitting without an enrollment row is
+ * someone using the tool who will never appear in anyone's digest, which is the
+ * one drift worth chasing. The reverse — enrolled with nothing logged — is
+ * expected and is the whole point for an onboarding site, so the card states it
+ * without calling it a problem.
+ */
+async function apiDigestSettings(
+  env: Env,
+  session: Session
+): Promise<Response> {
+  if (session.role !== "super_admin") return digestForbidden();
+
+  const sb = createServiceClient(env);
+  const [locations, suppressions, loggedCodes] = await Promise.all([
+    listGreeterDigestLocations(sb),
+    listGreeterDigestSuppressions(sb),
+    listGreeterLoggedLocationCodes(sb)
+  ]);
+
+  return jsonResponse({
+    locations,
+    suppressions,
+    logged_codes: loggedCodes
+  });
+}
+
+/**
+ * Enroll a site in the weekly digest.
+ *
+ * TAKES location_id AND RESOLVES THE CODE SERVER-SIDE, like every other write
+ * here. That is not about scope — a super_admin has none — but about spelling.
+ * There is no foreign key on greeter_digest_locations.location_code and there
+ * cannot be one (see supabase/greeter-digest-15.sql), so a free-text field
+ * would let a plausible typo insert cleanly and quietly enroll nothing. Going
+ * through the picker means the code can only ever be one pricing_simple
+ * actually has.
+ */
+async function apiEnrollDigestLocation(
+  request: Request,
+  env: Env,
+  session: Session
+): Promise<Response> {
+  if (session.role !== "super_admin") return digestForbidden();
+
+  const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
+
+  const locationId = toIntOrNull(body.location_id);
+  if (locationId == null) {
+    return jsonResponse({ error: "location_id is required" }, 400);
+  }
+
+  // undefined scope: a super_admin is the only caller that gets this far, so
+  // the resolve is here for the code lookup and the unknown-location 400, not
+  // for the permission check it also performs.
+  const resolved = await resolveWritableLocation(env, locationId, undefined);
+  if (!resolved.ok) return resolved.response;
+
+  const sb = createServiceClient(env);
+  const row = await insertGreeterDigestLocation(sb, {
+    location_code: resolved.key.location_code,
+    // Session.email is non-nullable, so this is never actually null — the
+    // COLUMN is nullable only so the seed rows in greeter-digest-15.sql, which
+    // no person added, aren't forced to name one.
+    enrolled_by_email: session.email,
+    note: trimOrNull(body.note)
+  });
+
+  // null means the row already existed, which insertGreeterDigestLocation
+  // treats as success on purpose. Report the code back either way so the
+  // banner can name the site rather than say "done".
+  return jsonResponse({
+    location_code: resolved.key.location_code,
+    already_enrolled: row === null
+  });
+}
+
+async function apiUnenrollDigestLocation(
+  request: Request,
+  env: Env,
+  session: Session
+): Promise<Response> {
+  if (session.role !== "super_admin") return digestForbidden();
+
+  const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
+
+  // location_code, not location_id: this deletes a row that is keyed on the
+  // code, and a site whose pricing_simple row has since been removed must still
+  // be un-enrollable. Resolving through the picker here would strand it.
+  const code = trimOrNull(body.location_code)?.toLowerCase() ?? null;
+  if (!code) {
+    return jsonResponse({ error: "location_code is required" }, 400);
+  }
+
+  const sb = createServiceClient(env);
+  const deleted = await deleteGreeterDigestLocation(sb, code);
+
+  if (!deleted) {
+    return jsonResponse(
+      {
+        error:
+          "That site is no longer enrolled — it may already have been removed. Reload the page to see the current list.",
+        reason: "No greeter_digest_locations row matched that location_code."
+      },
+      404
+    );
+  }
+
+  return jsonResponse({ location_code: deleted.location_code });
+}
+
+/**
+ * Stop the digest reaching an address.
+ *
+ * NO CHECK THAT THE ADDRESS BELONGS TO ANYONE. Deliberate: the addresses most
+ * worth suppressing are shared site mailboxes and people who have left, neither
+ * of which reliably has a user_permissions row, and refusing to suppress an
+ * address the database doesn't recognise would block exactly the cases where
+ * mail is going somewhere unwanted.
+ */
+async function apiSuppressDigestRecipient(
+  request: Request,
+  env: Env,
+  session: Session
+): Promise<Response> {
+  if (session.role !== "super_admin") return digestForbidden();
+
+  const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
+
+  const email = trimOrNull(body.email)?.toLowerCase() ?? null;
+  // Shape only, and loosely. A full address grammar here would reject valid
+  // exotic addresses to catch a typo the reason field makes obvious anyway.
+  if (!email || !email.includes("@") || email.startsWith("@")) {
+    return jsonResponse(
+      {
+        error: "A valid email address is required.",
+        reason:
+          "The suppression list is matched exactly against the address the digest would send to."
+      },
+      400
+    );
+  }
+
+  const sb = createServiceClient(env);
+  const row = await insertGreeterDigestSuppression(sb, {
+    email,
+    reason: trimOrNull(body.reason),
+    // Non-nullable on Session; the column is nullable for the same reason
+    // enrolled_by_email is. See apiEnrollDigestLocation.
+    created_by_email: session.email
+  });
+
+  return jsonResponse({ email, already_suppressed: row === null });
+}
+
+async function apiUnsuppressDigestRecipient(
+  request: Request,
+  env: Env,
+  session: Session
+): Promise<Response> {
+  if (session.role !== "super_admin") return digestForbidden();
+
+  const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
+
+  const email = trimOrNull(body.email)?.toLowerCase() ?? null;
+  if (!email) {
+    return jsonResponse({ error: "email is required" }, 400);
+  }
+
+  const sb = createServiceClient(env);
+  const deleted = await deleteGreeterDigestSuppression(sb, email);
+
+  if (!deleted) {
+    return jsonResponse(
+      {
+        error:
+          "That address is no longer suppressed — it may already have been removed. Reload the page to see the current list.",
+        reason: "No greeter_digest_suppressions row matched that address."
+      },
+      404
+    );
+  }
+
+  return jsonResponse({ email: deleted.email });
 }
 
 /* ============================================================

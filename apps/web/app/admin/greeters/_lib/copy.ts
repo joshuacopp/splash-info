@@ -49,5 +49,21 @@ export const SUCCESS_COPY: Record<string, string> = {
   day_restored: "Greeter day restored.",
   location_voided:
     "Site-wide day voided. It's out of every report and rollup, and that day counts as unreported again.",
-  location_restored: "Site-wide day restored."
+  location_restored: "Site-wide day restored.",
+  // Weekly digest. These say WHEN the change takes effect, because none of them
+  // has a visible consequence until Monday — a reader who saw only "site added"
+  // would reasonably check their inbox and conclude the button did nothing.
+  //
+  // The already-enrolled line exists because enrolling a site twice is a no-op
+  // rather than an error, and "site added" would describe that as a change.
+  digest_enrolled:
+    "Site added to the weekly digest. It'll be included in Monday's send.",
+  digest_already_enrolled:
+    "That site was already on the weekly digest — nothing changed.",
+  digest_unenrolled:
+    "Site removed from the weekly digest. Nobody will be mailed about it from Monday on. No submitted day was touched.",
+  digest_suppressed:
+    "That address is suppressed. It won't receive the weekly digest, even if the person holds access to an enrolled site.",
+  digest_unsuppressed:
+    "Suppression removed. The address will receive Monday's digest if the person holds pertrack access to an enrolled site — removing a suppression doesn't grant anything on its own."
 };
