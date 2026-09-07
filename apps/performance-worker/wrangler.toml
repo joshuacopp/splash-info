@@ -31,6 +31,20 @@ routes = [
   # { pattern = "splashcarwashes.info/pertrack/*", zone_name = "splashcarwashes.info" }
 ]
 
+# Weekly greeter digest. Mondays 09:00 UTC = 4am EST / 5am EDT.
+#
+# Cron triggers fire independently of the `routes` table above — a worker with
+# no production route still runs its cron. Deploying this file schedules the
+# send; there is no second switch.
+#
+# UTC IS THE ONLY OPTION Cloudflare offers, so the send time moves an hour at
+# each DST boundary rather than the weekday moving. Do not "fix" the drift by
+# adding a second cron: two triggers would enqueue twice, and while the
+# outbound_emails dedup index would absorb it, the second run is still a full
+# estate read for nothing.
+[triggers]
+crons = ["0 9 * * 1"]
+
 # Bindings:
 # SUPABASE_URL          — string
 # SUPABASE_ANON_KEY     — secret

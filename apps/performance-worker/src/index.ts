@@ -26,6 +26,11 @@
 //                             route list. Same "pertrack" grant as the other
 //                             two features, same single auth gate below.
 //
+// CRON: Mondays 09:00 UTC, the weekly greeter digest (./digest-send.ts). It
+// runs with no request and no session, so the auth gate below is not in its
+// path — its authority is the service key, and who receives mail is decided by
+// listGreeterDigestRecipients reading auth_unified, not by this file.
+//
 // AUTH GATE POSITION:
 //   /api/login    — no gate (this IS the auth flow).
 //   /api/logout   — no gate (cookie clear is unauthenticated-safe).
@@ -60,6 +65,7 @@ import {
 } from "@splash/db-supabase";
 import { isOriginAllowed, json as jsonResponse } from "@splash/http";
 import type { PerformanceTrackingInsert } from "@splash/types/performance";
+import { runWeeklyGreeterDigestCron } from "./digest-send.js";
 import { handleExpenseRoute, isExpenseRoute } from "./expense.js";
 import { handleGreeterRoute, isGreeterRoute } from "./greeter.js";
 
@@ -163,6 +169,24 @@ export default {
         500
       );
     }
+  },
+
+  /**
+   * Cron: the weekly greeter digest, Mondays at 09:00 UTC.
+   *
+   * PINNED TO UTC, NOT TO EASTERN. 09:00Z is 4am EST and 5am EDT — the send
+   * drifts an hour across the year rather than the schedule drifting a week,
+   * which is the trade we chose. Cloudflare crons have no timezone.
+   *
+   * ctx.waitUntil, matching apps/damage-worker. The runner already swallows and
+   * logs its own failures, so nothing here can reject.
+   */
+  async scheduled(
+    _controller: ScheduledController,
+    env: Env,
+    ctx: ExecutionContext
+  ): Promise<void> {
+    ctx.waitUntil(runWeeklyGreeterDigestCron(env));
   }
 } satisfies ExportedHandler<Env>;
 

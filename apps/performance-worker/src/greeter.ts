@@ -26,6 +26,17 @@
 //   GET  /api/greeter/monthly-targets       filters  -> labor/revenue targets
 //   POST /api/greeter/monthly-targets                -> set or correct a month
 //   POST /api/greeter/monthly-targets/delete { id }  -> remove a month's target
+//   GET  /api/greeter/digest                         -> weekly digest card data
+//   POST /api/greeter/digest/locations               -> enroll a site
+//   POST /api/greeter/digest/locations/delete        -> un-enroll a site
+//   POST /api/greeter/digest/suppressions            -> stop mail to an address
+//   POST /api/greeter/digest/suppressions/delete     -> resume mail
+//   GET  /api/greeter/digest/preview ?email= &week=  -> the email, as text/html
+//   POST /api/greeter/digest/send    { confirm }     -> run the digest off-cron
+//
+// THE SEVEN DIGEST ROUTES ARE super_admin-ONLY, tested inside each handler
+// rather than by location scope — see the section header above digestForbidden()
+// for why a location grant is the wrong instrument for them.
 //
 // THE MONTHLY TARGETS ARE THE GOALS ENDPOINTS' SIBLING, deliberately down to the
 // shape of every request and response, but they are NOT goal windows and the
@@ -93,6 +104,7 @@ import {
   insertGreeterGoal,
   listGreeterDays,
   listGreeterDigestLocations,
+  listGreeterDigestRecipients,
   listGreeterDigestSuppressions,
   listGreeterGoals,
   listGreeterLoggedLocationCodes,
@@ -131,6 +143,7 @@ import type {
   LocationDailyRow,
   SiteMonthlyTargetRestampResult
 } from "@splash/types/greeter";
+import { runWeeklyGreeterDigest } from "./digest-send.js";
 
 type Env = SupabaseEnv;
 
@@ -149,6 +162,9 @@ export function isGreeterRoute(pathname: string, method: string): boolean {
     // comparison BETWEEN them. Three round trips could each succeed against a
     // different moment and render a drift that never existed.
     case "/api/greeter/digest":
+    // Separate from the card's GET because it answers a different question and
+    // returns text/html, not JSON. Still a GET: it sends nothing.
+    case "/api/greeter/digest/preview":
       return method === "GET";
     case "/api/greeter/days":
     case "/api/greeter/location-days":
@@ -165,6 +181,7 @@ export function isGreeterRoute(pathname: string, method: string): boolean {
     case "/api/greeter/digest/locations/delete":
     case "/api/greeter/digest/suppressions":
     case "/api/greeter/digest/suppressions/delete":
+    case "/api/greeter/digest/send":
       return method === "POST";
     default:
       return false;
@@ -254,6 +271,11 @@ export async function handleGreeterRoute(
   ) {
     return apiUnsuppressDigestRecipient(request, env, session);
   }
+  // The manual run. Grouped with the digest writes and gated the same way: it
+  // is the one route on this module that can put mail in other people's inboxes.
+  if (pathname === "/api/greeter/digest/send" && method === "POST") {
+    return apiDigestSend(request, env, session);
+  }
 
   if (!isGreeterRoute(pathname, method)) return null;
 
@@ -293,6 +315,10 @@ export async function handleGreeterRoute(
   // partial enrollment table and conclude sites were missing.
   if (pathname === "/api/greeter/digest" && method === "GET") {
     return apiDigestSettings(env, session);
+  }
+  // Also session, not readScope, and for the same reason as the card above.
+  if (pathname === "/api/greeter/digest/preview" && method === "GET") {
+    return apiDigestPreview(url, env, session);
   }
   return null;
 }
@@ -1916,6 +1942,117 @@ async function apiUnsuppressDigestRecipient(
   }
 
   return jsonResponse({ email: deleted.email });
+}
+
+/**
+ * See the email a recipient would get, without sending it.
+ *
+ * RETURNS text/html, NOT JSON, when an address resolves. The point of a preview
+ * is to look at the thing, and an escaped HTML string inside a JSON envelope is
+ * not looking at it. Opened in a new tab on the same origin, the session cookie
+ * rides along and the super_admin gate below still applies.
+ *
+ * `?email=` picks the recipient. Omitted, it takes the first eligible address
+ * alphabetically — enough to answer "does the layout hold", and the JSON
+ * fallback below lists every candidate so the next call can be specific.
+ *
+ * `?week=` accepts any date inside a week and previews THAT week, via the same
+ * digestWeekFor() the cron uses. Handy for looking at a week that already has
+ * data while this week is still filling in.
+ *
+ * DRY RUN, ALWAYS. There is no query parameter that makes this one send; a GET
+ * that could mail twelve managers is a link somebody eventually clicks by
+ * accident. Sending is the POST below, with its own confirmation flag.
+ */
+async function apiDigestPreview(
+  url: URL,
+  env: Env,
+  session: Session
+): Promise<Response> {
+  if (session.role !== "super_admin") return digestForbidden();
+
+  const email = trimOrNull(url.searchParams.get("email"))?.toLowerCase() ?? null;
+  const weekParam = trimOrNull(url.searchParams.get("week"));
+  // Noon UTC so the date can't slide either way when it's read back as a day.
+  const now = weekParam ? new Date(`${weekParam}T12:00:00Z`) : new Date();
+  if (Number.isNaN(now.getTime())) {
+    return jsonResponse({ error: "week must be YYYY-MM-DD" }, 400);
+  }
+
+  const run = await runWeeklyGreeterDigest(env, now, {
+    dryRun: true,
+    onlyTo: email,
+    includeHtml: true
+  });
+
+  const first = run.results[0];
+  if (!first || !first.body_html) {
+    // No match, or the one match had nothing to render. Say so in JSON with the
+    // candidate list — the usual cause is an address that holds pertrack but no
+    // enrolled site, and seeing who IS eligible answers that instantly. Listed
+    // from the recipient query rather than a second dry run, which would re-read
+    // the whole estate to produce a column of addresses.
+    const eligible = await listGreeterDigestRecipients(createServiceClient(env));
+    return jsonResponse(
+      {
+        error: email
+          ? `No digest for ${email} — they hold no enrolled site, or they are suppressed.`
+          : "No eligible recipients for that week.",
+        week: run.week,
+        eligible: eligible.map((r) => ({
+          email: r.email,
+          sites: r.location_codes.length
+        }))
+      },
+      404
+    );
+  }
+
+  return new Response(first.body_html, {
+    headers: {
+      "content-type": "text/html; charset=utf-8",
+      // A preview of a stale week is worse than a slow preview.
+      "cache-control": "no-store"
+    }
+  });
+}
+
+/**
+ * Run the digest now, off-schedule.
+ *
+ * DEFAULTS TO A DRY RUN. `confirm: true` is what actually queues mail, so a
+ * bare POST — a mis-click, a curious curl — costs a read and nothing else. The
+ * response shape is identical either way, which is what makes the dry run a
+ * real rehearsal rather than a different code path.
+ *
+ * `only_to` narrows to one address for a test send to yourself.
+ *
+ * SAFE TO REPEAT. The queue dedups on (worker, kind, week, recipient), so a
+ * second confirmed run of the same week returns duplicates rather than mailing
+ * anybody twice. That is the intended recovery for a cron that half-failed.
+ */
+async function apiDigestSend(
+  request: Request,
+  env: Env,
+  session: Session
+): Promise<Response> {
+  if (session.role !== "super_admin") return digestForbidden();
+
+  const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
+
+  const onlyTo = trimOrNull(body.only_to)?.toLowerCase() ?? null;
+  const weekParam = trimOrNull(body.week);
+  const now = weekParam ? new Date(`${weekParam}T12:00:00Z`) : new Date();
+  if (Number.isNaN(now.getTime())) {
+    return jsonResponse({ error: "week must be YYYY-MM-DD" }, 400);
+  }
+
+  const run = await runWeeklyGreeterDigest(env, now, {
+    dryRun: body.confirm !== true,
+    onlyTo
+  });
+
+  return jsonResponse(run);
 }
 
 /* ============================================================
