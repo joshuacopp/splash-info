@@ -45,3 +45,9 @@ pnpm-debug.log*
 coverage/
 
 .claude/
+
+# Editor/OS lock + scratch files (these have been committed by accident before:
+# Word owner-lock files, Word recovery files, and *.tmp copies of source files).
+~$*
+~WRL*.tmp
+*.tmp
