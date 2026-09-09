@@ -149,3 +149,7 @@ binding = "ASSETS"
 [observability.logs]
 enabled = true
 invocation_logs = true
+
+# 2026-09-09: rebuild trigger. The previous Workers Build failed on a push that
+# swept in unrelated working-tree files; the app itself builds clean (verified
+# locally with `opennextjs-cloudflare build`). No config change intended.
