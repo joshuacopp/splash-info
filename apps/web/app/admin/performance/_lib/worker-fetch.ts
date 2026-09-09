@@ -87,6 +87,43 @@ export async function performanceGetJson<T>(path: string): Promise<T | null> {
   return (await resp.json()) as T;
 }
 
+/**
+ * GET a worker endpoint and hand back the Response UNTOUCHED.
+ *
+ * performanceGetJson parses, and collapses 401/403 to null, both of which are
+ * wrong for an endpoint that answers in HTML. The digest preview is the only
+ * such endpoint today: the whole point is to look at the rendered email, so the
+ * bytes have to survive the trip and the status has to stay distinguishable.
+ *
+ * Same dual-mode transport as the two helpers above — service binding in the
+ * Workers runtime, absolute URL in dev — for the same reason (see the header).
+ */
+export async function performanceGetRaw(path: string): Promise<Response> {
+  const cookieStore = await cookies();
+  const cookieHeader = cookieStore.toString();
+  const trimmed = path.startsWith("/") ? path : `/${path}`;
+
+  try {
+    const { env } = await getCloudflareContext({ async: true });
+    if (env.PERFORMANCE_WORKER) {
+      const req = new Request(`https://internal${trimmed}`, {
+        method: "GET",
+        headers: { Cookie: cookieHeader }
+      });
+      return await env.PERFORMANCE_WORKER.fetch(req);
+    }
+  } catch {
+    // Fall through to the URL path below — dev, or no binding.
+  }
+
+  const url = await workerUrl(trimmed);
+  return fetch(url, {
+    method: "GET",
+    headers: { Cookie: cookieHeader },
+    cache: "no-store"
+  });
+}
+
 export type PerformancePostResult =
   | { ok: true; body: unknown }
   | { ok: false; status: number; error: string };
