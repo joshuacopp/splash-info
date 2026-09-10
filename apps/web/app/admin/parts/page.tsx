@@ -1,8 +1,9 @@
 // Parts (/admin/parts) — index of interactive parts manuals.
 //
-// The list comes from manifest.json in the parts bucket, so this page needs no
-// change when a manual is added. Auth posture: any authenticated session;
-// middleware gates /admin/*, and nothing here is per-location or per-role.
+// The list is derived from the parts bucket itself (see _lib/manuals), so this
+// page needs no change when a manual is added — dropping the .html in R2 is
+// enough. Auth posture: any authenticated session; middleware gates /admin/*,
+// and nothing here is per-location or per-role.
 
 import Link from "next/link";
 import {
