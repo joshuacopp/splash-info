@@ -68,6 +68,10 @@ export interface FetchInput {
   /** Brief 72: cap on the accumulated work orders when paginate=true.
    *  Ignored when paginate=false (the single 200-cap call applies). */
   maxWorkOrders: number;
+  /** Server-side status filter. Omit for the open-work default
+   *  (OPEN / IN_PROGRESS / ON_HOLD); pass ALL_WORK_ORDER_STATUSES to include
+   *  closed work. */
+  statuses?: readonly string[];
 }
 
 export interface FetchResult {
@@ -85,15 +89,30 @@ export interface FetchResult {
   status: number;
 }
 
-/** Statuses we care about. Excludes DONE / CANCELED / SKIPPED — operators
- *  who want closed WOs follow the link out to MaintainX itself. */
+/** Default statuses. Excludes DONE / CANCELED / SKIPPED — operators browsing
+ *  open work follow the link out to MaintainX for closed WOs.
+ *
+ *  Callers that need closed work orders pass `statuses` explicitly; the
+ *  inventory app does, because it orders approved requests by the state of the
+ *  work order they became, and "done last" requires seeing the done ones. */
 const ACTIVE_STATUSES = ["OPEN", "IN_PROGRESS", "ON_HOLD"] as const;
+
+/** Every status MaintainX emits on a work order, for callers that want them
+ *  all. */
+export const ALL_WORK_ORDER_STATUSES = [
+  "OPEN",
+  "IN_PROGRESS",
+  "ON_HOLD",
+  "DONE",
+  "CANCELED",
+  "SKIPPED"
+] as const;
 
 function buildUrl(input: FetchInput, cursor: string | null): string {
   const base = trimBase(input.baseUrl);
   const url = new URL(`${base}/workorders`);
 
-  for (const status of ACTIVE_STATUSES) {
+  for (const status of input.statuses ?? ACTIVE_STATUSES) {
     url.searchParams.append("statuses", status);
   }
   // Brief 71: drop `thumbnail` (the page no longer renders thumbnails);

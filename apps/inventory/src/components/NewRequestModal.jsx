@@ -31,6 +31,7 @@ export default function NewRequestModal({ open, locations, defaultName, onClose,
   const [locationId, setLocationId] = useState('')
   const [submittedOn, setSubmittedOn] = useState(todayIso())
   const [requesterName, setRequesterName] = useState(defaultName || '')
+  const [requesterPhone, setRequesterPhone] = useState('')
   const [priority, setPriority] = useState('MEDIUM')
   const [title, setTitle] = useState('')
   const [detail, setDetail] = useState('')
@@ -46,6 +47,7 @@ export default function NewRequestModal({ open, locations, defaultName, onClose,
     setLocationId('')
     setSubmittedOn(todayIso())
     setRequesterName(defaultName || '')
+    setRequesterPhone('')
     setPriority('MEDIUM')
     setTitle('')
     setDetail('')
@@ -72,6 +74,7 @@ export default function NewRequestModal({ open, locations, defaultName, onClose,
     !busy &&
     locationId !== '' &&
     requesterName.trim() !== '' &&
+    requesterPhone.trim() !== '' &&
     title.trim() !== '' &&
     title.length <= TITLE_MAX &&
     !detailShort
@@ -107,6 +110,7 @@ export default function NewRequestModal({ open, locations, defaultName, onClose,
     fd.set('description', detail.trim())
     fd.set('priority', priority)
     fd.set('requester_name', requesterName.trim())
+    fd.set('requester_phone', requesterPhone.trim())
     fd.set('submitted_on', submittedOn)
     for (const p of photos) fd.append('photo', p)
 
@@ -195,20 +199,39 @@ export default function NewRequestModal({ open, locations, defaultName, onClose,
             </Field>
           </div>
 
-          <Field label="Name of person submitting" required htmlFor="nr-name">
-            <input
-              id="nr-name"
-              type="text"
-              required
-              maxLength={80}
-              value={requesterName}
-              onChange={(e) => setRequesterName(e.target.value)}
-              className="input w-full"
-            />
-            <p className="mt-1 text-xs text-slate-400">
-              Enter the actual person, even when signed in on a shared site account.
-            </p>
-          </Field>
+          <div className="grid grid-cols-1 gap-5 sm:grid-cols-2">
+            <Field label="Name of person submitting" required htmlFor="nr-name">
+              <input
+                id="nr-name"
+                type="text"
+                required
+                maxLength={80}
+                value={requesterName}
+                onChange={(e) => setRequesterName(e.target.value)}
+                className="input w-full"
+              />
+            </Field>
+
+            {/* Required: the signed-in email is often a shared site mailbox, so
+                it is not a way to reach the person who saw the problem. The
+                maintenance tech calls this number. */}
+            <Field label="Phone number" required htmlFor="nr-phone">
+              <input
+                id="nr-phone"
+                type="tel"
+                required
+                maxLength={30}
+                value={requesterPhone}
+                onChange={(e) => setRequesterPhone(e.target.value)}
+                placeholder="315-555-0148"
+                className="input w-full"
+              />
+            </Field>
+          </div>
+          <p className="-mt-3 text-xs text-slate-400">
+            Enter the actual person and a number they can be reached on, even when signed in on a
+            shared site account.
+          </p>
 
           {/* Not in the original mockup. MaintainX requires a priority on every
               work request, so the choice is either this control or defaulting

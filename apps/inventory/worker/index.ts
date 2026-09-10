@@ -143,6 +143,15 @@ async function handleCreateRequest(
   const requesterName = formString(form, "requester_name");
   if (!requesterName) return jsonError(422, "Enter the name of the person submitting this.");
 
+  // Required. The signed-in email is frequently a shared site mailbox, so it
+  // is not a way to reach the person who actually saw the problem — the
+  // maintenance tech calls this number. Deliberately NOT format-validated:
+  // extensions, mobile-vs-desk and however a site writes its own number are
+  // all legitimate, and a regex here would reject real numbers to no benefit.
+  const requesterPhone = formString(form, "requester_phone");
+  if (!requesterPhone) return jsonError(422, "Enter a phone number for the person submitting.");
+  if (requesterPhone.length > 30) return jsonError(422, "That phone number is too long.");
+
   // MaintainX has no created-at override and no requester-name field — its
   // `creatorContactInfo` is a contact identifier, for which the session email
   // is the reliable answer (a shared site login would otherwise attribute every
@@ -155,7 +164,9 @@ async function handleCreateRequest(
   // makes new requests invisible on the MaintainX Requests page.
   const submittedOn = formString(form, "submitted_on");
   const provenance = [
-    `Filed by: ${requesterName} (${sessionEmail})`,
+    `Filed by: ${requesterName}`,
+    `Phone: ${requesterPhone}`,
+    `Email: ${sessionEmail}`,
     submittedOn ? `Date of submission: ${submittedOn}` : null,
     `Site: ${site.name}`,
     `Submitted from Splash Chemical Inventory ${ORIGIN_TAG}`

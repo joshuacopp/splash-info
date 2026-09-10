@@ -31,6 +31,7 @@ export {
   type RawWorkOrder,
   type FetchInput,
   type FetchResult,
+  ALL_WORK_ORDER_STATUSES,
   fetchMaintainXWorkOrders,
   type MaintainXAssignee,
   type CreateWorkOrderInput,

@@ -22,7 +22,9 @@
 // never wraps these in try/catch.
 
 import {
+  ALL_WORK_ORDER_STATUSES,
   createMaintainXWorkRequest,
+  fetchMaintainXWorkOrders,
   fetchMaintainXWorkRequests,
   uploadMaintainXWorkRequestFile,
   type RawWorkRequest
@@ -71,6 +73,53 @@ const LIST_MAX_REQUESTS = 500;
  *  still the outcome of something they reported, so all four are listed and the
  *  page filters client-side. */
 const LIST_STATUSES = ["PENDING", "APPROVED", "REJECTED", "DONE"];
+
+/** Cap on work orders pulled back to resolve statuses for approved requests. */
+const LIST_MAX_WORK_ORDERS = 500;
+
+/**
+ * Display order for the request-status groups. Approved work is what an
+ * operator is waiting on, so it leads; rejected and completed sink.
+ *
+ * DONE is a REQUEST status (MaintainX marks a request done once its work is
+ * closed out) and is distinct from a work order's DONE below.
+ */
+const REQUEST_STATUS_RANK: Record<string, number> = {
+  APPROVED: 0,
+  PENDING: 1,
+  REJECTED: 2,
+  DONE: 3
+};
+
+/**
+ * Secondary order INSIDE the approved group, by the status of the work order
+ * the request was promoted into. Follows the work lifecycle, with finished
+ * work last.
+ *
+ * An approved request with no resolvable work-order status ranks between
+ * ON_HOLD and DONE: it is unusual enough to want visible, but it is not more
+ * urgent than work that is genuinely open or in progress.
+ */
+const WORK_ORDER_STATUS_RANK: Record<string, number> = {
+  OPEN: 0,
+  IN_PROGRESS: 1,
+  ON_HOLD: 2,
+  // Terminal states last, done first among them. Cancelled and skipped work
+  // is the least actionable thing on the page.
+  DONE: 4,
+  CANCELED: 5,
+  SKIPPED: 6
+};
+const WORK_ORDER_STATUS_RANK_UNKNOWN = 3;
+
+function requestStatusRank(status: string): number {
+  return REQUEST_STATUS_RANK[status] ?? 90;
+}
+
+function workOrderStatusRank(status: string | null): number {
+  if (!status) return WORK_ORDER_STATUS_RANK_UNKNOWN;
+  return WORK_ORDER_STATUS_RANK[status] ?? WORK_ORDER_STATUS_RANK_UNKNOWN;
+}
 
 export interface MaintainXConfig {
   apiKey: string;
@@ -130,6 +179,10 @@ export interface ListedRequest {
   locationId: number | null;
   locationName: string | null;
   workOrderId: number | null;
+  /** Status of the work order this request was promoted into (OPEN /
+   *  IN_PROGRESS / ON_HOLD / DONE). Null when the request has no work order,
+   *  or when the work order exists but wasn't in the fetched page. */
+  workOrderStatus: string | null;
   /** Name typed into the filing form, recovered from the provenance block.
    *  Null for a request whose description no longer carries one. */
   filedBy: string | null;
@@ -159,7 +212,11 @@ function extractFiledBy(description: string): string | null {
   return name ? name : null;
 }
 
-function normalize(raw: RawWorkRequest, nameById: Map<number, string>): ListedRequest {
+function normalize(
+  raw: RawWorkRequest,
+  nameById: Map<number, string>,
+  woStatusById: Map<number, string>
+): ListedRequest {
   const locationId =
     typeof raw.locationId === "number"
       ? raw.locationId
@@ -192,8 +249,78 @@ function normalize(raw: RawWorkRequest, nameById: Map<number, string>): ListedRe
     locationName:
       (locationId != null ? nameById.get(locationId) : null) ??
       (raw.location?.name ? String(raw.location.name) : null),
-    workOrderId: typeof raw.workOrderId === "number" ? raw.workOrderId : null
+    workOrderId: typeof raw.workOrderId === "number" ? raw.workOrderId : null,
+    workOrderStatus:
+      typeof raw.workOrderId === "number"
+        ? (woStatusById.get(raw.workOrderId) ?? null)
+        : null
   };
+}
+
+/**
+ * Resolve work-order id → status for the approved requests in `raw`.
+ *
+ * Returns null (not an empty Map) when the lookup was skipped or failed, but
+ * callers treat both the same: an unresolved status sorts to the middle of the
+ * approved group rather than failing the page. Work-order status is ordering
+ * detail — it is not worth a 500.
+ */
+async function fetchWorkOrderStatuses(
+  config: MaintainXConfig,
+  allowedLocationIds: number[],
+  raw: RawWorkRequest[]
+): Promise<Map<number, string> | null> {
+  const wanted = new Set(
+    raw
+      .map((r) => r.workOrderId)
+      .filter((id): id is number => typeof id === "number" && Number.isFinite(id))
+  );
+  if (wanted.size === 0) return null;
+
+  const result = await fetchMaintainXWorkOrders({
+    apiKey: config.apiKey,
+    baseUrl: config.baseUrl,
+    maintainxLocationIds: allowedLocationIds,
+    paginate: true,
+    maxWorkOrders: LIST_MAX_WORK_ORDERS,
+    // The default filter is open work only (OPEN / IN_PROGRESS / ON_HOLD). We
+    // need the closed ones too: sorting approved requests with "done last"
+    // is impossible if done work orders never come back — they would all
+    // resolve to an unknown status and sort together in the middle.
+    statuses: ALL_WORK_ORDER_STATUSES
+  });
+
+  const out = new Map<number, string>();
+  for (const wo of result.workOrders) {
+    if (!wanted.has(wo.id)) continue;
+    const status = (wo.status || "").trim().toUpperCase();
+    if (status) out.set(wo.id, status);
+  }
+
+  if (!result.ok) {
+    console.error("[inventory.maintainx] work-order status lookup partial:", result.error);
+  }
+  return out;
+}
+
+/**
+ * Group by request status (approved, pending, rejected, then done), and inside
+ * the approved group order by work-order status with finished work last.
+ * Newest first within any tie.
+ */
+function compareRequests(a: ListedRequest, b: ListedRequest): number {
+  const byStatus = requestStatusRank(a.status) - requestStatusRank(b.status);
+  if (byStatus !== 0) return byStatus;
+
+  // Work-order status only orders the approved group. Applying it to pending
+  // requests would be meaningless (they have no work order) and to rejected
+  // ones misleading.
+  if (a.status === "APPROVED") {
+    const byWo = workOrderStatusRank(a.workOrderStatus) - workOrderStatusRank(b.workOrderStatus);
+    if (byWo !== 0) return byWo;
+  }
+
+  return (b.createdAt || "").localeCompare(a.createdAt || "");
 }
 
 /**
@@ -225,19 +352,25 @@ export async function listWorkRequests(
     maxWorkRequests: LIST_MAX_REQUESTS
   });
 
+  // Origin filter FIRST, on the raw rows: this page reports what was filed
+  // from the inventory app, not everything happening at the site. Requests
+  // filed from /workorders or typed directly into MaintainX are that page's
+  // business and would be noise here.
+  const mine = result.workRequests.filter(isFiledFromInventory);
+
+  // Work-order statuses, only when something actually needs one. Requests are
+  // promoted by MaintainX staff, so on a fresh install nothing has a work
+  // order and this second round trip is pure waste — skip it.
+  const woStatusById = (await fetchWorkOrderStatuses(config, allowedLocationIds, mine)) ?? new Map();
+
   const allowed = new Set(allowedLocationIds);
-  const requests = result.workRequests
-    // Origin filter FIRST, on the raw row: this page reports what was filed
-    // from the inventory app, not everything happening at the site. Requests
-    // filed from /workorders or typed directly into MaintainX are that page's
-    // business and would be noise here.
-    .filter(isFiledFromInventory)
-    .map((raw) => normalize(raw, nameById))
+  const requests = mine
+    .map((raw) => normalize(raw, nameById, woStatusById))
     // Defense in depth: drop anything outside scope even if the server-side
     // `locations` filter was ignored. A request with no resolvable location id
     // can't be proven in-scope, so it goes too.
     .filter((r) => r.locationId != null && allowed.has(r.locationId))
-    .sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || ""));
+    .sort(compareRequests);
 
   return {
     configured: true,

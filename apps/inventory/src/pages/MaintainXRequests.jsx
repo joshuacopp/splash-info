@@ -6,7 +6,7 @@
 // see here is what MaintainX has. That means a freshly filed request appears
 // only after the refetch below, and it also means nothing can drift out of sync.
 
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useState } from 'react'
 import { useAuth } from '../context/AuthContext'
 import { apiGet } from '../lib/api'
 import { KpiCard, PageHeader, Pill, SectionTitle, Spinner, Toast } from '../components/ui'
@@ -28,6 +28,35 @@ const STATUS_LABEL = {
 }
 
 const PRIORITY_TONE = { HIGH: 'rose', MEDIUM: 'amber', LOW: 'slate' }
+
+// Work-order status of the order an approved request was promoted into. The
+// worker orders the approved group by this, so it has to be visible or the
+// ordering looks arbitrary.
+const WO_STATUS_LABEL = {
+  OPEN: 'Open',
+  IN_PROGRESS: 'In Progress',
+  ON_HOLD: 'On Hold',
+  DONE: 'Done',
+  CANCELED: 'Cancelled',
+  SKIPPED: 'Skipped',
+}
+const WO_STATUS_TONE = {
+  OPEN: 'blue',
+  IN_PROGRESS: 'amber',
+  ON_HOLD: 'slate',
+  DONE: 'emerald',
+  CANCELED: 'slate',
+  SKIPPED: 'slate',
+}
+
+// Group headings, in the order the worker sorts them.
+const GROUP_ORDER = ['APPROVED', 'PENDING', 'REJECTED', 'DONE']
+const GROUP_LABEL = {
+  APPROVED: 'Approved',
+  PENDING: 'Pending approval',
+  REJECTED: 'Denied',
+  DONE: 'Completed',
+}
 
 const DATE_RANGES = [
   { value: 'all', label: 'All dates', days: null },
@@ -289,8 +318,22 @@ export default function MaintainXRequests() {
           </div>
         ) : (
           <ul className="divide-y divide-slate-100">
-            {filtered.map((r) => (
-              <li key={r.id} className="px-5 py-4 hover:bg-splash-50/40">
+            {filtered.map((r, i) => (
+              <Fragment key={r.id}>
+                {/* Group heading whenever the status changes. The list arrives
+                    already sorted by the worker, so a change of status is a
+                    group boundary — no regrouping needed here. */}
+                {(i === 0 || filtered[i - 1].status !== r.status) && (
+                  <li className="sticky top-0 z-10 flex items-center gap-2 border-y border-slate-100 bg-slate-50/95 px-5 py-2 backdrop-blur">
+                    <span className="text-[11px] font-extrabold uppercase tracking-wider text-slate-500">
+                      {GROUP_LABEL[r.status] || r.status}
+                    </span>
+                    <span className="text-[11px] font-bold text-slate-400">
+                      {fmtInt(filtered.filter((x) => x.status === r.status).length)}
+                    </span>
+                  </li>
+                )}
+                <li className="px-5 py-4 hover:bg-splash-50/40">
                 <div className="flex flex-wrap items-start justify-between gap-3">
                   <div className="min-w-0 flex-1">
                     <div className="flex flex-wrap items-center gap-2">
@@ -301,7 +344,14 @@ export default function MaintainXRequests() {
                       {r.priority && (
                         <Pill tone={PRIORITY_TONE[r.priority] || 'slate'}>{r.priority}</Pill>
                       )}
-                      {r.workOrderId != null && <Pill tone="blue">WO #{r.workOrderId}</Pill>}
+                      {r.workOrderId != null && (
+                        <Pill tone={WO_STATUS_TONE[r.workOrderStatus] || 'blue'}>
+                          WO #{r.workOrderId}
+                          {r.workOrderStatus
+                            ? ` · ${WO_STATUS_LABEL[r.workOrderStatus] || r.workOrderStatus}`
+                            : ''}
+                        </Pill>
+                      )}
                     </div>
                     <div className="mt-1 text-xs font-semibold text-slate-500">
                       {r.locationName || `MaintainX location #${r.locationId}`}
@@ -318,7 +368,8 @@ export default function MaintainXRequests() {
                     #{r.id}
                   </span>
                 </div>
-              </li>
+                </li>
+              </Fragment>
             ))}
           </ul>
         )}
