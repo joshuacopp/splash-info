@@ -29,6 +29,30 @@ import {
 } from "@splash/maintainx";
 import type { Env } from "./env.js";
 
+/**
+ * Marker identifying a request as having been filed from THIS app.
+ *
+ * MaintainX has no "source" field on a work request, and every request for a
+ * location comes back from the list endpoint regardless of who filed it or
+ * where. So origin is stamped into the description on create and matched on
+ * read — this page shows only what was filed through the inventory app, not
+ * everything happening at the site (which is what /workorders is for).
+ *
+ * KNOWN FRAGILITY: this is a text match. If someone edits a request's
+ * description inside MaintainX and drops this line, the request stops
+ * appearing here. A MaintainX custom field (`extraFields` on the create
+ * endpoint, which @splash/maintainx does not send today) would be a firmer
+ * key and is the upgrade path if that turns out to matter.
+ *
+ * Do not reword this token. Requests already in MaintainX carry the current
+ * spelling, and changing it orphans every one of them.
+ */
+export const ORIGIN_TAG = "[splash-inventory]";
+
+/** Separator between the filer's own words and the provenance block that
+ *  create appends. Used to strip that block back off for display. */
+const PROVENANCE_SEPARATOR = "\n---\n";
+
 /** Photo cap. MaintainX takes one thumbnail plus N attachments, so six photos
  *  is photo[0] → thumbnail and photo[1..5] → attachments. workorders-worker
  *  caps at five; the extra slot here is a UI decision, not an API limit. */
@@ -106,6 +130,9 @@ export interface ListedRequest {
   locationId: number | null;
   locationName: string | null;
   workOrderId: number | null;
+  /** Name typed into the filing form, recovered from the provenance block.
+   *  Null for a request whose description no longer carries one. */
+  filedBy: string | null;
 }
 
 export interface ListRequestsResult {
@@ -118,6 +145,20 @@ export interface ListRequestsResult {
   error: string | null;
 }
 
+/** True when this request was filed through the inventory app. Matched against
+ *  the RAW description, before the provenance block is stripped for display. */
+function isFiledFromInventory(raw: RawWorkRequest): boolean {
+  return (raw.description || "").includes(ORIGIN_TAG);
+}
+
+/** Pull the typed filer name back out of the provenance block. Returns null
+ *  rather than guessing when the line isn't there. */
+function extractFiledBy(description: string): string | null {
+  const m = description.match(/^Filed by:\s*(.+?)\s*(?:\(|$)/m);
+  const name = m?.[1]?.trim();
+  return name ? name : null;
+}
+
 function normalize(raw: RawWorkRequest, nameById: Map<number, string>): ListedRequest {
   const locationId =
     typeof raw.locationId === "number"
@@ -126,10 +167,18 @@ function normalize(raw: RawWorkRequest, nameById: Map<number, string>): ListedRe
         ? raw.location.id
         : null;
 
+  const fullDescription = (raw.description || "").trim();
+  // Show the filer's own words, not the machine-appended footer. The footer is
+  // still what MaintainX staff see in the request itself, which is where the
+  // attribution is actually needed.
+  const idx = fullDescription.indexOf(PROVENANCE_SEPARATOR);
+  const body = idx === -1 ? fullDescription : fullDescription.slice(0, idx).trim();
+
   return {
     id: raw.id,
     title: (raw.title || "").trim() || "(untitled request)",
-    description: (raw.description || "").trim(),
+    description: body,
+    filedBy: extractFiledBy(fullDescription),
     priority: raw.priority ? String(raw.priority).toUpperCase() : null,
     // requestStatus is the work-REQUEST field; a work ORDER's `type`/`status`
     // is a different axis and must not be read here (see work-requests.ts).
@@ -178,6 +227,11 @@ export async function listWorkRequests(
 
   const allowed = new Set(allowedLocationIds);
   const requests = result.workRequests
+    // Origin filter FIRST, on the raw row: this page reports what was filed
+    // from the inventory app, not everything happening at the site. Requests
+    // filed from /workorders or typed directly into MaintainX are that page's
+    // business and would be noise here.
+    .filter(isFiledFromInventory)
     .map((raw) => normalize(raw, nameById))
     // Defense in depth: drop anything outside scope even if the server-side
     // `locations` filter was ignored. A request with no resolvable location id

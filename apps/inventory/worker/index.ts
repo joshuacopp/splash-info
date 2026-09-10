@@ -47,6 +47,7 @@ import {
 } from "./db.js";
 import type { Env } from "./env.js";
 import {
+  ORIGIN_TAG,
   REQUEST_MAX_PHOTOS,
   REQUEST_PHOTO_MAX_BYTES,
   createWorkRequest,
@@ -148,12 +149,16 @@ async function handleCreateRequest(
   // request to the same person). So the typed name and the submission date are
   // folded into the description, where they survive and stay readable, rather
   // than being dropped on the floor.
+  //
+  // The ORIGIN_TAG on the last line is load-bearing, not decoration: the list
+  // route matches on it to show only requests filed from this app. Removing it
+  // makes new requests invisible on the MaintainX Requests page.
   const submittedOn = formString(form, "submitted_on");
   const provenance = [
     `Filed by: ${requesterName} (${sessionEmail})`,
     submittedOn ? `Date of submission: ${submittedOn}` : null,
     `Site: ${site.name}`,
-    "Submitted from Splash Chemical Inventory."
+    `Submitted from Splash Chemical Inventory ${ORIGIN_TAG}`
   ]
     .filter(Boolean)
     .join("\n");

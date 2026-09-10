@@ -97,7 +97,8 @@ export default function MaintainXRequests() {
       if (status !== 'all' && r.status !== status) return false
       if (cutoff && (!r.createdAt || r.createdAt < cutoff)) return false
       if (needle) {
-        const hay = `${r.title} ${r.description} ${r.locationName || ''}`.toLowerCase()
+        const hay =
+          `${r.title} ${r.description} ${r.locationName || ''} ${r.filedBy || ''}`.toLowerCase()
         if (!hay.includes(needle)) return false
       }
       return true
@@ -149,7 +150,7 @@ export default function MaintainXRequests() {
       <PageHeader
         eyebrow="Operations"
         title="MaintainX Requests"
-        sub="Report maintenance problems and review every request for your locations"
+        sub="Maintenance problems reported from this app. Requests filed elsewhere in MaintainX are not listed here."
         actions={
           canSubmit && (
             <button className="btn-primary" onClick={() => setModalOpen(true)}>
@@ -306,6 +307,8 @@ export default function MaintainXRequests() {
                       {r.locationName || `MaintainX location #${r.locationId}`}
                       {r.createdAt && <span className="text-slate-300"> · </span>}
                       {r.createdAt && fmtDate(r.createdAt.slice(0, 10))}
+                      {r.filedBy && <span className="text-slate-300"> · </span>}
+                      {r.filedBy}
                     </div>
                     {r.description && (
                       <p className="mt-1.5 line-clamp-2 text-sm text-slate-500">{r.description}</p>
