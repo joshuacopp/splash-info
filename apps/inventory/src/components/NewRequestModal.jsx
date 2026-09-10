@@ -35,6 +35,7 @@ export default function NewRequestModal({ open, locations, defaultName, onClose,
   const [title, setTitle] = useState('')
   const [detail, setDetail] = useState('')
   const [photos, setPhotos] = useState([])
+  const [dragging, setDragging] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState(null)
   const fileRef = useRef(null)
@@ -49,6 +50,7 @@ export default function NewRequestModal({ open, locations, defaultName, onClose,
     setTitle('')
     setDetail('')
     setPhotos([])
+    setDragging(false)
     setBusy(false)
     setError(null)
     if (fileRef.current) fileRef.current.value = ''
@@ -151,7 +153,11 @@ export default function NewRequestModal({ open, locations, defaultName, onClose,
           </button>
         </div>
 
-        <div className="max-h-[60vh] space-y-5 overflow-y-auto px-6 py-5">
+        {/* Taller than the 60vh this started at. The body scrolls between a
+            fixed header and a sticky footer, which reads as the end of the
+            form — so anything below the fold is easy to miss entirely. Worth
+            the extra height to keep the photo control near it. */}
+        <div className="max-h-[72vh] space-y-5 overflow-y-auto px-6 py-5">
           {error && (
             <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-semibold text-rose-700">
               {error}
@@ -261,7 +267,7 @@ export default function NewRequestModal({ open, locations, defaultName, onClose,
             <textarea
               id="nr-detail"
               required
-              rows={6}
+              rows={5}
               value={detail}
               onChange={(e) => setDetail(e.target.value)}
               placeholder="Explain exactly where the issue is, what you observed, when it happens, and any safety or operating impact."
@@ -275,6 +281,52 @@ export default function NewRequestModal({ open, locations, defaultName, onClose,
             hint={`${photos.length}/${MAX_PHOTOS} photos`}
             hintTone={photos.length >= MAX_PHOTOS ? 'bad' : 'muted'}
           >
+            {/* A drop zone rather than a bare <input type="file">. The native
+                control is a small grey button that reads as page furniture —
+                it was present but nobody found it, sitting under a tall
+                textarea inside a scrolling body with a sticky footer below.
+                A full-width target is hard to miss and gives drag-and-drop
+                for free. The input itself stays in the DOM (sr-only, not
+                display:none) so the label, keyboard focus and form
+                association all still work. */}
+            <label
+              htmlFor="nr-photos"
+              onDragOver={(e) => {
+                e.preventDefault()
+                setDragging(true)
+              }}
+              onDragLeave={() => setDragging(false)}
+              onDrop={(e) => {
+                e.preventDefault()
+                setDragging(false)
+                if (photos.length < MAX_PHOTOS) addFiles(e.dataTransfer.files)
+              }}
+              className={`flex cursor-pointer flex-col items-center justify-center gap-1 rounded-2xl border-2 border-dashed px-4 py-7 text-center transition ${
+                photos.length >= MAX_PHOTOS
+                  ? 'cursor-not-allowed border-slate-200 bg-slate-50 opacity-60'
+                  : dragging
+                    ? 'border-splash-600 bg-splash-50'
+                    : 'border-slate-300 bg-slate-50/60 hover:border-splash-300 hover:bg-splash-50/50'
+              }`}
+            >
+              <svg className="h-7 w-7 text-slate-400" viewBox="0 0 20 20" fill="currentColor">
+                <path
+                  fillRule="evenodd"
+                  d="M4 3a2 2 0 00-2 2v10a2 2 0 002 2h12a2 2 0 002-2V5a2 2 0 00-2-2H4zm5 5a1.5 1.5 0 11-3 0 1.5 1.5 0 013 0zm-4 7l3.5-4.5 2.5 3 2-2.5L16 15H5z"
+                  clipRule="evenodd"
+                />
+              </svg>
+              <span className="text-sm font-bold text-slate-700">
+                {photos.length >= MAX_PHOTOS
+                  ? `Maximum of ${MAX_PHOTOS} photos added`
+                  : 'Add photos'}
+              </span>
+              <span className="text-xs text-slate-400">
+                {photos.length >= MAX_PHOTOS
+                  ? 'Remove one to add another'
+                  : 'Click to choose, or drag images here'}
+              </span>
+            </label>
             <input
               ref={fileRef}
               id="nr-photos"
@@ -283,9 +335,9 @@ export default function NewRequestModal({ open, locations, defaultName, onClose,
               multiple
               disabled={photos.length >= MAX_PHOTOS}
               onChange={(e) => addFiles(e.target.files)}
-              className="block w-full text-sm text-slate-600 file:mr-3 file:rounded-xl file:border-0 file:bg-splash-600 file:px-4 file:py-2 file:text-sm file:font-bold file:text-white hover:file:bg-splash-700 disabled:opacity-50"
+              className="sr-only"
             />
-            <p className="mt-1 text-xs text-slate-400">
+            <p className="mt-1.5 text-xs text-slate-400">
               The first photo becomes the request thumbnail in MaintainX; the rest attach to it.
             </p>
             {photos.length > 0 && (
