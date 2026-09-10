@@ -22,6 +22,12 @@
 #     POST splashcarwashes.info/inventory/api/report        queue visit report
 #     POST splashcarwashes.info/inventory/api/flags/resolve
 #     POST splashcarwashes.info/inventory/api/flags/unresolve
+#     GET  splashcarwashes.info/inventory/api/maintainx/requests  list (scoped)
+#     POST splashcarwashes.info/inventory/api/maintainx/requests  file a request
+#
+#   The two /maintainx/* routes proxy MaintainX directly — nothing about a work
+#   request is stored in Supabase. The POST is multipart/form-data (photos ride
+#   along); every other route on this worker is JSON.
 #
 #   The /inventory/* carve out-ranks apps/web's splashcarwashes.info/* catch-all
 #   on path specificity, so both the SPA pages and the API resolve here. Sharing
@@ -90,8 +96,18 @@ not_found_handling = "single-page-application"
 # forms-worker and promo-worker do. Nothing to configure — if the service key
 # works, mail works. (This replaced an INVENTORY_REPORT_WEBHOOK_URL var that was
 # never set, which is why the report step used to no-op as "simulated".)
+# MAINTAINX_API_KEY — secret, NOT set here. `wrangler secret put
+#   MAINTAINX_API_KEY` with the SAME value already bound on splash-damage and
+#   splash-workorders; the key is per-organization, not per-worker. Optional:
+#   with it unset the /inventory/api/maintainx/* routes return
+#   { configured: false } and the MaintainX Requests page explains itself
+#   instead of erroring. Nothing else in the app depends on it.
 [vars]
 SUPABASE_URL = "https://rewokyofschtvqgxrxwl.supabase.co"
+# MaintainX REST root. Same value as the var of the same name on splash-damage
+# (Brief 42) and splash-workorders (Brief 70) — the path segment is appended by
+# the client, so this must NOT carry a trailing /workrequests.
+MAINTAINX_BASE_URL = "https://api.getmaintainx.com/v1"
 
 # Keeps Workers Logs sticky across deploys (Brief 63 convention).
 [observability.logs]

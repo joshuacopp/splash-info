@@ -36,6 +36,7 @@ import {
   deleteVisit,
   getVisitLocationCode,
   loadInventoryData,
+  loadMaintainXLocations,
   resolveFlag,
   savePackageConfig,
   saveRecipients,
@@ -45,6 +46,13 @@ import {
   upsertProduct
 } from "./db.js";
 import type { Env } from "./env.js";
+import {
+  REQUEST_MAX_PHOTOS,
+  REQUEST_PHOTO_MAX_BYTES,
+  createWorkRequest,
+  listWorkRequests,
+  maintainxConfig
+} from "./maintainx.js";
 
 const ROUTE_PREFIX = "/inventory";
 
@@ -54,6 +62,140 @@ async function readJson<T = Record<string, unknown>>(request: Request): Promise<
   } catch {
     return {} as T;
   }
+}
+
+/* ---------------------------------------------------------------------------
+ * POST /api/maintainx/requests — file a work request.
+ *
+ * multipart/form-data, because photos ride along. Every other route on this
+ * worker is JSON; this one is the exception rather than a new convention.
+ *
+ * Field lengths mirror the form: `title` is the one-line problem (160), and
+ * `description` carries a 50-character floor because a maintenance tech acting
+ * on this can't do anything with "it's broken".
+ * ------------------------------------------------------------------------ */
+
+const REQUEST_TITLE_MAX = 160;
+const REQUEST_DESCRIPTION_MIN = 50;
+const REQUEST_DESCRIPTION_MAX = 4000;
+const REQUEST_PRIORITIES = new Set(["HIGH", "MEDIUM", "LOW"]);
+
+function formString(form: FormData, key: string): string {
+  const v = form.get(key);
+  return typeof v === "string" ? v.trim() : "";
+}
+
+async function handleCreateRequest(
+  request: Request,
+  sessionEmail: string,
+  config: { apiKey: string; baseUrl: string },
+  locations: Array<{ id: string; name: string; maintainx_id: number }>
+): Promise<Response> {
+  const ctype = request.headers.get("content-type") || "";
+  if (!ctype.includes("multipart/form-data")) {
+    return jsonError(415, "Work request must be multipart/form-data.");
+  }
+
+  if (locations.length === 0) {
+    return jsonError(
+      422,
+      "None of your locations are mapped to MaintainX yet. An admin needs to set maintainx_id on the site before requests can be filed."
+    );
+  }
+
+  let form: FormData;
+  try {
+    form = await request.formData();
+  } catch {
+    return jsonError(400, "Could not read the submitted form.");
+  }
+
+  // Location — the id must be one of the caller's OWN mappable sites. This is
+  // the authorization check, not a validation nicety: without it any operator
+  // could file against any MaintainX location by editing the posted value.
+  const locationId = Number.parseInt(formString(form, "location_id"), 10);
+  const site = locations.find((l) => l.maintainx_id === locationId);
+  if (!site) return jsonError(403, "forbidden for that location");
+
+  const title = formString(form, "title");
+  if (!title) return jsonError(422, "Describe the problem in one line.");
+  if (title.length > REQUEST_TITLE_MAX) {
+    return jsonError(422, `That one-line description is over ${REQUEST_TITLE_MAX} characters.`);
+  }
+
+  const detail = formString(form, "description");
+  if (detail.length < REQUEST_DESCRIPTION_MIN) {
+    return jsonError(
+      422,
+      `Add at least ${REQUEST_DESCRIPTION_MIN} characters of detail so the maintenance team can act on this.`
+    );
+  }
+  if (detail.length > REQUEST_DESCRIPTION_MAX) {
+    return jsonError(422, `Details are over ${REQUEST_DESCRIPTION_MAX} characters.`);
+  }
+
+  const priority = formString(form, "priority").toUpperCase();
+  if (!REQUEST_PRIORITIES.has(priority)) {
+    return jsonError(422, "Pick a priority.");
+  }
+
+  const requesterName = formString(form, "requester_name");
+  if (!requesterName) return jsonError(422, "Enter the name of the person submitting this.");
+
+  // MaintainX has no created-at override and no requester-name field — its
+  // `creatorContactInfo` is a contact identifier, for which the session email
+  // is the reliable answer (a shared site login would otherwise attribute every
+  // request to the same person). So the typed name and the submission date are
+  // folded into the description, where they survive and stay readable, rather
+  // than being dropped on the floor.
+  const submittedOn = formString(form, "submitted_on");
+  const provenance = [
+    `Filed by: ${requesterName} (${sessionEmail})`,
+    submittedOn ? `Date of submission: ${submittedOn}` : null,
+    `Site: ${site.name}`,
+    "Submitted from Splash Chemical Inventory."
+  ]
+    .filter(Boolean)
+    .join("\n");
+  const description = `${detail}\n\n---\n${provenance}`;
+
+  // Photos. Empty file inputs arrive as "" strings in multipart, and a
+  // zero-byte File is a browser artifact of an unfilled input — skip both.
+  const photos: File[] = [];
+  for (const entry of form.getAll("photo")) {
+    if (typeof entry === "string") continue;
+    if (entry.size === 0) continue;
+    if (entry.size > REQUEST_PHOTO_MAX_BYTES) {
+      return jsonError(
+        413,
+        `"${entry.name}" is too large (max ${REQUEST_PHOTO_MAX_BYTES / (1024 * 1024)} MB per photo).`
+      );
+    }
+    photos.push(entry);
+  }
+  if (photos.length > REQUEST_MAX_PHOTOS) {
+    return jsonError(422, `Attach at most ${REQUEST_MAX_PHOTOS} photos.`);
+  }
+
+  const result = await createWorkRequest(config, {
+    title,
+    description,
+    priority: priority as "HIGH" | "MEDIUM" | "LOW",
+    locationId: site.maintainx_id,
+    creatorContactInfo: sessionEmail,
+    photos
+  });
+
+  if (!result.ok) return jsonError(502, result.error || "MaintainX rejected the request.");
+
+  // 200 with photosFailed > 0 is a real outcome, not a fudge: the request
+  // exists in MaintainX and only some images are missing. The SPA says so.
+  return json({
+    ok: true,
+    requestId: result.requestId,
+    photosFailed: result.photosFailed,
+    photosTotal: result.photosTotal
+  });
 }
 
 export default {
@@ -123,6 +265,50 @@ export default {
       if (sub === "data" && segments.length === 2) {
         if (method !== "GET") return jsonError(405, "method not allowed");
         return json(await loadInventoryData(sb, session));
+      }
+
+      // /api/maintainx/requests — list (GET) and file (POST) MaintainX work
+      // requests. These proxy MaintainX directly; nothing is stored locally.
+      //
+      // Scope is enforced by resolving the caller's OWN locations server-side
+      // and only ever using maintainx_ids drawn from that list. The client
+      // sends a maintainx_id on POST, but it is checked against the resolved
+      // set before use — a caller cannot file against a site they can't see by
+      // posting someone else's id.
+      if (sub === "maintainx" && segments[2] === "requests" && segments.length === 3) {
+        if (method !== "GET" && method !== "POST") {
+          return jsonError(405, "method not allowed");
+        }
+
+        // An unbound API key is a deployment state, not an error: report it and
+        // let the SPA explain itself. 200 rather than 503 so the page can
+        // render its own copy instead of a generic failure banner.
+        const config = maintainxConfig(env);
+        if (!config) {
+          return json({
+            configured: false,
+            ok: true,
+            requests: [],
+            truncated: false,
+            error: null
+          });
+        }
+
+        const locations = await loadMaintainXLocations(sb, session);
+
+        if (method === "GET") {
+          const nameById = new Map(locations.map((l) => [l.maintainx_id, l.name]));
+          const result = await listWorkRequests(
+            config,
+            locations.map((l) => l.maintainx_id),
+            nameById
+          );
+          // Echo the mappable sites so the SPA can build its location dropdown
+          // and its filter list from one round trip.
+          return json({ ...result, locations });
+        }
+
+        return handleCreateRequest(request, session.email, config, locations);
       }
 
       // /api/visits (create) and /api/visits/{id} (edit | delete)

@@ -6,6 +6,7 @@ import Layout from './components/Layout'
 import MasterDashboard from './pages/MasterDashboard'
 import Inventory from './pages/Inventory'
 import Attention from './pages/Attention'
+import MaintainXRequests from './pages/MaintainXRequests'
 import LocationDashboard from './pages/LocationDashboard'
 import UsageTrends from './pages/UsageTrends'
 import PackageEditor from './pages/PackageEditor'
@@ -30,6 +31,10 @@ export default function App() {
         <Route path="inventory" element={<Gate loading={loading} error={error} el={<Inventory />} />} />
         <Route path="admin" element={<Gate loading={loading} error={error} el={<AdminProducts />} />} />
         <Route path="attention" element={<Gate loading={loading} error={error} el={<Attention />} />} />
+        {/* Not wrapped in <Gate>: this page reads MaintainX, not the inventory
+            dataset, so it has no reason to sit behind that load/error. It
+            fetches and reports its own state. */}
+        <Route path="maintainx" element={<MaintainXRequests />} />
         <Route
           path="location/:locationId"
           element={<Gate loading={loading} error={error} el={<LocationDashboard />} />}

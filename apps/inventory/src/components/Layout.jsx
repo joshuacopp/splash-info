@@ -329,6 +329,22 @@ function SidebarContent({ onNavigate }) {
           </svg>
           Attention
         </NavLink>
+        <NavLink
+          to="/maintainx"
+          onClick={onNavigate}
+          className={({ isActive }) => `sidebar-link ${isActive ? 'sidebar-link-active' : ''}`}
+        >
+          {/* Wrench — the other four nav icons are filled 20x20 paths, so this
+              matches rather than introducing a stroked icon set. */}
+          <svg className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
+            <path
+              fillRule="evenodd"
+              d="M13.5 2a4.5 4.5 0 00-4.28 5.9L2.9 14.22a1.5 1.5 0 000 2.12l.76.76a1.5 1.5 0 002.12 0l6.32-6.32A4.5 4.5 0 1013.5 2zm0 2a2.5 2.5 0 11-1.06 4.77 1 1 0 00-1.13.2l-6.6 6.6-.28-.28 6.6-6.6a1 1 0 00.2-1.13A2.5 2.5 0 0113.5 4z"
+              clipRule="evenodd"
+            />
+          </svg>
+          MaintainX Requests
+        </NavLink>
         {isAdmin && (
           <NavLink
             to="/admin"

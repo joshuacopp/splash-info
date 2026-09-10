@@ -118,6 +118,12 @@ interface LocationMeta {
   manager: string | null;
   region: string | null;
   region_group: string | null;
+  /** public.locations.maintainx_id — the MaintainX location this site maps to.
+   *  Null for sites that were never mapped; the MaintainX request form filters
+   *  those out of its dropdown rather than filing against a missing location
+   *  (MaintainX rejects an unknown locationId). Carried on the dataset so the
+   *  SPA can build that dropdown without a second round trip. */
+  maintainx_id: number | null;
 }
 
 function locationRow(id: string, meta: LocationMeta, active: boolean): Record<string, unknown> {
@@ -127,13 +133,28 @@ function locationRow(id: string, meta: LocationMeta, active: boolean): Record<st
     active,
     manager: meta.manager,
     region: meta.region,
-    region_group: meta.region_group
+    region_group: meta.region_group,
+    maintainx_id: meta.maintainx_id
   };
 }
 
 function str(row: Record<string, unknown>, key: string): string | null {
   const v = row[key];
   return typeof v === "string" && v.trim() ? v.trim() : null;
+}
+
+/** Integer column reader. PostgREST hands back `maintainx_id` as a number, but
+ *  read text defensively too — the same column arrives as a string through some
+ *  views, and a silently-dropped id means a site vanishes from the request
+ *  form's dropdown rather than failing loudly. */
+function int(row: Record<string, unknown>, key: string): number | null {
+  const v = row[key];
+  if (typeof v === "number") return Number.isFinite(v) ? Math.trunc(v) : null;
+  if (typeof v === "string" && v.trim()) {
+    const n = Number.parseInt(v.trim(), 10);
+    return Number.isFinite(n) ? n : null;
+  }
+  return null;
 }
 
 // Site-number join key. public.locations.site_number is an INTEGER but
@@ -170,7 +191,9 @@ async function getLocations(sb: SupabaseClient, allowed: Set<string> | null) {
     sb
       .from("pricing_simple")
       .select("location_code,location_pretty,site,area_manager,regional_manager"),
-    sb.from("locations").select("site_number,area_manager,regional_manager,rm_group"),
+    sb
+      .from("locations")
+      .select("site_number,area_manager,regional_manager,rm_group,maintainx_id"),
     loadOverlay(sb)
   ]);
   if (pricing.error) throw new Error(`Failed loading locations: ${pricing.error.message}`);
@@ -181,7 +204,12 @@ async function getLocations(sb: SupabaseClient, allowed: Set<string> | null) {
   // fallback below still produces a usable grouping.
   const bySite = new Map<
     string,
-    { manager: string | null; region: string | null; region_group: string | null }
+    {
+      manager: string | null;
+      region: string | null;
+      region_group: string | null;
+      maintainx_id: number | null;
+    }
   >();
   if (registry.error) {
     console.error("[inventory.locations] registry read failed", registry.error.message);
@@ -193,7 +221,13 @@ async function getLocations(sb: SupabaseClient, allowed: Set<string> | null) {
       bySite.set(key, {
         manager: str(row, "area_manager"),
         region: regionLabel(row),
-        region_group: rmGroup(row)
+        region_group: rmGroup(row),
+        // First-wins, same as the labels above. site_number isn't unique
+        // (19/40/68 each carry an Express and a Handwash row), so a split site
+        // takes whichever MaintainX id sorts first out of PostgREST. Both rows
+        // sit at one physical address, which is what a MaintainX location is,
+        // so the pair share an id in practice.
+        maintainx_id: int(row, "maintainx_id")
       });
     }
   }
@@ -214,7 +248,10 @@ async function getLocations(sb: SupabaseClient, allowed: Set<string> | null) {
       name: str(row, "location_pretty") || code,
       manager: reg?.manager || str(row, "area_manager"),
       region: reg?.region || str(row, "regional_manager"),
-      region_group: reg?.region_group ?? null
+      region_group: reg?.region_group ?? null,
+      // Only the registry carries this — pricing_simple has no maintainx_id
+      // column to fall back to, so a code that doesn't join stays unmapped.
+      maintainx_id: reg?.maintainx_id ?? null
     });
     order.push(code);
   }
@@ -240,13 +277,44 @@ async function getLocations(sb: SupabaseClient, allowed: Set<string> | null) {
           name: row.name || row.code,
           manager: parent?.manager ?? null,
           region: parent?.region ?? null,
-          region_group: parent?.region_group ?? null
+          region_group: parent?.region_group ?? null,
+          // An overlay code is a reporting split of its parent site, not a
+          // separate physical place, so it files against the parent's
+          // MaintainX location — same inheritance as manager/region above.
+          maintainx_id: parent?.maintainx_id ?? null
         },
         row.active !== false
       )
     );
   }
 
+  return out;
+}
+
+/**
+ * Scoped locations that map to a MaintainX location, for the /api/maintainx/*
+ * routes.
+ *
+ * Deliberately not `loadInventoryData` — that pulls every visit, entry and wash
+ * count in scope, and the MaintainX routes need three fields off one table.
+ * Runs the same `allowedCodes(session)` scope as every other read, so a
+ * location-scoped operator can only ever list or file against their own sites.
+ *
+ * Sites with a null `maintainx_id` are dropped: MaintainX rejects an unknown
+ * locationId, so an unmapped site can be neither filed against nor listed.
+ */
+export async function loadMaintainXLocations(
+  sb: SupabaseClient,
+  session: Session
+): Promise<Array<{ id: string; name: string; maintainx_id: number }>> {
+  const locations = await getLocations(sb, allowedCodes(session));
+  const out: Array<{ id: string; name: string; maintainx_id: number }> = [];
+  for (const row of locations) {
+    if (row.active === false) continue;
+    const mx = row.maintainx_id;
+    if (typeof mx !== "number" || !Number.isFinite(mx)) continue;
+    out.push({ id: String(row.id), name: String(row.name), maintainx_id: mx });
+  }
   return out;
 }
 

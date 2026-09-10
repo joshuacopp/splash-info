@@ -1,0 +1,295 @@
+// MaintainX work requests for the inventory app.
+//
+// Requests are filed STRAIGHT TO MAINTAINX and nothing about them is stored in
+// Supabase. There is no inventory-side requests table, no photo bucket and no
+// pending queue: the create POST returns a MaintainX request id, the photos PUT
+// against that id, and the list route reads them back out of MaintainX. The one
+// piece of local state is `locations.maintainx_id`, which already existed.
+//
+// This mirrors the path apps/workorders-worker has run in production since
+// Brief 74/76 — see apps/workorders-worker/src/index.ts. The two hard-won
+// details from those briefs carry over and must not be re-litigated here:
+//
+//   1. The attachment URL segment is PLURAL (`/attachments/{filename}`) even
+//      though the MaintainX doc heading reads singular. Brief 74 shipped
+//      singular and every upload 404'd. @splash/maintainx owns that mapping.
+//   2. There is NO IDEMPOTENCY KEY on the create endpoint. A double-submit
+//      makes two work requests. The SPA disables its submit button while a
+//      request is in flight; that is the only guard there is.
+//
+// Every @splash/maintainx call is fail-soft — it resolves with `ok:false` and
+// an `error` string rather than throwing — so the code below checks `.ok` and
+// never wraps these in try/catch.
+
+import {
+  createMaintainXWorkRequest,
+  fetchMaintainXWorkRequests,
+  uploadMaintainXWorkRequestFile,
+  type RawWorkRequest
+} from "@splash/maintainx";
+import type { Env } from "./env.js";
+
+/** Photo cap. MaintainX takes one thumbnail plus N attachments, so six photos
+ *  is photo[0] → thumbnail and photo[1..5] → attachments. workorders-worker
+ *  caps at five; the extra slot here is a UI decision, not an API limit. */
+export const REQUEST_MAX_PHOTOS = 6;
+
+/** Per-photo ceiling, matching workorders-worker's REQUEST_PHOTO_MAX_BYTES.
+ *  Phone cameras clear 10 MB routinely, so this is deliberately generous. */
+export const REQUEST_PHOTO_MAX_BYTES = 15 * 1024 * 1024;
+
+/** Cap on rows pulled back from the list endpoint. The cursor walk stops here
+ *  and reports `truncated`, which the page surfaces rather than hiding. */
+const LIST_MAX_REQUESTS = 500;
+
+/** Statuses worth showing an inventory operator. A request that MaintainX staff
+ *  promoted (APPROVED) or closed (DONE) has left the filer's hands, but it is
+ *  still the outcome of something they reported, so all four are listed and the
+ *  page filters client-side. */
+const LIST_STATUSES = ["PENDING", "APPROVED", "REJECTED", "DONE"];
+
+export interface MaintainXConfig {
+  apiKey: string;
+  baseUrl: string;
+}
+
+/** Resolve credentials, or null when the worker has no MaintainX binding.
+ *  Callers turn null into `{ configured: false }` rather than an error — an
+ *  unconfigured integration is a deployment state, not a failure. */
+export function maintainxConfig(env: Env): MaintainXConfig | null {
+  const apiKey = env.MAINTAINX_API_KEY;
+  const baseUrl = env.MAINTAINX_BASE_URL;
+  if (!apiKey || !apiKey.trim()) return null;
+  if (!baseUrl || !baseUrl.trim()) return null;
+  return { apiKey: apiKey.trim(), baseUrl: baseUrl.trim() };
+}
+
+/* ============================================================
+ * Filename sanitising — ported from workorders-worker.
+ *
+ * The filename lands in a URL path segment. Anything exotic either breaks the
+ * PUT or gives MaintainX a name nobody can read in the app, so squash to a
+ * conservative charset and keep the extension.
+ * ============================================================ */
+
+const SAFE_FILENAME = /[^a-zA-Z0-9._-]/g;
+
+export function sanitizeFilename(raw: string, fallbackIndex: number): string {
+  const trimmed = (raw || "").trim();
+  const dot = trimmed.lastIndexOf(".");
+  let stem = dot > 0 ? trimmed.slice(0, dot) : trimmed;
+  let ext = dot > 0 ? trimmed.slice(dot + 1) : "";
+
+  stem = stem.replace(SAFE_FILENAME, "-").replace(/-+/g, "-").replace(/^-|-$/g, "");
+  ext = ext.replace(SAFE_FILENAME, "").toLowerCase();
+
+  if (!stem) stem = `photo-${fallbackIndex + 1}`;
+  // Cap the stem so a pathological 400-char filename can't push the PUT URL
+  // past what MaintainX will accept.
+  if (stem.length > 60) stem = stem.slice(0, 60);
+
+  return ext ? `${stem}.${ext}` : stem;
+}
+
+/* ============================================================
+ * READ — list requests for the caller's locations.
+ * ============================================================ */
+
+export interface ListedRequest {
+  id: number;
+  title: string;
+  description: string;
+  priority: string | null;
+  status: string;
+  createdAt: string | null;
+  updatedAt: string | null;
+  locationId: number | null;
+  locationName: string | null;
+  workOrderId: number | null;
+}
+
+export interface ListRequestsResult {
+  configured: true;
+  ok: boolean;
+  requests: ListedRequest[];
+  /** True when MaintainX had more rows than LIST_MAX_REQUESTS. Surfaced so the
+   *  page can say the list is partial instead of quietly showing a prefix. */
+  truncated: boolean;
+  error: string | null;
+}
+
+function normalize(raw: RawWorkRequest, nameById: Map<number, string>): ListedRequest {
+  const locationId =
+    typeof raw.locationId === "number"
+      ? raw.locationId
+      : typeof raw.location?.id === "number"
+        ? raw.location.id
+        : null;
+
+  return {
+    id: raw.id,
+    title: (raw.title || "").trim() || "(untitled request)",
+    description: (raw.description || "").trim(),
+    priority: raw.priority ? String(raw.priority).toUpperCase() : null,
+    // requestStatus is the work-REQUEST field; a work ORDER's `type`/`status`
+    // is a different axis and must not be read here (see work-requests.ts).
+    status: (raw.requestStatus || "PENDING").toUpperCase(),
+    createdAt: raw.createdAt ?? null,
+    updatedAt: raw.updatedAt ?? null,
+    locationId,
+    // Prefer OUR name for the site over MaintainX's. The operator navigates
+    // this app by Splash location names; showing MaintainX's spelling of the
+    // same place ("SPLASH #19 EXPRESS") would read as a different site.
+    locationName:
+      (locationId != null ? nameById.get(locationId) : null) ??
+      (raw.location?.name ? String(raw.location.name) : null),
+    workOrderId: typeof raw.workOrderId === "number" ? raw.workOrderId : null
+  };
+}
+
+/**
+ * Fetch the caller's work requests.
+ *
+ * `allowedLocationIds` is the set of MaintainX location ids the session may
+ * see, derived from the operator's inventory scope. It is passed to MaintainX
+ * as a server-side filter AND re-applied to the response, which is the posture
+ * work-requests.ts documents: the param keeps the cursor walk short, the
+ * caller-side filter is what actually enforces scope.
+ */
+export async function listWorkRequests(
+  config: MaintainXConfig,
+  allowedLocationIds: number[],
+  nameById: Map<number, string>
+): Promise<ListRequestsResult> {
+  // No mapped locations means nothing to ask about. Skipping the call also
+  // avoids the failure mode where an empty `locations` filter is treated as
+  // "no filter" and returns the whole organisation's requests.
+  if (allowedLocationIds.length === 0) {
+    return { configured: true, ok: true, requests: [], truncated: false, error: null };
+  }
+
+  const result = await fetchMaintainXWorkRequests({
+    apiKey: config.apiKey,
+    baseUrl: config.baseUrl,
+    maintainxLocationIds: allowedLocationIds,
+    statuses: LIST_STATUSES,
+    maxWorkRequests: LIST_MAX_REQUESTS
+  });
+
+  const allowed = new Set(allowedLocationIds);
+  const requests = result.workRequests
+    .map((raw) => normalize(raw, nameById))
+    // Defense in depth: drop anything outside scope even if the server-side
+    // `locations` filter was ignored. A request with no resolvable location id
+    // can't be proven in-scope, so it goes too.
+    .filter((r) => r.locationId != null && allowed.has(r.locationId))
+    .sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || ""));
+
+  return {
+    configured: true,
+    // fetch is fail-soft and returns partial rows with ok:false; pass both
+    // through so the page can show what arrived AND say the read was partial.
+    ok: result.ok,
+    requests,
+    truncated: result.truncated,
+    error: result.error
+  };
+}
+
+/* ============================================================
+ * WRITE — create a request, then attach its photos.
+ * ============================================================ */
+
+export interface CreateRequestInput {
+  title: string;
+  description: string;
+  priority: "HIGH" | "MEDIUM" | "LOW";
+  locationId: number;
+  creatorContactInfo: string;
+  photos: File[];
+}
+
+export interface CreateRequestResult {
+  ok: boolean;
+  requestId: number | null;
+  /** How many photos failed to attach. The request still exists in MaintainX
+   *  when this is non-zero — photo failure is deliberately non-fatal. */
+  photosFailed: number;
+  photosTotal: number;
+  error: string | null;
+}
+
+export async function createWorkRequest(
+  config: MaintainXConfig,
+  input: CreateRequestInput
+): Promise<CreateRequestResult> {
+  // Phase 1 — create. Everything else keys on the id this returns, so a
+  // failure here is fatal and nothing is uploaded.
+  const created = await createMaintainXWorkRequest({
+    apiKey: config.apiKey,
+    baseUrl: config.baseUrl,
+    title: input.title,
+    description: input.description,
+    priority: input.priority,
+    locationId: input.locationId,
+    creatorContactInfo: input.creatorContactInfo
+  });
+
+  if (!created.ok || created.requestId == null) {
+    return {
+      ok: false,
+      requestId: null,
+      photosFailed: 0,
+      photosTotal: input.photos.length,
+      error: created.error || "MaintainX did not accept the request."
+    };
+  }
+
+  const requestId = created.requestId;
+
+  // Phase 2 — photos. photo[0] becomes the thumbnail (what shows on the
+  // request card in MaintainX), the rest attach. Failures are counted, not
+  // thrown: the request already exists upstream, and losing it over a failed
+  // JPEG would be worse than an incomplete one the filer can add to later.
+  let photosFailed = 0;
+  for (let i = 0; i < input.photos.length; i += 1) {
+    const file = input.photos[i]!;
+    const endpoint: "thumbnail" | "attachment" = i === 0 ? "thumbnail" : "attachment";
+
+    let body: ArrayBuffer;
+    try {
+      body = await file.arrayBuffer();
+    } catch (e) {
+      console.error(
+        `[inventory.maintainx] request ${requestId} photo ${i} (${endpoint}) read failed:`,
+        e instanceof Error ? e.message : String(e)
+      );
+      photosFailed += 1;
+      continue;
+    }
+
+    const uploaded = await uploadMaintainXWorkRequestFile({
+      requestId,
+      filename: sanitizeFilename(file.name, i),
+      body,
+      apiKey: config.apiKey,
+      baseUrl: config.baseUrl,
+      endpoint
+    });
+
+    if (!uploaded.ok) {
+      console.error(
+        `[inventory.maintainx] request ${requestId} photo ${i} (${endpoint}) failed: status=${uploaded.status} error=${uploaded.error}`
+      );
+      photosFailed += 1;
+    }
+  }
+
+  return {
+    ok: true,
+    requestId,
+    photosFailed,
+    photosTotal: input.photos.length,
+    error: null
+  };
+}

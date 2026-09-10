@@ -14,6 +14,21 @@ import type { SupabaseEnv } from "@splash/db-supabase";
 export interface Env extends SupabaseEnv {
   /** Cloudflare Static Assets binding — serves the built Vite SPA (./dist). */
   ASSETS: Fetcher;
+
+  /** MaintainX REST root, e.g. "https://api.getmaintainx.com/v1" (no trailing
+   *  /workrequests). Set in wrangler.toml [vars]; mirrors the var of the same
+   *  name on splash-damage and splash-workorders. */
+  MAINTAINX_BASE_URL?: string;
+
+  /** MaintainX API key. `wrangler secret put MAINTAINX_API_KEY` with the SAME
+   *  value already bound on splash-damage and splash-workorders — the key is
+   *  per-organization, not per-worker.
+   *
+   *  Optional on purpose. When it or MAINTAINX_BASE_URL is unset, the
+   *  /api/maintainx/* routes report themselves unconfigured instead of 500ing,
+   *  and the SPA renders an explanatory card rather than an error. The rest of
+   *  the inventory app is unaffected either way. */
+  MAINTAINX_API_KEY?: string;
 }
 
 // No email binding is declared here on purpose. POST /inventory/api/report
