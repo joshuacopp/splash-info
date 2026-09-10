@@ -59,7 +59,7 @@ export async function GET(
   const inm = req.headers.get("If-None-Match");
   const clientEtag = inm
     ?.split(",")[0]
-    .trim()
+    ?.trim()
     .replace(/^W\//, "")
     .replace(/^"(.*)"$/, "$1");
 
