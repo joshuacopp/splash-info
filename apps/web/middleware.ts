@@ -79,6 +79,7 @@ const ADMIN_KNOWN_SUBPATHS = new Set<string>([
   "greeters",
   "jotform",
   "my-requests",
+  "parts",
   "performance",
   "pricing",
   "promotions",

@@ -288,6 +288,20 @@ const ticketIcon: ReactNode = (
   </svg>
 );
 
+const cogIcon: ReactNode = (
+  <svg {...SvgProps}>
+    <circle cx="12" cy="12" r="3.2" />
+    <path d="M12 2v3" />
+    <path d="M12 19v3" />
+    <path d="M2 12h3" />
+    <path d="M19 12h3" />
+    <path d="m4.9 4.9 2.2 2.2" />
+    <path d="m16.9 16.9 2.2 2.2" />
+    <path d="m19.1 4.9-2.2 2.2" />
+    <path d="m7.1 16.9-2.2 2.2" />
+  </svg>
+);
+
 const calendarIcon: ReactNode = (
   <svg {...SvgProps}>
     <rect x="3" y="4" width="18" height="18" rx="2" ry="2" />
@@ -383,6 +397,17 @@ export const TILES: ReadonlyArray<Tile> = [
     description: "View MaintainX work orders for your locations.",
     href: "/workorders",
     icon: wrenchIcon,
+    visibleTo: allStaff
+  },
+  {
+    id: "parts",
+    group: "operations",
+    eyebrow: "Equipment",
+    title: "Parts",
+    description:
+      "Interactive parts manuals — search by part number or click a callout on the exploded view.",
+    href: "/admin/parts",
+    icon: cogIcon,
     visibleTo: allStaff
   },
   {

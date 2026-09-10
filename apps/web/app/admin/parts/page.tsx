@@ -1,0 +1,90 @@
+// Parts (/admin/parts) — index of interactive parts manuals.
+//
+// The list comes from manifest.json in the parts bucket, so this page needs no
+// change when a manual is added. Auth posture: any authenticated session;
+// middleware gates /admin/*, and nothing here is per-location or per-role.
+
+import Link from "next/link";
+import {
+  listManuals,
+  PartsBindingUnavailable,
+  type PartsManual
+} from "./_lib/manuals";
+
+export const dynamic = "force-dynamic";
+export const metadata = { title: "Parts" };
+
+export default async function PartsIndexPage() {
+  let manuals: PartsManual[];
+  let unavailable = false;
+  try {
+    manuals = await listManuals();
+  } catch (err) {
+    if (!(err instanceof PartsBindingUnavailable)) throw err;
+    manuals = [];
+    unavailable = true;
+  }
+
+  return (
+    <section className="mx-auto w-full max-w-[1100px] px-5 py-9">
+      <div className="mb-2 text-sm">
+        <Link
+          href="/admin/dashboard/operations"
+          className="text-splash-blue hover:underline"
+        >
+          ← Operations
+        </Link>
+      </div>
+
+      <div className="mb-6">
+        <p className="mb-1 text-xs font-semibold uppercase tracking-[0.18em] text-sudsy-blue">
+          Equipment
+        </p>
+        <h1 className="text-2xl font-bold text-splash-navy">Parts</h1>
+        <p className="mt-1 text-sm text-splash-navy/70">
+          Interactive parts manuals. Search by part number or description, or
+          click a numbered callout on the exploded view to pull up the part.
+        </p>
+      </div>
+
+      {unavailable && (
+        <p className="mb-5 rounded-splash-md border border-amber-300 bg-amber-50 px-3 py-2 text-amber-900">
+          Parts storage isn&apos;t connected in this environment. Run the app
+          with <code>wrangler dev</code> (or deploy) to reach the manuals.
+        </p>
+      )}
+
+      {!unavailable && manuals.length === 0 && (
+        <div className="rounded-splash-md border border-gray-light bg-white px-4 py-8 text-center italic text-splash-navy/60">
+          No manuals published yet.
+        </div>
+      )}
+
+      <div className="grid gap-4 sm:grid-cols-2">
+        {manuals.map((manual) => (
+          <Link
+            key={manual.slug}
+            href={`/admin/parts/${manual.slug}`}
+            className="block overflow-hidden rounded-splash-md border-[1.5px] border-splash-navy/15 bg-white shadow-splash-card transition hover:border-splash-blue/50"
+          >
+            <div className="border-b border-splash-navy/10 bg-splash-navy/5 px-4 py-2.5">
+              {manual.model && (
+                <p className="text-xs font-semibold uppercase tracking-[0.18em] text-sudsy-blue">
+                  {manual.model}
+                </p>
+              )}
+              <h2 className="text-base font-bold text-splash-navy">
+                {manual.title}
+              </h2>
+            </div>
+            {manual.description && (
+              <p className="px-4 py-3 text-sm text-splash-navy/70">
+                {manual.description}
+              </p>
+            )}
+          </Link>
+        ))}
+      </div>
+    </section>
+  );
+}

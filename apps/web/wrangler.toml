@@ -122,6 +122,18 @@ service = "splash-promo"
 binding = "BEEKEEPER_WORKER"
 service = "beekeeper-worker"
 
+# Parts manuals (/admin/parts). Each manual is a self-contained multi-MB HTML
+# file, so they live in R2 rather than public/: the repo doesn't carry them,
+# and the serve route can sit behind the /admin/* auth gate. Static assets are
+# served by the [assets] binding BEFORE the worker runs, which would make
+# anything in public/ publicly reachable regardless of middleware.
+#
+# Bucket root holds `manifest.json` — the list the index page renders from, so
+# adding a manual is an upload, not a deploy.
+[[r2_buckets]]
+binding = "PARTS_FILES"
+bucket_name = "splash-parts-manuals"
+
 # Public Turnstile site key — read at runtime by app/login/page.tsx via
 # getCloudflareContext().env and passed to the login form widget. Committed
 # here (not set in the CF dashboard) because Workers Builds re-provisions the

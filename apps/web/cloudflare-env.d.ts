@@ -26,6 +26,8 @@ declare global {
     JOTFORM_WORKER: Fetcher;
     PROMO_WORKER: Fetcher;
     BEEKEEPER_WORKER: Fetcher;
+    /** Parts manuals — see the [[r2_buckets]] block in wrangler.toml. */
+    PARTS_FILES: R2Bucket;
   }
 }
 
