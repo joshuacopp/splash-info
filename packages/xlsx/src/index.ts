@@ -1,4 +1,9 @@
-// Brief 178 — a tiny, dependency-free XLSX writer.
+// A tiny, dependency-free XLSX writer.
+//
+// Extracted from apps/damage-worker/src/xlsx.ts (Brief 178) so the inventory
+// export can use it too, and generalised from one worksheet to many. The
+// single-sheet entry point kept its original signature, so damage-worker's
+// claims export calls it unchanged.
 //
 // Why hand-rolled: the claims export runs inside the Cloudflare Workers
 // runtime. The usual xlsx libraries are a poor fit there — SheetJS's free
@@ -14,10 +19,11 @@
 // of bandwidth but removes any dependency on a compressor in the runtime.
 // The output validates cleanly with openpyxl / Excel / Numbers.
 //
-// Scope: a single worksheet, inline strings (no sharedStrings table),
-// numbers, and date/datetime cells written as Excel serial numbers with a
-// date number-format. That's all the claims export needs; this is not a
-// general spreadsheet engine.
+// Scope: inline strings (no sharedStrings table), numbers, and date/datetime
+// cells written as Excel serial numbers with a date number-format. One or more
+// worksheets, each with its own columns. This is not a general spreadsheet
+// engine — no formulas, merges, images or per-cell styling beyond the five
+// built-in cell formats below.
 
 export type XlsxColumnKind =
   | "text"
@@ -38,25 +44,88 @@ export interface XlsxColumn {
  *  string and are converted to a serial number here. */
 export type XlsxCell = string | number;
 
+/** One worksheet: a tab name, its column definitions, and its body rows. */
+export interface XlsxSheet {
+  /** Tab name. Sanitised on the way out — Excel refuses names that are
+   *  blank, over 31 chars, or contain any of : \ / ? * [ ]. Duplicates are
+   *  suffixed, because a workbook with two same-named tabs won't open. */
+  name: string;
+  columns: XlsxColumn[];
+  rows: XlsxCell[][];
+}
+
 /**
  * Build a complete .xlsx file (a ZIP of OOXML parts) for one worksheet.
- * `columns` defines the header, widths, and per-column typing; `rows` is
- * the body, each row an array of cells in the same order as `columns`.
+ *
+ * Original single-sheet entry point, kept so existing callers are unaffected.
+ * `columns` defines the header, widths, and per-column typing; `rows` is the
+ * body, each row an array of cells in the same order as `columns`.
  */
 export function buildXlsxWorkbook(
   columns: XlsxColumn[],
-  rows: XlsxCell[][]
+  rows: XlsxCell[][],
+  sheetName = "Sheet1"
 ): Uint8Array {
-  const sheetXml = buildSheetXml(columns, rows);
+  return buildXlsxWorkbookMultiSheet([{ name: sheetName, columns, rows }]);
+}
+
+/**
+ * Build a complete .xlsx file with one worksheet per entry, in order.
+ *
+ * Throws on an empty array: a workbook with no sheets is not a valid xlsx
+ * file, and failing here beats handing the user a download Excel won't open.
+ */
+export function buildXlsxWorkbookMultiSheet(sheets: XlsxSheet[]): Uint8Array {
+  if (sheets.length === 0) {
+    throw new Error("buildXlsxWorkbookMultiSheet: at least one sheet is required");
+  }
+
+  const names = uniqueSheetNames(sheets.map((s) => s.name));
+
   const files: ZipEntry[] = [
-    { name: "[Content_Types].xml", data: enc(CONTENT_TYPES_XML) },
+    { name: "[Content_Types].xml", data: enc(contentTypesXml(sheets.length)) },
     { name: "_rels/.rels", data: enc(ROOT_RELS_XML) },
-    { name: "xl/workbook.xml", data: enc(WORKBOOK_XML) },
-    { name: "xl/_rels/workbook.xml.rels", data: enc(WORKBOOK_RELS_XML) },
-    { name: "xl/styles.xml", data: enc(STYLES_XML) },
-    { name: "xl/worksheets/sheet1.xml", data: enc(sheetXml) }
+    { name: "xl/workbook.xml", data: enc(workbookXml(names)) },
+    { name: "xl/_rels/workbook.xml.rels", data: enc(workbookRelsXml(sheets.length)) },
+    { name: "xl/styles.xml", data: enc(STYLES_XML) }
   ];
+
+  for (let i = 0; i < sheets.length; i++) {
+    const sheet = sheets[i]!;
+    files.push({
+      name: `xl/worksheets/sheet${i + 1}.xml`,
+      data: enc(buildSheetXml(sheet.columns, sheet.rows))
+    });
+  }
+
   return zipStore(files);
+}
+
+/** Excel's tab-name rules, applied defensively so a caller can pass a raw
+ *  location name through without the workbook silently failing to open. */
+function uniqueSheetNames(raw: string[]): string[] {
+  const taken = new Set<string>();
+  return raw.map((original, i) => {
+    let name = (original || "").replace(/[:\\/?*[\]]/g, " ").trim();
+    if (name === "") name = `Sheet${i + 1}`;
+    if (name.length > 31) name = name.slice(0, 31).trim();
+
+    if (!taken.has(name.toLowerCase())) {
+      taken.add(name.toLowerCase());
+      return name;
+    }
+    // Collision — append " (2)", " (3)" …, trimming the stem to stay inside
+    // the 31-char ceiling.
+    for (let n = 2; ; n++) {
+      const suffix = ` (${n})`;
+      const stem = name.slice(0, 31 - suffix.length).trim();
+      const candidate = `${stem}${suffix}`;
+      if (!taken.has(candidate.toLowerCase())) {
+        taken.add(candidate.toLowerCase());
+        return candidate;
+      }
+    }
+  });
 }
 
 /* ------------------------------------------------------------------ *
@@ -194,15 +263,26 @@ const STYLES_XML =
  * Static package parts
  * ------------------------------------------------------------------ */
 
-const CONTENT_TYPES_XML =
-  `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
-  `<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">` +
-  `<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>` +
-  `<Default Extension="xml" ContentType="application/xml"/>` +
-  `<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>` +
-  `<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>` +
-  `<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>` +
-  `</Types>`;
+/** Every worksheet part needs its own Override entry, or Excel reports the
+ *  workbook as corrupt rather than ignoring the sheet. */
+function contentTypesXml(sheetCount: number): string {
+  const overrides: string[] = [];
+  for (let i = 1; i <= sheetCount; i++) {
+    overrides.push(
+      `<Override PartName="/xl/worksheets/sheet${i}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`
+    );
+  }
+  return (
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
+    `<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">` +
+    `<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>` +
+    `<Default Extension="xml" ContentType="application/xml"/>` +
+    `<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>` +
+    overrides.join("") +
+    `<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>` +
+    `</Types>`
+  );
+}
 
 const ROOT_RELS_XML =
   `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
@@ -210,19 +290,44 @@ const ROOT_RELS_XML =
   `<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>` +
   `</Relationships>`;
 
-const WORKBOOK_XML =
-  `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
-  `<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" ` +
-  `xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">` +
-  `<sheets><sheet name="Claims" sheetId="1" r:id="rId1"/></sheets>` +
-  `</workbook>`;
+/** Tab order is array order. Names are already sanitised and de-duplicated by
+ *  uniqueSheetNames(); they still need XML-escaping ("R&D" is a legal tab
+ *  name and an illegal XML attribute value unescaped). */
+function workbookXml(names: string[]): string {
+  const sheets = names
+    .map(
+      (name, i) =>
+        `<sheet name="${escapeXmlAttr(name)}" sheetId="${i + 1}" r:id="rId${i + 1}"/>`
+    )
+    .join("");
+  return (
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
+    `<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" ` +
+    `xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">` +
+    `<sheets>${sheets}</sheets>` +
+    `</workbook>`
+  );
+}
 
-const WORKBOOK_RELS_XML =
-  `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
-  `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">` +
-  `<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>` +
-  `<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>` +
-  `</Relationships>`;
+/** Worksheets take rId1..rIdN and styles takes rId(N+1) — the ids must line up
+ *  with the r:id values workbookXml() emits. */
+function workbookRelsXml(sheetCount: number): string {
+  const rels: string[] = [];
+  for (let i = 1; i <= sheetCount; i++) {
+    rels.push(
+      `<Relationship Id="rId${i}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet${i}.xml"/>`
+    );
+  }
+  rels.push(
+    `<Relationship Id="rId${sheetCount + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>`
+  );
+  return (
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
+    `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">` +
+    rels.join("") +
+    `</Relationships>`
+  );
+}
 
 /* ------------------------------------------------------------------ *
  * Helpers
@@ -282,6 +387,13 @@ function escapeXml(s: string): string {
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;");
+}
+
+/** Escape for an XML *attribute* value. escapeXml() above covers text content,
+ *  where a bare quote is legal; inside a double-quoted attribute it is not, so
+ *  a sheet named `12" Wands` would otherwise emit malformed XML. */
+function escapeXmlAttr(s: string): string {
+  return escapeXml(s).replace(/"/g, "&quot;");
 }
 
 const textEncoder = new TextEncoder();

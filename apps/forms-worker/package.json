@@ -17,6 +17,7 @@
     "@splash/email-shell": "workspace:*",
     "@splash/forms-schema": "workspace:*",
     "@splash/http": "workspace:*",
+    "@splash/pdf-report": "workspace:*",
     "@splash/storage-r2": "workspace:*",
     "@splash/types": "workspace:*",
     "file-type": "^19.6.0",

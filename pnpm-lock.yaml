@@ -69,6 +69,9 @@ importers:
       '@splash/types':
         specifier: workspace:*
         version: link:../../packages/types
+      '@splash/xlsx':
+        specifier: workspace:*
+        version: link:../../packages/xlsx
       file-type:
         specifier: ^19.6.0
         version: 19.6.0
@@ -162,6 +165,9 @@ importers:
       '@splash/http':
         specifier: workspace:*
         version: link:../../packages/http
+      '@splash/pdf-report':
+        specifier: workspace:*
+        version: link:../../packages/pdf-report
       '@splash/storage-r2':
         specifier: workspace:*
         version: link:../../packages/storage-r2
@@ -202,12 +208,21 @@ importers:
       '@splash/http':
         specifier: workspace:*
         version: link:../../packages/http
+      '@splash/maintainx':
+        specifier: workspace:*
+        version: link:../../packages/maintainx
+      '@splash/pdf-report':
+        specifier: workspace:*
+        version: link:../../packages/pdf-report
       '@splash/storage-r2':
         specifier: workspace:*
         version: link:../../packages/storage-r2
       '@splash/types':
         specifier: workspace:*
         version: link:../../packages/types
+      '@splash/xlsx':
+        specifier: workspace:*
+        version: link:../../packages/xlsx
       react:
         specifier: ^18.3.1
         version: 18.3.1
@@ -661,6 +676,22 @@ importers:
         specifier: ^5.6.0
         version: 5.9.3
 
+  packages/pdf-report:
+    dependencies:
+      pdf-lib:
+        specifier: ^1.17.1
+        version: 1.17.1
+    devDependencies:
+      '@cloudflare/workers-types':
+        specifier: ^4.20250101.0
+        version: 4.20260502.1
+      '@splash/config':
+        specifier: workspace:*
+        version: link:../config
+      typescript:
+        specifier: ^5.6.0
+        version: 5.9.3
+
   packages/storage-r2:
     devDependencies:
       '@cloudflare/workers-types':
@@ -706,6 +737,18 @@ importers:
       react-dom:
         specifier: ^19.0.0
         version: 19.2.5(react@19.2.5)
+      typescript:
+        specifier: ^5.6.0
+        version: 5.9.3
+
+  packages/xlsx:
+    devDependencies:
+      '@cloudflare/workers-types':
+        specifier: ^4.20250101.0
+        version: 4.20260502.1
+      '@splash/config':
+        specifier: workspace:*
+        version: link:../config
       typescript:
         specifier: ^5.6.0
         version: 5.9.3

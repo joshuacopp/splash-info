@@ -18,6 +18,7 @@
     "@splash/maintainx": "workspace:*",
     "@splash/storage-r2": "workspace:*",
     "@splash/types": "workspace:*",
+    "@splash/xlsx": "workspace:*",
     "file-type": "^19.6.0",
     "pdf-lib": "^1.17.1"
   },

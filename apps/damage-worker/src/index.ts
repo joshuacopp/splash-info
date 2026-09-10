@@ -161,7 +161,7 @@ import {
   findTransition
 } from "./transitions.js";
 import { waitingForStatus } from "./status-waiting-for.js";
-import { buildXlsxWorkbook, type XlsxColumn } from "./xlsx.js";
+import { buildXlsxWorkbook, type XlsxColumn } from "@splash/xlsx";
 import {
   STATUS_NOTIFIES_NEXT,
   fireClaimUpdateWebhook,
@@ -2516,7 +2516,9 @@ async function getClaimsXlsx(env: Env, session: Session, url: URL): Promise<Resp
 
   const dataRows =
     result.kind === "rows" ? result.rows.map((r) => claimsCsvCells(r)) : [];
-  const workbook = buildXlsxWorkbook(CLAIMS_XLSX_COLUMNS, dataRows);
+  // "Claims" was baked into the workbook XML before the writer moved to
+  // @splash/xlsx; it is passed explicitly now so the tab name is unchanged.
+  const workbook = buildXlsxWorkbook(CLAIMS_XLSX_COLUMNS, dataRows, "Claims");
   return xlsxResponse(workbook, claimsXlsxFilename());
 }
 

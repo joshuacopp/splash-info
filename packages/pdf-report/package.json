@@ -1,0 +1,25 @@
+{
+  "name": "@splash/pdf-report",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Environment-agnostic PDF layout helpers on pdf-lib — page flow, text wrapping, headings, page-numbered footers and paginated tables. Runs in a Worker or a browser. Extracted from forms-worker (Brief 129).",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "lint": "echo 'no lint yet'",
+    "clean": "rm -rf dist .turbo"
+  },
+  "dependencies": {
+    "pdf-lib": "^1.17.1"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20250101.0",
+    "@splash/config": "workspace:*",
+    "typescript": "^5.6.0"
+  }
+}
