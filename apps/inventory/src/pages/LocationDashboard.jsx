@@ -110,9 +110,18 @@ export default function LocationDashboard() {
         }
         actions={
           canAddVisit && (
-            <Link to={`/location/${locationId}/new`} className="btn-primary">
-              + New site visit
-            </Link>
+            <div className="flex flex-wrap gap-2">
+              {/* A delivery is the short form — chemical dropped off, no car
+                  counts or levels. Offered beside the visit rather than buried
+                  inside it, because the whole point is not having to open the
+                  visit protocol to record one. */}
+              <Link to={`/location/${locationId}/delivery`} className="btn-ghost">
+                + Delivery
+              </Link>
+              <Link to={`/location/${locationId}/new`} className="btn-primary">
+                + New site visit
+              </Link>
+            </div>
           )
         }
       />

@@ -3,7 +3,7 @@ import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useData } from '../context/DataContext'
 import { useAuth } from '../context/AuthContext'
 import {
-  latestVisitForLocation,
+  latestLedgerRowForLocation,
   computeVisit,
   applicationsByProduct,
   GAL_TO_ML,
@@ -36,7 +36,10 @@ export default function NewVisit() {
 
   const { productRows, packages, washPackages, addonPackages, lastVisit } = useMemo(() => {
     const lps = (dataset.location_products || []).filter((lp) => lp.location_id === locationId)
-    const lastVisit = isEdit ? null : latestVisitForLocation(idx, locationId)
+    // Ledger, not inspection list: starting quantities must carry forward from
+    // a delivery filed since the last visit, or the delivered chemical vanishes
+    // and shows up as impossible negative usage on this visit.
+    const lastVisit = isEdit ? null : latestLedgerRowForLocation(idx, locationId)
     const lastEnding = {}
     const lastMlPerCar = {}
     const lastEquipment = {}

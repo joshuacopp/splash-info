@@ -29,6 +29,8 @@ import type { Session } from "@splash/types/session";
 import { loadOverlay } from "./overlay.js";
 import { renderVisitReport } from "./report-email.js";
 import type { ComputedVisitLike } from "./report-email.js";
+import { renderDeliveryReceipt } from "./delivery-email.js";
+import type { ComputedDeliveryLike } from "./delivery-email.js";
 // Imported, not reimplemented. calc.js is the same module the Visit Detail
 // page renders from, so the email cannot disagree with the screen. See the
 // allowJs note in tsconfig.json for why the worker can reach into src/.
@@ -581,6 +583,112 @@ export async function updateVisit(
   payload: Record<string, unknown>
 ) {
   return saveVisit(sb, visitId, payload, false);
+}
+
+/**
+ * Record a delivery: chemical dropped at a site, with no car counts and no
+ * level measurements.
+ *
+ * Stored as a site_visits row with visit_kind='delivery'. The starting
+ * quantity per product is the site's LAST KNOWN ending quantity, resolved here
+ * from stored rows rather than taken from the client — the point of a delivery
+ * is that it adds to what was already there, and a client-supplied starting
+ * figure could silently overwrite the site's level with a stale number from an
+ * open browser tab. save_delivery then computes ending = starting + delivered,
+ * so usage on this row is exactly 0 and the ending becomes the new last-known
+ * level that the next visit carries forward.
+ */
+export async function createDelivery(sb: SupabaseClient, payload: Record<string, unknown>) {
+  const locationCode = String(payload.location_id || "").trim();
+  if (!locationCode) throw new ApiError("A delivery must name a location.");
+
+  const visitDate = String(payload.visit_date || "").trim();
+  if (!visitDate) throw new ApiError("A delivery must have a date.");
+
+  const incoming = (payload.entries as Array<Record<string, unknown>>) || [];
+  const delivered = incoming
+    .map((e) => ({
+      product_id: String(e.product_id || ""),
+      qty_delivered_gal: Number(e.qty_delivered_gal)
+    }))
+    .filter((e) => e.product_id && Number.isFinite(e.qty_delivered_gal) && e.qty_delivered_gal > 0);
+
+  if (delivered.length === 0) {
+    throw new ApiError("Enter a delivered quantity for at least one chemical.");
+  }
+
+  const lastKnown = await lastKnownEndingQuantities(sb, locationCode);
+
+  const deliveryId = newId();
+  const { error } = await inv(sb).rpc("save_delivery", {
+    p_delivery_id: deliveryId,
+    p_delivery: {
+      location_code: locationCode,
+      visit_date: visitDate,
+      submitter: payload.submitter || null,
+      notes: payload.notes || null
+    },
+    p_entries: delivered.map((e) => ({
+      product_id: e.product_id,
+      // Unknown product at this site (never recorded before) starts at 0 —
+      // the delivery is the first thing we know about it.
+      starting_qty_gal: lastKnown.get(e.product_id) ?? 0,
+      qty_delivered_gal: e.qty_delivered_gal
+    }))
+  });
+
+  if (error) {
+    const known: Record<string, string> = {
+      "23505": "The same chemical was submitted twice on this delivery",
+      "23503": "This delivery refers to a chemical that no longer exists",
+      "23502": "An entry was submitted with no chemical selected",
+      "22P02": "An entry contained a value that is not a number",
+      "23514": "An entry contained a value outside the range the field allows"
+    };
+    const friendly = error.code ? known[error.code] : undefined;
+    if (friendly) throw new ApiError(`${friendly}. Nothing was saved.`);
+    throw new Error(error.message);
+  }
+
+  return { deliveryId };
+}
+
+/**
+ * product_id -> ending quantity on the site's most recent row of ANY kind.
+ *
+ * Reads the latest row including deliveries, so two deliveries in a row
+ * accumulate rather than the second one resetting to the level at the last
+ * inspection.
+ */
+async function lastKnownEndingQuantities(
+  sb: SupabaseClient,
+  locationCode: string
+): Promise<Map<string, number>> {
+  const { data: rows, error } = await inv(sb)
+    .from("site_visits")
+    .select("id,visit_date")
+    .eq("location_code", locationCode)
+    .order("visit_date", { ascending: false })
+    .limit(1);
+  if (error) throw new Error(`Failed reading last known levels: ${error.message}`);
+
+  const latestId = (rows || [])[0]?.id as string | undefined;
+  const out = new Map<string, number>();
+  if (!latestId) return out;
+
+  const { data: entries, error: entryError } = await inv(sb)
+    .from("inventory_entries")
+    .select("product_id,ending_qty_gal")
+    .eq("site_visit_id", latestId);
+  if (entryError) throw new Error(`Failed reading last known levels: ${entryError.message}`);
+
+  for (const raw of entries || []) {
+    const row = raw as Record<string, unknown>;
+    const id = typeof row.product_id === "string" ? row.product_id : null;
+    const qty = Number(row.ending_qty_gal);
+    if (id && Number.isFinite(qty)) out.set(id, qty);
+  }
+  return out;
 }
 
 export async function deleteVisit(sb: SupabaseClient, visitId: string) {
@@ -1165,6 +1273,83 @@ export async function sendVisitReport(
     recipients: delivered,
     via: recipients.map((r) => ({ email: r.email, via: r.via })),
     flagCount: computed.flagCount
+  };
+}
+
+/**
+ * Queue the delivery receipt.
+ *
+ * Same recipients as a visit report (resolveReportRecipients) — a delivery is
+ * site news and goes to the people who already get site news. Same
+ * recompute-from-stored-rows posture too: the request body contributes only the
+ * delivery id, so the email cannot disagree with the record.
+ */
+export async function sendDeliveryReceipt(
+  sb: SupabaseClient,
+  env: { SUPABASE_URL: string; SUPABASE_SERVICE_KEY: string },
+  origin: string,
+  opts: { deliveryId: string; resend?: boolean }
+) {
+  const deliveryId = String(opts.deliveryId || "").trim();
+  if (!deliveryId) throw new Error("receipt: deliveryId is required");
+
+  const ds = await loadUnscoped(sb);
+  const idx = buildIndex(ds);
+  const computed = computeVisit(ds, idx, deliveryId);
+  if (!computed) throw new Error("receipt: delivery not found");
+
+  const locationCode = String(computed.visit.location_id || "").trim();
+  if (!locationCode) throw new Error("receipt: delivery has no location");
+
+  const recipients = await resolveReportRecipients(sb, locationCode);
+  if (!recipients.length) {
+    return { queued: 0, duplicates: 0, recipients: [] as string[] };
+  }
+
+  const deliveryUrl = `${origin}/inventory/location/${encodeURIComponent(
+    locationCode
+  )}/visit/${encodeURIComponent(deliveryId)}`;
+
+  const { subject, bodyHtml, bodyText } = renderDeliveryReceipt(
+    computed as ComputedDeliveryLike,
+    deliveryUrl
+  );
+
+  // Keyed on the delivery id, so a double-tapped Submit is a permanent no-op.
+  // Same minute-resolution escape hatch as the visit report for a deliberate
+  // resend.
+  const sourceId = opts.resend ? `${deliveryId}:r${Math.floor(Date.now() / 60000)}` : deliveryId;
+
+  let queued = 0;
+  let duplicates = 0;
+  const delivered: string[] = [];
+
+  // Sequential for the same reason as the visit report: one bad recipient must
+  // not discard the sends that already succeeded.
+  for (const r of recipients) {
+    try {
+      const result = await enqueueOutboundEmail(env, {
+        source_worker: "inventory",
+        source_kind: "delivery-receipt",
+        source_id: sourceId,
+        recipient: r.email,
+        subject,
+        body_html: bodyHtml,
+        body_text: bodyText
+      });
+      if (result.was_duplicate) duplicates++;
+      else queued++;
+      delivered.push(r.email);
+    } catch (err) {
+      console.error(`[inventory.receipt] enqueue failed for ${r.email}`, err);
+    }
+  }
+
+  return {
+    queued,
+    duplicates,
+    recipients: delivered,
+    via: recipients.map((r) => ({ email: r.email, via: r.via }))
   };
 }
 

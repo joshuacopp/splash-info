@@ -56,14 +56,33 @@ export function buildIndex(ds) {
     ;(packageProducts[pp.package_id] ||= []).push(pp)
   }
 
-  // location_id -> visits sorted desc by date
+  // site_visits carries TWO kinds of row (visit_kind): a 'visit' is someone
+  // inspecting the site — car counts, levels, water readings — and a 'delivery'
+  // is only a record of chemical dropped off. They are indexed separately
+  // because almost every question here means one or the other, never both:
+  //
+  //   visitsByLocation  — inspections only. "When was this site last visited",
+  //                       stale-site warnings, usage trends, ml/car deltas.
+  //                       A delivery must not answer any of those; nobody
+  //                       looked at the equipment.
+  //   ledgerByLocation  — every row, newest first. What the site is holding
+  //                       RIGHT NOW, and what the next visit's starting
+  //                       quantities carry forward from. A delivery absolutely
+  //                       counts here — that is the point of recording it.
+  //
+  // Rows written before visit_kind existed have no field; they are all
+  // inspections, hence the `!== 'delivery'` test rather than `=== 'visit'`.
+  const byDateDesc = (a, b) =>
+    a.visit_date < b.visit_date ? 1 : a.visit_date > b.visit_date ? -1 : 0
+
   const visitsByLocation = {}
+  const ledgerByLocation = {}
   for (const v of ds.site_visits || []) {
-    ;(visitsByLocation[v.location_id] ||= []).push(v)
+    ;(ledgerByLocation[v.location_id] ||= []).push(v)
+    if (v.visit_kind !== 'delivery') (visitsByLocation[v.location_id] ||= []).push(v)
   }
-  for (const arr of Object.values(visitsByLocation)) {
-    arr.sort((a, b) => (a.visit_date < b.visit_date ? 1 : a.visit_date > b.visit_date ? -1 : 0))
-  }
+  for (const arr of Object.values(visitsByLocation)) arr.sort(byDateDesc)
+  for (const arr of Object.values(ledgerByLocation)) arr.sort(byDateDesc)
 
   // site_visit_id -> rows
   const entriesByVisit = {}
@@ -83,6 +102,7 @@ export function buildIndex(ds) {
     locationProduct,
     packageProducts,
     visitsByLocation,
+    ledgerByLocation,
     entriesByVisit,
     washByVisit,
   }
@@ -396,6 +416,22 @@ export function visitsForLocation(ds, locationId) {
     .sort((a, b) => (a.visit_date < b.visit_date ? 1 : a.visit_date > b.visit_date ? -1 : 0))
 }
 
+/**
+ * The row a new visit should carry its starting quantities from — the latest
+ * row of ANY kind, deliveries included.
+ *
+ * This reads the ledger, not the inspection list, and that is the whole
+ * mechanism by which a delivery reaches the next visit: the delivery row's
+ * ending quantity (last known + delivered) becomes the next visit's starting
+ * quantity. Point this at visitsByLocation and delivered chemical silently
+ * disappears, reappearing as impossible negative usage on the following visit.
+ */
+export function latestLedgerRowForLocation(idx, locationId) {
+  const rows = idx.ledgerByLocation[locationId] || []
+  return rows.length ? rows[0] : null
+}
+
+/** The latest actual inspection, ignoring deliveries. Use for "last visited". */
 export function latestVisitForLocation(idx, locationId) {
   const vs = idx.visitsByLocation[locationId] || []
   return vs.length ? vs[0] : null
@@ -493,14 +529,27 @@ export function inventorySnapshot(ds, idx, asOfIso, visibleIds) {
   if (visibleIds) locations = locations.filter((l) => visibleIds.has(l.id))
 
   const rows = locations.map((loc) => {
+    // VALUE comes from the ledger — the latest row of any kind, so a delivery
+    // filed after the last inspection is reflected in what the site is holding.
+    const ledger = idx.ledgerByLocation[loc.id] || []
+    const asOfRow = ledger.find((v) => v.visit_date <= asOfIso) || null
+    const computed = asOfRow ? computeVisit(ds, idx, asOfRow.id) : null
+
+    // The DATE shown is the last real inspection. A delivery is not somebody
+    // looking at the site, and showing it in a column headed "most recent
+    // visit" would make a site that has only been delivered to look inspected.
     const visits = idx.visitsByLocation[loc.id] || []
     const asOfVisit = visits.find((v) => v.visit_date <= asOfIso) || null
-    const computed = asOfVisit ? computeVisit(ds, idx, asOfVisit.id) : null
+
     return {
       location: loc,
       visit: asOfVisit,
       onHandValue: computed ? computed.onHandValue : null,
-      hasNewerVisit: !!asOfVisit && visits[0]?.id !== asOfVisit.id, // viewing history, not the current value
+      // True when the row the value came from is a delivery, so the page can
+      // say the figure is newer than the visit date beside it.
+      valueFromDelivery: !!asOfRow && asOfRow.visit_kind === 'delivery',
+      valueDate: asOfRow ? asOfRow.visit_date : null,
+      hasNewerVisit: !!asOfRow && ledger[0]?.id !== asOfRow.id, // viewing history, not the current value
     }
   })
 

@@ -12,6 +12,7 @@ import UsageTrends from './pages/UsageTrends'
 import PackageEditor from './pages/PackageEditor'
 import AdminProducts from './pages/AdminProducts'
 import NewVisit from './pages/NewVisit'
+import NewDelivery from './pages/NewDelivery'
 import History from './pages/History'
 import VisitDetail from './pages/VisitDetail'
 
@@ -50,6 +51,10 @@ export default function App() {
         <Route
           path="location/:locationId/new"
           element={<Gate loading={loading} error={error} el={<NewVisit />} />}
+        />
+        <Route
+          path="location/:locationId/delivery"
+          element={<Gate loading={loading} error={error} el={<NewDelivery />} />}
         />
         <Route
           path="location/:locationId/history"

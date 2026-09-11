@@ -12,7 +12,13 @@ export default function History() {
   const { dataset, idx } = useData()
   const { canSubmit } = useAuth()
   const location = idx.locationById[locationId]
-  const visits = idx.visitsByLocation[locationId] || []
+  // Ledger, not just inspections: a delivery is part of this site's record and
+  // is the reason an on-hand figure moved between two visits. Hiding it here
+  // would make that jump look unexplained. Badged in the table so it is never
+  // mistaken for a visit.
+  const visits = idx.ledgerByLocation[locationId] || []
+  const visitCount = visits.filter((v) => v.visit_kind !== 'delivery').length
+  const deliveryCount = visits.length - visitCount
 
   const rows = useMemo(
     () => visits.map((v) => ({ v, c: computeVisit(dataset, idx, v.id) })),
@@ -25,7 +31,12 @@ export default function History() {
     <div className="space-y-6">
       <LocationHeader
         location={location}
-        sub={`${visits.length} recorded visit${visits.length === 1 ? '' : 's'}`}
+        sub={
+          `${visitCount} recorded visit${visitCount === 1 ? '' : 's'}` +
+          (deliveryCount
+            ? ` · ${deliveryCount} deliver${deliveryCount === 1 ? 'y' : 'ies'}`
+            : '')
+        }
         actions={
           canSubmit && (
             <Link to={`/location/${locationId}/new`} className="btn-primary">
@@ -60,9 +71,24 @@ export default function History() {
                       <Link to={`/location/${locationId}/visit/${v.id}`} className="group-hover:text-splash-700">
                         {fmtDate(v.visit_date)}
                       </Link>
+                      {/* A delivery has no washes, no measured levels and zero
+                          usage by construction, so its blank metric columns are
+                          correct rather than missing data. The badge is what
+                          says so. */}
+                      {v.visit_kind === 'delivery' && (
+                        <span className="ml-2 rounded-full bg-splash-100 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-splash-700">
+                          Delivery
+                        </span>
+                      )}
                     </td>
                     <td className="td">{v.submitter || '—'}</td>
-                    <td className="td text-right tabular-nums">{fmtInt(c.totalWashCount)}</td>
+                    <td className="td text-right tabular-nums">
+                      {v.visit_kind === 'delivery' ? (
+                        <span className="text-slate-300">—</span>
+                      ) : (
+                        fmtInt(c.totalWashCount)
+                      )}
+                    </td>
                     <td className="td text-right tabular-nums">{fmtCurrency(c.chemicalCost)}</td>
                     <td className={`td text-right font-semibold tabular-nums ${over ? 'text-amber-600' : ''}`}>
                       {fmtCpc(c.blendedCpc)}

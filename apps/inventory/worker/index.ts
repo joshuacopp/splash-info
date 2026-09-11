@@ -32,6 +32,7 @@ import { canWriteInventory, inventoryGate, isInventoryAdmin, userCanAccessLocati
 import {
   ApiError,
   bulkUpdateProductPrices,
+  createDelivery,
   createVisit,
   deleteVisit,
   getVisitLocationCode,
@@ -40,6 +41,7 @@ import {
   resolveFlag,
   savePackageConfig,
   saveRecipients,
+  sendDeliveryReceipt,
   sendVisitReport,
   unresolveFlag,
   updateVisit,
@@ -325,6 +327,43 @@ export default {
         }
 
         return handleCreateRequest(request, session.email, config, locations);
+      }
+
+      // POST /api/deliveries — record a delivery (no car counts, no levels)
+      // and queue its receipt.
+      //
+      // Same write tier and per-location scope as creating a visit: anyone who
+      // can file a visit for a site can record a delivery to it. The blanket
+      // non-GET gate above has already excluded read-only sessions.
+      if (sub === "deliveries" && segments.length === 2) {
+        if (method !== "POST") return jsonError(405, "method not allowed");
+        const body = await readJson(request);
+        const code = String(body.location_id || "");
+        if (!code || !userCanAccessLocation(session, code)) {
+          return jsonError(403, "forbidden for that location");
+        }
+
+        const created = await createDelivery(sb, {
+          ...body,
+          // Attribution comes from the session, not the payload.
+          submitter: body.submitter || session.email
+        });
+
+        // The delivery is saved at this point. A failing receipt must not fail
+        // the request and make the operator re-file a delivery that already
+        // exists — report it and let them resend.
+        let receipt: Awaited<ReturnType<typeof sendDeliveryReceipt>> | null = null;
+        let receiptError: string | null = null;
+        try {
+          receipt = await sendDeliveryReceipt(sb, env, url.origin, {
+            deliveryId: created.deliveryId
+          });
+        } catch (err) {
+          receiptError = err instanceof Error ? err.message : String(err);
+          console.error("[inventory.deliveries] receipt failed", receiptError);
+        }
+
+        return json({ ...created, receipt, receiptError });
       }
 
       // /api/visits (create) and /api/visits/{id} (edit | delete)
