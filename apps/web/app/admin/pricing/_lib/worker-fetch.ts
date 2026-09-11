@@ -82,7 +82,25 @@ export async function workerGetJson<T>(path: string): Promise<T | null> {
     });
   }
 
-  if (resp.status === 401 || resp.status === 403) return null;
+  // 404 joins 401/403 rather than throwing.
+  //
+  // A path segment that isn't a real location code used to take this branch
+  // and crash the render: /admin/pricing/{anything} is a live route, so any
+  // stray URL under it returned a 500 "An error occurred in the Server
+  // Components render" instead of a page. Seen in production on
+  // /admin/pricing/macneil-videos.
+  //
+  // Returning null lands the caller in the same "you don't have access" state
+  // as an unauthorised location, which is the right answer for a second
+  // reason: it does not reveal which location codes exist. Callers that
+  // genuinely need to tell "missing" from "forbidden" apart should ask for a
+  // status, not infer it from a thrown error.
+  //
+  // Real failures -- 500s from the worker, a dead binding -- still throw, and
+  // should: those are bugs, not user input.
+  if (resp.status === 401 || resp.status === 403 || resp.status === 404) {
+    return null;
+  }
   if (!resp.ok) {
     throw new Error(`Worker GET ${path} failed: ${resp.status}`);
   }
