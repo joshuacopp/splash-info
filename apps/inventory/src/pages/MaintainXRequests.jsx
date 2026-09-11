@@ -49,13 +49,15 @@ const WO_STATUS_TONE = {
   SKIPPED: 'slate',
 }
 
-// Group headings, in the order the worker sorts them.
-const GROUP_ORDER = ['APPROVED', 'PENDING', 'REJECTED', 'DONE']
+// Group headings, in the order the worker sorts them. Keyed on `group`, not
+// `status`: MaintainX reports a completed request as requestStatus=DONE while
+// its own UI still calls it Approved, so the worker folds DONE in with
+// APPROVED and orders that group by work-order status. See groupFor() in
+// worker/maintainx.ts.
 const GROUP_LABEL = {
   APPROVED: 'Approved',
   PENDING: 'Pending approval',
   REJECTED: 'Denied',
-  DONE: 'Completed',
 }
 
 const DATE_RANGES = [
@@ -323,13 +325,13 @@ export default function MaintainXRequests() {
                 {/* Group heading whenever the status changes. The list arrives
                     already sorted by the worker, so a change of status is a
                     group boundary — no regrouping needed here. */}
-                {(i === 0 || filtered[i - 1].status !== r.status) && (
+                {(i === 0 || filtered[i - 1].group !== r.group) && (
                   <li className="sticky top-0 z-10 flex items-center gap-2 border-y border-slate-100 bg-slate-50/95 px-5 py-2 backdrop-blur">
                     <span className="text-[11px] font-extrabold uppercase tracking-wider text-slate-500">
-                      {GROUP_LABEL[r.status] || r.status}
+                      {GROUP_LABEL[r.group] || r.group}
                     </span>
                     <span className="text-[11px] font-bold text-slate-400">
-                      {fmtInt(filtered.filter((x) => x.status === r.status).length)}
+                      {fmtInt(filtered.filter((x) => x.group === r.group).length)}
                     </span>
                   </li>
                 )}

@@ -32,6 +32,7 @@ export {
   type FetchInput,
   type FetchResult,
   ALL_WORK_ORDER_STATUSES,
+  fetchMaintainXWorkOrder,
   fetchMaintainXWorkOrders,
   type MaintainXAssignee,
   type CreateWorkOrderInput,

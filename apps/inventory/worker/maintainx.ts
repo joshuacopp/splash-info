@@ -23,7 +23,7 @@
 
 import {
   createMaintainXWorkRequest,
-  fetchMaintainXWorkOrders,
+  fetchMaintainXWorkOrder,
   fetchMaintainXWorkRequests,
   uploadMaintainXWorkRequestFile,
   type RawWorkRequest
@@ -73,22 +73,43 @@ const LIST_MAX_REQUESTS = 500;
  *  page filters client-side. */
 const LIST_STATUSES = ["PENDING", "APPROVED", "REJECTED", "DONE"];
 
-/** Cap on work orders pulled back to resolve statuses for approved requests. */
-const LIST_MAX_WORK_ORDERS = 500;
+/** Backstop on how many work orders we look up per page load. Bounded by our
+ *  own filing volume, not the organisation's. */
+const LIST_MAX_WORK_ORDER_LOOKUPS = 60;
+
+/** Parallel work-order lookups in flight at once. */
+const WORK_ORDER_LOOKUP_CONCURRENCY = 6;
 
 /**
- * Display order for the request-status groups. Approved work is what an
- * operator is waiting on, so it leads; rejected and completed sink.
+ * Display groups, and their order.
  *
- * DONE is a REQUEST status (MaintainX marks a request done once its work is
- * closed out) and is distinct from a work order's DONE below.
+ * MaintainX's API and its UI disagree here, and the UI is what operators go
+ * by. Verified against live data 2026-09-10: approving a request creates a
+ * work order and the request shows as "Approved" in MaintainX from then on —
+ * but the API moves `requestStatus` to DONE once that work order completes
+ * (request 13868154: requestStatus=DONE, work order 118470642 status=DONE,
+ * completedAt set). The UI still calls it Approved.
+ *
+ * So APPROVED and DONE are ONE group: every promoted request, ordered inside
+ * by the state of its work order with finished work last. Splitting them would
+ * scatter a single MaintainX status across two headings.
  */
-const REQUEST_STATUS_RANK: Record<string, number> = {
-  APPROVED: 0,
-  PENDING: 1,
-  REJECTED: 2,
-  DONE: 3
+const GROUP_APPROVED = "APPROVED";
+const GROUP_PENDING = "PENDING";
+const GROUP_REJECTED = "REJECTED";
+
+const GROUP_RANK: Record<string, number> = {
+  [GROUP_APPROVED]: 0,
+  [GROUP_PENDING]: 1,
+  [GROUP_REJECTED]: 2
 };
+
+/** Request status → display group. */
+function groupFor(status: string): string {
+  if (status === "APPROVED" || status === "DONE") return GROUP_APPROVED;
+  if (status === "REJECTED") return GROUP_REJECTED;
+  return GROUP_PENDING;
+}
 
 /**
  * Secondary order INSIDE the approved group, by the status of the work order
@@ -111,8 +132,8 @@ const WORK_ORDER_STATUS_RANK: Record<string, number> = {
 };
 const WORK_ORDER_STATUS_RANK_UNKNOWN = 3;
 
-function requestStatusRank(status: string): number {
-  return REQUEST_STATUS_RANK[status] ?? 90;
+function groupRank(group: string): number {
+  return GROUP_RANK[group] ?? 90;
 }
 
 function workOrderStatusRank(status: string | null): number {
@@ -173,6 +194,10 @@ export interface ListedRequest {
   description: string;
   priority: string | null;
   status: string;
+  /** Display group: APPROVED (promoted, work order open or done), PENDING or
+   *  REJECTED. Computed by groupFor() — see the note there on why DONE lands
+   *  under APPROVED. */
+  group: string;
   createdAt: string | null;
   updatedAt: string | null;
   locationId: number | null;
@@ -239,6 +264,7 @@ function normalize(
     // requestStatus is the work-REQUEST field; a work ORDER's `type`/`status`
     // is a different axis and must not be read here (see work-requests.ts).
     status: (raw.requestStatus || "PENDING").toUpperCase(),
+    group: groupFor((raw.requestStatus || "PENDING").toUpperCase()),
     createdAt: raw.createdAt ?? null,
     updatedAt: raw.updatedAt ?? null,
     locationId,
@@ -269,41 +295,53 @@ async function fetchWorkOrderStatuses(
   allowedLocationIds: number[],
   raw: RawWorkRequest[]
 ): Promise<Map<number, string> | null> {
-  // Only APPROVED requests need this. Verified against live data 2026-09-10:
-  // MaintainX moves a request to DONE when its work order closes, so a request
-  // still sitting at APPROVED has, by definition, a work order that is still
-  // open. DONE requests are ordered by their own group and need no lookup.
+  // Fetched BY ID rather than by listing. The list endpoint filters by
+  // location and status, so pulling one specific closed work order out of it
+  // means requesting every closed work order at that location and hoping ours
+  // is inside the row cap — slower and less correct the more history there is.
+  // These ids come from the requests themselves, so an exact lookup is both
+  // cheaper and always right.
   //
-  // That is why this uses the client's DEFAULT status filter (OPEN /
-  // IN_PROGRESS / ON_HOLD) rather than asking for every status. Requesting
-  // closed work too would drag back every work order those locations have ever
-  // completed, and with a 500-row cap the ones we actually need could fall off
-  // the end — the lookup would get slower AND less correct as history grows.
-  const wanted = new Set(
-    raw
-      .filter((r) => (r.requestStatus || "").toUpperCase() === "APPROVED")
-      .map((r) => r.workOrderId)
-      .filter((id): id is number => typeof id === "number" && Number.isFinite(id))
-  );
-  if (wanted.size === 0) return null;
+  // Only requests filed from this app are ever in `raw`, so the id count is
+  // bounded by our own filing volume, not the organisation's. The cap below is
+  // a backstop for the far future; the oldest promoted requests sort to the
+  // bottom of the approved group anyway, so losing their status is harmless.
+  const ids = [
+    ...new Set(
+      raw
+        .map((r) => r.workOrderId)
+        .filter((id): id is number => typeof id === "number" && Number.isFinite(id))
+    )
+  ].slice(0, LIST_MAX_WORK_ORDER_LOOKUPS);
 
-  const result = await fetchMaintainXWorkOrders({
-    apiKey: config.apiKey,
-    baseUrl: config.baseUrl,
-    maintainxLocationIds: allowedLocationIds,
-    paginate: true,
-    maxWorkOrders: LIST_MAX_WORK_ORDERS
-  });
+  if (ids.length === 0) return null;
 
   const out = new Map<number, string>();
-  for (const wo of result.workOrders) {
-    if (!wanted.has(wo.id)) continue;
-    const status = (wo.status || "").trim().toUpperCase();
-    if (status) out.set(wo.id, status);
+  let failures = 0;
+
+  // Bounded concurrency: one round trip each, but a page with dozens of
+  // promoted requests should not make them serially.
+  for (let i = 0; i < ids.length; i += WORK_ORDER_LOOKUP_CONCURRENCY) {
+    const batch = ids.slice(i, i + WORK_ORDER_LOOKUP_CONCURRENCY);
+    const settled = await Promise.all(
+      batch.map((id) =>
+        fetchMaintainXWorkOrder({ id, apiKey: config.apiKey, baseUrl: config.baseUrl })
+      )
+    );
+    for (const result of settled) {
+      if (!result.ok || !result.workOrder) {
+        failures += 1;
+        continue;
+      }
+      const status = (result.workOrder.status || "").trim().toUpperCase();
+      if (status) out.set(result.workOrder.id, status);
+    }
   }
 
-  if (!result.ok) {
-    console.error("[inventory.maintainx] work-order status lookup partial:", result.error);
+  if (failures > 0) {
+    console.error(
+      `[inventory.maintainx] ${failures} of ${ids.length} work-order status lookups failed`
+    );
   }
   return out;
 }
@@ -314,13 +352,12 @@ async function fetchWorkOrderStatuses(
  * Newest first within any tie.
  */
 function compareRequests(a: ListedRequest, b: ListedRequest): number {
-  const byStatus = requestStatusRank(a.status) - requestStatusRank(b.status);
-  if (byStatus !== 0) return byStatus;
+  const byGroup = groupRank(a.group) - groupRank(b.group);
+  if (byGroup !== 0) return byGroup;
 
-  // Work-order status only orders the approved group. Applying it to pending
-  // requests would be meaningless (they have no work order) and to rejected
-  // ones misleading.
-  if (a.status === "APPROVED") {
+  // Work-order status only orders the approved group. Pending requests have no
+  // work order, and ordering rejected ones by one would be misleading.
+  if (a.group === GROUP_APPROVED) {
     const byWo = workOrderStatusRank(a.workOrderStatus) - workOrderStatusRank(b.workOrderStatus);
     if (byWo !== 0) return byWo;
   }

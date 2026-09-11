@@ -108,6 +108,75 @@ export const ALL_WORK_ORDER_STATUSES = [
   "SKIPPED"
 ] as const;
 
+/**
+ * Fetch ONE work order by id — `GET /v1/workorders/{id}`.
+ *
+ * Use this when you know exactly which work orders you want. The list helper
+ * below filters by location and status and pages through results, so pulling a
+ * specific closed work order out of it means asking for every closed work
+ * order at that location and hoping yours is inside the row cap. This is exact
+ * and cheap for a handful of ids; it is one HTTP call each, so do not loop it
+ * over hundreds.
+ *
+ * Fail-soft like everything else here: resolves with `workOrder: null` and an
+ * `error` rather than throwing.
+ */
+export async function fetchMaintainXWorkOrder(input: {
+  id: number;
+  apiKey: string;
+  baseUrl: string;
+  signal?: AbortSignal;
+}): Promise<{ ok: boolean; workOrder: RawWorkOrder | null; error: string | null; status: number }> {
+  const url = `${trimBase(input.baseUrl)}/workorders/${input.id}`;
+
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      method: "GET",
+      headers: { Authorization: `Bearer ${input.apiKey}`, Accept: "application/json" },
+      signal: input.signal
+    });
+  } catch (e) {
+    return {
+      ok: false,
+      workOrder: null,
+      error: e instanceof Error ? e.message : String(e),
+      status: 0
+    };
+  }
+
+  if (!res.ok) {
+    return { ok: false, workOrder: null, error: await mxError(res), status: res.status };
+  }
+
+  let parsed: unknown = null;
+  try {
+    parsed = await res.json();
+  } catch {
+    return {
+      ok: false,
+      workOrder: null,
+      error: `MX ${res.status}: response was not valid JSON`,
+      status: res.status
+    };
+  }
+
+  // Live responses wrap the row as { workOrder: {...} }; accept a bare object
+  // too, matching the defensive envelope handling on every other read here.
+  const obj = (parsed && typeof parsed === "object" ? parsed : {}) as Record<string, unknown>;
+  const body = (obj.workOrder ?? obj.data ?? obj) as RawWorkOrder;
+  const id = typeof body?.id === "number" ? body.id : null;
+  if (id === null) {
+    return {
+      ok: false,
+      workOrder: null,
+      error: `MX ${res.status}: response missing work-order id`,
+      status: res.status
+    };
+  }
+  return { ok: true, workOrder: body, error: null, status: res.status };
+}
+
 function buildUrl(input: FetchInput, cursor: string | null): string {
   const base = trimBase(input.baseUrl);
   const url = new URL(`${base}/workorders`);
