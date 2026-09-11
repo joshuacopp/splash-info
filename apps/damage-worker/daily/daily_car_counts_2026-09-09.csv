@@ -1,0 +1,91 @@
+source,location_name,day,total_cars
+DRB,Splash Guilderland-197,2026-09-09,322
+DRB,Splash Rensselaer-196,2026-09-09,244
+ICS,Corporate,2026-09-09,0
+ICS,WashCo Middletown,2026-09-09,994
+ICS,WashCo White Plains,2026-09-09,818
+splashdb,Online Portal,2026-09-09,
+splashdb,Splash Auburn-159,2026-09-09,94
+splashdb,Splash Batavia MainSt-157,2026-09-09,154
+splashdb,Splash Batavia Veterans-121,2026-09-09,110
+splashdb,Splash Bayville-234,2026-09-09,
+splashdb,Splash Bedford Express-019,2026-09-09,159
+splashdb,Splash Bedford Handwash & Lube-019,2026-09-09,168
+splashdb,Splash Binghamton-122,2026-09-09,219
+splashdb,Splash Bohemia-182,2026-09-09,467
+splashdb,Splash Brewster-021,2026-09-09,80
+splashdb,Splash Bridgeport Lube-023,2026-09-09,
+splashdb,Splash Bridgeport-022,2026-09-09,179
+splashdb,Splash Brighton-155,2026-09-09,
+splashdb,Splash Brockport II-140,2026-09-09,58
+splashdb,Splash Cheshire-030,2026-09-09,140
+splashdb,Splash Chili-141,2026-09-09,58
+splashdb,Splash Cicero-125,2026-09-09,75
+splashdb,Splash Clay-144,2026-09-09,144
+splashdb,Splash Commack-186,2026-09-09,189
+splashdb,Splash Cortland-126,2026-09-09,137
+splashdb,Splash Cos Cob-032,2026-09-09,206
+splashdb,Splash Cromwell-082,2026-09-09,116
+splashdb,Splash Darien-049,2026-09-09,225
+splashdb,Splash Derby-089,2026-09-09,313
+splashdb,Splash East Haven-085,2026-09-09,506
+splashdb,Splash East Northport-187,2026-09-09,384
+splashdb,Splash Elmira-127,2026-09-09,208
+splashdb,Splash Fairfield-050,2026-09-09,151
+splashdb,Splash Fairport-138,2026-09-09,53
+splashdb,Splash Farmington-160,2026-09-09,43
+splashdb,Splash Fayetteville-150,2026-09-09,158
+splashdb,Splash Geneva II-139,2026-09-09,94
+splashdb,Splash Greenwich Express-040,2026-09-09,208
+splashdb,Splash Greenwich Handwash-040,2026-09-09,327
+splashdb,Splash Hamburg-149,2026-09-09,25
+splashdb,Splash Hamden-051,2026-09-09,188
+splashdb,Splash Hempstead-185,2026-09-09,209
+splashdb,Splash Henrietta-151,2026-09-09,77
+splashdb,Splash Johnson City-156,2026-09-09,346
+splashdb,Splash Leray-148,2026-09-09,95
+splashdb,Splash Lindenhurst-184,2026-09-09,300
+splashdb,Splash Liverpool-145,2026-09-09,44
+splashdb,Splash Management-011,2026-09-09,
+splashdb,Splash Milford-090,2026-09-09,606
+splashdb,Splash Montgomery-191,2026-09-09,348
+splashdb,Splash Nanuet-087,2026-09-09,
+splashdb,Splash Newark-132,2026-09-09,52
+splashdb,Splash Newburgh-086,2026-09-09,245
+splashdb,Splash Northport-183,2026-09-09,440
+splashdb,Splash Norwalk-065,2026-09-09,199
+splashdb,Splash Oswego-147,2026-09-09,73
+splashdb,Splash Port Jefferson-188,2026-09-09,
+splashdb,Splash Randolph-091,2026-09-09,316
+splashdb,Splash Rochester LongPond-142,2026-09-09,56
+splashdb,Splash Rutland-221,2026-09-09,240
+splashdb,Splash Seneca Falls-133,2026-09-09,82
+splashdb,Splash Shelburne-222,2026-09-09,182
+splashdb,Splash Shelton Express-068,2026-09-09,142
+splashdb,Splash Shelton Handwash-068,2026-09-09,113
+splashdb,Splash Southeast Wash & Lube-088,2026-09-09,209
+splashdb,Splash Spencerport-143,2026-09-09,72
+splashdb,Splash Springfield-095,2026-09-09,182
+splashdb,Splash Stamford HopeSt-053,2026-09-09,251
+splashdb,Splash USA Car Wash Bronx-096,2026-09-09,69
+splashdb,Splash Vestal-134,2026-09-09,333
+splashdb,Splash Watertown-135,2026-09-09,77
+splashdb,Splash West Haven-074,2026-09-09,197
+splashdb,Splash Westport-070,2026-09-09,221
+splashdb,Splash White Glove-Blackwood 231,2026-09-09,196
+splashdb,Splash White Glove-Cherry Hill 232,2026-09-09,175
+splashdb,Splash White Glove-Exton 241,2026-09-09,148
+splashdb,Splash White Glove-Maple Shade 233,2026-09-09,120
+splashdb,Splash White Glove-NewArk II 251,2026-09-09,103
+splashdb,Splash White Glove-Wilmington 252,2026-09-09,0
+splashdb,Splash White Plains-Central Ave-076,2026-09-09,264
+splashdb,Splash White Plains-Kensico Ave-075,2026-09-09,333
+splashdb,Splash Williamsville-137,2026-09-09,46
+splashdb,Splash Williston-084,2026-09-09,160
+splashdb,Splash Wilton-080,2026-09-09,185
+splashdb,Splash24 Batavia Liberty-131,2026-09-09,57
+splashdb,Splash24 Brockport-123,2026-09-09,
+splashdb,Splash24 Canandaigua-124,2026-09-09,74
+splashdb,Suds McClean New Haven-060,2026-09-09,103
+spot_ai,Splash Falmouth-092,2026-09-09,194
+spot_ai,Splash Plattsburgh-083,2026-09-09,174
