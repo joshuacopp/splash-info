@@ -6,7 +6,8 @@
 // Special-price modal.
 
 import Link from "next/link";
-import { workerGetJson } from "../_lib/worker-fetch";
+import { notFound } from "next/navigation";
+import { workerGetJsonResult } from "../_lib/worker-fetch";
 import { SignupAdminTabs } from "../../_components/SignupAdminTabs";
 import { PricingGrid } from "./grid";
 
@@ -48,9 +49,17 @@ interface LocationDetailResponse {
 export default async function LocationPricingPage({ params }: PageProps) {
   const { location } = await params;
 
-  const data = await workerGetJson<LocationDetailResponse>(
+  const { data, status } = await workerGetJsonResult<LocationDetailResponse>(
     `/admin/api/locations/${encodeURIComponent(location)}`
   );
+
+  // Not a location at all -- a stray path under this route, which middleware's
+  // legacy /admin/{slug} -> /admin/pricing/{slug} redirect makes easy to reach.
+  // A 404 is the honest answer; the sign-in page below would be telling a
+  // signed-in operator to sign in again over a URL that was never a site.
+  if (status === 404) {
+    notFound();
+  }
 
   if (!data) {
     const returnPath = `/admin/pricing/${encodeURIComponent(location)}`;

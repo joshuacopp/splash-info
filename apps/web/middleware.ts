@@ -78,6 +78,7 @@ const ADMIN_KNOWN_SUBPATHS = new Set<string>([
   "forms",
   "greeters",
   "jotform",
+  "macneil-videos",
   "my-requests",
   "parts",
   "performance",

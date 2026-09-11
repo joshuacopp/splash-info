@@ -46,12 +46,34 @@ async function workerUrl(path: string): Promise<string> {
  * GET a JSON endpoint, forwarding the user's auth cookie.
  *
  *   - Returns parsed JSON on 2xx.
- *   - Returns null on 401/403 (caller decides — typically render a
+ *   - Returns null on 401/403/404 (caller decides — typically render a
  *     "no access" page).
  *   - Throws on other non-2xx (5xx, malformed JSON, etc.) — caller's
  *     error boundary handles.
+ *
+ * Use `workerGetJsonResult` when "forbidden" and "does not exist" need
+ * different pages; this wrapper collapses them.
  */
 export async function workerGetJson<T>(path: string): Promise<T | null> {
+  return (await workerGetJsonResult<T>(path)).data;
+}
+
+export interface WorkerJsonResult<T> {
+  data: T | null;
+  /** Upstream HTTP status, so a caller can tell 404 from 403. */
+  status: number;
+}
+
+/**
+ * As `workerGetJson`, but reports the status alongside the body.
+ *
+ * Exists because null had come to mean two different things — "you may not see
+ * this" and "this is not a thing" — and the per-location pricing page needs to
+ * render a sign-in prompt for the first and a 404 for the second. Offering a
+ * signed-in super_admin a Sign In button for a path that was never a location
+ * is worse than either.
+ */
+export async function workerGetJsonResult<T>(path: string): Promise<WorkerJsonResult<T>> {
   const cookieStore = await cookies();
   const cookieHeader = cookieStore.toString();
 
@@ -99,12 +121,12 @@ export async function workerGetJson<T>(path: string): Promise<T | null> {
   // Real failures -- 500s from the worker, a dead binding -- still throw, and
   // should: those are bugs, not user input.
   if (resp.status === 401 || resp.status === 403 || resp.status === 404) {
-    return null;
+    return { data: null, status: resp.status };
   }
   if (!resp.ok) {
     throw new Error(`Worker GET ${path} failed: ${resp.status}`);
   }
-  return (await resp.json()) as T;
+  return { data: (await resp.json()) as T, status: resp.status };
 }
 
 /* ============================================================
