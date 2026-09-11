@@ -29,6 +29,12 @@ export default function VisitDetail() {
     return c ? attachPrevDeltas(dataset, idx, c) : null
   }, [dataset, idx, visitId])
 
+  // A delivery is a site_visits row too, so this page renders it — but it has
+  // no washes, no measured levels and zero usage by construction. Saying
+  // "Visit" over it would read as a visit where somebody forgot to enter
+  // anything, rather than a record that is complete as it stands.
+  const isDelivery = idx.visitById[visitId]?.visit_kind === 'delivery'
+
   async function onDelete() {
     setBusy(true)
     try {
@@ -89,8 +95,12 @@ export default function VisitDetail() {
           <span className="text-slate-400">{fmtDate(computed.visit.visit_date)}</span>
         </div>
         <PageHeader
-          title={`Visit — ${fmtDate(computed.visit.visit_date)}`}
-          sub={computed.visit.submitter ? `Submitted by ${computed.visit.submitter}` : null}
+          title={`${isDelivery ? 'Delivery' : 'Visit'} — ${fmtDate(computed.visit.visit_date)}`}
+          sub={
+            computed.visit.submitter
+              ? `${isDelivery ? 'Recorded' : 'Submitted'} by ${computed.visit.submitter}`
+              : null
+          }
           actions={
             <>
               {computed.prevVisit && (
@@ -104,7 +114,17 @@ export default function VisitDetail() {
                 </button>
               )}
               {inScope && canSubmit && (
-                <Link to={`/location/${locationId}/visit/${visitId}/edit`} className="btn-ghost">
+                // A delivery edits through the delivery form, not the visit
+                // form: the visit form would demand car counts and ending
+                // levels that a delivery has no business carrying.
+                <Link
+                  to={
+                    isDelivery
+                      ? `/location/${locationId}/delivery/${visitId}/edit`
+                      : `/location/${locationId}/visit/${visitId}/edit`
+                  }
+                  className="btn-ghost"
+                >
                   Edit
                 </Link>
               )}
@@ -123,7 +143,11 @@ export default function VisitDetail() {
       <ConfirmDialog
         open={confirming}
         title="Delete this visit?"
-        body={`This permanently removes the ${fmtDate(computed.visit.visit_date)} visit and all of its inventory and wash count data for ${location.name}. This can't be undone.`}
+        body={`This permanently removes the ${fmtDate(computed.visit.visit_date)} ${
+          isDelivery ? 'delivery' : 'visit'
+        } and all of its inventory${
+          isDelivery ? '' : ' and wash count'
+        } data for ${location.name}. This can't be undone.`}
         confirmLabel="Delete visit"
         danger
         busy={busy}

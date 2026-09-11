@@ -634,7 +634,8 @@ export async function createDelivery(sb: SupabaseClient, payload: Record<string,
       // the delivery is the first thing we know about it.
       starting_qty_gal: lastKnown.get(e.product_id) ?? 0,
       qty_delivered_gal: e.qty_delivered_gal
-    }))
+    })),
+    p_create: true
   });
 
   if (error) {
@@ -654,22 +655,126 @@ export async function createDelivery(sb: SupabaseClient, payload: Record<string,
 }
 
 /**
+ * Edit a delivery: its date, who recorded it, notes, and which chemicals came.
+ *
+ * The RPC freezes price and starting quantity per chemical already on the
+ * delivery, so an edit changes what was delivered without moving the basis a
+ * receipt was already sent against. A chemical ADDED by the edit has no such
+ * basis, so its starting level is resolved here from the row immediately
+ * BEFORE this delivery — not the latest row, which would be this delivery
+ * itself or something filed after it.
+ */
+export async function updateDelivery(
+  sb: SupabaseClient,
+  deliveryId: string,
+  payload: Record<string, unknown>
+) {
+  const existing = await getDelivery(sb, deliveryId);
+  if (!existing) throw new ApiError("That delivery no longer exists.");
+
+  const visitDate = String(payload.visit_date || "").trim();
+  if (!visitDate) throw new ApiError("A delivery must have a date.");
+
+  const incoming = (payload.entries as Array<Record<string, unknown>>) || [];
+  const delivered = incoming
+    .map((e) => ({
+      product_id: String(e.product_id || ""),
+      qty_delivered_gal: Number(e.qty_delivered_gal)
+    }))
+    .filter((e) => e.product_id && Number.isFinite(e.qty_delivered_gal) && e.qty_delivered_gal > 0);
+
+  if (delivered.length === 0) {
+    throw new ApiError("Enter a delivered quantity for at least one chemical.");
+  }
+
+  // Basis for chemicals newly added by this edit: the level as of the row
+  // before this delivery. Ignored by the RPC for chemicals already present.
+  const priorLevels = await lastKnownEndingQuantities(sb, existing.location_code, {
+    beforeDate: existing.visit_date,
+    excludeId: deliveryId
+  });
+
+  const { error } = await inv(sb).rpc("save_delivery", {
+    p_delivery_id: deliveryId,
+    p_delivery: {
+      location_code: existing.location_code,
+      visit_date: visitDate,
+      submitter: payload.submitter || null,
+      notes: payload.notes || null
+    },
+    p_entries: delivered.map((e) => ({
+      product_id: e.product_id,
+      starting_qty_gal: priorLevels.get(e.product_id) ?? 0,
+      qty_delivered_gal: e.qty_delivered_gal
+    })),
+    p_create: false
+  });
+
+  if (error) {
+    const known: Record<string, string> = {
+      "23505": "The same chemical was submitted twice on this delivery",
+      "23503": "This delivery refers to a chemical that no longer exists",
+      "23502": "An entry was submitted with no chemical selected",
+      "22P02": "An entry contained a value that is not a number",
+      "23514": "An entry contained a value outside the range the field allows"
+    };
+    const friendly = error.code ? known[error.code] : undefined;
+    if (friendly) throw new ApiError(`${friendly}. Nothing was saved.`);
+    throw new Error(error.message);
+  }
+
+  return { deliveryId };
+}
+
+/**
+ * The delivery's own row, or null when the id is not a delivery.
+ *
+ * Returns null for a real VISIT too, on purpose: it is what stops
+ * PUT /api/deliveries/{id} being pointed at a visit and stripping its wash
+ * counts. The RPC guards this as well; this is the layer that produces a
+ * sensible 404 instead of a Postgres exception.
+ */
+export async function getDelivery(
+  sb: SupabaseClient,
+  deliveryId: string
+): Promise<{ location_code: string; visit_date: string } | null> {
+  const { data, error } = await inv(sb)
+    .from("site_visits")
+    .select("location_code,visit_date,visit_kind")
+    .eq("id", deliveryId)
+    .maybeSingle();
+  if (error) throw new Error(error.message);
+  if (!data || (data as Record<string, unknown>).visit_kind !== "delivery") return null;
+  return {
+    location_code: String((data as Record<string, unknown>).location_code),
+    visit_date: String((data as Record<string, unknown>).visit_date)
+  };
+}
+
+/**
  * product_id -> ending quantity on the site's most recent row of ANY kind.
  *
  * Reads the latest row including deliveries, so two deliveries in a row
  * accumulate rather than the second one resetting to the level at the last
  * inspection.
+ *
+ * `beforeDate` / `excludeId` narrow it to "the row before this one", which an
+ * edit needs: the latest row would be the delivery being edited, making a
+ * newly-added chemical start from a level that already includes itself.
  */
 async function lastKnownEndingQuantities(
   sb: SupabaseClient,
-  locationCode: string
+  locationCode: string,
+  opts: { beforeDate?: string; excludeId?: string } = {}
 ): Promise<Map<string, number>> {
-  const { data: rows, error } = await inv(sb)
+  let q = inv(sb)
     .from("site_visits")
     .select("id,visit_date")
-    .eq("location_code", locationCode)
-    .order("visit_date", { ascending: false })
-    .limit(1);
+    .eq("location_code", locationCode);
+  if (opts.beforeDate) q = q.lte("visit_date", opts.beforeDate);
+  if (opts.excludeId) q = q.neq("id", opts.excludeId);
+
+  const { data: rows, error } = await q.order("visit_date", { ascending: false }).limit(1);
   if (error) throw new Error(`Failed reading last known levels: ${error.message}`);
 
   const latestId = (rows || [])[0]?.id as string | undefined;

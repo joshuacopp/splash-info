@@ -15,7 +15,7 @@ import { useMemo, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useData } from '../context/DataContext'
 import { useAuth } from '../context/AuthContext'
-import { apiPost } from '../lib/api'
+import { apiPost, apiPut } from '../lib/api'
 import { computeVisit, latestLedgerRowForLocation } from '../lib/calc'
 import { Banner, EmptyState, PageHeader, Toast } from '../components/ui'
 import { fmtCurrency, fmtDate, todayIso } from '../lib/format'
@@ -23,15 +23,32 @@ import { fmtCurrency, fmtDate, todayIso } from '../lib/format'
 const GAL_TO_ML = 3785.41
 
 export default function NewDelivery() {
-  const { locationId } = useParams()
+  const { locationId, deliveryId } = useParams()
+  const isEdit = !!deliveryId
   const navigate = useNavigate()
   const { dataset, idx, refresh } = useData()
   const { email, canSubmit } = useAuth()
 
-  const [deliveryDate, setDeliveryDate] = useState(todayIso())
-  const [submitter, setSubmitter] = useState(email || '')
-  const [notes, setNotes] = useState('')
-  const [qty, setQty] = useState({}) // productId -> string
+  // On an edit these seed from the stored row; the initialisers run once, and
+  // the row is already in the dataset because the page is only reachable from
+  // it. No loading state, no flash of an empty form.
+  const editing = isEdit ? computeVisit(dataset, idx, deliveryId) : null
+
+  const [deliveryDate, setDeliveryDate] = useState(
+    () => editing?.visit?.visit_date?.slice(0, 10) || todayIso()
+  )
+  const [submitter, setSubmitter] = useState(() => editing?.visit?.submitter || email || '')
+  const [notes, setNotes] = useState(() => editing?.visit?.notes || '')
+  const [qty, setQty] = useState(() =>
+    Object.fromEntries(
+      (editing?.entries || [])
+        .filter((e) => e.qtyDeliveredGal > 0)
+        .map((e) => [e.productId, String(e.qtyDeliveredGal)])
+    )
+  )
+  // Editing a delivery does NOT re-send its receipt unless asked. A silent
+  // re-send on a typo fix trains people to ignore the email.
+  const [resend, setResend] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState(null)
   const [toast, setToast] = useState(null)
@@ -41,9 +58,15 @@ export default function NewDelivery() {
   const { rows, lastRow } = useMemo(() => {
     // Last known levels come from the LEDGER, so a second delivery stacks on
     // the first rather than resetting to the level at the last inspection.
-    const lastRow = latestLedgerRowForLocation(idx, locationId)
+    // On an EDIT the basis is the delivery's own stored starting quantities —
+    // the level before it landed, frozen when it was filed. Using the latest
+    // ledger row here would be this very delivery, so every line would show a
+    // starting level that already includes itself.
+    const lastRow = isEdit ? null : latestLedgerRowForLocation(idx, locationId)
     const lastEnding = {}
-    if (lastRow) {
+    if (isEdit) {
+      for (const e of editing?.entries || []) lastEnding[e.productId] = e.startingQtyGal
+    } else if (lastRow) {
       const computed = computeVisit(dataset, idx, lastRow.id)
       if (computed) for (const e of computed.entries) lastEnding[e.productId] = e.endingQtyGal
     }
@@ -63,7 +86,7 @@ export default function NewDelivery() {
       .sort((a, b) => a.name.localeCompare(b.name))
 
     return { rows, lastRow }
-  }, [dataset, idx, locationId])
+  }, [dataset, idx, locationId, isEdit, editing])
 
   const entered = rows
     .map((r) => ({ ...r, delivered: Number(qty[r.productId]) }))
@@ -82,7 +105,7 @@ export default function NewDelivery() {
     setBusy(true)
     setError(null)
     try {
-      const res = await apiPost('/deliveries', {
+      const body = {
         location_id: locationId,
         visit_date: deliveryDate,
         submitter: submitter.trim() || null,
@@ -91,7 +114,10 @@ export default function NewDelivery() {
           product_id: r.productId,
           qty_delivered_gal: r.delivered,
         })),
-      })
+      }
+      const res = isEdit
+        ? await apiPut(`/deliveries/${encodeURIComponent(deliveryId)}`, { ...body, resend })
+        : await apiPost('/deliveries', body)
       await refresh()
       // The receipt is best-effort on the worker: the delivery is saved either
       // way, so a failed email is a note on the way out, never a lost record.
@@ -102,7 +128,7 @@ export default function NewDelivery() {
           message: `The receipt email could not be queued: ${res.receiptError}`,
         })
       }
-      navigate(`/location/${locationId}/visit/${res.deliveryId}`)
+      navigate(`/location/${locationId}/visit/${res.deliveryId || deliveryId}`)
     } catch (err) {
       setError(err.message || 'Could not record the delivery.')
       setBusy(false)
@@ -116,8 +142,12 @@ export default function NewDelivery() {
     <div className="space-y-6">
       <PageHeader
         eyebrow={location.name}
-        title="Record a delivery"
-        sub="Chemical delivered only — no car counts or levels. Quantities are added to the last recorded on-hand figures."
+        title={isEdit ? "Edit delivery" : "Record a delivery"}
+        sub={
+          isEdit
+            ? 'Correcting what was delivered. The level this delivery started from stays as filed.'
+            : 'Chemical delivered only — no car counts or levels. Quantities are added to the last recorded on-hand figures.'
+        }
         actions={
           <Link to={`/location/${locationId}`} className="btn-ghost">
             Cancel
@@ -125,7 +155,7 @@ export default function NewDelivery() {
         }
       />
 
-      {!lastRow && (
+      {!isEdit && !lastRow && (
         <Banner tone="amber" title="No previous record for this site">
           Every chemical starts from zero, so the delivered amounts become the site&rsquo;s first
           recorded on-hand figures. If that is wrong, file a site visit instead so the real
@@ -260,6 +290,17 @@ export default function NewDelivery() {
           </div>
 
           <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-100 bg-slate-50/60 px-5 py-4">
+            {isEdit && (
+              <label className="flex cursor-pointer items-center gap-2 text-sm font-semibold text-slate-600">
+                <input
+                  type="checkbox"
+                  checked={resend}
+                  onChange={(e) => setResend(e.target.checked)}
+                  className="h-4 w-4"
+                />
+                Resend the receipt
+              </label>
+            )}
             <div className="text-sm text-slate-500">
               {entered.length === 0
                 ? 'Nothing entered yet'
@@ -269,7 +310,13 @@ export default function NewDelivery() {
                   )}`}
             </div>
             <button type="submit" className="btn-primary" disabled={!canSave}>
-              {busy ? 'Recording…' : 'Record delivery & send receipt'}
+              {busy
+                ? 'Saving…'
+                : isEdit
+                  ? resend
+                    ? 'Save & resend receipt'
+                    : 'Save changes'
+                  : 'Record delivery & send receipt'}
             </button>
           </div>
         </div>

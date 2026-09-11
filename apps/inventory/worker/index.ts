@@ -35,6 +35,7 @@ import {
   createDelivery,
   createVisit,
   deleteVisit,
+  getDelivery,
   getVisitLocationCode,
   loadInventoryData,
   loadMaintainXLocations,
@@ -44,6 +45,7 @@ import {
   sendDeliveryReceipt,
   sendVisitReport,
   unresolveFlag,
+  updateDelivery,
   updateVisit,
   upsertProduct
 } from "./db.js";
@@ -364,6 +366,59 @@ export default {
         }
 
         return json({ ...created, receipt, receiptError });
+      }
+
+      // /api/deliveries/{id} — edit or delete one delivery.
+      //
+      // Scope comes from the STORED row, never the payload, same as the visit
+      // edit path. getDelivery returns null for a real visit, so this route
+      // cannot be aimed at one and strip its wash counts.
+      if (sub === "deliveries" && segments.length === 3) {
+        const deliveryId = decodeURIComponent(segments[2]!);
+        if (method !== "PUT" && method !== "DELETE") {
+          return jsonError(405, "method not allowed");
+        }
+
+        const existing = await getDelivery(sb, deliveryId);
+        if (!existing) return jsonError(404, "delivery not found");
+        if (!userCanAccessLocation(session, existing.location_code)) {
+          return jsonError(403, "forbidden for that location");
+        }
+
+        // Same tier split as visits: editing is a write, deleting is admin.
+        // A delivery is the only record that chemical ever arrived, and there
+        // is no undo.
+        if (method === "DELETE") {
+          if (!isInventoryAdmin(session)) return jsonError(403, "admin only");
+          await deleteVisit(sb, deliveryId);
+          return json({ ok: true });
+        }
+
+        const body = await readJson(request);
+        const updated = await updateDelivery(sb, deliveryId, {
+          ...body,
+          submitter: body.submitter || session.email
+        });
+
+        // A corrected delivery re-receipts only when asked. Silently emailing
+        // everyone again on a typo fix would train people to ignore the
+        // receipt; `resend` makes it deliberate and bypasses the queue's
+        // duplicate suppression.
+        let receipt: Awaited<ReturnType<typeof sendDeliveryReceipt>> | null = null;
+        let receiptError: string | null = null;
+        if (body.resend) {
+          try {
+            receipt = await sendDeliveryReceipt(sb, env, url.origin, {
+              deliveryId,
+              resend: true
+            });
+          } catch (err) {
+            receiptError = err instanceof Error ? err.message : String(err);
+            console.error("[inventory.deliveries] resend failed", receiptError);
+          }
+        }
+
+        return json({ ...updated, receipt, receiptError });
       }
 
       // /api/visits (create) and /api/visits/{id} (edit | delete)

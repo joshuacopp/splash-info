@@ -57,6 +57,10 @@ export default function App() {
           element={<Gate loading={loading} error={error} el={<NewDelivery />} />}
         />
         <Route
+          path="location/:locationId/delivery/:deliveryId/edit"
+          element={<Gate loading={loading} error={error} el={<NewDelivery />} />}
+        />
+        <Route
           path="location/:locationId/history"
           element={<Gate loading={loading} error={error} el={<History />} />}
         />
