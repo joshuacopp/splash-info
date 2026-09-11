@@ -72,10 +72,9 @@ function d1(sql, { json = false } = {}) {
   });
 }
 
-// Returns the result rows as objects. Throws if the output cannot be parsed --
-// callers must treat that as unsafe, never as "no rows found".
-function d1Rows(sql) {
-  const raw = d1(sql, { json: true });
+// Pulls the result rows out of wrangler's --json output. Throws if the output
+// cannot be parsed -- callers must treat that as unsafe, never as "no rows".
+function parseRows(raw) {
   const start = raw.indexOf("[");
   if (start === -1) throw new Error(`no JSON in wrangler output:\n${raw}`);
   const parsed = JSON.parse(raw.slice(start));
@@ -98,9 +97,26 @@ const overlapSql =
   `SELECT id, location_code, start_date, end_date, cars, note FROM car_counts ` +
   `WHERE start_date <= '${day}' AND end_date >= '${day}';`;
 
+// Two different failures here, and they must NOT share an exit code. wrangler
+// failing to run at all (Cloudflare API flake, expired auth, network) is
+// transient and should be retried -- exit 1. Getting output back but being
+// unable to parse it is a safety problem and must never be retried blindly --
+// exit 3. Lumping both into 3 meant one API hiccup killed a whole backfill day
+// that the retry loop would have recovered on its own (seen on 2026-09-01).
+let rawOverlap;
+try {
+  rawOverlap = d1(overlapSql, { json: true });
+} catch (err) {
+  console.error(
+    `\nthe overlap query did not run (wrangler failed). Nothing was written.\n` +
+      `This is usually transient - the caller will retry. Underlying error:\n${err.message}`
+  );
+  process.exit(1);
+}
+
 let covering;
 try {
-  covering = d1Rows(overlapSql);
+  covering = parseRows(rawOverlap);
 } catch (err) {
   console.error(
     `\nABORT: could not read the overlap check result, so the day cannot be\n` +

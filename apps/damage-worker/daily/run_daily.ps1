@@ -28,7 +28,11 @@ param(
     [string]$Day,
     [switch]$DryRun,
     [switch]$SkipExport,
-    [int]$MaxRetries = 3
+    [int]$MaxRetries = 3,
+    # Number of location_codes the build must produce. This is the real
+    # invariant: it is what actually lands in D1. Bump it when a store genuinely
+    # opens or closes -- not to make a failing day go away.
+    [int]$ExpectedRows = 77
 )
 
 $ErrorActionPreference = 'Stop'
@@ -77,25 +81,32 @@ if ($SkipExport) {
     if (-not (Test-Path $csvPath)) { Fail "export produced no CSV at $csvPath" }
 }
 
-# Completeness gate. A short day loads silently and reads as a real decline in
-# the cost-per-car metric, so refuse to continue rather than warn.
+# ---- CSV sanity check ------------------------------------------------------
 #
-# This used to demand exactly 89 rows. That was too blunt: on 2026-09-06 the ICS
-# 'Corporate' row -- a non-store that always reports 0 cars and is SKIPped by
-# build_car_counts.py -- simply did not appear, and an otherwise complete day was
-# blocked. The gate now checks the sources that actually reach D1, so a missing
-# real store still fails loudly while a missing zero-car non-store does not.
+# Only the small fixed-membership sources are checked here. Counting splashdb
+# rows does not work and two earlier versions of this gate got it wrong:
+#   * demanding exactly 89 CSV rows blocked 09-06, where the ICS 'Corporate'
+#     non-store (always 0 cars, SKIPped downstream) simply did not appear;
+#   * demanding exactly 82 splashdb rows blocked 09-02/03/07/08, where a new
+#     site 'Splash Bayville-234' showed up with a blank count, also SKIPped.
+# The splashdb roster legitimately moves: new stores open, and sites that never
+# reach D1 anyway (Bronx-096, Brighton-155) flicker in and out day to day.
+#
+# The real completeness check is on the BUILD output further down -- the number
+# of location_codes that actually land in D1.
 $rows = @(Import-Csv -Path $csvPath)
 Log ("         CSV has {0} rows" -f $rows.Count)
 
 $counts = @{}
 $rows | Group-Object source | ForEach-Object { $counts[$_.Name] = $_.Count }
 
-$expected = [ordered]@{ splashdb = 82; spot_ai = 2; DRB = 2 }
+# spot_ai and DRB are fixed two-site sources. A missing row here means a real
+# gap-fill site vanished, which nothing downstream can compensate for.
+$expected = [ordered]@{ spot_ai = 2; DRB = 2 }
 foreach ($src in $expected.Keys) {
     $got = [int]$counts[$src]
     if ($got -ne $expected[$src]) {
-        Fail "expected $($expected[$src]) $src rows, got $got. Something upstream is missing - investigate before loading."
+        Fail "expected $($expected[$src]) $src rows, got $got. A gap-fill site is missing - investigate before loading."
     }
 }
 
@@ -104,16 +115,42 @@ $washco = @($rows | Where-Object { $_.source -eq 'ICS' -and $_.location_name -li
 if ($washco.Count -ne 2) {
     Fail "expected 2 ICS WashCo rows, got $($washco.Count). Investigate before loading."
 }
-Log ("         gate OK: splashdb {0} | spot_ai {1} | DRB {2} | ICS WashCo {3}" -f `
+Log ("         csv OK: splashdb {0} | spot_ai {1} | DRB {2} | ICS WashCo {3}" -f `
     $counts['splashdb'], $counts['spot_ai'], $counts['DRB'], $washco.Count)
 
 # ---- 2. build --------------------------------------------------------------
 Log "step 2/3 build   CSV -> SQL" 'Cyan'
+$buildOut = $null
 try {
-    & python (Join-Path $scriptDir 'build_car_counts.py') $Day 2>&1 | Tee-Object -Append -FilePath $logFile
+    $buildOut = & python (Join-Path $scriptDir 'build_car_counts.py') $Day 2>&1 |
+                Tee-Object -Append -FilePath $logFile
     if ($LASTEXITCODE -ne 0) { Fail "build_car_counts.py exited $LASTEXITCODE" }
 } catch { Fail "build threw: $_" }
 if (-not (Test-Path $sqlPath)) { Fail "build produced no SQL at $sqlPath" }
+
+# ---- completeness gate -----------------------------------------------------
+#
+# This is the one that matters. build_car_counts.py prints "<n> rows, <c> cars"
+# and <n> is the number of location_codes that will be written to D1. A store
+# genuinely dropping out of the extract shows up here as a lower count; new or
+# unmapped sites appearing upstream do not, because they never survive the build.
+#
+# Do NOT add a cars-based threshold. Car-wash volume is weather-driven and swings
+# 40% day to day, so any "that looks low" alarm fires constantly and gets ignored.
+$builtRows = $null
+foreach ($line in $buildOut) {
+    $m = [regex]::Match([string]$line, '^\s*(\d+)\s+rows,')
+    if ($m.Success) { $builtRows = [int]$m.Groups[1].Value; break }
+}
+
+if ($null -eq $builtRows) {
+    Fail "could not read the row count out of build_car_counts.py output - refusing to load blind."
+}
+if ($builtRows -ne $ExpectedRows) {
+    Fail ("build produced $builtRows location_codes, expected $ExpectedRows. A store is missing " +
+          "(or a new one opened). Check the SKIP lines above, then re-run with -ExpectedRows if the change is real.")
+}
+Log "         build OK: $builtRows location_codes"
 
 # ---- 3. apply --------------------------------------------------------------
 # apply.mjs runs the overlap pre-flight itself and exits 2 if the day is covered.
