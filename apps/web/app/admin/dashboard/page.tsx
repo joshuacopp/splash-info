@@ -28,9 +28,9 @@
 // population later gains a second tile, or if another single-tool audience
 // appears.
 
-import Link from "next/link";
 import { getMe } from "../../_lib/me";
 import { DashboardTile } from "./_components/DashboardTile";
+import { SectionCard } from "./_components/SectionCard";
 import { GROUPS, TILES } from "./_lib/tiles";
 
 const GROUP_DESCRIPTIONS: Record<string, string> = {
@@ -88,48 +88,14 @@ export default async function AdminDashboardPage() {
       ) : (
         <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3">
           {visibleGroups.map(({ group, count }) => (
-            <Link
+            <SectionCard
               key={group.id}
               href={`/admin/dashboard/${group.id}`}
-              className="group flex flex-col overflow-hidden rounded-splash-lg border-[3px] border-splash-navy bg-white text-splash-navy shadow-splash-card transition-transform duration-150 hover:-translate-y-1 hover:shadow-splash-card-hover"
-            >
-              <div className="flex items-center gap-4 bg-gradient-to-br from-splash-blue to-splash-navy px-6 py-5">
-                <div className="flex min-w-0 flex-col gap-0.5">
-                  <span className="text-[0.6875rem] font-semibold uppercase tracking-[0.16em] text-sudsy-blue">
-                    Section
-                  </span>
-                  <span className="text-lg font-bold leading-tight text-white">
-                    {group.label}
-                  </span>
-                </div>
-              </div>
-              <div className="flex flex-1 flex-col justify-between gap-3.5 px-6 pb-5 pt-4">
-                <div>
-                  <p className="text-[0.9375rem] leading-relaxed text-splash-navy/80">
-                    {GROUP_DESCRIPTIONS[group.id]}
-                  </p>
-                  <p className="mt-2 text-xs font-semibold uppercase tracking-[0.14em] text-splash-navy/55">
-                    {count} {count === 1 ? "tool" : "tools"}
-                  </p>
-                </div>
-                <span className="inline-flex items-center gap-1.5 self-start text-[0.8125rem] font-bold uppercase tracking-[0.08em] text-splash-blue">
-                  Open
-                  <svg
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth={2.5}
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    className="h-3.5 w-3.5 transition-transform duration-200 group-hover:translate-x-1"
-                    aria-hidden="true"
-                  >
-                    <line x1="5" y1="12" x2="19" y2="12" />
-                    <polyline points="12 5 19 12 12 19" />
-                  </svg>
-                </span>
-              </div>
-            </Link>
+              eyebrow="Section"
+              label={group.label}
+              description={GROUP_DESCRIPTIONS[group.id] ?? ""}
+              count={count}
+            />
           ))}
         </div>
       )}

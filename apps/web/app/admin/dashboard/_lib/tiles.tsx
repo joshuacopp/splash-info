@@ -22,9 +22,17 @@ import type { Session } from "@splash/types/session";
 
 export type TileGroup = "submissions" | "operations" | "admin";
 
+/** Optional third level below a group. A subgroup collects tiles that belong
+ *  together into one card on the group page, which drills through to its own
+ *  page — the same shape as a group, one level down. */
+export type TileSubgroup = "mechanical";
+
 export interface Tile {
   id: string;
   group: TileGroup;
+  /** Nests this tile one level deeper. Omitted tiles render directly on the
+   *  group page as before. */
+  subgroup?: TileSubgroup;
   /** Small uppercase label rendered above the title on the tile header. */
   eyebrow: string;
   /** Bold display name. */
@@ -43,6 +51,26 @@ export const GROUPS: { id: TileGroup; label: string }[] = [
   { id: "submissions", label: "Submissions" },
   { id: "operations", label: "Operations" },
   { id: "admin", label: "Admin" }
+];
+
+export interface Subgroup {
+  id: TileSubgroup;
+  /** The group whose page this subgroup's card appears on. */
+  group: TileGroup;
+  label: string;
+  /** Body copy on the subgroup card, and the strapline on its own page. */
+  description: string;
+}
+
+/** Subgroups render before the group's ungrouped tiles, so a section's
+ *  categories read first and its loose tools follow. */
+export const SUBGROUPS: Subgroup[] = [
+  {
+    id: "mechanical",
+    group: "operations",
+    label: "Mechanical",
+    description: "Parts manuals and maintenance work orders."
+  }
 ];
 
 function isAdminTier(session: Session | null): boolean {
@@ -392,6 +420,7 @@ export const TILES: ReadonlyArray<Tile> = [
   {
     id: "workorders",
     group: "operations",
+    subgroup: "mechanical",
     eyebrow: "Maintenance",
     title: "Work Orders",
     description: "View MaintainX work orders for your locations.",
@@ -402,6 +431,7 @@ export const TILES: ReadonlyArray<Tile> = [
   {
     id: "parts",
     group: "operations",
+    subgroup: "mechanical",
     eyebrow: "Equipment",
     title: "Parts",
     description:

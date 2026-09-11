@@ -14,8 +14,9 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { getMe } from "../../../_lib/me";
-import { GROUPS, TILES, type TileGroup } from "../_lib/tiles";
+import { GROUPS, SUBGROUPS, TILES, type TileGroup } from "../_lib/tiles";
 import { DashboardTile } from "../_components/DashboardTile";
+import { SectionCard } from "../_components/SectionCard";
 
 const GROUP_DESCRIPTIONS: Record<TileGroup, string> = {
   submissions: "View signups, fleet inquiries, JotForm, and form submissions.",
@@ -47,6 +48,25 @@ export default async function DashboardGroupPage({ params }: PageProps) {
   if (tiles.length === 0) {
     notFound();
   }
+
+  // Subgroups with something to show. A subgroup holding exactly ONE visible
+  // tile is NOT worth a card: clicking through a "Mechanical - 1 tool" card to
+  // reach the only thing behind it is the same friction the top level already
+  // refuses for a single-tile session, so that tile renders inline instead.
+  const subgroups = SUBGROUPS.filter((sub) => sub.group === group.id)
+    .map((sub) => ({
+      sub,
+      count: tiles.filter((tile) => tile.subgroup === sub.id).length
+    }))
+    .filter((entry) => entry.count > 1);
+
+  const nested = new Set(subgroups.map((entry) => entry.sub.id));
+
+  // Everything not behind a rendered subgroup card, including the lone tile of
+  // a subgroup that did not earn one.
+  const looseTiles = tiles.filter(
+    (tile) => !tile.subgroup || !nested.has(tile.subgroup)
+  );
 
   return (
     <section className="mx-auto w-full max-w-[1100px] px-5 py-9">
@@ -82,7 +102,17 @@ export default async function DashboardGroupPage({ params }: PageProps) {
       </div>
 
       <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3">
-        {tiles.map((tile) => (
+        {subgroups.map(({ sub, count }) => (
+          <SectionCard
+            key={sub.id}
+            href={`/admin/dashboard/${group.id}/${sub.id}`}
+            eyebrow={group.label}
+            label={sub.label}
+            description={sub.description}
+            count={count}
+          />
+        ))}
+        {looseTiles.map((tile) => (
           <DashboardTile key={tile.id} tile={tile} />
         ))}
       </div>
