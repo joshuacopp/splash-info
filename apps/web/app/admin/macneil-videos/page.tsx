@@ -8,7 +8,7 @@
 
 import Link from "next/link";
 import { VideoGrid } from "./_components/VideoGrid";
-import { VIDEOS } from "./_lib/videos";
+import { VIDEOS, VIDEO_GROUPS } from "./_lib/videos";
 
 export const metadata = { title: "MacNeil Videos" };
 
@@ -30,12 +30,14 @@ export default function MacneilVideosPage() {
         </p>
         <h1 className="text-2xl font-bold text-splash-navy">MacNeil Videos</h1>
         <p className="mt-1 text-sm text-splash-navy/70">
-          Equipment training from MacNeil and National Carwash Solutions. Click a
-          video to play it here, or open it on YouTube.
+          Equipment training from MacNeil and National Carwash Solutions,
+          grouped by machine. Search by part (bearing, motor, cylinder) to cross
+          every machine, or by equipment (conveyor, wrap, top brush, baby).
+          Click a video to play it here.
         </p>
       </div>
 
-      <VideoGrid videos={VIDEOS} />
+      <VideoGrid videos={VIDEOS} groups={VIDEO_GROUPS} />
     </section>
   );
 }

@@ -18,8 +18,8 @@ export interface MacneilVideo {
   /** YouTube video id — the 11-character code, not a URL. */
   id: string;
   title: string;
-  /** Optional one-liner shown under the title. */
-  description?: string;
+  /** Which VIDEO_GROUPS entry this belongs under. */
+  group: string;
 }
 
 /** YouTube ids are 11 chars of URL-safe base64. Anything else is a mistake —
@@ -79,10 +79,91 @@ export function embedUrl(id: string, autoplay: boolean): string {
   return `https://www.youtube-nocookie.com/embed/${id}?${params.toString()}`;
 }
 
-export const VIDEOS: MacneilVideo[] = [
-  {
-    id: "nnfYq5hrvUI",
-    title: "Daily Walkthrough - NCS College of Clean",
-    description: "The daily equipment walkthrough, start to finish."
-  }
+/** An equipment category. Order here is the order sections render in. */
+export interface VideoGroup {
+  id: string;
+  label: string;
+  /**
+   * Extra search terms for every video in the group, so a tech can find the
+   * top brush by typing "top" when no title contains that word. Titles are
+   * searched too — searching "bearing" crosses every group.
+   */
+  keywords: string[];
+}
+
+export const VIDEO_GROUPS: VideoGroup[] = [
+  { id: "xr1000", label: "XR1000 Conveyor", keywords: ["conveyor", "xr1000", "xr 1000"] },
+  { id: "rs1000", label: "RS1000 Top Brush", keywords: ["top", "top brush", "rs1000", "rs 1000"] },
+  { id: "boss", label: "Wheel Boss / Gloss Boss", keywords: ["wheel", "tire", "shine", "boss"] },
+  { id: "rs701", label: "RS701 Wrap", keywords: ["wrap", "701", "rs701", "rs 701"] },
+  { id: "rs400-301", label: "RS400 / RS301 Side Brush", keywords: ["van", "high side", "short side", "baby", "400", "301", "rs400", "rs301", "side"] },
+  { id: "magnum", label: "Magnum High Pressure", keywords: ["pressure", "arch", "magnum"] },
+  { id: "blowers", label: "Blowers", keywords: ["blower", "dryer", "dry"] },
+  { id: "general", label: "General", keywords: ["general", "site", "walkthrough"] },
 ];
+
+export const VIDEOS: MacneilVideo[] = [
+  // ---- XR1000 Conveyor ----
+  { id: "qvXzLyBldz0", group: "xr1000", title: "XR 1000 Slide Assembly Bushings Replacement" },
+  { id: "BiyWKxOxAoA", group: "xr1000", title: "XR 1000 Prox Switch and Rotary Encoder Replacement" },
+  { id: "B05DdlLTN7w", group: "xr1000", title: "XR 1000 Take up Drum Replacement" },
+  { id: "0aH2THpKtBw", group: "xr1000", title: "XR 1000 Roller Replacement" },
+  { id: "l1cki1zT0xo", group: "xr1000", title: "XR 1000 Removing Chain Link" },
+  { id: "mlJ8mv7guts", group: "xr1000", title: "XR 1000 Motor and HECO Replacement" },
+  { id: "sLSq25A6asU", group: "xr1000", title: "XR 1000 Lubrication Points and Frequency" },
+  { id: "wGCWKSjddbU", group: "xr1000", title: "XR 1000 Drive up Sprocket Replacement" },
+  { id: "hGeswRcuCmc", group: "xr1000", title: "XR 1000 Call up Fork and Cylinders Replacement" },
+  { id: "rloU7m1E7gE", group: "xr1000", title: "XR 1000 Air Shock Replacement" },
+  // ---- RS1000 Top Brush ----
+  { id: "cZfnWb6-T5U", group: "rs1000", title: "RS 1000 Air Cylinder Replacement" },
+  { id: "E1g5CQ1zIFk", group: "rs1000", title: "RS 1000 Shaft and Bearing Replacement" },
+  { id: "cPpZ4aBNUrw", group: "rs1000", title: "RS 1000 Motor Replacement" },
+  { id: "CXqlKXgbfMs", group: "rs1000", title: "RS 1000 Lubrication Points" },
+  { id: "tcgKsnrNiIs", group: "rs1000", title: "RS 1000 Leveling and Balancing" },
+  { id: "PAeeIXrvPVs", group: "rs1000", title: "RS 1000 Core and Foam Replacement" },
+  // ---- Wheel Boss / Gloss Boss ----
+  { id: "NNTUjhS0EsY", group: "boss", title: "Wheel Boss and Gloss Boss Motor Replacement" },
+  { id: "is4UwVR-aCU", group: "boss", title: "Wheel Boss and Gloss Boss Lubrication Points and Frequency" },
+  { id: "Zjepb6od08Y", group: "boss", title: "Wheel Boss and Gloss Boss Cylinder Replacement" },
+  { id: "2wyalbJo0E0", group: "boss", title: "Wheel Boss and Gloss Boss Bearing Replacement" },
+  // ---- RS701 Wrap ----
+  { id: "e8m0y0X8K3o", group: "rs701", title: "RS 701 Secondary Arm Bearing Replacement" },
+  { id: "ugOn4WtGWQo", group: "rs701", title: "RS 701 Motor and Shaft Replacement" },
+  { id: "diNrp2eF2cg", group: "rs701", title: "RS 701 Main Arm Bearing Replacement" },
+  { id: "Vm_MhJbTsVk", group: "rs701", title: "RS 701 Lubrication Points" },
+  { id: "Z74Xmp6puck", group: "rs701", title: "RS 701 Locking the Wrap Back" },
+  { id: "ME89EHIMv7M", group: "rs701", title: "RS 701 Knuckle Bushing Replacement" },
+  { id: "D9gPCgA2Ht8", group: "rs701", title: "RS 701 Flo Controls" },
+  { id: "LvYTenYFCs4", group: "rs701", title: "RS 701 Core and Foam Replacement" },
+  { id: "eopWlfFHj0A", group: "rs701", title: "RS 701 Air Panel and Best Practices" },
+  { id: "tkkbIw4QXWc", group: "rs701", title: "RS 701 Air Cylinder Replacement" },
+  // ---- RS400 / RS301 Side Brush ----
+  { id: "NI2HzglqdoA", group: "rs400-301", title: "RS 400 301 Shaft and Motor Replacement" },
+  { id: "qctLJoiGblU", group: "rs400-301", title: "RS 400 301 Bearing Replacement" },
+  { id: "_UeQe1qvfUw", group: "rs400-301", title: "RS 400 301 Shaft and Motor Replacement" },
+  { id: "ngTysZARu7M", group: "rs400-301", title: "RS 400 301 Lubrication Points" },
+  { id: "_pte9F6xfXM", group: "rs400-301", title: "RS 400 301 Core and Foam Replacement" },
+  { id: "4LiLUyAAMTQ", group: "rs400-301", title: "RS 400 301 Air Cylinder Replacement" },
+  // ---- Magnum High Pressure ----
+  { id: "nzMU_XSmXlM", group: "magnum", title: "Unclogging High Pressure Nozzles" },
+  { id: "gNCDD5uhgd8", group: "magnum", title: "Magnum Force Air Cylinder Replacement" },
+  { id: "4YM5tVCNhYU", group: "magnum", title: "Magnum Force Adjustment" },
+  // ---- Blowers ----
+  { id: "nJunvyqWFlI", group: "blowers", title: "Blower Impeller Replacement" },
+  // ---- General ----
+  { id: "nnfYq5hrvUI", group: "general", title: "Daily Walkthrough" },
+  { id: "MF4-V35myVM", group: "general", title: "Photo Eyes Operations and Re Alignment" },
+  { id: "Jk1UKDrzLr8", group: "general", title: "Clocking a Motor" },
+  { id: "F-QgyDri26Y", group: "general", title: "Powerlock Maintenance" },
+];
+
+/**
+ * Everything a search query is matched against for one video: its title plus
+ * its group's label and keywords. Built once per video by the grid.
+ */
+export function searchText(video: MacneilVideo, groups: VideoGroup[]): string {
+  const group = groups.find((g) => g.id === video.group);
+  return [video.title, group?.label ?? "", ...(group?.keywords ?? [])]
+    .join(" ")
+    .toLowerCase();
+}
