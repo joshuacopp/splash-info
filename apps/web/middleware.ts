@@ -4,7 +4,8 @@
 //   1. Static legacy redirects (308) — /admin/login, /admin/change-password,
 //      /admin/logout — map to apps/web's canonical /login, /change-password,
 //      /logout. Preserves bookmarks from the legacy /admin/* surface.
-//   2. Dynamic legacy redirect (308) — /admin/{slug} where {slug} is a
+//   2. Dynamic legacy redirect (307, deliberately not 308 — see below) —
+//      /admin/{slug} where {slug} is a
 //      single segment that is NOT a known admin sub-path → /admin/pricing/{slug}.
 //      This is the per-location pricing bookmark fall-through (legacy URL was
 //      /admin/binghamton; canonical is /admin/pricing/binghamton).
@@ -116,7 +117,20 @@ export function middleware(request: NextRequest) {
       if (!ADMIN_KNOWN_SUBPATHS.has(rest)) {
         const url = request.nextUrl.clone();
         url.pathname = `/admin/pricing/${rest}`;
-        return NextResponse.redirect(url, 308);
+        // 307, NOT 308. This redirect is conditional on a list that changes:
+        // the day a new /admin route is added to ADMIN_KNOWN_SUBPATHS, this
+        // rule stops applying to that slug. 308 is permanent and browsers
+        // cache it indefinitely, so anyone who hit the path BEFORE it was
+        // registered keeps being sent to /admin/pricing/{slug} from cache,
+        // never asking the server again — the new page is unreachable for
+        // them and no redeploy can fix it. Exactly what happened with
+        // /admin/macneil-videos.
+        //
+        // The static table above stays 308: those targets are genuinely
+        // permanent and their membership does not change.
+        //
+        // Method-preserving either way; the only difference is cacheability.
+        return NextResponse.redirect(url, 307);
       }
     }
   }
