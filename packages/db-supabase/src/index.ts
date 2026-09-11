@@ -26,3 +26,4 @@ export * from "./summary.js";
 export * from "./lookup.js";
 export * from "./outbound-emails.js";
 export * from "./promo.js";
+export * from "./parts-directory.js";

@@ -11,6 +11,30 @@
 # write path (Brief 42 / 43 — `createMaintainXWorkOrder`) is unchanged;
 # this worker is a sibling, not a replacement.
 #
+# SECOND SURFACE — /workorders/api/parts/* (Parts Directory).
+# `src/parts.ts` adds a small CRUD API over the `parts_directory`
+# Supabase table, backing apps/web's parts directory page:
+#
+#   GET    /workorders/api/parts?search=&equipment=   any session
+#   POST   /workorders/api/parts                      super_admin
+#   PATCH  /workorders/api/parts/{id}                 super_admin
+#   DELETE /workorders/api/parts/{id}                 super_admin
+#
+# It is hosted here because this worker already carries the three
+# Supabase bindings and is already service-bound from apps/web — no new
+# worker, no new secrets, no new routes. NOTE the deliberately different
+# permission domain: the directory is one shared company-wide list, so
+# reads are NOT email-on-locations scoped; every authenticated session
+# sees every row. Writes gate on `session.role === "super_admin"` (the
+# platform role, not `dcRole`). Part photos live in the apps/web-bound
+# `splash-parts-manuals` R2 bucket; this worker stores only the key.
+#
+# ROUTES: nothing was added for the parts surface, on purpose. apps/web
+# SSR reads through the WORKORDERS_WORKER service binding (which does
+# not need a route), and browser writes are proxied through apps/web
+# route handlers on its own origin. The staging route below already
+# covers /workorders/api/* if a same-origin call is ever wanted there.
+#
 # DEPLOY STRATEGY: workers.dev fallback only until apps/web cuts over.
 # Staging route binds /workorders/api/* on staging.splashcarwashes.info
 # so apps/web (also bound to staging) can call same-origin (per Brief
@@ -46,7 +70,9 @@ routes = [
 # SUPABASE_SERVICE_KEY  — secret. `wrangler secret put SUPABASE_SERVICE_KEY`
 #                         (same value as on splash-damage / splash-sysadmin —
 #                         service-role bypasses RLS for the bulk
-#                         maintainx_id resolution chain).
+#                         maintainx_id resolution chain, and for every
+#                         parts_directory read/write: that table has RLS on
+#                         with no policies, so service-role is the ONLY way in).
 # MAINTAINX_API_KEY     — secret. `wrangler secret put MAINTAINX_API_KEY`
 #                         with the SAME value already bound on splash-damage
 #                         (Brief 42). The API key is per-organization, not
@@ -54,6 +80,7 @@ routes = [
 #                         /workorders read path. Optional — when unbound
 #                         the endpoint returns 503 and the page surfaces a
 #                         friendly "integration not configured" empty state.
+#                         The parts surface does NOT need it.
 
 # Brief 70 — non-secret env vars consumed by the MaintainX read path.
 #   MAINTAINX_BASE_URL — REST root (no trailing /workorders). Mirrors the

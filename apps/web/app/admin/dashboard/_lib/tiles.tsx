@@ -337,6 +337,15 @@ const cogIcon: ReactNode = (
   </svg>
 );
 
+const packageIcon: ReactNode = (
+  <svg {...SvgProps}>
+    <path d="m7.5 4.27 9 5.15" />
+    <path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z" />
+    <path d="m3.3 7 8.7 5 8.7-5" />
+    <path d="M12 22V12" />
+  </svg>
+);
+
 const calendarIcon: ReactNode = (
   <svg {...SvgProps}>
     <rect x="3" y="4" width="18" height="18" rx="2" ry="2" />
@@ -445,6 +454,18 @@ export const TILES: ReadonlyArray<Tile> = [
       "Interactive parts manuals — search by part number or click a callout on the exploded view.",
     href: "/admin/parts",
     icon: cogIcon,
+    visibleTo: allStaff
+  },
+  {
+    id: "parts-directory",
+    group: "operations",
+    subgroup: "mechanical",
+    eyebrow: "Equipment",
+    title: "Parts Directory",
+    description:
+      "Frequently ordered parts — part number, vendor, cost, photo, and where to order.",
+    href: "/admin/parts/directory",
+    icon: packageIcon,
     visibleTo: allStaff
   },
   {

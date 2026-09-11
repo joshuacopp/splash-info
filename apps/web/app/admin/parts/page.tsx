@@ -48,6 +48,30 @@ export default async function PartsIndexPage() {
         </p>
       </div>
 
+      <Link
+        href="/admin/parts/directory"
+        className="mb-6 flex items-center justify-between gap-4 rounded-splash-md border-[1.5px] border-splash-blue/40 bg-sudsy-blue-soft/40 px-4 py-3.5 transition hover:border-splash-blue"
+      >
+        <div>
+          <p className="mb-0.5 text-xs font-semibold uppercase tracking-[0.18em] text-sudsy-blue">
+            Equipment
+          </p>
+          <h2 className="text-base font-bold text-splash-navy">
+            Parts Directory
+          </h2>
+          <p className="mt-0.5 text-sm text-splash-navy/70">
+            The parts we order most — part number, vendor, cost, and a photo.
+            Search across every machine at once.
+          </p>
+        </div>
+        <span
+          aria-hidden="true"
+          className="shrink-0 text-xl font-bold text-splash-blue"
+        >
+          →
+        </span>
+      </Link>
+
       {unavailable && (
         <p className="mb-5 rounded-splash-md border border-amber-300 bg-amber-50 px-3 py-2 text-amber-900">
           Parts storage isn&apos;t connected in this environment. Run the app

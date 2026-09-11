@@ -13,6 +13,12 @@
 //   global visibility they need their email on the relevant rows.
 //   No dc_role check, no global path, no "unmatched" bucket.
 //
+//   EXCEPTION — /workorders/api/parts/* (see ./parts.ts). The Parts
+//   Directory is a single company-wide reference list, not per-site
+//   data, so it is deliberately NOT scoped by email-on-locations: every
+//   authenticated session reads all of it, and writes are gated on the
+//   platform `session.role === "super_admin"`.
+//
 // FAIL-SOFT POSTURE:
 //   - MAINTAINX_API_KEY unbound → 503 with friendly body
 //   - MaintainX upstream non-2xx → 502
@@ -46,6 +52,7 @@ import {
   type RawWorkOrder,
   type RawWorkRequest
 } from "@splash/maintainx";
+import { handlePartsRequest } from "./parts.js";
 import { runMaintainXUserTeamSync, type SyncResult } from "./sync.js";
 
 interface Env extends SupabaseEnv {
@@ -239,6 +246,20 @@ export default {
           return buildRequestRedirect(request, "Sign in to file a work request.");
         }
         return handleCreateRequest(request, env, auth.session);
+      }
+
+      // Parts Directory — /workorders/api/parts[/{id}]. Handlers live in
+      // ./parts.js; see that file's header for why this surface is hosted
+      // here and why its permission domain is deliberately NOT the
+      // email-on-locations gate the MaintainX routes above use. Auth is
+      // checked once here (401); the super_admin gate on writes is inside.
+      if (
+        path === "workorders/api/parts" ||
+        path.startsWith("workorders/api/parts/")
+      ) {
+        const auth = await authenticate(request, env);
+        if (auth.status !== "authenticated") return jsonError(401, "unauthorized");
+        return handlePartsRequest(request, env, path, auth.session);
       }
 
       return new Response("Not found", { status: 404 });
