@@ -22,7 +22,6 @@
 // never wraps these in try/catch.
 
 import {
-  ALL_WORK_ORDER_STATUSES,
   createMaintainXWorkRequest,
   fetchMaintainXWorkOrders,
   fetchMaintainXWorkRequests,
@@ -270,8 +269,19 @@ async function fetchWorkOrderStatuses(
   allowedLocationIds: number[],
   raw: RawWorkRequest[]
 ): Promise<Map<number, string> | null> {
+  // Only APPROVED requests need this. Verified against live data 2026-09-10:
+  // MaintainX moves a request to DONE when its work order closes, so a request
+  // still sitting at APPROVED has, by definition, a work order that is still
+  // open. DONE requests are ordered by their own group and need no lookup.
+  //
+  // That is why this uses the client's DEFAULT status filter (OPEN /
+  // IN_PROGRESS / ON_HOLD) rather than asking for every status. Requesting
+  // closed work too would drag back every work order those locations have ever
+  // completed, and with a 500-row cap the ones we actually need could fall off
+  // the end — the lookup would get slower AND less correct as history grows.
   const wanted = new Set(
     raw
+      .filter((r) => (r.requestStatus || "").toUpperCase() === "APPROVED")
       .map((r) => r.workOrderId)
       .filter((id): id is number => typeof id === "number" && Number.isFinite(id))
   );
@@ -282,12 +292,7 @@ async function fetchWorkOrderStatuses(
     baseUrl: config.baseUrl,
     maintainxLocationIds: allowedLocationIds,
     paginate: true,
-    maxWorkOrders: LIST_MAX_WORK_ORDERS,
-    // The default filter is open work only (OPEN / IN_PROGRESS / ON_HOLD). We
-    // need the closed ones too: sorting approved requests with "done last"
-    // is impossible if done work orders never come back — they would all
-    // resolve to an unknown status and sort together in the middle.
-    statuses: ALL_WORK_ORDER_STATUSES
+    maxWorkOrders: LIST_MAX_WORK_ORDERS
   });
 
   const out = new Map<number, string>();
