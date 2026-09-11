@@ -236,6 +236,13 @@ const wrenchIcon: ReactNode = (
   </svg>
 );
 
+const playCircleIcon: ReactNode = (
+  <svg {...SvgProps}>
+    <circle cx="12" cy="12" r="10" />
+    <polygon points="10 8 16 12 10 16 10 8" />
+  </svg>
+);
+
 const barChartIcon: ReactNode = (
   <svg {...SvgProps}>
     <line x1="18" y1="20" x2="18" y2="10" />
@@ -438,6 +445,18 @@ export const TILES: ReadonlyArray<Tile> = [
       "Interactive parts manuals — search by part number or click a callout on the exploded view.",
     href: "/admin/parts",
     icon: cogIcon,
+    visibleTo: allStaff
+  },
+  {
+    id: "macneil-videos",
+    group: "operations",
+    subgroup: "mechanical",
+    eyebrow: "Training",
+    title: "MacNeil Videos",
+    description:
+      "Equipment training videos from MacNeil and National Carwash Solutions.",
+    href: "/admin/macneil-videos",
+    icon: playCircleIcon,
     visibleTo: allStaff
   },
   {

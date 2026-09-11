@@ -30,10 +30,10 @@ export default async function PartsIndexPage() {
     <section className="mx-auto w-full max-w-[1100px] px-5 py-9">
       <div className="mb-2 text-sm">
         <Link
-          href="/admin/dashboard/operations"
+          href="/admin/dashboard/operations/mechanical"
           className="text-splash-blue hover:underline"
         >
-          ← Operations
+          ← Mechanical
         </Link>
       </div>
 
