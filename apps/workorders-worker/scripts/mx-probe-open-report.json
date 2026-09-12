@@ -1,0 +1,138 @@
+{
+  "generated_at": "2026-09-12T14:13:01.028663+00:00",
+  "live_statuses": [
+    "OPEN",
+    "IN_PROGRESS",
+    "ON_HOLD"
+  ],
+  "fetch_meta": {
+    "pages": 40,
+    "errors": []
+  },
+  "live_total": 3920,
+  "by_type": {
+    "REACTIVE": 327,
+    "PREVENTIVE": 3567,
+    "OTHER": 26
+  },
+  "by_status": {
+    "OPEN": 3496,
+    "IN_PROGRESS": 308,
+    "ON_HOLD": 116
+  },
+  "urgency_buckets_by_type": {
+    "REACTIVE": {
+      "NO_DUE_DATE": 281,
+      "OVERDUE": 46
+    },
+    "PREVENTIVE": {
+      "DUE_SOON": 63,
+      "OVERDUE": 3469,
+      "UPCOMING": 32,
+      "NO_DUE_DATE": 3
+    },
+    "OTHER": {
+      "NO_DUE_DATE": 22,
+      "OVERDUE": 4
+    }
+  },
+  "no_due_date": 306,
+  "overdue_age_days": {
+    "n": 3519,
+    "min": 0.0,
+    "median": 331.5,
+    "mean": 386.1,
+    "max": 1116.6
+  },
+  "per_location": {
+    "locations_with_live_work": 88,
+    "total_per_location": {
+      "n": 88,
+      "min": 1,
+      "median": 10.5,
+      "mean": 44.5,
+      "max": 432
+    },
+    "preventive_per_location": {
+      "n": 88,
+      "min": 0,
+      "median": 6.0,
+      "mean": 40.5,
+      "max": 423
+    },
+    "reactive_per_location": {
+      "n": 88,
+      "min": 0,
+      "median": 3.0,
+      "mean": 3.7,
+      "max": 35
+    },
+    "worst_locations": [
+      {
+        "locationId": 1187705,
+        "REACTIVE": 7,
+        "total": 432,
+        "PREVENTIVE": 423,
+        "OTHER": 2
+      },
+      {
+        "locationId": 1187667,
+        "PREVENTIVE": 416,
+        "total": 419,
+        "REACTIVE": 3
+      },
+      {
+        "locationId": 1187683,
+        "PREVENTIVE": 347,
+        "total": 355,
+        "REACTIVE": 7,
+        "OTHER": 1
+      },
+      {
+        "locationId": 1187677,
+        "PREVENTIVE": 312,
+        "total": 316,
+        "REACTIVE": 4
+      },
+      {
+        "locationId": 1187701,
+        "PREVENTIVE": 196,
+        "total": 202,
+        "REACTIVE": 6
+      },
+      {
+        "locationId": 2504365,
+        "PREVENTIVE": 189,
+        "total": 195,
+        "REACTIVE": 5,
+        "OTHER": 1
+      },
+      {
+        "locationId": 1187668,
+        "PREVENTIVE": 183,
+        "total": 187,
+        "REACTIVE": 4
+      },
+      {
+        "locationId": 1824178,
+        "PREVENTIVE": 157,
+        "total": 161,
+        "REACTIVE": 4
+      },
+      {
+        "locationId": null,
+        "PREVENTIVE": 114,
+        "total": 149,
+        "REACTIVE": 35
+      },
+      {
+        "locationId": 1187687,
+        "REACTIVE": 8,
+        "total": 124,
+        "PREVENTIVE": 115,
+        "OTHER": 1
+      }
+    ]
+  },
+  "total_api_requests": 40
+}

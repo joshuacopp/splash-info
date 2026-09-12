@@ -1,0 +1,403 @@
+{
+  "generated_at": "2026-09-12T12:29:37.995136+00:00",
+  "window_start_6mo": "2026-03-13T12:29:37Z",
+  "probe_version": 2,
+  "work_orders": {
+    "meta": {
+      "pages": 200,
+      "truncated": false,
+      "envelope_keys": [
+        "nextCursor",
+        "nextPageUrl",
+        "workOrders"
+      ],
+      "errors": [],
+      "stopped_on_date": false
+    },
+    "total_6mo": 19927,
+    "total_fetched": 19927,
+    "total_last_30d": 3288,
+    "oldest_created": "2026-03-13 12:32:39.675000+00:00",
+    "newest_created": "2026-09-12 12:05:29.500000+00:00",
+    "by_status": {
+      "OPEN": 1136,
+      "IN_PROGRESS": 71,
+      "DONE": 18649,
+      "ON_HOLD": 63,
+      "SKIPPED": 2,
+      "CANCELED": 6
+    },
+    "by_priority": {
+      "MEDIUM": 836,
+      "HIGH": 14709,
+      "NONE": 4111,
+      "LOW": 271
+    },
+    "by_type": {
+      "REACTIVE": 2471,
+      "PREVENTIVE": 17426,
+      "OTHER": 30
+    },
+    "type_crosstab": {
+      "REACTIVE": {
+        "total": 2471,
+        "with_requester": 2135,
+        "with_comments": 1851,
+        "with_time_items": 830,
+        "with_expenditures": 22,
+        "with_parts": 9
+      },
+      "PREVENTIVE": {
+        "total": 17426,
+        "recurring": 17348,
+        "with_time_items": 3390,
+        "with_comments": 40,
+        "with_requester": 1
+      },
+      "OTHER": {
+        "total": 30,
+        "with_comments": 5,
+        "with_expenditures": 1,
+        "with_time_items": 3
+      }
+    },
+    "recurring": 17348,
+    "with_requester_id": 2136,
+    "with_last_message_sent_at": 1896,
+    "with_expenditures": 23,
+    "expenditure_line_total": 25,
+    "with_parts": 9,
+    "part_line_total": 10,
+    "with_time_items": 4223,
+    "time_item_line_total": 4460,
+    "pct_with_requester": 10.7,
+    "pct_recurring": 87.1,
+    "pct_with_comments": 9.5
+  },
+  "comments": {
+    "envelope_keys": [
+      "comments",
+      "nextCursor",
+      "nextPageUrl"
+    ],
+    "per_wo_with_watermark": {
+      "n": 15,
+      "min": 1,
+      "median": 2,
+      "mean": 2.53,
+      "max": 6,
+      "total": 38
+    },
+    "per_wo_without_watermark": {
+      "n": 15,
+      "min": 0,
+      "median": 0,
+      "mean": 0,
+      "max": 0,
+      "total": 0
+    },
+    "bodies": [
+      {
+        "work_order_id": 118615846,
+        "comment_keys": [
+          "authorId",
+          "content",
+          "createdAt",
+          "id"
+        ],
+        "samples": [
+          {
+            "id": 579427394,
+            "content": "I just sent to tech support for the gates please call them and let me know thx",
+            "authorId": 452450,
+            "createdAt": "2026-09-11T19:10:29.559Z"
+          },
+          {
+            "id": 579428982,
+            "content": "The gate is not the only issue ; the kiosk is getting stuck on the thank you please pull forward screen and will not clear",
+            "authorId": 465477,
+            "createdAt": "2026-09-11T19:12:03.113Z"
+          },
+          {
+            "id": 579436980,
+            "content": "Ok.  Then please call micrologic",
+            "authorId": 452450,
+            "createdAt": "2026-09-11T19:19:51.747Z"
+          }
+        ]
+      },
+      {
+        "work_order_id": 116700185,
+        "comment_keys": [
+          "authorId",
+          "content",
+          "createdAt",
+          "id"
+        ],
+        "samples": [
+          {
+            "id": 569064611,
+            "content": "Repaired the leak.all set",
+            "authorId": 452445,
+            "createdAt": "2026-08-31T15:06:59.709Z"
+          }
+        ]
+      },
+      {
+        "work_order_id": 114627641,
+        "comment_keys": [
+          "authorId",
+          "content",
+          "createdAt",
+          "id"
+        ],
+        "samples": [
+          {
+            "id": 558546167,
+            "content": "Please bring site mat machine key",
+            "authorId": 460164,
+            "createdAt": "2026-08-18T20:41:27.004Z"
+          },
+          {
+            "id": 559421489,
+            "content": "Motors being delivered to site",
+            "authorId": 477066,
+            "createdAt": "2026-08-19T17:41:25.700Z"
+          },
+          {
+            "id": 559421713,
+            "content": "Thank you",
+            "authorId": 460164,
+            "createdAt": "2026-08-19T17:41:40.050Z"
+          }
+        ]
+      },
+      {
+        "work_order_id": 113030882,
+        "comment_keys": [
+          "authorId",
+          "content",
+          "createdAt",
+          "id"
+        ],
+        "samples": [
+          {
+            "id": 549550067,
+            "content": "Put plates back on and new 5/8 rod . Adjusted brush. Top 2 back working",
+            "authorId": 477066,
+            "createdAt": "2026-08-08T16:25:21.961Z"
+          }
+        ]
+      },
+      {
+        "work_order_id": 111268175,
+        "comment_keys": [
+          "authorId",
+          "content",
+          "createdAt",
+          "id"
+        ],
+        "samples": [
+          {
+            "id": 539651376,
+            "content": "Replaced auto roller up cylinder",
+            "authorId": 477066,
+            "createdAt": "2026-07-28T13:25:06.508Z"
+          }
+        ]
+      },
+      {
+        "work_order_id": 109275193,
+        "comment_keys": [
+          "authorId",
+          "content",
+          "createdAt",
+          "id"
+        ],
+        "samples": [
+          {
+            "id": 528457695,
+            "content": "LCD screens are burned, will need to be replaced.",
+            "authorId": 878221,
+            "createdAt": "2026-07-15T13:36:16.571Z"
+          },
+          {
+            "id": 541393656,
+            "content": "Closing for now until screens are ordered for replacement",
+            "authorId": 878221,
+            "createdAt": "2026-07-30T03:07:16.619Z"
+          }
+        ]
+      },
+      {
+        "work_order_id": 107726097,
+        "comment_keys": [
+          "authorId",
+          "content",
+          "createdAt",
+          "id"
+        ],
+        "samples": [
+          {
+            "id": 519382843,
+            "content": "MLA ticket # 2344362 they\u2019re looking into it",
+            "authorId": 878221,
+            "createdAt": "2026-07-03T13:02:56.920Z"
+          },
+          {
+            "id": 522162001,
+            "content": "Thank you",
+            "authorId": 833871,
+            "createdAt": "2026-07-07T18:25:02.187Z"
+          },
+          {
+            "id": 522163726,
+            "content": "@[Rutland Wash](u|833871) is this still an issue?",
+            "authorId": 426577,
+            "createdAt": "2026-07-07T18:26:32.997Z"
+          }
+        ]
+      },
+      {
+        "work_order_id": 106036388,
+        "comment_keys": [
+          "authorId",
+          "content",
+          "createdAt",
+          "id"
+        ],
+        "samples": [
+          {
+            "id": 509776199,
+            "content": "Heim bolt repaired",
+            "authorId": 1255847,
+            "createdAt": "2026-06-22T13:13:40.241Z"
+          },
+          {
+            "id": 509776594,
+            "content": "",
+            "authorId": 1255847,
+            "createdAt": "2026-06-22T13:13:55.870Z"
+          },
+          {
+            "id": 509776608,
+            "content": "",
+            "authorId": 1255847,
+            "createdAt": "2026-06-22T13:13:56.870Z"
+          }
+        ]
+      }
+    ]
+  },
+  "attachments": {
+    "per_work_order": {
+      "n": 30,
+      "min": 0,
+      "median": 0.0,
+      "mean": 0.2,
+      "max": 1,
+      "total": 6
+    },
+    "object_keys": [
+      "createdAt",
+      "fileName",
+      "height",
+      "id",
+      "mimeType",
+      "url",
+      "width"
+    ],
+    "sample_object": {
+      "id": 272038998,
+      "fileName": "IMG_3897.HEIC",
+      "createdAt": "2026-09-11T19:05:22.899Z",
+      "url": "https://maintainx-uploads-production.s3.us-west-2.amazonaws.com/9c79e0f5-ae6b-46ae-93ac-d91cfa5c8cb5_IMG_3897.HEIC?X-Amz",
+      "mimeType": "image/jpeg",
+      "width": 960,
+      "height": 1280
+    },
+    "size_bytes": {
+      "n": 6,
+      "min": 193009,
+      "median": 458435.5,
+      "mean": 955510.5,
+      "max": 2794145,
+      "total": 5733063
+    },
+    "size_errors": []
+  },
+  "r2_projection": {
+    "mean_attachment_bytes": 955510,
+    "mean_attachments_per_work_order": 0.2,
+    "backfill_gb": 3.547,
+    "monthly_growth_gb": 0.585,
+    "backfill_cost_usd_per_month_at_0.015_per_gb": 0.053,
+    "caveat": "small sample; one large video would dominate"
+  },
+  "work_requests": {
+    "meta": {
+      "pages": 103,
+      "truncated": false,
+      "envelope_keys": [
+        "nextCursor",
+        "nextPageUrl",
+        "workRequests"
+      ],
+      "errors": [],
+      "stopped_on_date": false
+    },
+    "total_seen": 10243,
+    "created_in_6mo": 2445,
+    "by_status": {
+      "APPROVED": 136,
+      "REJECTED": 1435,
+      "PENDING": 8,
+      "DONE": 8664
+    },
+    "with_creator_contact_info": 5,
+    "contact_types": {
+      "EMAIL": 5
+    },
+    "with_work_order_id": 8800,
+    "with_creator_id": 10243
+  },
+  "reference_tables": {
+    "/users": {
+      "count": 122,
+      "pages": 2,
+      "truncated": false,
+      "errors": []
+    },
+    "/locations": {
+      "count": 92,
+      "pages": 1,
+      "truncated": false,
+      "errors": []
+    },
+    "/teams": {
+      "count": 17,
+      "pages": 1,
+      "truncated": false,
+      "errors": []
+    },
+    "/categories": {
+      "count": 17,
+      "pages": 1,
+      "truncated": false,
+      "errors": []
+    },
+    "/vendors": {
+      "count": 121,
+      "pages": 2,
+      "truncated": false,
+      "errors": []
+    },
+    "/parts": {
+      "count": 1648,
+      "pages": 17,
+      "truncated": false,
+      "errors": []
+    }
+  },
+  "total_api_requests": 393
+}

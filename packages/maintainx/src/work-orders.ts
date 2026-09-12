@@ -51,6 +51,59 @@ export interface RawWorkOrder {
   /** Resolved when caller passes `expand=categories`. Brief 71 surfaces
    *  these as small badges on the expanded-row drawer in apps/web. */
   categories?: Array<string | { name?: string | null }>;
+
+  // -------------------------------------------------------------------------
+  // Ingest fields (Phase 1). Everything below is read by the Supabase ingest
+  // in `sync.ts` and ignored by the serving path, so adding them is additive
+  // for existing callers. All optional, because MaintainX OMITS null fields
+  // from responses rather than sending them as null — an absent key means
+  // empty, never "unchanged".
+  //
+  // Note there is deliberately no `deletedAt`: it never appears on a list
+  // payload (0 of 100 rows measured), so deletes are observable only as
+  // disappearance from a walk. Reconciliation, not a field, is what catches
+  // them.
+  //
+  // `mx_work_order.raw` stores the full payload regardless, so a field missed
+  // here is recoverable without re-walking the corpus.
+  // -------------------------------------------------------------------------
+
+  /** Present on preventive work orders — 17,348 of 17,426 carry it. There is
+   *  NO `expand` token for this, so if it is absent from the default list
+   *  payload it cannot be backfilled without per-work-order fetches. */
+  recurrenceInfo?: unknown;
+  /** Resolved by `expand=time_items` (snake_case; camelCase 400s). Store
+   *  THESE, not `times` — `times` is the aggregated view and is derivable by
+   *  summing these. Confirmed on WO 118160263: two raw entries of 7705s and
+   *  5221s against one aggregated 12926s. */
+  timeItems?: Array<Record<string, unknown>>;
+  /** Aggregated labor time. Derivable from `timeItems`; kept only so a caller
+   *  can cross-check. */
+  times?: Array<Record<string, unknown>>;
+  /** Resolved by `expand=parts`. */
+  parts?: Array<Record<string, unknown>>;
+  /** Resolved by `expand=expenditures`. Effectively always empty today — 23
+   *  work orders and 25 line items across a full six months. Line items carry
+   *  NO id, so they must be written delete-and-replace keyed on a content
+   *  hash, never on ordinal. */
+  expenditures?: Array<Record<string, unknown>>;
+  /** The requester, present on 86% of REACTIVE work orders and 1 of 17,426
+   *  preventive. Resolve to an email via `GET /users` — this is the join that
+   *  the Phase 6 cost email depends on. */
+  requesterId?: number | null;
+  /** Comment watermark. `updatedAt` does NOT move when a comment is added, so
+   *  this is the only field that reveals comment activity. */
+  lastMessageSentAt?: string | null;
+  completedAt?: string | null;
+  completerId?: number | null;
+  creatorId?: number | null;
+  startDate?: string | null;
+  partStatus?: string | null;
+  estimatedTimeSeconds?: number | null;
+  organizationId?: number | null;
+  assetId?: number | null;
+  dueDateIsFullDay?: boolean | null;
+  workOrderSummary?: unknown;
 }
 
 export interface FetchInput {

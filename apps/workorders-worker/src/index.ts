@@ -25,12 +25,13 @@
 //   - Network / abort → 504
 //   - Anything else → 500
 //
-// SCHEDULED HANDLER (Brief 71):
-//   The default export is { fetch, scheduled }. The scheduled handler
-//   runs the daily MaintainX user/team sync (`[triggers] crons` in
-//   wrangler.toml — 11:30 UTC). Same pattern as damage-worker post-
-//   Brief 65; Workers Logs `[observability.logs]` block from Brief 63
-//   covers scheduled invocations automatically (eventType: scheduled).
+// SCHEDULED HANDLER (Brief 71, extended Brief 74):
+//   The default export is { fetch, scheduled }. TWO cron expressions are
+//   registered in wrangler.toml and the handler branches on
+//   `controller.cron` — see the comment above `scheduled` below. Same
+//   pattern as damage-worker post-Brief 65; Workers Logs
+//   `[observability.logs]` block from Brief 63 covers scheduled
+//   invocations automatically (eventType: scheduled).
 
 import { authenticate, type Session } from "@splash/auth";
 import {
@@ -52,8 +53,17 @@ import {
   type RawWorkOrder,
   type RawWorkRequest
 } from "@splash/maintainx";
+import { runMxIngest } from "./mx-ingest.js";
 import { handlePartsRequest } from "./parts.js";
 import { runMaintainXUserTeamSync, type SyncResult } from "./sync.js";
+
+// The two cron expressions registered under `[triggers] crons` in
+// wrangler.toml. `controller.cron` hands back the literal string from that
+// file, so matching is EXACT: editing a schedule in wrangler.toml without
+// editing the constant here does not throw, it silently stops running the
+// pass. The fall-through arm of the branch below logs loudly for that reason.
+const USER_SYNC_CRON = "30 11 * * *";
+const MX_INGEST_CRON = "*/5 * * * *";
 
 interface Env extends SupabaseEnv {
   /** MaintainX bearer token. Same value as on splash-damage (Brief 42).
@@ -240,6 +250,23 @@ export default {
         return json(result satisfies SyncResult);
       }
 
+      // Manual kick for the MaintainX -> Postgres ingest. Same super_admin
+      // gate as the user sync above. One call runs ONE bounded pass
+      // (mx-ingest.ts owns the page and time budgets) and checkpoints into
+      // mx_sync_state, so during backfill this has to be called repeatedly —
+      // it is a debugging handle, not a "sync everything now" button. Safe to
+      // call while the cron is also running: every write is an upsert.
+      if (path === "workorders/api/mx-ingest" && request.method === "POST") {
+        const auth = await authenticate(request, env);
+        if (auth.status !== "authenticated") return jsonError(401, "unauthorized");
+        if (!isSyncTriggerAllowed(auth.session)) {
+          return jsonError(403, "manual ingest requires super_admin");
+        }
+        const result = await runMxIngest(env);
+        console.log("workorders-worker manual mx ingest complete:", JSON.stringify(result));
+        return json(result);
+      }
+
       if (path === "workorders/api/request" && request.method === "POST") {
         const auth = await authenticate(request, env);
         if (auth.status !== "authenticated") {
@@ -269,15 +296,52 @@ export default {
     }
   },
 
-  async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
+  // Two crons land here and the ONLY thing that distinguishes them is
+  // `controller.cron`:
+  //
+  //   "30 11 * * *"  daily MaintainX user/team sync (Brief 71).
+  //   "*/5 * * * *"  MaintainX -> Postgres ingest (Brief 74). Deliberately
+  //                  chunked: one pass per invocation, bounded by
+  //                  TIME_BUDGET_MS / PAGE_BUDGET in mx-ingest.ts and resumed
+  //                  from the cursor in mx_sync_state. The 6-month backfill
+  //                  therefore completes across many ticks rather than in one
+  //                  long-running invocation; once every backfill pass is
+  //                  marked complete, this tick costs a single incremental
+  //                  sweep that usually finds nothing.
+  //
+  // Both arms swallow their own errors. A throw out of a `waitUntil` promise
+  // fails the whole scheduled invocation, and with two independent jobs
+  // sharing this handler that would let one job's bad day mask the other's.
+  // Nothing here retries, either — the next tick is the retry, and because
+  // every write is an upsert keyed on the MaintainX id, re-running a pass is
+  // free.
+  async scheduled(controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
+    const cron = controller.cron;
     ctx.waitUntil(
       (async () => {
-        try {
-          const result = await runMaintainXUserTeamSync(env);
-          console.log("workorders-worker scheduled sync complete:", JSON.stringify(result));
-        } catch (err) {
-          console.error("workorders-worker scheduled sync failed:", err);
+        if (cron === MX_INGEST_CRON) {
+          try {
+            const result = await runMxIngest(env);
+            console.log("workorders-worker mx ingest complete:", JSON.stringify(result));
+          } catch (err) {
+            console.error("workorders-worker mx ingest failed:", err);
+          }
+          return;
         }
+
+        if (cron === USER_SYNC_CRON) {
+          try {
+            const result = await runMaintainXUserTeamSync(env);
+            console.log("workorders-worker scheduled sync complete:", JSON.stringify(result));
+          } catch (err) {
+            console.error("workorders-worker scheduled sync failed:", err);
+          }
+          return;
+        }
+
+        console.error(
+          `workorders-worker: scheduled fired for an unrecognised cron ${JSON.stringify(cron)} — wrangler.toml and the cron constants in src/index.ts have drifted; nothing ran`
+        );
       })()
     );
   }

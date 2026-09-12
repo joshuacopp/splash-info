@@ -1,0 +1,732 @@
+{
+  "generated_at": "2026-09-12T14:42:41.422854+00:00",
+  "openapi": {
+    "status": 200,
+    "declared_params": [
+      {
+        "name": "cursor",
+        "in": "query",
+        "type": "string",
+        "enum": null,
+        "description": null
+      },
+      {
+        "name": "limit",
+        "in": "query",
+        "type": "integer",
+        "enum": null,
+        "description": null
+      },
+      {
+        "name": "title",
+        "in": "query",
+        "type": "string",
+        "enum": null,
+        "description": null
+      },
+      {
+        "name": "assets",
+        "in": "query",
+        "type": "array",
+        "enum": null,
+        "description": null
+      },
+      {
+        "name": "notAssets",
+        "in": "query",
+        "type": "array",
+        "enum": null,
+        "description": null
+      },
+      {
+        "name": "locations",
+        "in": "query",
+        "type": "array",
+        "enum": null,
+        "description": null
+      },
+      {
+        "name": "notLocations",
+        "in": "query",
+        "type": "array",
+        "enum": null,
+        "description": null
+      },
+      {
+        "name": "parts",
+        "in": "query",
+        "type": "array",
+        "enum": null,
+        "description": null
+      },
+      {
+        "name": "notParts",
+        "in": "query",
+        "type": "array",
+        "enum": null,
+        "description": null
+      },
+      {
+        "name": "vendors",
+        "in": "query",
+        "type": "array",
+        "enum": null,
+        "description": null
+      },
+      {
+        "name": "notVendors",
+        "in": "query",
+        "type": "array",
+        "enum": null,
+        "description": null
+      },
+      {
+        "name": "assignees",
+        "in": "query",
+        "type": "array",
+        "enum": null,
+        "description": null
+      },
+      {
+        "name": "teams",
+        "in": "query",
+        "type": "array",
+        "enum": null,
+        "description": null
+      },
+      {
+        "name": "categories",
+        "in": "query",
+        "type": "array",
+        "enum": null,
+        "description": null
+      },
+      {
+        "name": "notCategories",
+        "in": "query",
+        "type": "array",
+        "enum": null,
+        "description": null
+      },
+      {
+        "name": "priorities",
+        "in": "query",
+        "type": "array",
+        "enum": [
+          "NONE",
+          "LOW",
+          "MEDIUM",
+          "HIGH"
+        ],
+        "description": null
+      },
+      {
+        "name": "statuses",
+        "in": "query",
+        "type": "array",
+        "enum": [
+          "OPEN",
+          "IN_PROGRESS",
+          "ON_HOLD",
+          "DONE",
+          "CANCELED",
+          "SKIPPED"
+        ],
+        "description": null
+      },
+      {
+        "name": "partStatuses",
+        "in": "query",
+        "type": "array",
+        "enum": [
+          "NO_PARTS",
+          "ASSIGNED",
+          "RESERVED",
+          "KITTED",
+          "STAGED",
+          "ISSUED"
+        ],
+        "description": null
+      },
+      {
+        "name": "parentSubWorkOrderTypes",
+        "in": "query",
+        "type": "array",
+        "enum": [
+          "PARENT",
+          "SUB_WORK_ORDER",
+          "STANDALONE"
+        ],
+        "description": null
+      },
+      {
+        "name": "show_upcoming",
+        "in": "query",
+        "type": "boolean",
+        "enum": null,
+        "description": null
+      },
+      {
+        "name": "updatedAt[gte]",
+        "in": "query",
+        "type": "string",
+        "enum": null,
+        "description": null
+      },
+      {
+        "name": "updatedAt[lte]",
+        "in": "query",
+        "type": "string",
+        "enum": null,
+        "description": null
+      },
+      {
+        "name": "createdAt[gte]",
+        "in": "query",
+        "type": "string",
+        "enum": null,
+        "description": null
+      },
+      {
+        "name": "createdAt[lte]",
+        "in": "query",
+        "type": "string",
+        "enum": null,
+        "description": null
+      },
+      {
+        "name": "sort",
+        "in": "query",
+        "type": "string",
+        "enum": [
+          "updatedAt",
+          "createdAt",
+          "dueDate",
+          "startedAt",
+          "completedAt",
+          "-updatedAt",
+          "-createdAt",
+          "-dueDate",
+          "-startedAt",
+          "-completedAt"
+        ],
+        "description": null
+      },
+      {
+        "name": "expand",
+        "in": "query",
+        "type": "array",
+        "enum": [
+          "thumbnail",
+          "assignees",
+          "categories",
+          "parts",
+          "asset",
+          "location",
+          "procedure",
+          "team_ids",
+          "vendor_ids",
+          "times",
+          "time_items",
+          "expenditures",
+          "extra_fields",
+          "part_extra_fields",
+          "asset_extra_fields",
+          "location_extra_fields",
+          "estimated_time"
+        ],
+        "description": null
+      },
+      {
+        "name": "x-organization-id",
+        "in": "header",
+        "type": "integer",
+        "enum": null,
+        "description": "Required if using a multi organizations token"
+      }
+    ],
+    "param_names": [
+      "cursor",
+      "limit",
+      "title",
+      "assets",
+      "notAssets",
+      "locations",
+      "notLocations",
+      "parts",
+      "notParts",
+      "vendors",
+      "notVendors",
+      "assignees",
+      "teams",
+      "categories",
+      "notCategories",
+      "priorities",
+      "statuses",
+      "partStatuses",
+      "parentSubWorkOrderTypes",
+      "show_upcoming",
+      "updatedAt[gte]",
+      "updatedAt[lte]",
+      "createdAt[gte]",
+      "createdAt[lte]",
+      "sort",
+      "expand",
+      "x-organization-id"
+    ],
+    "expand_enum": [
+      "thumbnail",
+      "assignees",
+      "categories",
+      "parts",
+      "asset",
+      "location",
+      "procedure",
+      "team_ids",
+      "vendor_ids",
+      "times",
+      "time_items",
+      "expenditures",
+      "extra_fields",
+      "part_extra_fields",
+      "asset_extra_fields",
+      "location_extra_fields",
+      "estimated_time"
+    ],
+    "date_params_declared": {
+      "updatedAt[gte]": true,
+      "updatedAt[lte]": true,
+      "createdAt[gte]": true,
+      "createdAt[lte]": true
+    }
+  },
+  "limit": {
+    "50": {
+      "status": 200,
+      "returned": 50,
+      "honored": true,
+      "error": null
+    },
+    "100": {
+      "status": 200,
+      "returned": 100,
+      "honored": true,
+      "error": null
+    },
+    "150": {
+      "status": 200,
+      "returned": 150,
+      "honored": true,
+      "error": null
+    },
+    "200": {
+      "status": 200,
+      "returned": 200,
+      "honored": true,
+      "error": null
+    },
+    "250": {
+      "status": 400,
+      "returned": 0,
+      "honored": false,
+      "error": "{\"errors\":[{\"error\":\"must be <= 200\",\"fieldPath\":\"limit\",\"fieldValue\":250}]}"
+    },
+    "500": {
+      "status": 400,
+      "returned": 0,
+      "honored": false,
+      "error": "{\"errors\":[{\"error\":\"must be <= 200\",\"fieldPath\":\"limit\",\"fieldValue\":500}]}"
+    },
+    "1000": {
+      "status": 400,
+      "returned": 0,
+      "honored": false,
+      "error": "{\"errors\":[{\"error\":\"must be <= 200\",\"fieldPath\":\"limit\",\"fieldValue\":1000}]}"
+    },
+    "_effective_max_page_size": 200,
+    "_client_PAGE_LIMIT_200_is_real": true
+  },
+  "updated_at_filter": {
+    "baseline": {
+      "status": 200,
+      "returned": 100,
+      "updatedAt_span": {
+        "n": 100,
+        "min": "2026-09-04T18:16:19.000Z",
+        "max": "2026-09-12T14:39:08.000Z"
+      }
+    },
+    "gte_recent": {
+      "status": 200,
+      "bound": "2026-09-10T14:42:49.000Z",
+      "returned": 100,
+      "updatedAt_span": {
+        "n": 100,
+        "min": "2026-09-10T14:44:21.000Z",
+        "max": "2026-09-11T12:00:26.000Z"
+      },
+      "violations": 0,
+      "violation_sample": [],
+      "error": null
+    },
+    "lte_old": {
+      "status": 200,
+      "bound": "2024-09-12T14:42:49.000Z",
+      "returned": 100,
+      "updatedAt_span": {
+        "n": 100,
+        "min": "2024-08-14T20:04:58.000Z",
+        "max": "2024-09-12T14:37:57.000Z"
+      },
+      "violations": 0,
+      "violation_sample": [],
+      "error": null
+    },
+    "window": {
+      "status": 200,
+      "gte": "2026-08-13T14:42:49.000Z",
+      "lte": "2026-08-20T14:42:49.000Z",
+      "returned": 100,
+      "updatedAt_span": {
+        "n": 100,
+        "min": "2026-08-13T14:44:03.000Z",
+        "max": "2026-08-14T11:57:33.000Z"
+      },
+      "error": null
+    },
+    "_verdict": "WORKS"
+  },
+  "created_at_filter": {
+    "gte_6mo": {
+      "status": 200,
+      "bound": "2026-03-13T14:42:56.000Z",
+      "returned": 100,
+      "createdAt_span": {
+        "n": 100,
+        "min": "2026-03-13T14:43:37.000Z",
+        "max": "2026-03-14T19:08:17.000Z"
+      },
+      "violations": 0,
+      "error": null
+    },
+    "lte_old": {
+      "status": 200,
+      "bound": "2024-09-12T14:42:56.000Z",
+      "returned": 100,
+      "createdAt_span": {
+        "n": 100,
+        "min": "2024-09-11T14:00:20.000Z",
+        "max": "2024-09-12T14:37:57.000Z"
+      },
+      "violations": 0,
+      "error": null
+    },
+    "_verdict": "WORKS"
+  },
+  "sorts": {
+    "-updatedAt": {
+      "status": 200,
+      "returned": 20,
+      "correctly_ordered": true,
+      "span": {
+        "n": 20,
+        "min": "2026-09-12T13:11:40.000Z",
+        "max": "2026-09-12T14:39:08.000Z"
+      },
+      "error": null
+    },
+    "updatedAt": {
+      "status": 200,
+      "returned": 20,
+      "correctly_ordered": true,
+      "span": {
+        "n": 20,
+        "min": "2023-06-28T13:39:26.000Z",
+        "max": "2023-07-22T10:34:41.000Z"
+      },
+      "error": null
+    },
+    "-createdAt": {
+      "status": 200,
+      "returned": 20,
+      "correctly_ordered": true,
+      "span": {
+        "n": 20,
+        "min": "2026-09-12T00:42:06.000Z",
+        "max": "2026-09-12T14:06:00.000Z"
+      },
+      "error": null
+    },
+    "createdAt": {
+      "status": 200,
+      "returned": 20,
+      "correctly_ordered": true,
+      "span": {
+        "n": 20,
+        "min": "2023-06-27T13:42:23.000Z",
+        "max": "2023-07-13T16:26:31.000Z"
+      },
+      "error": null
+    },
+    "-dueDate": {
+      "status": 200,
+      "returned": 20,
+      "correctly_ordered": true,
+      "span": {
+        "n": 20,
+        "min": "2026-09-21T01:00:00.000Z",
+        "max": "2073-10-18T16:00:00.000Z"
+      },
+      "error": null
+    },
+    "dueDate": {
+      "status": 200,
+      "returned": 20,
+      "correctly_ordered": true,
+      "span": {
+        "n": 20,
+        "min": "2023-07-01T16:00:00.000Z",
+        "max": "2023-07-22T14:00:00.000Z"
+      },
+      "error": null
+    },
+    "-id": {
+      "status": 400,
+      "returned": 0,
+      "correctly_ordered": null,
+      "span": null,
+      "error": "{\"error\":\"'-id' is not a member of updatedAt,createdAt,dueDate,startedAt,completedAt,-updatedAt,-createdAt,-dueDate,-startedAt,-completedAt\"}"
+    },
+    "id": {
+      "status": 400,
+      "returned": 0,
+      "correctly_ordered": null,
+      "span": null,
+      "error": "{\"error\":\"'id' is not a member of updatedAt,createdAt,dueDate,startedAt,completedAt,-updatedAt,-createdAt,-dueDate,-startedAt,-completedAt\"}"
+    }
+  },
+  "expands": {
+    "assignees": {
+      "status": 200,
+      "accepted": true,
+      "returned": 5,
+      "added_keys": [
+        "assignees"
+      ],
+      "added_keys_populated": [
+        "assignees"
+      ],
+      "error": null
+    },
+    "location": {
+      "status": 200,
+      "accepted": true,
+      "returned": 5,
+      "added_keys": [
+        "location"
+      ],
+      "added_keys_populated": [
+        "location"
+      ],
+      "error": null
+    },
+    "categories": {
+      "status": 200,
+      "accepted": true,
+      "returned": 5,
+      "added_keys": [
+        "categories"
+      ],
+      "added_keys_populated": [
+        "categories"
+      ],
+      "error": null
+    },
+    "parts": {
+      "status": 200,
+      "accepted": true,
+      "returned": 5,
+      "added_keys": [
+        "parts"
+      ],
+      "added_keys_populated": [],
+      "error": null
+    },
+    "expenditures": {
+      "status": 200,
+      "accepted": true,
+      "returned": 5,
+      "added_keys": [
+        "expenditures"
+      ],
+      "added_keys_populated": [],
+      "error": null
+    },
+    "timeItems": {
+      "status": 400,
+      "accepted": false,
+      "returned": 0,
+      "added_keys": [],
+      "added_keys_populated": [],
+      "error": "{\"error\":\"'timeItems' is not a member of thumbnail,assignees,categories,parts,asset,location,procedure,team_ids,vendor_ids,times,time_items,expenditures,extra_fields,part_extra_fields,asset_extra_fields,location_extra_fields,estimated_time\"}"
+    },
+    "times": {
+      "status": 200,
+      "accepted": true,
+      "returned": 5,
+      "added_keys": [
+        "times"
+      ],
+      "added_keys_populated": [
+        "times"
+      ],
+      "error": null
+    },
+    "attachments": {
+      "status": 400,
+      "accepted": false,
+      "returned": 0,
+      "added_keys": [],
+      "added_keys_populated": [],
+      "error": "{\"error\":\"'attachments' is not a member of thumbnail,assignees,categories,parts,asset,location,procedure,team_ids,vendor_ids,times,time_items,expenditures,extra_fields,part_extra_fields,asset_extra_fields,location_extra_fields,estimated_time\"}"
+    },
+    "procedure": {
+      "status": 200,
+      "accepted": true,
+      "returned": 5,
+      "added_keys": [],
+      "added_keys_populated": [],
+      "error": null
+    },
+    "procedureFields": {
+      "status": 400,
+      "accepted": false,
+      "returned": 0,
+      "added_keys": [],
+      "added_keys_populated": [],
+      "error": "{\"error\":\"'procedureFields' is not a member of thumbnail,assignees,categories,parts,asset,location,procedure,team_ids,vendor_ids,times,time_items,expenditures,extra_fields,part_extra_fields,asset_extra_fields,location_extra_fields,estimated_time\"}"
+    },
+    "vendors": {
+      "status": 400,
+      "accepted": false,
+      "returned": 0,
+      "added_keys": [],
+      "added_keys_populated": [],
+      "error": "{\"error\":\"'vendors' is not a member of thumbnail,assignees,categories,parts,asset,location,procedure,team_ids,vendor_ids,times,time_items,expenditures,extra_fields,part_extra_fields,asset_extra_fields,location_extra_fields,estimated_time\"}"
+    },
+    "teams": {
+      "status": 400,
+      "accepted": false,
+      "returned": 0,
+      "added_keys": [],
+      "added_keys_populated": [],
+      "error": "{\"error\":\"'teams' is not a member of thumbnail,assignees,categories,parts,asset,location,procedure,team_ids,vendor_ids,times,time_items,expenditures,extra_fields,part_extra_fields,asset_extra_fields,location_extra_fields,estimated_time\"}"
+    },
+    "requester": {
+      "status": 400,
+      "accepted": false,
+      "returned": 0,
+      "added_keys": [],
+      "added_keys_populated": [],
+      "error": "{\"error\":\"'requester' is not a member of thumbnail,assignees,categories,parts,asset,location,procedure,team_ids,vendor_ids,times,time_items,expenditures,extra_fields,part_extra_fields,asset_extra_fields,location_extra_fields,estimated_time\"}"
+    },
+    "asset": {
+      "status": 200,
+      "accepted": true,
+      "returned": 5,
+      "added_keys": [
+        "asset"
+      ],
+      "added_keys_populated": [],
+      "error": null
+    },
+    "workRequest": {
+      "status": 400,
+      "accepted": false,
+      "returned": 0,
+      "added_keys": [],
+      "added_keys_populated": [],
+      "error": "{\"error\":\"'workRequest' is not a member of thumbnail,assignees,categories,parts,asset,location,procedure,team_ids,vendor_ids,times,time_items,expenditures,extra_fields,part_extra_fields,asset_extra_fields,location_extra_fields,estimated_time\"}"
+    },
+    "recurrence": {
+      "status": 400,
+      "accepted": false,
+      "returned": 0,
+      "added_keys": [],
+      "added_keys_populated": [],
+      "error": "{\"error\":\"'recurrence' is not a member of thumbnail,assignees,categories,parts,asset,location,procedure,team_ids,vendor_ids,times,time_items,expenditures,extra_fields,part_extra_fields,asset_extra_fields,location_extra_fields,estimated_time\"}"
+    },
+    "recurrenceInfo": {
+      "status": 400,
+      "accepted": false,
+      "returned": 0,
+      "added_keys": [],
+      "added_keys_populated": [],
+      "error": "{\"error\":\"'recurrenceInfo' is not a member of thumbnail,assignees,categories,parts,asset,location,procedure,team_ids,vendor_ids,times,time_items,expenditures,extra_fields,part_extra_fields,asset_extra_fields,location_extra_fields,estimated_time\"}"
+    },
+    "_accepted": [
+      "assignees",
+      "location",
+      "categories",
+      "parts",
+      "expenditures",
+      "times",
+      "procedure",
+      "asset"
+    ]
+  },
+  "baseline_row_keys": [
+    "assetId",
+    "completedAt",
+    "completerId",
+    "createdAt",
+    "creatorId",
+    "customerId",
+    "description",
+    "id",
+    "lastMessageSentAt",
+    "locationId",
+    "organizationId",
+    "partStatus",
+    "priority",
+    "requesterId",
+    "sequentialId",
+    "startDate",
+    "status",
+    "title",
+    "type",
+    "updatedAt",
+    "workOrderSummary"
+  ],
+  "cursor_with_filter": {
+    "page1": {
+      "status": 200,
+      "returned": 100,
+      "has_cursor": true,
+      "span": {
+        "n": 100,
+        "min": "2026-08-13T14:44:03.000Z",
+        "max": "2026-08-14T11:57:33.000Z"
+      }
+    },
+    "page2": {
+      "status": 200,
+      "returned": 100,
+      "span": {
+        "n": 100,
+        "min": "2026-08-14T11:57:46.000Z",
+        "max": "2026-08-15T13:23:41.000Z"
+      },
+      "overlap_with_page1": 0,
+      "filter_still_applied": true,
+      "error": null
+    }
+  },
+  "deleted_at": {
+    "rows_checked": 100,
+    "key_present_on": 0,
+    "non_null_on": 0,
+    "sample": []
+  },
+  "total_api_requests": 43
+}

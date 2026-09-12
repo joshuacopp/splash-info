@@ -21,6 +21,16 @@
 //      unchecked `.ok` is a silently swallowed failure.
 //   2. THERE IS NO IDEMPOTENCY KEY on any create. Two POSTs make two
 //      records. Guarding double-submit is the caller's job.
+//
+// There are TWO read surfaces here and picking the wrong one is the easy
+// mistake to make:
+//
+//   - `fetchMaintainXWorkOrders` / `fetchMaintainXWorkRequests` are for
+//     SERVING. They accumulate, self-cap, and truncate on purpose, because a
+//     page render must be bounded.
+//   - `fetchWorkOrderPage` / `fetchWorkRequestPage` / `fetchWorkOrderComments`
+//     in `./sync.js` are for INGEST. One page per call, no ceiling, caller owns
+//     the cursor. Use these when the goal is a complete corpus in Postgres.
 
 export {
   ERROR_BODY_MAX_BYTES,
@@ -52,3 +62,22 @@ export {
   type UploadWorkRequestFileResult,
   uploadMaintainXWorkRequestFile
 } from "./work-requests.js";
+
+export {
+  INGEST_PAGE_LIMIT,
+  INGEST_EXPAND,
+  LIVE_WORK_ORDER_STATUSES,
+  CLOSED_WORK_ORDER_STATUSES,
+  type WorkOrderSort,
+  type RawWorkOrderComment,
+  type RetryOptions,
+  type FetchWorkOrderPageInput,
+  type FetchWorkOrderPageResult,
+  fetchWorkOrderPage,
+  type FetchWorkOrderCommentsInput,
+  type FetchWorkOrderCommentsResult,
+  fetchWorkOrderComments,
+  type FetchWorkRequestPageInput,
+  type FetchWorkRequestPageResult,
+  fetchWorkRequestPage
+} from "./sync.js";

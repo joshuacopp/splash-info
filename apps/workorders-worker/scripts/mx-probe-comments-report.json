@@ -1,0 +1,482 @@
+{
+  "generated_at": "2026-09-12T12:50:34.096659+00:00",
+  "openapi": {
+    "status": 200,
+    "comment_paths": {
+      "/purchaseorders/{id}/comments": [
+        "POST"
+      ],
+      "/workorders/{id}/comments": [
+        "GET",
+        "POST"
+      ]
+    },
+    "get_comments_params": [
+      {
+        "name": "cursor",
+        "in": "query",
+        "enum": null
+      },
+      {
+        "name": "limit",
+        "in": "query",
+        "enum": null
+      }
+    ],
+    "comment_schemas": {},
+    "attachment_paths": {
+      "/assets/{id}/attachments/{filename}": [
+        "DELETE",
+        "PUT"
+      ],
+      "/locations/{id}/attachments/{filename}": [
+        "DELETE",
+        "PUT"
+      ],
+      "/metertriggers/{id}/workordertemplates/attachments/{filename}": [
+        "DELETE",
+        "PUT"
+      ],
+      "/parts/{id}/attachments/{filename}": [
+        "DELETE",
+        "PUT"
+      ],
+      "/purchaseorders/{id}/attachments/{filename}": [
+        "DELETE",
+        "PUT"
+      ],
+      "/proceduretemplaterows/{id}/attachments": [
+        "DELETE"
+      ],
+      "/proceduretemplaterows/{id}/attachments/{filename}": [
+        "PUT"
+      ],
+      "/vendors/{id}/attachments/{filename}": [
+        "DELETE",
+        "PUT"
+      ],
+      "/workorders/{id}/attachments/{filename}": [
+        "DELETE",
+        "PUT"
+      ],
+      "/workorders/{id}/procedure/fields/{index}/attachment": [
+        "DELETE"
+      ],
+      "/workorders/{id}/procedure/fields/{index}/attachment/{filename}": [
+        "PUT"
+      ],
+      "/workrequests/{id}/attachments/{filename}": [
+        "DELETE",
+        "PUT"
+      ]
+    }
+  },
+  "comment_expand_attempts": {
+    "<none>": {
+      "status": 200,
+      "count": 3,
+      "keys": [
+        "authorId",
+        "content",
+        "createdAt",
+        "id"
+      ],
+      "error": null
+    },
+    "attachments": {
+      "status": 400,
+      "count": 0,
+      "keys": [],
+      "error": "{\"error\":\"'expand' is not a valid query parameter\"}"
+    },
+    "author": {
+      "status": 400,
+      "count": 0,
+      "keys": [],
+      "error": "{\"error\":\"'expand' is not a valid query parameter\"}"
+    },
+    "images": {
+      "status": 400,
+      "count": 0,
+      "keys": [],
+      "error": "{\"error\":\"'expand' is not a valid query parameter\"}"
+    },
+    "files": {
+      "status": 400,
+      "count": 0,
+      "keys": [],
+      "error": "{\"error\":\"'expand' is not a valid query parameter\"}"
+    }
+  },
+  "known_case": {
+    "work_order_id": 106036388,
+    "attachment_count": 1,
+    "attachments": [
+      {
+        "id": 243028578,
+        "fileName": "IMG_1246.HEIC",
+        "createdAt": "2026-06-22T12:15:33.607Z",
+        "mimeType": "image/jpeg"
+      }
+    ],
+    "comments": [
+      {
+        "id": 509776199,
+        "authorId": 1255847,
+        "createdAt": "2026-06-22T13:13:40.241Z",
+        "content_len": 18,
+        "content": "Heim bolt repaired"
+      },
+      {
+        "id": 509776594,
+        "authorId": 1255847,
+        "createdAt": "2026-06-22T13:13:55.870Z",
+        "content_len": 0,
+        "content": ""
+      },
+      {
+        "id": 509776608,
+        "authorId": 1255847,
+        "createdAt": "2026-06-22T13:13:56.870Z",
+        "content_len": 0,
+        "content": ""
+      }
+    ]
+  },
+  "correlation": {
+    "window_seconds": 120,
+    "totals": {
+      "work_orders": 40,
+      "comments": 61,
+      "empty_comments": 7,
+      "attachments": 10,
+      "empty_comments_matched_to_attachment": 0,
+      "attachments_matched_to_any_comment": 0,
+      "attachments_matched_to_empty_comment": 0,
+      "work_orders_with_more_attachments_than_empty_comments": 6
+    },
+    "rows": [
+      {
+        "work_order_id": 118615846,
+        "comments": 5,
+        "empty_comments": 0,
+        "attachments": 1,
+        "empty_matched": 0,
+        "att_matched_any_comment": 0
+      },
+      {
+        "work_order_id": 118581810,
+        "comments": 1,
+        "empty_comments": 0,
+        "attachments": 0,
+        "empty_matched": 0,
+        "att_matched_any_comment": 0
+      },
+      {
+        "work_order_id": 118580378,
+        "comments": 1,
+        "empty_comments": 0,
+        "attachments": 0,
+        "empty_matched": 0,
+        "att_matched_any_comment": 0
+      },
+      {
+        "work_order_id": 118532335,
+        "comments": 1,
+        "empty_comments": 0,
+        "attachments": 2,
+        "empty_matched": 0,
+        "att_matched_any_comment": 0
+      },
+      {
+        "work_order_id": 118470642,
+        "comments": 1,
+        "empty_comments": 0,
+        "attachments": 0,
+        "empty_matched": 0,
+        "att_matched_any_comment": 0
+      },
+      {
+        "work_order_id": 118398492,
+        "comments": 1,
+        "empty_comments": 0,
+        "attachments": 1,
+        "empty_matched": 0,
+        "att_matched_any_comment": 0
+      },
+      {
+        "work_order_id": 118397879,
+        "comments": 1,
+        "empty_comments": 0,
+        "attachments": 0,
+        "empty_matched": 0,
+        "att_matched_any_comment": 0
+      },
+      {
+        "work_order_id": 118365236,
+        "comments": 1,
+        "empty_comments": 0,
+        "attachments": 0,
+        "empty_matched": 0,
+        "att_matched_any_comment": 0
+      },
+      {
+        "work_order_id": 118358359,
+        "comments": 2,
+        "empty_comments": 0,
+        "attachments": 0,
+        "empty_matched": 0,
+        "att_matched_any_comment": 0
+      },
+      {
+        "work_order_id": 118340900,
+        "comments": 1,
+        "empty_comments": 0,
+        "attachments": 0,
+        "empty_matched": 0,
+        "att_matched_any_comment": 0
+      },
+      {
+        "work_order_id": 118332698,
+        "comments": 1,
+        "empty_comments": 0,
+        "attachments": 0,
+        "empty_matched": 0,
+        "att_matched_any_comment": 0
+      },
+      {
+        "work_order_id": 118324397,
+        "comments": 1,
+        "empty_comments": 0,
+        "attachments": 0,
+        "empty_matched": 0,
+        "att_matched_any_comment": 0
+      },
+      {
+        "work_order_id": 118259457,
+        "comments": 1,
+        "empty_comments": 0,
+        "attachments": 0,
+        "empty_matched": 0,
+        "att_matched_any_comment": 0
+      },
+      {
+        "work_order_id": 118241450,
+        "comments": 1,
+        "empty_comments": 0,
+        "attachments": 0,
+        "empty_matched": 0,
+        "att_matched_any_comment": 0
+      },
+      {
+        "work_order_id": 118230809,
+        "comments": 1,
+        "empty_comments": 0,
+        "attachments": 0,
+        "empty_matched": 0,
+        "att_matched_any_comment": 0
+      },
+      {
+        "work_order_id": 118217963,
+        "comments": 2,
+        "empty_comments": 0,
+        "attachments": 0,
+        "empty_matched": 0,
+        "att_matched_any_comment": 0
+      },
+      {
+        "work_order_id": 118211089,
+        "comments": 1,
+        "empty_comments": 0,
+        "attachments": 0,
+        "empty_matched": 0,
+        "att_matched_any_comment": 0
+      },
+      {
+        "work_order_id": 118208945,
+        "comments": 2,
+        "empty_comments": 0,
+        "attachments": 2,
+        "empty_matched": 0,
+        "att_matched_any_comment": 0
+      },
+      {
+        "work_order_id": 118207600,
+        "comments": 1,
+        "empty_comments": 0,
+        "attachments": 0,
+        "empty_matched": 0,
+        "att_matched_any_comment": 0
+      },
+      {
+        "work_order_id": 118198557,
+        "comments": 2,
+        "empty_comments": 1,
+        "attachments": 2,
+        "empty_matched": 0,
+        "att_matched_any_comment": 0
+      },
+      {
+        "work_order_id": 118160263,
+        "comments": 1,
+        "empty_comments": 0,
+        "attachments": 0,
+        "empty_matched": 0,
+        "att_matched_any_comment": 0
+      },
+      {
+        "work_order_id": 118157904,
+        "comments": 2,
+        "empty_comments": 1,
+        "attachments": 1,
+        "empty_matched": 0,
+        "att_matched_any_comment": 0
+      },
+      {
+        "work_order_id": 118152901,
+        "comments": 2,
+        "empty_comments": 0,
+        "attachments": 0,
+        "empty_matched": 0,
+        "att_matched_any_comment": 0
+      },
+      {
+        "work_order_id": 118075710,
+        "comments": 1,
+        "empty_comments": 0,
+        "attachments": 0,
+        "empty_matched": 0,
+        "att_matched_any_comment": 0
+      },
+      {
+        "work_order_id": 118075604,
+        "comments": 1,
+        "empty_comments": 0,
+        "attachments": 0,
+        "empty_matched": 0,
+        "att_matched_any_comment": 0
+      },
+      {
+        "work_order_id": 118068901,
+        "comments": 1,
+        "empty_comments": 0,
+        "attachments": 0,
+        "empty_matched": 0,
+        "att_matched_any_comment": 0
+      },
+      {
+        "work_order_id": 118062683,
+        "comments": 1,
+        "empty_comments": 0,
+        "attachments": 0,
+        "empty_matched": 0,
+        "att_matched_any_comment": 0
+      },
+      {
+        "work_order_id": 118009201,
+        "comments": 1,
+        "empty_comments": 0,
+        "attachments": 0,
+        "empty_matched": 0,
+        "att_matched_any_comment": 0
+      },
+      {
+        "work_order_id": 117996460,
+        "comments": 2,
+        "empty_comments": 0,
+        "attachments": 0,
+        "empty_matched": 0,
+        "att_matched_any_comment": 0
+      },
+      {
+        "work_order_id": 117987356,
+        "comments": 1,
+        "empty_comments": 0,
+        "attachments": 0,
+        "empty_matched": 0,
+        "att_matched_any_comment": 0
+      },
+      {
+        "work_order_id": 117973857,
+        "comments": 1,
+        "empty_comments": 0,
+        "attachments": 0,
+        "empty_matched": 0,
+        "att_matched_any_comment": 0
+      },
+      {
+        "work_order_id": 117971532,
+        "comments": 1,
+        "empty_comments": 0,
+        "attachments": 0,
+        "empty_matched": 0,
+        "att_matched_any_comment": 0
+      },
+      {
+        "work_order_id": 117914429,
+        "comments": 2,
+        "empty_comments": 1,
+        "attachments": 0,
+        "empty_matched": 0,
+        "att_matched_any_comment": 0
+      },
+      {
+        "work_order_id": 117906746,
+        "comments": 2,
+        "empty_comments": 0,
+        "attachments": 1,
+        "empty_matched": 0,
+        "att_matched_any_comment": 0
+      },
+      {
+        "work_order_id": 117900907,
+        "comments": 1,
+        "empty_comments": 0,
+        "attachments": 0,
+        "empty_matched": 0,
+        "att_matched_any_comment": 0
+      },
+      {
+        "work_order_id": 117845815,
+        "comments": 7,
+        "empty_comments": 4,
+        "attachments": 0,
+        "empty_matched": 0,
+        "att_matched_any_comment": 0
+      },
+      {
+        "work_order_id": 117845454,
+        "comments": 1,
+        "empty_comments": 0,
+        "attachments": 0,
+        "empty_matched": 0,
+        "att_matched_any_comment": 0
+      },
+      {
+        "work_order_id": 117841877,
+        "comments": 1,
+        "empty_comments": 0,
+        "attachments": 0,
+        "empty_matched": 0,
+        "att_matched_any_comment": 0
+      },
+      {
+        "work_order_id": 117840795,
+        "comments": 3,
+        "empty_comments": 0,
+        "attachments": 0,
+        "empty_matched": 0,
+        "att_matched_any_comment": 0
+      },
+      {
+        "work_order_id": 117839692,
+        "comments": 1,
+        "empty_comments": 0,
+        "attachments": 0,
+        "empty_matched": 0,
+        "att_matched_any_comment": 0
+      }
+    ]
+  },
+  "total_api_requests": 93
+}

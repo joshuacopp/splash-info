@@ -96,8 +96,15 @@ APPS_WEB_BASE_URL  = "https://splashcarwashes.info"
 # BEFORE the damage-worker daily summary cron at 13:00 UTC so any new
 # MaintainX users created overnight propagate to Supabase before they
 # could appear as assignees in that day's damage-summary email.
+#
+# Brief 74 — MaintainX -> Postgres ingest, every 5 minutes. One bounded pass
+# per invocation (src/mx-ingest.ts); the 6-month backfill completes across many
+# ticks and then settles into a cheap incremental sweep. The scheduled handler
+# in src/index.ts branches on `controller.cron` and compares against these
+# strings EXACTLY — changing a schedule here without changing USER_SYNC_CRON /
+# MX_INGEST_CRON there stops that pass silently.
 [triggers]
-crons = ["30 11 * * *"]
+crons = ["30 11 * * *", "*/5 * * * *"]
 
 # Brief 63 (2026-05-07): keeps Workers Logs sticky across deploys. Without
 # this, CF Builds re-provisions the worker on every push and the dashboard
