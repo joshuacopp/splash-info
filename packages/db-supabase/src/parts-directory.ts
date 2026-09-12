@@ -1,6 +1,7 @@
 // Parts Directory reads + writes — backs `public.parts_directory`.
 //
-// DDL lives in supabase/parts-directory-01-tables.sql. RLS is ON with no
+// DDL lives in supabase/parts-directory-01-tables.sql, amended by
+// supabase/parts-directory-02-multi-equipment.sql. RLS is ON with no
 // policies, so every call here MUST come through the service-role client
 // (`createServiceClient`); the anon / authenticated roles see nothing. The
 // only caller today is splash-workorders (`/workorders/api/parts/*`) —
@@ -11,6 +12,16 @@
 // worker (email-on-locations), the directory is a single shared reference
 // list: any authenticated user reads all of it. `location_codes` on a row
 // is descriptive metadata ("which sites use this part"), not an ACL.
+//
+// MULTI-EQUIPMENT: `parent_equipment` is a `text[]` (NOT NULL DEFAULT '{}'),
+// not a single machine name. One manufacturer part — a bearing, a motor, a
+// cylinder — is usually shared by the wrap, the top brush and the conveyor,
+// and operators should enter it once. An empty array is legal and means
+// "not yet assigned to a machine".
+//
+// Uniqueness moved with the column: the duplicate the DB now blocks is
+// `uq_parts_directory_number_per_vendor` — the same vendor's same part
+// number entered twice — not "same number on the same machine".
 //
 // PHOTOS: only the R2 key is persisted (`photo_r2_key`, in the existing
 // `splash-parts-manuals` bucket). Nothing in this module touches R2 —
@@ -25,7 +36,8 @@ const PARTS_COLS =
 
 export interface PartsDirectoryRow {
   id: string;
-  parent_equipment: string;
+  /** Every machine this part is used on. `[]` = unassigned. */
+  parent_equipment: string[];
   part_name: string;
   part_number: string | null;
   vendor: string | null;
@@ -51,7 +63,7 @@ export interface PartsDirectoryRow {
  * narrows `parent_equipment` + `part_name` to required at its own signature.
  */
 export interface PartsDirectoryInput {
-  parent_equipment?: string;
+  parent_equipment?: string[];
   part_name?: string;
   part_number?: string | null;
   vendor?: string | null;
@@ -64,7 +76,8 @@ export interface PartsDirectoryInput {
 
 /** `createPart` / `updatePart` narrow the create case to these two required. */
 export type PartsDirectoryCreateInput = PartsDirectoryInput & {
-  parent_equipment: string;
+  /** May be `[]` — a part can be catalogued before anyone knows what it fits. */
+  parent_equipment: string[];
   part_name: string;
 };
 
@@ -73,9 +86,14 @@ export type PartsDirectoryCreateInput = PartsDirectoryInput & {
  * ============================================================ */
 
 /**
- * Thrown when a write trips `uq_parts_directory_number_per_equipment` —
- * the partial UNIQUE index on `(lower(parent_equipment), lower(part_number))`
+ * Thrown when a write trips `uq_parts_directory_number_per_vendor` — the
+ * partial UNIQUE index on `(lower(coalesce(vendor,'')), lower(part_number))`
  * for rows with a non-empty part number.
+ *
+ * Since parts-directory-02 the duplicate rule is per VENDOR, not per machine:
+ * one part can now list many machines, so "same number on the same equipment"
+ * stopped describing a duplicate. Rows with no vendor coalesce to '', so two
+ * vendorless entries of the same number still collide.
  *
  * This exists so the worker can answer 409 instead of a generic 500. Two
  * admins editing the same bench at once is an ordinary, recoverable thing;
@@ -90,7 +108,7 @@ export class PartsDirectoryConflictError extends Error {
   readonly code = "parts_directory_conflict" as const;
   readonly pgCode = "23505" as const;
 
-  constructor(message = "A part with that part number already exists for this equipment.") {
+  constructor(message = "This vendor already has a part with that part number.") {
     super(message);
     this.name = "PartsDirectoryConflictError";
   }
@@ -133,13 +151,57 @@ function toNumberOrNull(v: unknown): number | null {
   return null;
 }
 
+/**
+ * Canonical shape for `parent_equipment` on the way IN: trim each entry, drop
+ * blanks, and dedupe case-insensitively while keeping the FIRST spelling the
+ * caller used and the caller's ordering. "Top Brush" and "top brush" are the
+ * same machine to an operator, so storing both would split the filter
+ * dropdown in two; but whichever capitalisation they typed first is the one
+ * that shows up in the UI, so we keep it rather than folding to lower case
+ * (unlike `location_codes`, which are opaque site codes and are lowercased).
+ *
+ * `[]` is a legitimate value and matches the column default.
+ */
+function normalizeEquipment(value: readonly unknown[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const entry of value) {
+    if (typeof entry !== "string") continue;
+    const trimmed = entry.trim();
+    if (!trimmed) continue;
+    const key = trimmed.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(trimmed);
+  }
+  return out;
+}
+
+/**
+ * Escape one value for a PostgREST text[] literal (`{a,b,c}`), used as the
+ * argument to the `cs` (contains) operator. postgrest-js builds that literal
+ * with a bare `value.join(",")` and does NOT quote the members, so an
+ * equipment name containing a comma, brace, quote or backslash would silently
+ * become two array elements — or a 400. Whitespace is quoted too, which is the
+ * common case here ("Top Brush" -> "\"Top Brush\""); Postgres would actually
+ * parse the unquoted form, but quoting it is unambiguous.
+ */
+function escapePgrstArrayLiteral(value: string): string {
+  if (/[,{}"\\\s]/.test(value)) {
+    return `"${value.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+  }
+  return value;
+}
+
 function normalizeRow(raw: unknown): PartsDirectoryRow | null {
   if (!raw || typeof raw !== "object") return null;
   const r = raw as Record<string, unknown>;
   if (typeof r.id !== "string" || !r.id) return null;
   return {
     id: r.id,
-    parent_equipment: typeof r.parent_equipment === "string" ? r.parent_equipment : "",
+    parent_equipment: Array.isArray(r.parent_equipment)
+      ? r.parent_equipment.filter((e): e is string => typeof e === "string")
+      : [],
     part_name: typeof r.part_name === "string" ? r.part_name : "",
     part_number: toStringOrNull(r.part_number),
     vendor: toStringOrNull(r.vendor),
@@ -183,26 +245,39 @@ function sanitizeSearchTerm(raw: string): string {
     .trim();
 }
 
-/** Columns the `search` param matches as a case-insensitive substring. */
+/**
+ * Columns the `search` param matches as a case-insensitive substring.
+ *
+ * `parent_equipment` is deliberately NOT here. It is a `text[]`, and ILIKE has
+ * no text[] operator — PostgREST answers 400 for `parent_equipment.ilike.*x*`.
+ * There is also no index that could serve it: `gin_trgm_ops` cannot index a
+ * text[], and wrapping the column in `array_to_string(...)` is rejected
+ * because that function is STABLE, not IMMUTABLE (see
+ * parts-directory-02-multi-equipment.sql). Substring matching on equipment is
+ * therefore done client-side by the page, which is free — `listParts` has no
+ * pagination and hands back the whole directory anyway. The exact-value
+ * equipment filter below is the indexed path.
+ */
 const SEARCH_COLS = [
   "part_name",
   "part_number",
   "vendor",
-  "parent_equipment",
   "notes"
 ] as const;
 
 export interface ListPartsOptions {
   /** Case-insensitive substring match across SEARCH_COLS. Blank = no filter. */
   search?: string;
-  /** Exact `parent_equipment` match (the UI's filter dropdown). */
+  /** Rows whose `parent_equipment` array CONTAINS this exact machine name
+   *  (the UI's filter dropdown). Blank = no filter. */
   equipment?: string;
 }
 
 /**
  * Whole directory, optionally filtered. Ordered parent_equipment asc then
- * part_name asc so the UI can render equipment-grouped sections without a
- * client-side sort.
+ * part_name asc; since parent_equipment is a text[], Postgres compares it
+ * element-wise, which groups parts that share a first machine together and
+ * sorts the unassigned (`{}`) rows first.
  *
  * No pagination: this is a hand-curated reference list in the low hundreds of
  * rows. If it ever outgrows that, add a range() here rather than filtering
@@ -221,7 +296,11 @@ export async function listParts(
 
   const equipment = typeof opts.equipment === "string" ? opts.equipment.trim() : "";
   if (equipment) {
-    q = q.eq("parent_equipment", equipment);
+    // parent_equipment=cs.{"Top Brush"} — array containment, served by
+    // idx_parts_directory_equipment_gin. Not `.eq`: the column holds every
+    // machine the part fits, so equality would only ever match a part used on
+    // exactly this one machine.
+    q = q.contains("parent_equipment", [escapePgrstArrayLiteral(equipment)]);
   }
 
   const { data, error } = await q
@@ -238,12 +317,17 @@ export async function listParts(
 }
 
 /**
- * Distinct `parent_equipment` values, sorted case-insensitively.
+ * Every machine named anywhere in the directory: the `parent_equipment`
+ * arrays of all rows flattened into one deduped list, sorted
+ * case-insensitively. Rows with an empty array contribute nothing.
  *
  * Deliberately computed over EVERY row, never the filtered set — the UI's
  * equipment dropdown must not shrink out from under the operator while they
- * type in the search box. A plain select + JS dedupe is correct at this table
- * size; PostgREST has no DISTINCT, and an RPC would be overkill.
+ * type in the search box. A plain select + JS flatten is correct at this table
+ * size; PostgREST has no DISTINCT or UNNEST, and an RPC would be overkill.
+ *
+ * Dedupe is case-insensitive and keeps the first spelling encountered, which
+ * matches `normalizeEquipment` on the write path.
  */
 export async function listPartsEquipment(client: SupabaseClient): Promise<string[]> {
   const { data, error } = await client
@@ -252,11 +336,21 @@ export async function listPartsEquipment(client: SupabaseClient): Promise<string
   if (error) throw error;
 
   const seen = new Set<string>();
+  const out: string[] = [];
   for (const raw of data ?? []) {
     const value = (raw as { parent_equipment?: unknown }).parent_equipment;
-    if (typeof value === "string" && value.trim()) seen.add(value);
+    if (!Array.isArray(value)) continue;
+    for (const entry of value) {
+      if (typeof entry !== "string") continue;
+      const trimmed = entry.trim();
+      if (!trimmed) continue;
+      const key = trimmed.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(trimmed);
+    }
   }
-  return [...seen].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }));
+  return out.sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }));
 }
 
 /** Single row by uuid. Returns null when the id doesn't exist. */
@@ -286,7 +380,9 @@ export async function getPart(
  */
 function buildWritableBody(input: PartsDirectoryInput): Record<string, unknown> {
   const body: Record<string, unknown> = {};
-  if (input.parent_equipment !== undefined) body.parent_equipment = input.parent_equipment;
+  if (input.parent_equipment !== undefined) {
+    body.parent_equipment = normalizeEquipment(input.parent_equipment);
+  }
   if (input.part_name !== undefined) body.part_name = input.part_name;
   if (input.part_number !== undefined) body.part_number = input.part_number;
   if (input.vendor !== undefined) body.vendor = input.vendor;
@@ -303,7 +399,7 @@ function buildWritableBody(input: PartsDirectoryInput): Record<string, unknown> 
  * session email — never from the request body.
  *
  * Throws `PartsDirectoryConflictError` on the partial unique index (same
- * equipment + same part number, case-insensitive). Caller maps that to 409.
+ * vendor + same part number, case-insensitive). Caller maps that to 409.
  */
 export async function createPart(
   client: SupabaseClient,
@@ -313,9 +409,10 @@ export async function createPart(
   const actor = actorEmail.trim().toLowerCase() || null;
   const body = {
     ...buildWritableBody(input),
-    // location_codes is NOT NULL DEFAULT '{}' — send an explicit empty array
-    // when the caller omitted it so the column default and the returned row
-    // agree without a re-read.
+    // Both array columns are NOT NULL DEFAULT '{}' — send an explicit empty
+    // array when the caller omitted them so the column default and the
+    // returned row agree without a re-read.
+    parent_equipment: normalizeEquipment(input.parent_equipment ?? []),
     location_codes: input.location_codes ?? [],
     created_by: actor,
     updated_by: actor

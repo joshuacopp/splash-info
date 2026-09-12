@@ -17,8 +17,17 @@
  */
 export interface PartRow {
   id: string;
-  /** The machine this part belongs to. Also the grouping key in the UI. */
-  parent_equipment: string;
+  /**
+   * Every machine this part is used on. A bearing or a cylinder is routinely
+   * shared across the wrap, the top brush and the conveyor, so this is an
+   * ARRAY, not a single machine — a part used on three machines is one row
+   * that lists three names, not three rows.
+   *
+   * MAY BE EMPTY. An operator is allowed to log a part before knowing where
+   * it fits, so nothing downstream may assume `[0]` exists. The directory
+   * groups those rows under an "Unassigned" heading rather than dropping them.
+   */
+  parent_equipment: string[];
   part_name: string;
   part_number: string | null;
   vendor: string | null;
@@ -33,6 +42,28 @@ export interface PartRow {
   created_by: string | null;
   updated_at: string;
   updated_by: string | null;
+}
+
+/**
+ * Coerce whatever the wire actually produced into a clean `string[]`.
+ *
+ * The worker now always sends an array, but this row shape crosses a service
+ * binding and survived a column migration from `text` to `text[]`, so a stray
+ * scalar (an un-migrated cache, an older worker still deployed on a preview)
+ * would otherwise render as `undefined.map` and take the whole shelf down.
+ * Tolerating it costs one function; trusting the wire costs a white page.
+ *
+ * Blank strings are dropped so `[""]` can't become a nameless group heading.
+ */
+export function toEquipmentList(value: unknown): string[] {
+  if (Array.isArray(value)) {
+    return value
+      .filter((v): v is string => typeof v === "string")
+      .map((v) => v.trim())
+      .filter(Boolean);
+  }
+  if (typeof value === "string" && value.trim()) return [value.trim()];
+  return [];
 }
 
 export type PartsFetchResult =

@@ -4,11 +4,12 @@
 // for why the browser can't call the worker itself, and ../../_lib/admin-gate.ts
 // for why the role check happens here as well as there.
 //
-// The request body is forwarded VERBATIM. Every field rule — required
-// parent_equipment/part_name, the unit_cost coercion, the http(s)-only
-// vendor_url check, location_codes lowercasing, and the 409 on a duplicate
-// part number within one parent equipment — belongs to the worker. This file
-// deliberately knows none of them.
+// The request body is forwarded VERBATIM. Every field rule — the required
+// part_name, parent_equipment as an array of machine names (possibly EMPTY,
+// which is valid), the unit_cost coercion, the http(s)-only vendor_url check,
+// location_codes lowercasing, and the 409 on a part number the same VENDOR
+// already uses — belongs to the worker. This file deliberately knows none of
+// them.
 
 import { partsWorkerFetch, PARTS_API_PATH } from "../../_lib/parts";
 import { requirePartsAdmin } from "../../_lib/admin-gate";

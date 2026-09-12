@@ -16,7 +16,30 @@
 //
 // The haystack is built once per list, not per keystroke, and includes the
 // notes field — notes are where someone writes "same as the one on the 701,
-// order two", which is the most searchable sentence on the card.
+// order two", which is the most searchable sentence on the card. It also
+// includes EVERY machine name on the row, so a term matching any one of them
+// keeps the part.
+//
+// ONE PART, MANY MACHINES. `parent_equipment` is an array: a bearing lives on
+// the wrap AND the top brush AND the conveyor. The part is therefore rendered
+// under EVERY machine it belongs to, because the question an operator is
+// actually asking is "what's on the wrap" — and a part that only showed up
+// under whichever machine happened to be listed first would be a part they
+// never find. Three consequences follow, all handled below:
+//
+//   1. The part id alone is no longer unique in the rendered tree. Every key
+//      is composed with the section it renders in (see `sectionKey`).
+//   2. The result count has to count DISTINCT parts, not cards, or it reads
+//      higher than the list it labels. `matches` is the distinct list; the
+//      per-section counts are the card counts. Don't sum the latter.
+//   3. A part with an EMPTY array belongs to no machine at all. Those are
+//      collected into a trailing "Unassigned" section rather than dropped —
+//      logging a part before you know where it fits is allowed, and a row
+//      that exists must never be invisible.
+//
+// Because a card can now appear several times on one page, each one carries a
+// quiet "Also used on" chip row naming the other machines. It reuses the chip
+// shape already used for location codes rather than inventing a second one.
 //
 // Photos open in a lightbox rather than a new tab. A part photo is looked at
 // to confirm "yes, that's the one" and then dismissed; a tab is a heavier
@@ -41,8 +64,9 @@ import { PartDeleteConfirm, PartEditor } from "./PartEditor";
 
 interface Props {
   parts: PartRow[];
-  /** Distinct sorted parent_equipment over ALL rows — drives the filter and
-   *  the order sections render in. */
+  /** Flattened, deduped, sorted union of parent_equipment over ALL rows —
+   *  drives the filter and the order sections render in. It deliberately does
+   *  not shrink while a search is active. */
   equipment: string[];
   /** Platform super_admin. Gates the Add/Edit/Delete affordances only — see
    *  the ADMIN CONTROLS note at the top of this file. Defaults to false so a
@@ -55,6 +79,25 @@ type EditorTarget = PartRow | "new" | null;
 
 const ALL_EQUIPMENT = "__all__";
 
+/** Heading for rows whose parent_equipment array is empty. */
+const UNASSIGNED_LABEL = "Unassigned";
+
+/**
+ * One rendered heading plus the cards under it.
+ *
+ * `key` is separate from `label` on purpose: the trailing catch-all section is
+ * keyed `__unassigned__`, so a machine a vendor genuinely named "Unassigned"
+ * would still get its own section instead of colliding with it.
+ */
+interface Section {
+  key: string;
+  label: string;
+  /** The machine this section is FOR — undefined for the catch-all, which
+   *  lets the card know it has no "other" machines to list. */
+  equipment?: string;
+  items: PartRow[];
+}
+
 const usd = new Intl.NumberFormat("en-US", {
   style: "currency",
   currency: "USD"
@@ -66,7 +109,8 @@ function searchText(part: PartRow): string {
     part.part_name,
     part.part_number,
     part.vendor,
-    part.parent_equipment,
+    // Every machine, so a term matching ANY of them keeps the row.
+    ...part.parent_equipment,
     part.notes
   ]
     .filter(Boolean)
@@ -90,10 +134,18 @@ export function PartsDirectory({ parts, equipment, canEdit = false }: Props) {
 
   const needle = query.trim().toLowerCase();
 
+  // DISTINCT parts, one entry each, however many machines they're on. The
+  // count text and the empty state both read off this; only the sections
+  // below expand a part into several cards.
   const matches = useMemo(() => {
     const terms = needle ? needle.split(/\s+/) : [];
     return parts.filter((p) => {
-      if (equipFilter !== ALL_EQUIPMENT && p.parent_equipment !== equipFilter) {
+      // The `?equipment=` contract is unchanged — a single value, meaning
+      // "parts whose array contains this value".
+      if (
+        equipFilter !== ALL_EQUIPMENT &&
+        !p.parent_equipment.includes(equipFilter)
+      ) {
         return false;
       }
       if (terms.length === 0) return true;
@@ -102,24 +154,42 @@ export function PartsDirectory({ parts, equipment, canEdit = false }: Props) {
     });
   }, [parts, haystacks, needle, equipFilter]);
 
-  // Sections in the registry's order. Any parent_equipment the worker didn't
-  // list (a row added between the two queries) is appended rather than
-  // dropped — a part that exists should never be invisible.
-  const sections = useMemo(() => {
+  // Sections in the registry's order. A part is listed under every machine on
+  // it. Any machine the worker's facet didn't list (a row added between the
+  // two queries) is appended rather than dropped, and rows with no machine at
+  // all land in the trailing catch-all — a part that exists is never
+  // invisible.
+  const sections = useMemo<Section[]>(() => {
     const order = [...equipment];
     const seen = new Set(order);
     for (const p of matches) {
-      if (!seen.has(p.parent_equipment)) {
-        seen.add(p.parent_equipment);
-        order.push(p.parent_equipment);
+      for (const label of p.parent_equipment) {
+        if (!seen.has(label)) {
+          seen.add(label);
+          order.push(label);
+        }
       }
     }
-    return order
+
+    const built: Section[] = order
       .map((label) => ({
+        key: `equipment:${label}`,
         label,
-        items: matches.filter((p) => p.parent_equipment === label)
+        equipment: label,
+        items: matches.filter((p) => p.parent_equipment.includes(label))
       }))
       .filter((s) => s.items.length > 0);
+
+    const unassigned = matches.filter((p) => p.parent_equipment.length === 0);
+    if (unassigned.length > 0) {
+      built.push({
+        key: "__unassigned__",
+        label: UNASSIGNED_LABEL,
+        items: unassigned
+      });
+    }
+
+    return built;
   }, [equipment, matches]);
 
   const closeLightbox = useCallback(() => setLightbox(null), []);
@@ -145,7 +215,7 @@ export function PartsDirectory({ parts, equipment, canEdit = false }: Props) {
             type="search"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="Search — part number, name, vendor, notes…"
+            placeholder="Search — part number, name, vendor, machine, notes…"
             aria-label="Search parts"
             className="w-full rounded-splash-md border-2 border-gray-light bg-white px-4 py-2.5 text-sm text-splash-navy outline-none focus:border-splash-blue"
           />
@@ -165,6 +235,8 @@ export function PartsDirectory({ parts, equipment, canEdit = false }: Props) {
           ))}
         </select>
 
+        {/* Distinct parts, NOT rendered cards — a part on three machines is
+            one part. See note 2 at the top of the file. */}
         <p className="text-sm font-semibold text-splash-navy/60">
           {filtering
             ? `${matches.length} of ${parts.length} part${parts.length === 1 ? "" : "s"}`
@@ -189,20 +261,32 @@ export function PartsDirectory({ parts, equipment, canEdit = false }: Props) {
             : "Nothing matches that search. Try a part number, a vendor, or the machine it came off."}
         </div>
       ) : (
-        sections.map(({ label, items }) => (
-          <section key={label} className="mb-10">
+        sections.map((section) => (
+          <section key={section.key} className="mb-10">
             <div className="mb-4 flex items-baseline gap-3 border-b-2 border-gray-light pb-2">
-              <h2 className="text-lg font-bold text-splash-navy">{label}</h2>
+              <h2 className="text-lg font-bold text-splash-navy">
+                {section.label}
+              </h2>
               <span className="text-xs font-semibold uppercase tracking-[0.14em] text-splash-navy/50">
-                {items.length} {items.length === 1 ? "part" : "parts"}
+                {section.items.length}{" "}
+                {section.items.length === 1 ? "part" : "parts"}
               </span>
+              {section.equipment === undefined && (
+                <span className="text-xs italic text-splash-navy/40">
+                  no machine recorded yet
+                </span>
+              )}
             </div>
 
             <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3">
-              {items.map((part) => (
+              {section.items.map((part) => (
                 <PartCard
-                  key={part.id}
+                  // The part id is no longer unique across the tree — the same
+                  // part renders under every machine it's on — so the key is
+                  // composed with the section. See note 1 at the top.
+                  key={`${section.key}::${part.id}`}
                   part={part}
+                  inEquipment={section.equipment}
                   onOpenPhoto={() => setLightbox(part)}
                   onEdit={canEdit ? () => setEditing(part) : undefined}
                   onDelete={canEdit ? () => setDeleting(part) : undefined}
@@ -284,17 +368,28 @@ export function PartsDirectory({ parts, equipment, canEdit = false }: Props) {
 
 function PartCard({
   part,
+  inEquipment,
   onOpenPhoto,
   onEdit,
   onDelete
 }: {
   part: PartRow;
+  /** The machine whose section this card is rendered under. Undefined in the
+   *  "Unassigned" section, where the part has no machines at all. */
+  inEquipment?: string;
   onOpenPhoto: () => void;
   /** Both undefined for a non-admin viewer — the footer row is then only
    *  rendered at all if there's a vendor link to put in it. */
   onEdit?: () => void;
   onDelete?: () => void;
 }) {
+  // The same card shows up under every machine the part is on, so it names the
+  // OTHER ones. Suppressed entirely for a single-machine part, which is still
+  // most of them — this is meant to be a quiet footnote, not a second title.
+  const alsoUsedOn = part.parent_equipment.filter(
+    (label) => label !== inEquipment
+  );
+
   return (
     <div className="flex flex-col overflow-hidden rounded-splash-lg border-[3px] border-splash-navy bg-white shadow-splash-card">
       <div className="relative aspect-[4/3] bg-splash-navy/5">
@@ -352,6 +447,30 @@ function PartCard({
               </span>
             )}
           </p>
+        )}
+
+        {/* Same chip shape as the location codes below, deliberately toned
+            down — machine names are long free text, so no uppercase and no
+            letter-spacing, or "Macneil RS701 Wrap" wraps to three lines. */}
+        {alsoUsedOn.length > 0 && (
+          <div className="pt-0.5">
+            <p className="text-[0.6875rem] font-semibold uppercase tracking-[0.08em] text-splash-navy/40">
+              Also used on
+            </p>
+            <ul
+              aria-label={`Other machines ${part.part_name} is used on`}
+              className="mt-1 flex flex-wrap gap-1"
+            >
+              {alsoUsedOn.map((label) => (
+                <li
+                  key={label}
+                  className="rounded-splash-sm bg-splash-navy/5 px-1.5 py-0.5 text-[0.6875rem] font-semibold text-splash-navy/70"
+                >
+                  {label}
+                </li>
+              ))}
+            </ul>
+          </div>
         )}
 
         {part.location_codes.length > 0 && (

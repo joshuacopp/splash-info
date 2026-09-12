@@ -38,6 +38,7 @@ import { cookies, headers } from "next/headers";
 import {
   PARTS_API_PATH,
   partPhotoUrl,
+  toEquipmentList,
   type FetchPartsParams,
   type PartRow,
   type PartsFetchResult
@@ -49,6 +50,7 @@ import {
 export {
   PARTS_API_PATH,
   partPhotoUrl,
+  toEquipmentList,
   type FetchPartsParams,
   type PartRow,
   type PartsFetchResult
@@ -59,7 +61,13 @@ import { getCloudflareContext } from "@opennextjs/cloudflare";
 interface PartsListResponse {
   ok: true;
   parts: PartRow[];
-  /** Distinct sorted parent_equipment across ALL rows, not just this page. */
+  /**
+   * The flattened, deduped, sorted union of every row's parent_equipment.
+   *
+   * Note it is computed over ALL rows and does NOT shrink while `?search=` is
+   * active. That is deliberate: the facet is the machine registry, and a
+   * filter dropdown whose options disappear as you type is unusable.
+   */
   equipment: string[];
 }
 
@@ -187,14 +195,27 @@ export async function fetchParts(
 
   // Defensive: a malformed payload should degrade to an empty shelf, not
   // crash the render with `undefined.map`.
-  const parts = Array.isArray(body?.parts) ? body.parts : [];
+  const rawParts = Array.isArray(body?.parts) ? body.parts : [];
+
+  // parent_equipment is the one field the UI iterates unconditionally, so it
+  // is normalized on the way in rather than guarded at every call site. A
+  // stray scalar becomes `[value]`, a null/undefined becomes `[]`.
+  const parts: PartRow[] = rawParts.map((p) => ({
+    ...p,
+    parent_equipment: toEquipmentList(p?.parent_equipment),
+    location_codes: Array.isArray(p?.location_codes) ? p.location_codes : []
+  }));
+
   const equipment = Array.isArray(body?.equipment)
-    ? body.equipment
-    : // Derive the filter list from the rows when the worker omits it.
-      [...new Set(parts.map((p) => p.parent_equipment).filter(Boolean))].sort(
-        (a, z) => a.localeCompare(z)
+    ? // Normalize the facet too — it feeds <option value> and the group order.
+      [...new Set(toEquipmentList(body.equipment))].sort((a, z) =>
+        a.localeCompare(z)
+      )
+    : // Derive it from the rows when the worker omits it. Flattened, because
+      // one row can now contribute several machines to the registry.
+      [...new Set(parts.flatMap((p) => p.parent_equipment))].sort((a, z) =>
+        a.localeCompare(z)
       );
 
   return { kind: "ok", parts, equipment };
 }
-

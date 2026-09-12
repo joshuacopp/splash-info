@@ -71,10 +71,12 @@ export default async function PartsDirectoryPage() {
         <h1 className="text-2xl font-bold text-splash-navy">Parts Directory</h1>
         <p className="mt-1 text-sm text-splash-navy/70">
           The parts we order most, with the number to quote and where to get
-          them. Search by part number, name, vendor, or anything in the notes —
-          multiple words narrow the list, so &ldquo;macneil bearing&rdquo; finds
-          the bearing we buy from MacNeil. Filter by machine to see everything
-          that comes off one piece of equipment.
+          them. Search by part number, name, vendor, machine, or anything in
+          the notes — multiple words narrow the list, so &ldquo;macneil
+          bearing&rdquo; finds the bearing we buy from MacNeil. Filter by
+          machine to see everything that comes off one piece of equipment. A
+          part used on several machines is one entry and shows up under each of
+          them.
         </p>
       </div>
 

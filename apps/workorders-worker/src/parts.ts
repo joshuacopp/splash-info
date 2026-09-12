@@ -41,6 +41,18 @@
 // preflight, which this worker never answers — plus the SameSite=Lax session
 // cookie and the super_admin gate.
 //
+// FIELDS. A row is `parent_equipment` (text[] — every machine the part fits,
+// possibly empty), `part_name` (required), and then all-optional
+// `part_number`, `vendor`, `photo_r2_key`, `unit_cost`, `vendor_url`,
+// `location_codes` (text[]), `notes`. `parent_equipment` became an array in
+// supabase/parts-directory-02-multi-equipment.sql: one bearing is used on the
+// wrap AND the top brush AND the conveyor, and operators were re-entering it
+// once per machine. Writers may send a JSON array of strings; a bare string is
+// accepted and wrapped, so an older client or a hand-rolled curl still works.
+// An empty array is allowed on purpose — a part can be catalogued before
+// anyone knows what it fits. The `?equipment=` filter on GET is still a single
+// value and now means "array contains this machine".
+//
 // PHOTOS. Only `photo_r2_key` is stored. The object itself lives in the
 // existing `splash-parts-manuals` R2 bucket, which is bound to apps/web (not to
 // this worker), so upload and cleanup are apps/web's job. DELETE hands the
@@ -70,9 +82,10 @@ import { json, jsonError } from "@splash/http";
 interface PartsListResponse {
   ok: true;
   parts: PartsDirectoryRow[];
-  /** Distinct sorted `parent_equipment` over EVERY row, not just the
-   *  filtered set, so the UI's filter dropdown doesn't collapse as the
-   *  operator types in the search box. */
+  /** Every machine named anywhere in the directory: the `parent_equipment`
+   *  arrays of EVERY row flattened, deduped and sorted — not just the filtered
+   *  set, so the UI's filter dropdown doesn't collapse as the operator types
+   *  in the search box. */
   equipment: string[];
 }
 
@@ -101,6 +114,7 @@ const MAX_NOTES = 4000;
 const MAX_URL = 2048;
 const MAX_R2_KEY = 512;
 const MAX_LOCATION_CODES = 200;
+const MAX_EQUIPMENT = 100;
 
 /** Thrown by the field readers; caught once per handler → 400. */
 class ValidationError extends Error {}
@@ -128,7 +142,7 @@ function readOptionalText(
   return trimmed;
 }
 
-/** Required free-text field (parent_equipment, part_name). */
+/** Required free-text field (`part_name` is the only one left). */
 function readRequiredText(
   body: Record<string, unknown>,
   key: string
@@ -206,20 +220,64 @@ function readLocationCodes(body: Record<string, unknown>): string[] | undefined 
   return [...out];
 }
 
+/**
+ * `parent_equipment` — array of machine names, trimmed and deduped
+ * case-insensitively (first spelling wins, caller's order preserved), mirroring
+ * `normalizeEquipment` in @splash/db-supabase.
+ *
+ * Tolerant on the way in, strict on the way out: a real JSON array is the
+ * contract, but a bare string is wrapped into a one-element array so a client
+ * written against the pre-02 single-value schema (or a curl by hand) doesn't
+ * eat a 400 for a request we understand perfectly well. null and `[]` both
+ * mean "no machines yet", which is legal — the column is NOT NULL DEFAULT '{}'
+ * and an operator may add a part before knowing where it fits. A non-string
+ * member is a genuine client bug and does 400.
+ */
+function readParentEquipment(body: Record<string, unknown>): string[] | undefined {
+  if (!("parent_equipment" in body)) return undefined;
+  const value = body.parent_equipment;
+  if (value === null) return [];
+
+  const raw = typeof value === "string" ? [value] : value;
+  if (!Array.isArray(raw)) fail("parent_equipment must be an array of strings");
+  if (raw.length > MAX_EQUIPMENT) {
+    fail(`parent_equipment has too many entries (max ${MAX_EQUIPMENT})`);
+  }
+
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const entry of raw) {
+    if (typeof entry !== "string") fail("parent_equipment must be an array of strings");
+    const name = entry.trim();
+    if (!name) continue;
+    if (name.length > MAX_SHORT_TEXT) {
+      fail(`parent_equipment entry is too long (max ${MAX_SHORT_TEXT} characters)`);
+    }
+    const key = name.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(name);
+  }
+  return out;
+}
+
 /** Shared field reader for POST (create=true) and PATCH (create=false). */
 function readPartsInput(
   body: Record<string, unknown>,
   create: boolean
 ): PartsDirectoryInput {
-  const parentEquipment = readRequiredText(body, "parent_equipment");
+  const parentEquipment = readParentEquipment(body);
   const partName = readRequiredText(body, "part_name");
   if (create) {
-    if (parentEquipment === undefined) fail("parent_equipment is required");
     if (partName === undefined) fail("part_name is required");
   }
 
   const input: PartsDirectoryInput = {};
+  // On create the column is always written, even when the operator named no
+  // machines, so the inserted row and the DB default agree. On PATCH an absent
+  // key still means "leave it alone".
   if (parentEquipment !== undefined) input.parent_equipment = parentEquipment;
+  else if (create) input.parent_equipment = [];
   if (partName !== undefined) input.part_name = partName;
 
   const partNumber = readOptionalText(body, "part_number", MAX_SHORT_TEXT);
@@ -337,6 +395,8 @@ export async function handlePartsRequest(
 async function handleListParts(request: Request, env: SupabaseEnv): Promise<Response> {
   const url = new URL(request.url);
   const search = url.searchParams.get("search") ?? "";
+  // Single value, not a list: the dropdown picks one machine, and the data
+  // layer turns it into an array-contains match on parent_equipment.
   const equipment = url.searchParams.get("equipment") ?? "";
 
   const sb = createServiceClient(env);
@@ -382,7 +442,9 @@ async function handleCreatePart(
       session.email ?? ""
     );
     console.log(
-      `workorders-worker parts create: id=${part.id} equipment=${part.parent_equipment} by=${session.email}`
+      `workorders-worker parts create: id=${part.id} equipment=${
+        part.parent_equipment.join("|") || "(none)"
+      } by=${session.email}`
     );
     return json({ ok: true, part } satisfies PartResponse, 201);
   } catch (err) {
