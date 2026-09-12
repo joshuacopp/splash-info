@@ -31,7 +31,7 @@
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import type { FormEvent, ReactNode } from "react";
 import { useRouter } from "next/navigation";
-import { partPhotoUrl, type PartRow } from "../_lib/parts";
+import { partPhotoUrl, type PartRow } from "../_lib/parts-shared";
 
 const API_PARTS = "/admin/parts/directory/api/parts";
 const API_PHOTO = "/admin/parts/directory/api/photo";

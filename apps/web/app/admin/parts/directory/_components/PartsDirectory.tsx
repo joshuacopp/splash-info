@@ -36,7 +36,7 @@
 // person with dev tools can flip this prop and get nothing for it.
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { partPhotoUrl, type PartRow } from "../_lib/parts";
+import { partPhotoUrl, type PartRow } from "../_lib/parts-shared";
 import { PartDeleteConfirm, PartEditor } from "./PartEditor";
 
 interface Props {

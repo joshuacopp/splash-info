@@ -35,33 +35,25 @@
 // "which sites use this part", not an access scope.
 
 import { cookies, headers } from "next/headers";
-import { getCloudflareContext } from "@opennextjs/cloudflare";
+import {
+  PARTS_API_PATH,
+  partPhotoUrl,
+  type FetchPartsParams,
+  type PartRow,
+  type PartsFetchResult
+} from "./parts-shared";
 
-/**
- * One row of the directory. Mirrors the worker's `GET /workorders/api/parts`
- * response exactly. Everything except the identity/audit columns is nullable
- * — a part can be logged with nothing but a name and the machine it came off,
- * and filled in later.
- */
-export interface PartRow {
-  id: string;
-  /** The machine this part belongs to. Also the grouping key in the UI. */
-  parent_equipment: string;
-  part_name: string;
-  part_number: string | null;
-  vendor: string | null;
-  /** `parts-directory/{id}/{nanoid}.jpg` — see partPhotoUrl(). */
-  photo_r2_key: string | null;
-  unit_cost: number | null;
-  vendor_url: string | null;
-  /** Sites that use this part. Display metadata, NOT an access scope. */
-  location_codes: string[];
-  notes: string | null;
-  created_at: string;
-  created_by: string | null;
-  updated_at: string;
-  updated_by: string | null;
-}
+// Re-exported so server-side callers keep importing everything from one place.
+// Client components must import from ./parts-shared directly — pulling any
+// runtime value out of THIS module puts next/headers in the browser bundle.
+export {
+  PARTS_API_PATH,
+  partPhotoUrl,
+  type FetchPartsParams,
+  type PartRow,
+  type PartsFetchResult
+};
+import { getCloudflareContext } from "@opennextjs/cloudflare";
 
 /** Raw worker response body for the list endpoint. */
 interface PartsListResponse {
@@ -70,28 +62,6 @@ interface PartsListResponse {
   /** Distinct sorted parent_equipment across ALL rows, not just this page. */
   equipment: string[];
 }
-
-export type PartsFetchResult =
-  | { kind: "ok"; parts: PartRow[]; equipment: string[] }
-  | { kind: "unavailable" }
-  | { kind: "denied" }
-  | { kind: "error"; status: number };
-
-export interface FetchPartsParams {
-  /** Server-side search. The page passes nothing — filtering is client-side
-   *  over the full list, which is what makes it instant. Here for the admin
-   *  pass and for any future paginated surface. */
-  search?: string;
-  /** Server-side parent_equipment filter. Same note as `search`. */
-  equipment?: string;
-}
-
-/**
- * The worker's parts surface. Exported because the admin write proxies
- * (../api/parts/route.ts and ../api/parts/[id]/route.ts) build item paths off
- * it as `${PARTS_API_PATH}/${id}`.
- */
-export const PARTS_API_PATH = "/workorders/api/parts";
 
 /**
  * Absolute URL for the dev fallback. Server-only: CF Workers' fetch refuses
@@ -228,21 +198,3 @@ export async function fetchParts(
   return { kind: "ok", parts, equipment };
 }
 
-/**
- * Browser-facing URL for a part photo. The serve route
- * (`/admin/parts/directory/photo/[...key]`) is built in the next pass; this
- * only produces the href, so the <img src> is stable ahead of it.
- *
- * Keys carry slashes (`parts-directory/{id}/{nanoid}.jpg`) and those are real
- * path separators, so each segment is encoded individually rather than
- * running the whole key through encodeURIComponent (which would turn the
- * separators into %2F and break the route match).
- */
-export function partPhotoUrl(r2Key: string): string {
-  const encoded = r2Key
-    .split("/")
-    .filter(Boolean)
-    .map(encodeURIComponent)
-    .join("/");
-  return `/admin/parts/directory/photo/${encoded}`;
-}
