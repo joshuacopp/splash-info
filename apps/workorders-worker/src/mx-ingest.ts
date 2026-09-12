@@ -52,7 +52,9 @@ import {
   INGEST_PAGE_LIMIT,
   LIVE_WORK_ORDER_STATUSES,
   CLOSED_WORK_ORDER_STATUSES,
-  ALL_WORK_ORDER_STATUSES
+  ALL_WORK_ORDER_STATUSES,
+  fetchWorkOrderComments,
+  type RawWorkOrderComment
 } from "@splash/maintainx";
 import {
   fetchMxLocationMap,
@@ -63,7 +65,12 @@ import {
   replaceMxWorkOrderPartsForPage,
   replaceMxWorkOrderExpendituresForPage,
   replaceMxWorkOrderTimeItemsForPage,
+  upsertMxWorkOrderComments,
+  selectMxCommentBacklog,
+  stampMxCommentsSynced,
+  type MxCommentStampRow,
   type MxSyncStateRow,
+  type MxWorkOrderCommentRow,
   type MxWorkOrderRow,
   type MxWorkRequestRow,
   type MxWorkOrderPartRow,
@@ -71,7 +78,12 @@ import {
   type MxWorkOrderTimeItemRow,
   type SupabaseWriteEnv
 } from "@splash/db-supabase";
-import { mapWorkOrder, mapWorkRequest, type MxLocationMap } from "./mx-map.js";
+import {
+  mapComment,
+  mapWorkOrder,
+  mapWorkRequest,
+  type MxLocationMap
+} from "./mx-map.js";
 
 export interface MxIngestEnv extends SupabaseWriteEnv {
   MAINTAINX_API_KEY?: string;
@@ -82,6 +94,13 @@ export const MX_PASS_LIVE = "work_orders_live";
 export const MX_PASS_HISTORY = "work_orders_history";
 export const MX_PASS_REQUESTS = "work_requests_full";
 export const MX_PASS_INCREMENTAL = "work_orders_incremental";
+
+/** Bookkeeping key for the comment pass. Deliberately NOT a member of
+ *  MX_BACKFILL_PASSES: the dispatcher treats those as things that finish, and
+ *  the comment pass never does -- it drains a work set that refills every time
+ *  somebody posts. Putting it in the list would wedge the dispatcher there and
+ *  the incremental sweep would never run again. */
+export const MX_PASS_COMMENTS = "work_order_comments";
 
 /** Backfill passes, in the order they must run. */
 export const MX_BACKFILL_PASSES = [
@@ -109,6 +128,24 @@ export const HISTORY_WINDOW_DAYS = 183;
  *  free; missing one is not. */
 export const INCREMENTAL_OVERLAP_MS = 5 * 60_000;
 
+/** Work orders pulled off the comment backlog per tick. The cold backlog is
+ *  ~1,851 threads, so 100 a tick against a five-minute cron drains it in about
+ *  an hour and a half; after that the real backlog is whatever moved in the
+ *  last five minutes, which is nearly always nothing. */
+export const COMMENT_WORK_SET = 100;
+
+/** Work orders per write cycle. The unit of durability: everything in a chunk
+ *  is fetched, then written, then stamped together, so a chunk is also the most
+ *  work a crash can cost. Small enough that the budget check between chunks is
+ *  frequent, large enough that the two writes amortise over 25 threads. */
+export const COMMENT_CHUNK = 25;
+
+/** Pages per thread before the walk gives up. Measured thread length is a mean
+ *  of 2.5 comments and a maximum of 6, against a 200-row page -- so one page is
+ *  the norm and five is an absurd allowance that exists only to bound the loop
+ *  if the API ever returns a cursor that does not terminate. */
+export const COMMENT_PAGE_CAP = 5;
+
 export interface MxPassResult {
   key: MxPassKey;
   ok: boolean;
@@ -122,10 +159,31 @@ export interface MxPassResult {
   error: string | null;
 }
 
+export interface MxCommentPassResult {
+  ok: boolean;
+  /** Threads taken off the backlog this tick. */
+  workOrders: number;
+  /** Work orders whose watermark advanced -- fetched cleanly, or 404. */
+  stamped: number;
+  /** Comment rows upserted. */
+  comments: number;
+  /** Threads whose fetch failed. Left un-stamped, so still in the backlog. */
+  failed: number;
+  /** Threads that hit COMMENT_PAGE_CAP. Stamped anyway; see `fetchThread`. */
+  truncated: number;
+  requests: number;
+  elapsedMs: number;
+  error: string | null;
+}
+
 export interface MxIngestResult {
   ok: boolean;
   /** Null when there was nothing to do or the worker is not configured. */
   pass: MxPassResult | null;
+  /** Null while the backfill is still running, and on every early return --
+   *  the comment pass only gets whatever budget the incremental sweep leaves
+   *  behind. */
+  comments: MxCommentPassResult | null;
   skipped: string | null;
 }
 
@@ -180,7 +238,7 @@ function isComplete(state: MxSyncStateRow | null): boolean {
 export async function runMxIngest(env: MxIngestEnv): Promise<MxIngestResult> {
   const apiKey = env.MAINTAINX_API_KEY;
   if (!apiKey) {
-    return { ok: true, pass: null, skipped: "MAINTAINX_API_KEY unbound" };
+    return { ok: true, pass: null, comments: null, skipped: "MAINTAINX_API_KEY unbound" };
   }
 
   const budget = new Budget();
@@ -191,14 +249,14 @@ export async function runMxIngest(env: MxIngestEnv): Promise<MxIngestResult> {
   const locationMap = await fetchMxLocationMap(env);
   budget.requests += 1;
   if (!locationMap.ok) {
-    return { ok: false, pass: null, skipped: `location map: ${locationMap.error}` };
+    return { ok: false, pass: null, comments: null, skipped: `location map: ${locationMap.error}` };
   }
 
   for (const key of MX_BACKFILL_PASSES) {
     const state = await getMxSyncState(env, key);
     budget.requests += 1;
     if (!state.ok) {
-      return { ok: false, pass: null, skipped: `sync state ${key}: ${state.error}` };
+      return { ok: false, pass: null, comments: null, skipped: `sync state ${key}: ${state.error}` };
     }
     if (isComplete(state.state)) continue;
 
@@ -218,17 +276,32 @@ export async function runMxIngest(env: MxIngestEnv): Promise<MxIngestResult> {
             prune: false
           });
 
-    return { ok: pass.ok, pass, skipped: null };
+    return { ok: pass.ok, pass, comments: null, skipped: null };
   }
 
   const state = await getMxSyncState(env, MX_PASS_INCREMENTAL);
   budget.requests += 1;
   if (!state.ok) {
-    return { ok: false, pass: null, skipped: `sync state incremental: ${state.error}` };
+    return { ok: false, pass: null, comments: null, skipped: `sync state incremental: ${state.error}` };
   }
 
   const pass = await runIncrementalPass(env, apiKey, state.state, locationMap.map, budget);
-  return { ok: pass.ok, pass, skipped: null };
+
+  // The comment pass rides along on the same invocation instead of taking a
+  // tick of its own. It is gated on the incremental sweep because the two are
+  // not peers: the sweep is what makes `last_message_sent_at` current, so
+  // running comments first would drain a backlog computed from stale
+  // watermarks. And it is affordable because the steady-state sweep costs about
+  // two requests and a fraction of a second -- it finds nothing, almost always.
+  // Whatever the sweep did not spend goes here.
+  //
+  // Gated on `pass.ok` as well: if the sweep failed, a tick spent stamping
+  // watermarks against stale `last_message_sent_at` values hides those comments
+  // until the next message arrives.
+  const comments =
+    pass.ok && !budget.exhausted() ? await runCommentPass(env, apiKey, budget) : null;
+
+  return { ok: pass.ok && (comments?.ok ?? true), pass, comments, skipped: null };
 }
 
 /* ============================================================
@@ -652,4 +725,197 @@ async function resolveWorkOrderIds(
   }
 
   return { ok: true, requests: 1, error: null };
+}
+
+/* ============================================================
+ * Comment pass
+ * ============================================================ */
+
+/**
+ * Drains `mx_comment_backlog`: work orders whose thread has moved since the
+ * last time this pass looked at them.
+ *
+ * Shape differs from every other pass here, because the API does. There is no
+ * collection endpoint for comments -- `/workorders/{id}/comments` is the only
+ * way in -- so this is not a cursor walk that can be checkpointed mid-flight.
+ * It is a work set: read a batch of ids, fetch each thread, write, stamp. The
+ * stamp IS the checkpoint, and it is per work order rather than per page.
+ *
+ * Why it can afford one request per work order: `type = 'REACTIVE'` plus
+ * `last_message_sent_at is not null` selects 1,851 work orders out of ~20,000
+ * measured over six months. Preventive work orders carry comments 0.2% of the
+ * time. And the backlog is self-draining -- a work order enters it when its
+ * thread moves and leaves it the moment the watermark is stamped, so in steady
+ * state the set is "threads that moved in the last five minutes", which is
+ * usually zero and costs exactly one request to discover.
+ *
+ * The pass is idempotent by construction rather than by watermark: comments
+ * upsert on their own MaintainX id, and MaintainX does not expose an
+ * `updatedAt` on a comment. Refetching a thread rewrites the same rows. The
+ * flip side, accepted: a comment EDITED in MaintainX is invisible unless
+ * something else in the thread moves `last_message_sent_at`.
+ */
+async function runCommentPass(
+  env: MxIngestEnv,
+  apiKey: string,
+  budget: Budget
+): Promise<MxCommentPassResult> {
+  const startedAt = Date.now();
+  const startRequests = budget.requests;
+
+  let workOrders = 0;
+  let stamped = 0;
+  let comments = 0;
+  let failed = 0;
+  let truncated = 0;
+
+  const stats = (): Record<string, number> => ({
+    work_orders: workOrders,
+    stamped,
+    comments,
+    failed,
+    truncated
+  });
+
+  const tally = (error: string | null): MxCommentPassResult => ({
+    ok: error === null,
+    workOrders,
+    stamped,
+    comments,
+    failed,
+    truncated,
+    requests: budget.requests - startRequests,
+    elapsedMs: Date.now() - startedAt,
+    error
+  });
+
+  const fail = async (error: string): Promise<MxCommentPassResult> => {
+    await writeMxSyncState(env, MX_PASS_COMMENTS, {
+      last_run_at: new Date().toISOString(),
+      last_status: "ERROR",
+      last_error: error.slice(0, 2000),
+      stats: stats()
+    });
+    return tally(error);
+  };
+
+  const backlog = await selectMxCommentBacklog(env, COMMENT_WORK_SET);
+  budget.requests += 1;
+  if (!backlog.ok) return fail(`backlog: ${backlog.error ?? "unknown"}`);
+
+  for (let i = 0; i < backlog.rows.length; i += COMMENT_CHUNK) {
+    const chunk = backlog.rows.slice(i, i + COMMENT_CHUNK);
+    const syncedAt = new Date().toISOString();
+    const rows: MxWorkOrderCommentRow[] = [];
+    const stamps: MxCommentStampRow[] = [];
+
+    for (const work of chunk) {
+      // Checked per work order, not just per chunk: a chunk is 25 sequential
+      // round trips to MaintainX, and the whole point of stopping is to stop
+      // before the invocation does.
+      if (budget.exhausted()) break;
+
+      workOrders += 1;
+      const thread = await fetchThread(env, apiKey, work.id, budget);
+      if (!thread.ok) {
+        // Left UN-stamped on purpose: it stays in the backlog and is retried
+        // next tick. The backlog is ordered by recency, so a thread that fails
+        // repeatedly sits at a fixed position costing one request a tick --
+        // visible in `failed`, not fatal.
+        failed += 1;
+        continue;
+      }
+      if (thread.truncated) truncated += 1;
+
+      for (const raw of thread.comments) {
+        const row = mapComment(raw, work.id, syncedAt);
+        if (row) rows.push(row);
+      }
+
+      // The stamp is the value the work order carried when the backlog was
+      // read, never `Date.now()`. See MxCommentStampRow.
+      stamps.push({ id: work.id, comments_synced_at: work.last_message_sent_at });
+    }
+
+    const write = await upsertMxWorkOrderComments(env, rows);
+    budget.requests += write.requests;
+    if (!write.ok) return fail(`upsert comments: ${write.error ?? "unknown"}`);
+    comments += write.written;
+
+    // Strictly after the comments are durable. Crashing between the two costs a
+    // refetch of one chunk; doing it in the other order would stamp threads
+    // whose comments never landed and lose them until someone posts again.
+    const stamp = await stampMxCommentsSynced(env, stamps);
+    budget.requests += stamp.requests;
+    if (!stamp.ok) return fail(`stamp watermark: ${stamp.error ?? "unknown"}`);
+    stamped += stamp.written;
+
+    if (budget.exhausted()) break;
+  }
+
+  // Recorded even when the backlog was empty. `mx_sync_state` is the only place
+  // an operator can see that this pass is alive, and "no row" would otherwise
+  // be indistinguishable from "never deployed".
+  const now = new Date().toISOString();
+  const checkpoint = await writeMxSyncState(env, MX_PASS_COMMENTS, {
+    last_run_at: now,
+    last_success_at: now,
+    last_status: failed > 0 ? "PARTIAL" : "OK",
+    last_error: failed > 0 ? `${failed} thread fetch(es) failed, left in backlog` : null,
+    stats: stats()
+  });
+  budget.requests += 1;
+  if (!checkpoint.ok) return tally(`checkpoint: ${checkpoint.error ?? "unknown"}`);
+
+  return tally(null);
+}
+
+interface ThreadResult {
+  ok: boolean;
+  comments: RawWorkOrderComment[];
+  /** True when COMMENT_PAGE_CAP stopped the walk before the cursor went null.
+   *  The work order is still stamped -- see below. */
+  truncated: boolean;
+}
+
+/** Walks one work order's comment thread to the end of its cursor. */
+async function fetchThread(
+  env: MxIngestEnv,
+  apiKey: string,
+  workOrderId: number,
+  budget: Budget
+): Promise<ThreadResult> {
+  const comments: RawWorkOrderComment[] = [];
+  let cursor: string | null = null;
+
+  for (let page = 0; page < COMMENT_PAGE_CAP; page += 1) {
+    const res = await fetchWorkOrderComments({
+      apiKey,
+      baseUrl: env.MAINTAINX_BASE_URL,
+      workOrderId,
+      cursor,
+      limit: INGEST_PAGE_LIMIT
+    });
+    budget.requests += 1;
+
+    if (!res.ok) {
+      // 404 is a work order that no longer exists in MaintainX. Reporting it as
+      // a failure would pin it in the backlog forever at one wasted request per
+      // tick, so it is treated as an empty thread: nothing to write, watermark
+      // stamped, row drains out. Every other status is retryable and is not.
+      if (res.status === 404) return { ok: true, comments, truncated: false };
+      return { ok: false, comments: [], truncated: false };
+    }
+
+    comments.push(...res.comments);
+    cursor = res.nextCursor;
+    if (cursor === null) return { ok: true, comments, truncated: false };
+  }
+
+  // Cap hit. Stamped anyway by the caller, deliberately: refusing to stamp
+  // would refetch the same first COMMENT_PAGE_CAP pages every tick forever and
+  // never reach the tail. Measured thread length is a mean of 2.5 comments
+  // against a page size of 200, so reaching this line means something is wrong
+  // in a way worth seeing in `truncated` rather than absorbing silently.
+  return { ok: true, comments, truncated: true };
 }

@@ -991,3 +991,127 @@ async function selectChildrenForPage(
     error: null
   };
 }
+
+// ---------------------------------------------------------------------------
+// 7. Comment pass support
+//
+// The comment pass (Phase 1 plan, section E) is not a cursor walk over a
+// MaintainX collection the way the other passes are -- there is no `/comments`
+// endpoint that spans work orders. It is a work-set drain: read a batch of work
+// orders whose thread has moved, fetch each thread by id, write the comments,
+// then stamp a watermark so the batch drops out of the work set.
+//
+// Both halves of that live here because both are PostgREST quirks rather than
+// ingest logic.
+// ---------------------------------------------------------------------------
+
+export interface MxCommentBacklogRow {
+  /** `mx_work_order.id` -- the id to hand to `fetchWorkOrderComments`. */
+  id: number;
+  /** Never null: the view filters `last_message_sent_at is not null`. This is
+   *  the exact value to stamp back into `comments_synced_at` afterwards. */
+  last_message_sent_at: string;
+}
+
+export interface MxCommentBacklogResult {
+  ok: boolean;
+  rows: MxCommentBacklogRow[];
+  status: number;
+  error: string | null;
+}
+
+/**
+ * Reads the comment pass's work set.
+ *
+ * Reads the `mx_comment_backlog` VIEW, not `mx_work_order`. The defining
+ * predicate compares `last_message_sent_at` against `comments_synced_at` --
+ * column against column -- and PostgREST filters are column against literal,
+ * so `last_message_sent_at=gt.comments_synced_at` asks Postgres to cast the
+ * string "comments_synced_at" to timestamptz and comes back 400. The comparison
+ * therefore has to live in the database:
+ * supabase/maintainx-ingest-03-comment-backlog.sql.
+ *
+ * Ordered `last_message_sent_at desc` so a backlog too large for one tick
+ * drains newest-first. If the pass never fully catches up, the threads it did
+ * fetch are the ones somebody is currently talking in.
+ */
+export async function selectMxCommentBacklog(
+  env: SupabaseWriteEnv,
+  limit: number
+): Promise<MxCommentBacklogResult> {
+  const r = await rest(env, "GET", "mx_comment_backlog", {
+    select: "id,last_message_sent_at",
+    order: "last_message_sent_at.desc",
+    limit: String(limit)
+  });
+  if (!r.ok) return { ok: false, rows: [], status: r.status, error: r.error };
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(r.body);
+  } catch (err) {
+    return {
+      ok: false,
+      rows: [],
+      status: r.status,
+      error: `unparseable body: ${err instanceof Error ? err.message : String(err)}`
+    };
+  }
+  if (!Array.isArray(parsed)) {
+    return { ok: false, rows: [], status: r.status, error: "expected an array" };
+  }
+
+  const rows: MxCommentBacklogRow[] = [];
+  for (const entry of parsed) {
+    if (typeof entry !== "object" || entry === null) continue;
+    const row = entry as Record<string, unknown>;
+    const id = row.id;
+    const at = row.last_message_sent_at;
+    if (typeof id !== "number" || !Number.isFinite(id)) continue;
+    // A row that reached here without a watermark would be stamped with
+    // `undefined` and requalify forever. The view makes it impossible; the
+    // check makes it impossible to reintroduce by editing the view.
+    if (typeof at !== "string" || at === "") continue;
+    rows.push({ id, last_message_sent_at: at });
+  }
+
+  return { ok: true, rows, status: r.status, error: null };
+}
+
+export interface MxCommentStampRow {
+  id: number;
+  /** MUST be the `last_message_sent_at` this work order carried when its thread
+   *  was fetched -- never `now()`. The backlog predicate is
+   *  `last_message_sent_at > comments_synced_at`, so stamping a wall-clock time
+   *  from our clock re-qualifies the row forever the moment MaintainX's clock
+   *  runs ahead of ours. Stamping the row's own value cannot: it is the same
+   *  clock on both sides of the comparison, so the row drops out immediately
+   *  and returns only when a genuinely newer message arrives. */
+  comments_synced_at: string;
+}
+
+/**
+ * Advances `comments_synced_at` on work orders whose threads were just fetched,
+ * and touches nothing else on those rows.
+ *
+ * A two-column upsert, deliberately. PostgREST builds its column list from the
+ * FIRST object in the array and its `ON CONFLICT ... DO UPDATE SET` from that
+ * same list, so a payload of `{id, comments_synced_at}` compiles to an update
+ * of exactly those two columns and leaves title, status, costs and every other
+ * column of the existing row alone. That is the mirror image of the rule in
+ * maintainx-ingest-02-comments.sql -- `comments_synced_at` must never appear in
+ * the WORK ORDER payload, and nothing but `comments_synced_at` may appear in
+ * THIS one.
+ *
+ * The insert arm is unreachable in practice: every id here came out of
+ * `mx_comment_backlog`, which is a view over `mx_work_order`. If it ever did
+ * fire it would write a stub rather than fail -- every NOT NULL column on
+ * `mx_work_order` except `id` carries a default, and Postgres forms the tuple
+ * (applying defaults) before it detects the conflict.
+ */
+export function stampMxCommentsSynced(
+  env: SupabaseWriteEnv,
+  rows: MxCommentStampRow[]
+): Promise<MxWriteResult> {
+  return upsertInBatches(env, "mx_work_order", "id", rows, MX_WORK_ORDER_BATCH);
+}
