@@ -25,7 +25,7 @@ export type TileGroup = "submissions" | "operations" | "admin";
 /** Optional third level below a group. A subgroup collects tiles that belong
  *  together into one card on the group page, which drills through to its own
  *  page — the same shape as a group, one level down. */
-export type TileSubgroup = "mechanical";
+export type TileSubgroup = "daily-tools" | "mechanical" | "other-tools";
 
 export interface Tile {
   id: string;
@@ -66,10 +66,26 @@ export interface Subgroup {
  *  categories read first and its loose tools follow. */
 export const SUBGROUPS: Subgroup[] = [
   {
+    id: "daily-tools",
+    group: "operations",
+    label: "Daily Tools",
+    description:
+      "Damage claims, shift schedule, greeter scorecard, and the expense log."
+  },
+  {
     id: "mechanical",
     group: "operations",
     label: "Mechanical",
-    description: "Parts manuals and maintenance work orders."
+    description:
+      "Equipment manuals, the parts directory, work orders, and training videos."
+  },
+  {
+    // Deliberately last: a catch-all reads as the place to look when the first
+    // two did not have it.
+    id: "other-tools",
+    group: "operations",
+    label: "Other Tools",
+    description: "Approvals, chemical inventory, and promotions."
   }
 ];
 
@@ -416,6 +432,7 @@ export const TILES: ReadonlyArray<Tile> = [
   {
     id: "damage",
     group: "operations",
+    subgroup: "daily-tools",
     eyebrow: "Service",
     title: "Damage Claims",
     description: "Review and manage vehicle damage claims and resolutions.",
@@ -426,6 +443,7 @@ export const TILES: ReadonlyArray<Tile> = [
   {
     id: "schedule",
     group: "operations",
+    subgroup: "daily-tools",
     eyebrow: "Scheduling",
     title: "Shift Schedule",
     description: "Add and edit employee shifts by location.",
@@ -448,10 +466,12 @@ export const TILES: ReadonlyArray<Tile> = [
     id: "parts",
     group: "operations",
     subgroup: "mechanical",
-    eyebrow: "Equipment",
-    title: "Parts",
-    description:
-      "Interactive parts manuals — search by part number or click a callout on the exploded view.",
+    // "Reference" rather than "Equipment" so the card does not read
+    // "EQUIPMENT / Equipment Manuals", and so it is distinguishable at a
+    // glance from Parts Directory, which keeps the Equipment eyebrow.
+    eyebrow: "Reference",
+    title: "Equipment Manuals",
+    description: "Interactive parts and maintenance manuals.",
     href: "/admin/parts",
     icon: cogIcon,
     visibleTo: allStaff
@@ -483,6 +503,7 @@ export const TILES: ReadonlyArray<Tile> = [
   {
     id: "pending-approvals",
     group: "operations",
+    subgroup: "other-tools",
     eyebrow: "Workflow",
     title: "Pending Approvals",
     description: "Custom form submissions waiting on your review.",
@@ -493,6 +514,7 @@ export const TILES: ReadonlyArray<Tile> = [
   {
     id: "inventory",
     group: "operations",
+    subgroup: "other-tools",
     eyebrow: "Chemicals",
     title: "Chemical Inventory",
     description: "Log site visits and track chemical usage and cost per car.",
@@ -513,6 +535,7 @@ export const TILES: ReadonlyArray<Tile> = [
     // manager's site visit), not a different permission.
     id: "greeters",
     group: "operations",
+    subgroup: "daily-tools",
     eyebrow: "Insights",
     title: "Greeter Scorecard",
     description:
@@ -530,6 +553,7 @@ export const TILES: ReadonlyArray<Tile> = [
     // own sites' entries.
     id: "expenses",
     group: "operations",
+    subgroup: "daily-tools",
     eyebrow: "Costs",
     title: "Expense Log",
     description:
@@ -545,6 +569,7 @@ export const TILES: ReadonlyArray<Tile> = [
   {
     id: "promotions",
     group: "operations",
+    subgroup: "other-tools",
     eyebrow: "Campaigns",
     title: "Promotions",
     description:
@@ -556,6 +581,7 @@ export const TILES: ReadonlyArray<Tile> = [
   {
     id: "promotions-queue",
     group: "operations",
+    subgroup: "other-tools",
     eyebrow: "IT",
     title: "IT Promotions Queue",
     description:

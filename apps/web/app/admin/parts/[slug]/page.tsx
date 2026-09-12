@@ -44,7 +44,7 @@ export default async function PartsManualPage({ params }: PageProps) {
             href="/admin/parts"
             className="text-sm text-splash-blue hover:underline"
           >
-            ← Parts
+            ← Equipment Manuals
           </Link>
           <h1 className="text-base font-bold text-splash-navy">
             {manual.title}

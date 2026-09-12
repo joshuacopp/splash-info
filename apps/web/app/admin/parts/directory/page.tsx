@@ -60,7 +60,7 @@ export default async function PartsDirectoryPage() {
           |
         </span>
         <Link href="/admin/parts" className="text-splash-blue hover:underline">
-          Parts manuals
+          Equipment Manuals
         </Link>
       </div>
 

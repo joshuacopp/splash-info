@@ -13,7 +13,7 @@ import {
 } from "./_lib/manuals";
 
 export const dynamic = "force-dynamic";
-export const metadata = { title: "Parts" };
+export const metadata = { title: "Equipment Manuals" };
 
 export default async function PartsIndexPage() {
   let manuals: PartsManual[];
@@ -39,12 +39,13 @@ export default async function PartsIndexPage() {
 
       <div className="mb-6">
         <p className="mb-1 text-xs font-semibold uppercase tracking-[0.18em] text-sudsy-blue">
-          Equipment
+          Reference
         </p>
-        <h1 className="text-2xl font-bold text-splash-navy">Parts</h1>
+        <h1 className="text-2xl font-bold text-splash-navy">Equipment Manuals</h1>
         <p className="mt-1 text-sm text-splash-navy/70">
-          Interactive parts manuals. Search by part number or description, or
-          click a numbered callout on the exploded view to pull up the part.
+          Interactive parts and maintenance manuals. Search by part number or
+          description, or click a numbered callout on the exploded view to pull
+          up the part.
         </p>
       </div>
 
