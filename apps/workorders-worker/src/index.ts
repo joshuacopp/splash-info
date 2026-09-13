@@ -367,9 +367,7 @@ async function handleList(env: Env, session: Session): Promise<Response> {
 
   // Phase 1 — resolve user's accessible locations via email match.
   const accessible = await getLocationsByContactEmail(env, email);
-  const mappedMxIds = accessible
-    .map((l) => l.maintainx_id)
-    .filter((n): n is number => typeof n === "number" && Number.isFinite(n));
+  const mappedMxIds = accessibleMxIdsOf(accessible);
 
   // Brief 74 — operator's MaintainX `full_name` for the New Request tab's
   // requester-name default. Fail-soft: null when no row matches the
@@ -485,7 +483,15 @@ async function handleList(env: Env, session: Session): Promise<Response> {
 
   // Phase 4 — bucket Reactive vs Preventive, then group each bucket.
   const buckets = bucketByType(result.workOrders);
+  // Keyed by canonical id AND by every alias, so a work order filed against a
+  // MaintainX sub-location still resolves to the site that owns it. Aliases go
+  // in first and never overwrite, so a canonical id always wins the key.
   const accessibleByMxId = new Map<number, UserAccessibleLocation>();
+  for (const loc of accessible) {
+    for (const alias of loc.maintainx_alias_ids) {
+      if (!accessibleByMxId.has(alias)) accessibleByMxId.set(alias, loc);
+    }
+  }
   for (const loc of accessible) {
     if (loc.maintainx_id != null) accessibleByMxId.set(loc.maintainx_id, loc);
   }
@@ -538,6 +544,27 @@ async function handleList(env: Env, session: Session): Promise<Response> {
     accessibleLocations: buildAccessibleLocations(accessible, mxNamesByLocId),
     currentUser
   } satisfies ListResponse);
+}
+
+/**
+ * Every MaintainX location id a user can see: each site's canonical
+ * `maintainx_id` plus any `maintainx_alias_ids`. A site can answer to more
+ * than one id -- MaintainX models Long Pond as a parent node with two tunnel
+ * children while we model it as a single site -- and filtering on the
+ * canonical id alone silently dropped the other tunnel's work orders from
+ * the list without ever reporting an error.
+ */
+function accessibleMxIdsOf(accessible: UserAccessibleLocation[]): number[] {
+  const seen = new Set<number>();
+  for (const loc of accessible) {
+    if (typeof loc.maintainx_id === "number" && Number.isFinite(loc.maintainx_id)) {
+      seen.add(loc.maintainx_id);
+    }
+    for (const alias of loc.maintainx_alias_ids) {
+      if (typeof alias === "number" && Number.isFinite(alias)) seen.add(alias);
+    }
+  }
+  return [...seen];
 }
 
 function buildAccessibleLocations(
@@ -667,12 +694,23 @@ function groupByLocation(
   for (const wo of workOrders) {
     const projected = projectWorkOrder(wo, users, teams);
     if (!projected) continue;
-    const mxId = projected.locationId;
-    if (mxId == null) continue;
+    const mxIdRaw = projected.locationId;
+    if (mxIdRaw == null) continue;
+    // One site can answer to several MaintainX location ids (see
+    // `locations.maintainx_alias_ids`). `accessibleByMxId` is keyed by the
+    // canonical id and by every alias, so this folds an alias back onto the
+    // site that owns it and Long Pond's two tunnels render as one group
+    // rather than two. An id we do not recognise falls through unchanged and
+    // groups on its own, exactly as before.
+    const mxId = accessibleByMxId.get(mxIdRaw)?.maintainx_id ?? mxIdRaw;
+    // Only a work order filed against the canonical id may name the group.
+    // Otherwise Long Pond's header would read "Longpond Tunnel B" whenever a
+    // sub-location work order happened to sort first.
+    const mayNameGroup = mxIdRaw === mxId;
 
     let bucket = buckets.get(mxId);
     if (!bucket) {
-      const headerFromMx = extractRawLocationName(wo);
+      const headerFromMx = mayNameGroup ? extractRawLocationName(wo) : null;
       const fallbackAddress = accessibleByMxId.get(mxId)?.location_address ?? null;
       bucket = {
         header: headerFromMx ?? fallbackAddress ?? "(unknown location)",
@@ -685,7 +723,7 @@ function groupByLocation(
     ) {
       // Upgrade the header if a later WO in this bucket carries the
       // MaintainX-side name (Brief 71 prefers MX's name when available).
-      const headerFromMx = extractRawLocationName(wo);
+      const headerFromMx = mayNameGroup ? extractRawLocationName(wo) : null;
       if (headerFromMx) bucket.header = headerFromMx;
     }
     bucket.items.push(projected);
@@ -882,12 +920,15 @@ function groupRequestsByLocation(
   for (const wr of requests) {
     const projected = projectWorkRequest(wr, users);
     if (!projected) continue;
-    const mxId = projected.locationId;
-    if (mxId == null) continue;
+    const mxIdRaw = projected.locationId;
+    if (mxIdRaw == null) continue;
+    // Same alias fold as groupByLocation -- see the comment there.
+    const mxId = accessibleByMxId.get(mxIdRaw)?.maintainx_id ?? mxIdRaw;
+    const mayNameGroup = mxIdRaw === mxId;
 
     let bucket = buckets.get(mxId);
     if (!bucket) {
-      const headerFromMx = extractRequestLocationName(wr);
+      const headerFromMx = mayNameGroup ? extractRequestLocationName(wr) : null;
       const fallbackAddress = accessibleByMxId.get(mxId)?.location_address ?? null;
       bucket = {
         header: headerFromMx ?? fallbackAddress ?? "(unknown location)",
@@ -898,7 +939,7 @@ function groupRequestsByLocation(
       bucket.header === "(unknown location)" ||
       bucket.header === (accessibleByMxId.get(mxId)?.location_address ?? "")
     ) {
-      const headerFromMx = extractRequestLocationName(wr);
+      const headerFromMx = mayNameGroup ? extractRequestLocationName(wr) : null;
       if (headerFromMx) bucket.header = headerFromMx;
     }
     bucket.items.push(projected);
@@ -1069,10 +1110,7 @@ async function handleCreateRequest(
   // location; super_admin / admin without their email on a locations
   // row are rejected here, matching the read path.
   const accessible = await getLocationsByContactEmail(env, email);
-  const accessibleMxIds = new Set<number>();
-  for (const loc of accessible) {
-    if (loc.maintainx_id != null) accessibleMxIds.add(loc.maintainx_id);
-  }
+  const accessibleMxIds = new Set<number>(accessibleMxIdsOf(accessible));
   if (accessibleMxIds.size === 0) {
     return buildRequestRedirect(
       request,

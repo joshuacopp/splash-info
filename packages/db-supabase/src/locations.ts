@@ -442,7 +442,28 @@ export interface UserAccessibleLocation {
   site_number: number;
   location_address: string | null;
   maintainx_id: number | null;
+  /**
+   * Additional MaintainX location ids that resolve to this same site --
+   * MaintainX sub-locations or parent nodes for a site we model as one row.
+   * Always an array, `[]` when there are none, so callers can iterate without
+   * a null check. `maintainx_id` remains the canonical id.
+   */
+  maintainx_alias_ids: number[];
   matched_via: "am_email" | "rm_email" | "site_email";
+}
+
+/**
+ * int8[] arrives from PostgREST as JSON numbers or strings depending on the
+ * driver. Normalise to numbers and drop anything that is not finite.
+ */
+function normalizeAliasIds(raw: unknown): number[] {
+  if (!Array.isArray(raw)) return [];
+  const out: number[] = [];
+  for (const entry of raw) {
+    const n = typeof entry === "string" ? Number(entry) : entry;
+    if (typeof n === "number" && Number.isFinite(n)) out.push(n);
+  }
+  return out;
 }
 
 /**
@@ -475,7 +496,7 @@ export async function getLocationsByContactEmail(
   );
   url.searchParams.set(
     "select",
-    "site_number,location,maintainx_id,am_email,rm_email,site_email"
+    "site_number,location,maintainx_id,maintainx_alias_ids,am_email,rm_email,site_email"
   );
   url.searchParams.set("limit", "200");
 
@@ -500,6 +521,7 @@ export async function getLocationsByContactEmail(
     site_number: number | null;
     location: string | null;
     maintainx_id: number | null;
+    maintainx_alias_ids: unknown;
     am_email: string | null;
     rm_email: string | null;
     site_email: string | null;
@@ -529,6 +551,7 @@ export async function getLocationsByContactEmail(
         typeof row.maintainx_id === "number" && Number.isFinite(row.maintainx_id)
           ? row.maintainx_id
           : null,
+      maintainx_alias_ids: normalizeAliasIds(row.maintainx_alias_ids),
       matched_via: matchedVia
     });
   }

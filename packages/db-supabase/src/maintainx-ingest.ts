@@ -793,9 +793,11 @@ export interface MxLocationMapResult {
 export async function fetchMxLocationMap(
   env: SupabaseWriteEnv
 ): Promise<MxLocationMapResult> {
+  // No filter. The table is ~90 rows, and a PostgREST `or` spanning a scalar
+  // column and an array column is easy to get subtly wrong for no gain. Rows
+  // carrying neither a canonical id nor aliases are skipped in the loop below.
   const r = await rest(env, "GET", "locations", {
-    select: "id,site_number,maintainx_id",
-    maintainx_id: "not.is.null"
+    select: "id,site_number,maintainx_id,maintainx_alias_ids"
   });
   if (!r.ok) return { ok: false, map: new Map(), status: r.status, error: r.error };
 
@@ -815,13 +817,53 @@ export async function fetchMxLocationMap(
   }
 
   const map = new Map<number, MxLocationMapping>();
+  const aliasClaimed = new Set<number>();
   for (const entry of parsed) {
     if (typeof entry !== "object" || entry === null) continue;
     const row = entry as Record<string, unknown>;
-    const mxId = row.maintainx_id;
     const locId = row.id;
-    if (typeof mxId !== "number" || !Number.isFinite(mxId)) continue;
     if (typeof locId !== "number" || !Number.isFinite(locId)) continue;
+    const mapping: MxLocationMapping = {
+      locationId: locId,
+      siteNumber: typeof row.site_number === "number" ? row.site_number : null
+    };
+
+    const mxId = row.maintainx_id;
+    if (typeof mxId === "number" && Number.isFinite(mxId)) map.set(mxId, mapping);
+
+    // `maintainx_alias_ids` holds additional MaintainX location ids that
+    // resolve to this same row. MaintainX sometimes splits one physical site
+    // into sub-locations under a parent node; Long Pond (site 142) is the
+    // first, a parent plus two tunnels where only one tunnel was ever mapped,
+    // which left the other tunnel's work orders with a null location_id.
+    //
+    // Deliberately NOT a second `locations` row: a second row would read as a
+    // second site in the request dropdown, in the grouped work-order list, and
+    // in the first-wins-by-site_number bind in apps/inventory/worker/db.ts.
+    //
+    // int8[] can arrive as JSON numbers or strings depending on the driver, so
+    // accept both. A canonical id always outranks an alias, whichever order
+    // the rows arrive in.
+    const aliases = row.maintainx_alias_ids;
+    if (!Array.isArray(aliases)) continue;
+    for (const rawAlias of aliases) {
+      const aliasId = typeof rawAlias === "string" ? Number(rawAlias) : rawAlias;
+      if (typeof aliasId !== "number" || !Number.isFinite(aliasId)) continue;
+      if (aliasClaimed.has(aliasId)) continue;
+      if (!map.has(aliasId)) map.set(aliasId, mapping);
+      aliasClaimed.add(aliasId);
+    }
+  }
+  // A row processed after an alias claim still wins the id if it owns it
+  // canonically -- second pass rather than ordering luck.
+  for (const entry of parsed) {
+    if (typeof entry !== "object" || entry === null) continue;
+    const row = entry as Record<string, unknown>;
+    const locId = row.id;
+    const mxId = row.maintainx_id;
+    if (typeof locId !== "number" || !Number.isFinite(locId)) continue;
+    if (typeof mxId !== "number" || !Number.isFinite(mxId)) continue;
+    if (!aliasClaimed.has(mxId)) continue;
     map.set(mxId, {
       locationId: locId,
       siteNumber: typeof row.site_number === "number" ? row.site_number : null
