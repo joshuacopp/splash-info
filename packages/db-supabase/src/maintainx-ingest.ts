@@ -465,6 +465,37 @@ function timeItemKey(row: MxWorkOrderTimeItemRow): string {
 }
 
 /**
+ * Builds an insert payload whose objects ALL carry the same key set.
+ *
+ * PostgREST derives one column list for an entire bulk insert and refuses to
+ * guess when the array's objects disagree, rejecting the statement with
+ * PGRST102 "All object keys must match". Every call site below used to write
+ *
+ *     carried ? { ...row, first_seen_at: carried } : row
+ *
+ * which is uniform only when the carry hits every row on the page or none of
+ * them. That held for as long as a page was wholly new or wholly re-seen. The
+ * history pass re-walking work orders the live pass had already written is what
+ * finally produced a genuinely mixed page, and it took the pass down with a 400
+ * on page 9 -- fatally, since the pass would have retried the same page every
+ * cron tick forever.
+ *
+ * `first_seen_at` is therefore always emitted. With nothing to carry the value
+ * is this run's `synced_at`, which is what the column's `default now()` would
+ * have produced anyway, so the written row is unchanged.
+ */
+function withFirstSeen<T extends { first_seen_at?: string; synced_at?: string }>(
+  rows: T[],
+  carriedFor: (row: T) => string | undefined
+): Array<T & { first_seen_at: string }> {
+  const fallback = new Date().toISOString();
+  return rows.map((row) => ({
+    ...row,
+    first_seen_at: carriedFor(row) ?? row.first_seen_at ?? row.synced_at ?? fallback
+  }));
+}
+
+/**
  * Delete-and-replace `mx_work_order_expenditure` for one work order, carrying
  * `first_seen_at` forward by `dedupe_key`.
  *
@@ -518,10 +549,7 @@ export async function replaceMxWorkOrderExpenditures(
     return { ok: true, written: 0, requests, status, error: null };
   }
 
-  const payload = rows.map((row) => {
-    const carried = seenAt.get(row.dedupe_key);
-    return carried ? { ...row, first_seen_at: carried } : row;
-  });
+  const payload = withFirstSeen(rows, (row) => seenAt.get(row.dedupe_key));
 
   const ins = await rest(env, "POST", "mx_work_order_expenditure", {}, {
     body: payload,
@@ -586,10 +614,7 @@ export async function replaceMxWorkOrderTimeItems(
     return { ok: true, written: 0, requests, status, error: null };
   }
 
-  const payload = rows.map((row) => {
-    const carried = seenAt.get(timeItemKey(row));
-    return carried ? { ...row, first_seen_at: carried } : row;
-  });
+  const payload = withFirstSeen(rows, (row) => seenAt.get(timeItemKey(row)));
 
   const ins = await rest(env, "POST", "mx_work_order_time_item", {}, {
     body: payload,
@@ -910,10 +935,9 @@ export async function replaceMxWorkOrderExpendituresForPage(
     return { ok: false, written: 0, requests: 2, status: del.status, error: del.error };
   }
 
-  const payload = rows.map((row) => {
-    const carried = seenAt.get(`${row.work_order_id}:${row.dedupe_key}`);
-    return carried ? { ...row, first_seen_at: carried } : row;
-  });
+  const payload = withFirstSeen(rows, (row) =>
+    seenAt.get(`${row.work_order_id}:${row.dedupe_key}`)
+  );
 
   const ins = await insertInBatches(env, "mx_work_order_expenditure", payload, MX_WORK_ORDER_BATCH);
   return { ...ins, requests: ins.requests + 2 };
@@ -961,10 +985,9 @@ export async function replaceMxWorkOrderTimeItemsForPage(
     return { ok: false, written: 0, requests: 2, status: del.status, error: del.error };
   }
 
-  const payload = rows.map((row) => {
-    const carried = seenAt.get(`${row.work_order_id}:${timeItemKey(row)}`);
-    return carried ? { ...row, first_seen_at: carried } : row;
-  });
+  const payload = withFirstSeen(rows, (row) =>
+    seenAt.get(`${row.work_order_id}:${timeItemKey(row)}`)
+  );
 
   const ins = await insertInBatches(env, "mx_work_order_time_item", payload, MX_COMMENT_BATCH);
   return { ...ins, requests: ins.requests + 2 };
