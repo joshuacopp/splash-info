@@ -614,7 +614,21 @@ export async function replaceMxWorkOrderTimeItems(
 // permanently skip whatever the interrupted pass had not reached.
 // ---------------------------------------------------------------------------
 
-export type MxSyncStatus = "OK" | "PARTIAL" | "ERROR";
+/**
+ * `EMPTY` = the pass completed (null cursor) but walked exactly one page and
+ * wrote zero rows. That shape is indistinguishable from a healthy finished
+ * pass, which is how the MaintainX CANCELED+SKIPPED empty-200 bug stayed
+ * invisible; recording it separately makes it visible in `mx_sync_state`.
+ *
+ * It is NOT a failure and must NOT trigger a retry — an incremental sweep that
+ * finds no updated work orders is routine and will report EMPTY constantly.
+ * `isComplete()` keys off `cursor` + `last_success_at`, never off this field,
+ * so adding the member changes no control flow.
+ *
+ * The column is plain `text` with no CHECK constraint (see
+ * supabase/maintainx-ingest-01-tables.sql), so no migration is needed.
+ */
+export type MxSyncStatus = "OK" | "PARTIAL" | "ERROR" | "EMPTY";
 
 export interface MxSyncStateRow {
   key: string;

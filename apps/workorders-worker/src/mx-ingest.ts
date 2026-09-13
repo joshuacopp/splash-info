@@ -51,8 +51,6 @@ import {
   fetchWorkRequestPage,
   INGEST_PAGE_LIMIT,
   LIVE_WORK_ORDER_STATUSES,
-  CLOSED_WORK_ORDER_STATUSES,
-  ALL_WORK_ORDER_STATUSES,
   fetchWorkOrderComments,
   type RawWorkOrderComment
 } from "@splash/maintainx";
@@ -264,8 +262,18 @@ export async function runMxIngest(env: MxIngestEnv): Promise<MxIngestResult> {
       key === MX_PASS_REQUESTS
         ? await runWorkRequestPass(env, apiKey, key, state.state, locationMap.map, budget)
         : await runWorkOrderPass(env, apiKey, key, state.state, locationMap.map, budget, {
-            statuses:
-              key === MX_PASS_LIVE ? LIVE_WORK_ORDER_STATUSES : CLOSED_WORK_ORDER_STATUSES,
+            // The history pass deliberately sends NO status filter. Asking for
+            // CANCELED and SKIPPED together makes GET /workorders answer 200
+            // with an empty collection and a null cursor (measured; see the doc
+            // comment on CLOSED_WORK_ORDER_STATUSES in packages/maintainx), and
+            // the walk below correctly reads a null cursor as "finished" — so
+            // this pass ingested nothing and marked itself OK. The pass is
+            // partitioned by its createdAt[gte] bound, not by status, so the
+            // filter was never load-bearing. Without it the pass also re-fetches
+            // live work orders created inside the window, which is harmless: the
+            // upsert is idempotent and the live pass already has them. `[]`
+            // appends no `statuses` query param at all.
+            statuses: key === MX_PASS_LIVE ? LIVE_WORK_ORDER_STATUSES : [],
             createdAtGte:
               key === MX_PASS_HISTORY
                 ? new Date(Date.now() - HISTORY_WINDOW_DAYS * 86_400_000).toISOString()
@@ -415,7 +423,14 @@ async function runWorkOrderPass(
     const checkpoint = await writeMxSyncState(env, key, {
       cursor,
       last_run_at: now,
-      last_status: complete ? "OK" : "PARTIAL",
+      // A one-page walk that returned zero rows and a null cursor is
+      // indistinguishable from a legitimately finished walk — that is exactly
+      // how the CANCELED+SKIPPED empty-200 bug hid for six hours. EMPTY makes
+      // that shape visible in mx_sync_state. It is deliberately NOT a failure
+      // and NOT a retry trigger: control flow is unchanged, the pass still
+      // counts as complete and still stamps last_success_at, because an
+      // incremental sweep that finds no updates is routine and common.
+      last_status: complete && pages === 1 && rows === 0 ? "EMPTY" : complete ? "OK" : "PARTIAL",
       last_error: null,
       ...(complete ? { last_success_at: now } : {}),
       stats: { pages, rows, max_updated_at: maxUpdatedAt }
@@ -514,7 +529,12 @@ async function runIncrementalPass(
     locations,
     budget,
     {
-      statuses: ALL_WORK_ORDER_STATUSES,
+      // Asking for all six statuses is semantically identical to asking for
+      // none, and the six-value set contains the poisoned CANCELED+SKIPPED
+      // pair that makes GET /workorders return an empty 200. Omitting the
+      // filter is behavior-preserving and dodges the bug. `[]` appends no
+      // `statuses` query param at all.
+      statuses: [],
       createdAtGte: null,
       updatedAtGte: watermark,
       sort: "updatedAt",
@@ -615,7 +635,12 @@ async function runWorkRequestPass(
     const checkpoint = await writeMxSyncState(env, key, {
       cursor,
       last_run_at: now,
-      last_status: complete ? "OK" : "PARTIAL",
+      // Same zero-row honesty guard as runWorkOrderPass: one page, zero rows,
+      // null cursor looks identical to a finished walk. EMPTY surfaces it in
+      // mx_sync_state without changing control flow — the pass still completes
+      // and still stamps last_success_at, because a legitimately empty result
+      // is routine and must never become a retry trigger.
+      last_status: complete && pages === 1 && rows === 0 ? "EMPTY" : complete ? "OK" : "PARTIAL",
       last_error: null,
       ...(complete ? { last_success_at: now } : {}),
       stats: { pages, rows }

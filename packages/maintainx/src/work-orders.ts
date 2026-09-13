@@ -150,8 +150,35 @@ export interface FetchResult {
  *  work order they became, and "done last" requires seeing the done ones. */
 const ACTIVE_STATUSES = ["OPEN", "IN_PROGRESS", "ON_HOLD"] as const;
 
-/** Every status MaintainX emits on a work order, for callers that want them
- *  all. */
+/**
+ * Every status MaintainX emits on a work order.
+ *
+ * USE AS DOCUMENTATION, NOT AS A `statuses` FILTER. Sending all six is
+ * semantically identical to sending none, and the six-value set contains the
+ * poisoned pair below — so "all statuses" is precisely the request that comes
+ * back empty. Omit `statuses` instead.
+ *
+ * TRAP — MEASURED 2026-09-13, DO NOT REINTRODUCE. `GET /workorders` returns
+ * HTTP 200 with an EMPTY collection and a NULL cursor whenever `CANCELED` and
+ * `SKIPPED` both appear in the `statuses` query param. It is not a 4xx and not
+ * an error of any kind, so every walk built on "null cursor means finished"
+ * reads it as a completed pass that legitimately had no work. That silently
+ * zeroed the history pass and the incremental sweep.
+ *
+ * Probed directly: DONE alone -> 25 rows, CANCELED alone -> 25, SKIPPED alone
+ * -> 18 (the entire account-wide SKIPPED population). DONE+CANCELED,
+ * DONE+SKIPPED, OPEN+DONE, OPEN+IN_PROGRESS+ON_HOLD and
+ * OPEN+IN_PROGRESS+ON_HOLD+DONE+CANCELED all -> 25. But CANCELED+SKIPPED -> 0,
+ * in either order, and so does every superset of that pair
+ * (OPEN+CANCELED+SKIPPED, DONE+CANCELED+SKIPPED, all six). Invalid values such
+ * as CANCELLED with two Ls correctly 400, so the enum IS validated and all six
+ * of these values are legitimate — the pair is what breaks.
+ *
+ * Every single value works, and every combination that does not contain both
+ * CANCELED and SKIPPED works. If you need closed history, send no `statuses`
+ * param at all and bound the walk by date instead — that is what the history
+ * pass in apps/workorders-worker/src/mx-ingest.ts does.
+ */
 export const ALL_WORK_ORDER_STATUSES = [
   "OPEN",
   "IN_PROGRESS",
