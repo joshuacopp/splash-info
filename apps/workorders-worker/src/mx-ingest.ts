@@ -152,6 +152,12 @@ export interface MxPassResult {
   complete: boolean;
   pages: number;
   rows: number;
+  /** Highest `mx_updated_at` written by this run, or null when the run wrote no
+   *  dated rows. The incremental sweep's next watermark comes from HERE and
+   *  nowhere else. Reading it back off the sync-state row meant reading the
+   *  PREVIOUS run's value, which is how the empty-200 bug was able to drag the
+   *  watermark forward across a window it had never actually read. */
+  maxUpdatedAt: string | null;
   requests: number;
   elapsedMs: number;
   error: string | null;
@@ -360,6 +366,7 @@ async function runWorkOrderPass(
       complete: false,
       pages,
       rows,
+      maxUpdatedAt,
       requests: budget.requests,
       elapsedMs: budget.elapsedMs,
       error
@@ -445,6 +452,7 @@ async function runWorkOrderPass(
         complete,
         pages,
         rows,
+        maxUpdatedAt,
         requests: budget.requests,
         elapsedMs: budget.elapsedMs,
         error: null
@@ -547,12 +555,40 @@ async function runIncrementalPass(
     // the cursor and stamped last_success_at; this is a second small write
     // rather than a field on the checkpoint precisely because it must not
     // happen on a PARTIAL page.
-    const stats = (state?.stats ?? {}) as Record<string, unknown>;
-    const observed = typeof stats.max_updated_at === "string" ? stats.max_updated_at : null;
-    await writeMxSyncState(env, MX_PASS_INCREMENTAL, {
-      watermark: observed ?? new Date().toISOString()
-    });
-    budget.requests += 1;
+    //
+    // The value comes from THIS run's result. It used to be read back off the
+    // sync-state row, which returned whatever the PREVIOUS run had left there,
+    // with `?? new Date().toISOString()` when that was missing -- and that
+    // fallback is precisely what let the empty-200 bug advance the watermark
+    // every five minutes across a window it had never read. The watermark is
+    // now written only when this run actually saw a dated row.
+    //
+    // A completed-but-EMPTY walk deliberately leaves the watermark ALONE.
+    // Advancing it would be sound against a trustworthy API -- an unbounded
+    // window returning nothing really does mean nothing changed -- but "empty"
+    // and "lying" are the same wire shape on this endpoint, so the window is
+    // allowed to widen instead. Cost of widening: one slightly larger query
+    // next tick, walked ascending and cursor-resumable. Cost of the old
+    // behaviour: silent, permanent data loss.
+    //
+    // Monotonic on purpose. The read bound above subtracts
+    // INCREMENTAL_OVERLAP_MS, so a run whose only rows fall inside that overlap
+    // can observe a max BELOW the stored watermark; without the comparison the
+    // watermark would ratchet backwards five minutes at a time. Compared as
+    // parsed instants, never as strings: `state.watermark` comes back from
+    // Postgres as `2026-09-13 09:30:44.07+00` while `maxUpdatedAt` is ISO with
+    // a `T`, and lexicographic order on those two shapes is wrong.
+    const observed = result.maxUpdatedAt;
+    const observedMs = observed === null ? NaN : Date.parse(observed);
+    const priorMs = state?.watermark ? Date.parse(state.watermark) : NaN;
+
+    // `!(priorMs >= observedMs)` rather than `<`: a NaN prior (no watermark
+    // yet, or an unparseable one) must ADVANCE, and every NaN comparison is
+    // false, so the negated form gives the right answer where `<` would not.
+    if (observed !== null && Number.isFinite(observedMs) && !(priorMs >= observedMs)) {
+      await writeMxSyncState(env, MX_PASS_INCREMENTAL, { watermark: observed });
+      budget.requests += 1;
+    }
   }
 
   return result;
@@ -594,6 +630,7 @@ async function runWorkRequestPass(
       complete: false,
       pages,
       rows,
+      maxUpdatedAt: null,
       requests: budget.requests,
       elapsedMs: budget.elapsedMs,
       error
@@ -655,6 +692,7 @@ async function runWorkRequestPass(
         complete,
         pages,
         rows,
+        maxUpdatedAt: null,
         requests: budget.requests,
         elapsedMs: budget.elapsedMs,
         error: null
