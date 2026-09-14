@@ -113,17 +113,25 @@ function first(source: Record<string, unknown>, keys: string[]): unknown {
 /**
  * Money coercion.
  *
- * MaintainX's line-item money shape is NOT yet pinned down: across a full six
- * months there are 25 expenditure lines on 23 work orders and 10 part lines on
- * 9, so no probe run has ever seen enough of them to be sure whether a cost
- * arrives as cents or as a decimal. Both spellings are handled: a key whose
- * name ends in `Cents` is trusted as an integer count of cents; anything else
- * is treated as a decimal amount and multiplied.
+ * MAINTAINX SENDS CENTS. Every money field is an integer count of cents and
+ * must NOT be scaled. Measured against live data 2026-09-14:
  *
- * Verify this against the first real page that carries expenditures. The cost
- * of being wrong is low — these tables are written delete-and-replace, so a
- * corrected mapper fixes history on the next sweep — but it is not zero, so it
- * should not stay unverified once real data exists.
+ *   parts        "unitCost": 12300     -> $123.00   (work order 118477847)
+ *   expenditures "costPerUnit": 350    -> $3.50
+ *
+ * This function previously treated any key NOT ending in `Cents` as a decimal
+ * amount and multiplied by 100, on the reasoning -- honest at the time, and
+ * flagged in this comment as unverified -- that no probe had ever seen enough
+ * line items to tell. It had seen the wrong thing: `unitCost` does not end in
+ * `Cents`, so a $123.00 part was stored as 1230000 and a $3.50 expenditure as
+ * 35000. Every cost in mx_work_order_part, mx_work_order_expenditure and the
+ * three derived totals on mx_work_order was 100x too large.
+ *
+ * The key list is kept because MaintainX is not consistent about field names,
+ * but the conversion no longer depends on which name matched. If a fractional
+ * value ever appears it is rounded rather than truncated -- a fraction would
+ * mean this assumption has broken again, and the rounding at least keeps the
+ * error to a cent instead of a dollar.
  */
 function money(source: Record<string, unknown>, keys: string[]): number {
   for (const k of keys) {
@@ -131,7 +139,7 @@ function money(source: Record<string, unknown>, keys: string[]): number {
     if (v === undefined || v === null) continue;
     const n = num(v);
     if (n === null) continue;
-    return k.endsWith("Cents") ? Math.trunc(n) : Math.round(n * 100);
+    return Math.round(n);
   }
   return 0;
 }
