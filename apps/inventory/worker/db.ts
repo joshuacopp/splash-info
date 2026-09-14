@@ -597,6 +597,17 @@ export async function updateVisit(
  * open browser tab. save_delivery then computes ending = starting + delivered,
  * so usage on this row is exactly 0 and the ending becomes the new last-known
  * level that the next visit carries forward.
+ *
+ * The row written is COMPLETE: one entry per product configured at the site,
+ * not just the chemicals that came off the truck. A delivery used to write only
+ * the products with a delivered quantity, which left the rest of the site's
+ * chemicals with no row at all — the UI read those absences as zero, and the
+ * next visit carried a zero baseline forward, wiping levels nobody had touched.
+ * Products the driver did not deliver get qty_delivered_gal = 0, so
+ * ending = starting + 0 carries them forward unchanged and the delivery is just
+ * an ordinary ledger row that happens to have no car counts. (The save_delivery
+ * RPC used to discard zero-qty entries with a `<> 0` predicate on its final
+ * INSERT; that filter is gone, so the complete set now lands as sent.)
  */
 export async function createDelivery(sb: SupabaseClient, payload: Record<string, unknown>) {
   const locationCode = String(payload.location_id || "").trim();
@@ -619,6 +630,16 @@ export async function createDelivery(sb: SupabaseClient, payload: Record<string,
 
   const lastKnown = await lastKnownEndingQuantities(sb, locationCode);
 
+  // The complete row set: every product the site is configured for, plus any
+  // product on this delivery that the config does not list yet (a chemical can
+  // arrive before someone adds it to the site's package).
+  const deliveredBy = new Map<string, number>();
+  for (const e of delivered) deliveredBy.set(e.product_id, e.qty_delivered_gal);
+  const productIds = await configuredProductIds(sb, locationCode);
+  for (const e of delivered) {
+    if (!productIds.includes(e.product_id)) productIds.push(e.product_id);
+  }
+
   const deliveryId = newId();
   const { error } = await inv(sb).rpc("save_delivery", {
     p_delivery_id: deliveryId,
@@ -628,12 +649,14 @@ export async function createDelivery(sb: SupabaseClient, payload: Record<string,
       submitter: payload.submitter || null,
       notes: payload.notes || null
     },
-    p_entries: delivered.map((e) => ({
-      product_id: e.product_id,
+    p_entries: productIds.map((productId) => ({
+      product_id: productId,
       // Unknown product at this site (never recorded before) starts at 0 —
       // the delivery is the first thing we know about it.
-      starting_qty_gal: lastKnown.get(e.product_id) ?? 0,
-      qty_delivered_gal: e.qty_delivered_gal
+      starting_qty_gal: lastKnown.get(productId) ?? 0,
+      // 0 for everything the driver did not drop: ending = starting + 0 leaves
+      // the level exactly where the last visit put it.
+      qty_delivered_gal: deliveredBy.get(productId) ?? 0
     })),
     p_create: true
   });
@@ -663,6 +686,16 @@ export async function createDelivery(sb: SupabaseClient, payload: Record<string,
  * basis, so its starting level is resolved here from the row immediately
  * BEFORE this delivery — not the latest row, which would be this delivery
  * itself or something filed after it.
+ *
+ * Like createDelivery, the edit rewrites a COMPLETE row set: every product
+ * configured at the site, with qty_delivered_gal = 0 for the ones this delivery
+ * did not bring. That falls out of the two rules above rather than fighting
+ * them — the RPC deletes and reinserts the entries, so a chemical already on
+ * the delivery still comes back with its frozen starting quantity and price
+ * whatever its new delivered amount, while a product pulled in only to complete
+ * the row set has no frozen basis and lands on the prior-visit level resolved
+ * here. Dropping a chemical from the delivery therefore zeroes what it
+ * delivered without erasing the site's level for it.
  */
 export async function updateDelivery(
   sb: SupabaseClient,
@@ -694,6 +727,15 @@ export async function updateDelivery(
     excludeId: deliveryId
   });
 
+  // The complete row set, same as a create: the site's configured products plus
+  // anything this edit delivers that the config does not list.
+  const deliveredBy = new Map<string, number>();
+  for (const e of delivered) deliveredBy.set(e.product_id, e.qty_delivered_gal);
+  const productIds = await configuredProductIds(sb, existing.location_code);
+  for (const e of delivered) {
+    if (!productIds.includes(e.product_id)) productIds.push(e.product_id);
+  }
+
   const { error } = await inv(sb).rpc("save_delivery", {
     p_delivery_id: deliveryId,
     p_delivery: {
@@ -702,10 +744,10 @@ export async function updateDelivery(
       submitter: payload.submitter || null,
       notes: payload.notes || null
     },
-    p_entries: delivered.map((e) => ({
-      product_id: e.product_id,
-      starting_qty_gal: priorLevels.get(e.product_id) ?? 0,
-      qty_delivered_gal: e.qty_delivered_gal
+    p_entries: productIds.map((productId) => ({
+      product_id: productId,
+      starting_qty_gal: priorLevels.get(productId) ?? 0,
+      qty_delivered_gal: deliveredBy.get(productId) ?? 0
     })),
     p_create: false
   });
@@ -749,6 +791,33 @@ export async function getDelivery(
     location_code: String((data as Record<string, unknown>).location_code),
     visit_date: String((data as Record<string, unknown>).visit_date)
   };
+}
+
+/**
+ * The product ids a site is configured for.
+ *
+ * location_products keys on location_code and has no active/enabled flag, so
+ * the rows matching the code ARE the site's chemical list — nothing to filter.
+ * A delivery needs this because it writes one entry per configured product,
+ * including the ones that visit did not deliver, so the ledger row is complete
+ * rather than a handful of rows the rest of the app reads as zeroes.
+ */
+async function configuredProductIds(
+  sb: SupabaseClient,
+  locationCode: string
+): Promise<string[]> {
+  const { data, error } = await inv(sb)
+    .from("location_products")
+    .select("product_id")
+    .eq("location_code", locationCode);
+  if (error) throw new Error(`Failed reading the site's chemical list: ${error.message}`);
+
+  const out: string[] = [];
+  for (const raw of data || []) {
+    const id = (raw as Record<string, unknown>).product_id;
+    if (typeof id === "string" && id && !out.includes(id)) out.push(id);
+  }
+  return out;
 }
 
 /**
