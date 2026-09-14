@@ -8,7 +8,8 @@
     "deploy": "wrangler deploy",
     "typecheck": "tsc --noEmit",
     "lint": "echo 'no lint yet'",
-    "clean": "rm -rf dist .turbo .wrangler"
+    "clean": "rm -rf dist .turbo .wrangler",
+    "test": "vitest run"
   },
   "dependencies": {
     "@splash/auth": "workspace:*",
@@ -18,9 +19,11 @@
     "@splash/types": "workspace:*"
   },
   "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "^0.12.4",
     "@cloudflare/workers-types": "^4.20250101.0",
     "@splash/config": "workspace:*",
     "typescript": "^5.6.0",
+    "vitest": "~3.2.0",
     "wrangler": "^4.86.0"
   }
 }
