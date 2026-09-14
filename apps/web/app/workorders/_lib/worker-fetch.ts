@@ -39,6 +39,19 @@ export interface WorkOrderItem {
   commentsTruncated?: boolean;
   /** Null/absent when nothing was recorded, which is the common case. */
   cost?: WorkOrderCost | null;
+  /** Mirrored photos, thumbnail first. Absent on the MaintainX path and for
+   *  anything not yet copied into R2 -- an un-mirrored attachment has no
+   *  servable source, because its MaintainX URL expired within the hour. */
+  attachments?: WorkOrderAttachment[];
+}
+
+export interface WorkOrderAttachment {
+  id: number;
+  fileName: string | null;
+  mimeType: string | null;
+  width: number | null;
+  height: number | null;
+  isThumbnail: boolean;
 }
 
 export interface WorkOrderComment {

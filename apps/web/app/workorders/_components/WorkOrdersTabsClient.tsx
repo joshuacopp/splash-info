@@ -43,6 +43,7 @@ import { DueDatePill } from "./DueDatePill";
 import { NewRequestForm } from "./NewRequestForm";
 import type {
   AccessibleLocation,
+  WorkOrderAttachment,
   WorkOrderComment,
   WorkOrderCost,
   WorkOrderItem,
@@ -978,6 +979,7 @@ function ExpandedRow({ wo, colSpan }: { wo: WorkOrderItem; colSpan: number }) {
             {wo.description ? wo.description : "(no description)"}
           </p>
         </div>
+        <PhotosSection attachments={wo.attachments ?? []} />
         <CostSection cost={wo.cost ?? null} />
         <CommentsSection
           comments={wo.comments ?? []}
@@ -986,6 +988,51 @@ function ExpandedRow({ wo, colSpan }: { wo: WorkOrderItem; colSpan: number }) {
         />
       </td>
     </tr>
+  );
+}
+
+/**
+ * Mirrored photos.
+ *
+ * `src` is an id, not a URL. The bytes come from our R2 copy through a
+ * same-origin proxy that re-checks permissions per request -- MaintainX's own
+ * links are presigned and expire an hour after the sync that saw them, so
+ * there is no URL here that could be linked to directly even if we wanted one.
+ *
+ * Renders nothing when empty, which covers both "no photos" and "not mirrored
+ * yet". The two are indistinguishable to the client and an empty frame would
+ * be worse than silence in either case.
+ */
+function PhotosSection({ attachments }: { attachments: WorkOrderAttachment[] }) {
+  if (attachments.length === 0) return null;
+  return (
+    <div className="mt-4">
+      <p className="mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-splash-navy/60">
+        Photos ({attachments.length})
+      </p>
+      <div className="flex flex-wrap gap-2">
+        {attachments.map((a) => (
+          <a
+            key={a.id}
+            href={`/workorders/attachment/${a.id}`}
+            target="_blank"
+            rel="noreferrer"
+            onClick={(e) => e.stopPropagation()}
+            className="block overflow-hidden rounded-md border border-gray-light/70 bg-white transition hover:border-splash-blue"
+            title={a.fileName ?? undefined}
+          >
+            <img
+              src={`/workorders/attachment/${a.id}`}
+              alt={a.fileName ?? "Work order photo"}
+              // Fixed box so a portrait phone photo and a landscape one tile
+              // evenly; the full image is one click away.
+              className="h-24 w-24 object-cover"
+              loading="lazy"
+            />
+          </a>
+        ))}
+      </div>
+    </div>
   );
 }
 

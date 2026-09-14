@@ -196,6 +196,18 @@ interface CostOut {
   }>;
 }
 
+/** A mirrored attachment. `id` is what the serve route takes; there is no URL
+ *  here because the client builds one from the id and the route checks
+ *  permissions on every request. */
+interface AttachmentOut {
+  id: number;
+  fileName: string | null;
+  mimeType: string | null;
+  width: number | null;
+  height: number | null;
+  isThumbnail: boolean;
+}
+
 interface WorkOrderOut {
   id: number;
   sequentialId: number | null;
@@ -220,6 +232,9 @@ interface WorkOrderOut {
    *  work orders carry a cost. Null renders as no cost section at all rather
    *  than a row of zeroes. */
   cost: CostOut | null;
+  /** Mirrored photos, thumbnail first. Empty on the MaintainX path and for
+   *  anything not yet copied into R2. */
+  attachments: AttachmentOut[];
 }
 
 interface GroupOut {
@@ -347,6 +362,16 @@ export default {
         const auth = await authenticate(request, env);
         if (auth.status !== "authenticated") return jsonError(401, "unauthorized");
         return handleList(env, auth.session, resolveReadSource(env, url, auth.session));
+      }
+
+      // Attachment bytes from the R2 mirror. Path carries the MaintainX
+      // attachment id; the handler resolves the owning work order and checks
+      // the caller can see THAT, so the id alone grants nothing.
+      const attachmentMatch = /^workorders\/api\/attachment\/(\d+)$/.exec(path);
+      if (attachmentMatch && request.method === "GET") {
+        const auth = await authenticate(request, env);
+        if (auth.status !== "authenticated") return jsonError(401, "unauthorized");
+        return handleAttachment(env, auth.session, Number(attachmentMatch[1]));
       }
 
       if (path === "workorders/api/sync-maintainx-users" && request.method === "POST") {
@@ -543,6 +568,96 @@ function isSyncTriggerAllowed(session: Session): boolean {
 /* ============================================================
  * GET /workorders/api/list — pure email-on-locations gate.
  * ============================================================ */
+
+/**
+ * Serve one mirrored attachment.
+ *
+ * THE PERMISSION CHECK IS THE POINT. An attachment id is a small integer and
+ * an operator could try another one, so possessing an id must grant nothing on
+ * its own. The handler resolves the attachment's owning work order, then its
+ * MaintainX location, and requires that location to be in the caller's
+ * accessible set -- the SAME set that gates the list. A miss returns 404, not
+ * 403: telling a prober that an id exists but is out of reach is itself an
+ * answer.
+ *
+ * Bytes come from R2, never from MaintainX. The presigned source URLs expired
+ * an hour after the sync that fetched them; the mirror is the only durable
+ * copy. An attachment whose bytes have not been mirrored yet is a 404 too --
+ * there is nothing to serve, and waiting on a live fetch would be a request
+ * that usually fails.
+ */
+async function handleAttachment(
+  env: Env,
+  session: Session,
+  attachmentId: number
+): Promise<Response> {
+  const bucket = env.WORKORDER_FILES;
+  if (!bucket) return jsonError(503, "attachment storage not configured");
+
+  const email = session.email?.trim().toLowerCase() ?? "";
+  if (!email) return jsonError(401, "no session email");
+
+  // One read: the attachment plus the owning work order's location, via the
+  // FK embed. Doing it in two would open a window where the second answer no
+  // longer matches the first.
+  const url =
+    `${env.SUPABASE_URL}/rest/v1/mx_work_order_attachment` +
+    `?select=id,work_order_id,r2_key,mime_type,file_name,` +
+    `mx_work_order!inner(mx_location_id,deleted_at)` +
+    `&id=eq.${attachmentId}` +
+    `&limit=1`;
+
+  let rows: Array<{
+    r2_key: string | null;
+    mime_type: string | null;
+    file_name: string | null;
+    mx_work_order: { mx_location_id: number | null; deleted_at: string | null } | null;
+  }>;
+  try {
+    const res = await fetch(url, {
+      headers: {
+        apikey: env.SUPABASE_SERVICE_KEY,
+        Authorization: `Bearer ${env.SUPABASE_SERVICE_KEY}`
+      }
+    });
+    if (!res.ok) return jsonError(502, "attachment lookup failed");
+    rows = await res.json();
+  } catch {
+    return jsonError(504, "attachment lookup timeout");
+  }
+
+  const row = rows[0];
+  if (!row || !row.r2_key || !row.mx_work_order) return jsonError(404, "not found");
+  if (row.mx_work_order.deleted_at !== null) return jsonError(404, "not found");
+
+  const locationId = row.mx_work_order.mx_location_id;
+  if (locationId === null) return jsonError(404, "not found");
+
+  const accessible = await getLocationsByContactEmail(env, email);
+  const allowed = new Set(accessibleMxIdsOf(accessible));
+  if (!allowed.has(locationId)) return jsonError(404, "not found");
+
+  const object = await bucket.get(row.r2_key);
+  if (!object) {
+    // The row claims a copy the bucket does not have. Loud, because it means
+    // the two have drifted -- r2_key is written only after the PUT resolves,
+    // so this should be unreachable.
+    console.error(`[mx-attach] r2 miss for key ${row.r2_key} (attachment ${attachmentId})`);
+    return jsonError(404, "not found");
+  }
+
+  const headers = new Headers();
+  headers.set("Content-Type", row.mime_type ?? "application/octet-stream");
+  // Private: the response is scoped to one operator's permissions, so a shared
+  // cache must never hold it. Immutable because a MaintainX attachment id
+  // always names the same bytes.
+  headers.set("Cache-Control", "private, max-age=3600, immutable");
+  headers.set("X-Content-Type-Options", "nosniff");
+  if (row.file_name) {
+    headers.set("Content-Disposition", `inline; filename="${sanitizeFilename(row.file_name)}"`);
+  }
+  return new Response(object.body, { status: 200, headers });
+}
 
 async function handleList(
   env: Env,
@@ -1097,7 +1212,8 @@ function projectWorkOrder(
     locationId: extractRawLocationId(wo),
     comments: projectComments(extras, users),
     commentsTruncated: extras?.commentsTruncated ?? false,
-    cost: projectCost(extras)
+    cost: projectCost(extras),
+    attachments: extras?.attachments ?? []
   };
 }
 

@@ -103,6 +103,15 @@ interface PgWorkOrderRow {
     cost_per_unit_cents: number | null;
     row_total_cents: number | null;
   }> | null;
+  mx_work_order_attachment?: Array<{
+    id: number;
+    file_name: string | null;
+    mime_type: string | null;
+    width: number | null;
+    height: number | null;
+    is_thumbnail: boolean | null;
+    r2_key: string | null;
+  }> | null;
 }
 
 /** Integer cents or null. Guards against a string arriving from PostgREST for
@@ -148,7 +157,23 @@ function projectExtras(row: PgWorkOrderRow): PgWorkOrderExtras {
     rowTotalCents: cents(e.row_total_cents)
   }));
 
+  const attachments: PgAttachment[] = (
+    Array.isArray(row.mx_work_order_attachment) ? row.mx_work_order_attachment : []
+  )
+    // Belt and braces: the query already filters on r2_key, but a servable
+    // attachment is defined by having bytes and nothing else should decide it.
+    .filter((a) => typeof a.r2_key === "string" && a.r2_key !== "")
+    .map((a) => ({
+      id: a.id,
+      fileName: a.file_name,
+      mimeType: a.mime_type,
+      width: cents(a.width),
+      height: cents(a.height),
+      isThumbnail: a.is_thumbnail === true
+    }));
+
   return {
+    attachments,
     partCostCents: cents(row.part_cost_cents),
     expenditureCents: cents(row.expenditure_cents),
     totalCostCents: cents(row.total_cost_cents),
@@ -290,6 +315,15 @@ export interface PgExpenditureLine {
  * per work order, which is why the live path never showed them. Reading them
  * from the mirror costs nothing extra because they arrive in the same query.
  */
+export interface PgAttachment {
+  id: number;
+  fileName: string | null;
+  mimeType: string | null;
+  width: number | null;
+  height: number | null;
+  isThumbnail: boolean;
+}
+
 export interface PgWorkOrderExtras {
   partCostCents: number | null;
   expenditureCents: number | null;
@@ -298,6 +332,10 @@ export interface PgWorkOrderExtras {
   comments: PgComment[];
   parts: PgPartLine[];
   expenditures: PgExpenditureLine[];
+  /** ONLY attachments whose bytes are already in R2. An un-mirrored one
+   *  cannot be served -- its MaintainX URL expired an hour after the sync that
+   *  saw it -- so surfacing it would render a broken image. */
+  attachments: PgAttachment[];
   /** True when the comment list was capped -- see COMMENT_LIMIT. */
   commentsTruncated: boolean;
 }
@@ -363,7 +401,8 @@ export async function fetchWorkOrdersFromPg(input: {
     `raw,part_cost_cents,expenditure_cents,total_cost_cents,labor_seconds,` +
     `mx_work_order_comment(id,author_id,content,mx_created_at),` +
     `mx_work_order_part(name,quantity_used,unit_cost_cents,line_total_cents),` +
-    `mx_work_order_expenditure(description,type,quantity,cost_per_unit_cents,row_total_cents)`;
+    `mx_work_order_expenditure(description,type,quantity,cost_per_unit_cents,row_total_cents),` +
+    `mx_work_order_attachment(id,file_name,mime_type,width,height,is_thumbnail,r2_key)`;
 
   const url =
     `${input.env.SUPABASE_URL}/rest/v1/mx_work_order` +
@@ -375,6 +414,10 @@ export async function fetchWorkOrdersFromPg(input: {
     `&mx_work_order_comment.limit=${COMMENT_LIMIT}` +
     `&mx_work_order_part.order=ordinal.asc` +
     `&mx_work_order_expenditure.order=ordinal.asc` +
+    // Only mirrored rows: an attachment without bytes in R2 has no servable
+    // source, so including it would render a broken image in the expanded row.
+    `&mx_work_order_attachment.r2_key=not.is.null` +
+    `&mx_work_order_attachment.order=is_thumbnail.desc,mx_created_at.asc` +
     `&status=in.(${ACTIVE_STATUSES.join(",")})` +
     `&deleted_at=is.null` +
     `&mx_location_id=in.(${ids})` +

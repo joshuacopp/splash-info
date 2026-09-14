@@ -358,6 +358,78 @@ describe("fetchWorkOrdersFromPg extras (comments + cost)", () => {
   });
 });
 
+describe("fetchWorkOrdersFromPg attachments", () => {
+  it("asks only for attachments that have bytes in R2", async () => {
+    // An un-mirrored attachment has NO servable source -- its MaintainX URL is
+    // presigned and expired within the hour -- so surfacing it renders a
+    // broken image. The filter is the whole safety property.
+    stub([]);
+    await fetchWorkOrdersFromPg({ env: ENV, maintainxLocationIds: [1] });
+    expect(lastUrl).toContain("mx_work_order_attachment.r2_key=not.is.null");
+  });
+
+  it("orders the thumbnail first", async () => {
+    stub([]);
+    await fetchWorkOrdersFromPg({ env: ENV, maintainxLocationIds: [1] });
+    expect(lastUrl).toContain("mx_work_order_attachment.order=is_thumbnail.desc");
+  });
+
+  it("projects a mirrored attachment", async () => {
+    stub([{
+      raw: { id: 5 },
+      mx_work_order_attachment: [
+        { id: 272727625, file_name: "camera2.jpg", mime_type: "image/jpeg",
+          width: 960, height: 1280, is_thumbnail: true, r2_key: "work-orders/5/272727625.jpg" }
+      ]
+    }]);
+    const res = await fetchWorkOrdersFromPg({ env: ENV, maintainxLocationIds: [1] });
+    expect(res.extrasById.get(5)?.attachments[0]).toMatchObject({
+      id: 272727625,
+      fileName: "camera2.jpg",
+      mimeType: "image/jpeg",
+      isThumbnail: true
+    });
+  });
+
+  it("drops a row whose r2_key is null even if the query returned it", async () => {
+    // Defence in depth: "servable" means "has bytes", and nothing else gets to
+    // decide that. If the query filter is ever edited away, this still holds.
+    stub([{
+      raw: { id: 5 },
+      mx_work_order_attachment: [
+        { id: 1, file_name: "a.jpg", mime_type: "image/jpeg", width: null,
+          height: null, is_thumbnail: false, r2_key: null },
+        { id: 2, file_name: "b.jpg", mime_type: "image/jpeg", width: null,
+          height: null, is_thumbnail: false, r2_key: "work-orders/5/2.jpg" }
+      ]
+    }]);
+    const res = await fetchWorkOrdersFromPg({ env: ENV, maintainxLocationIds: [1] });
+    const atts = res.extrasById.get(5)!.attachments;
+    expect(atts).toHaveLength(1);
+    expect(atts[0]!.id).toBe(2);
+  });
+
+  it("never exposes the r2 key to the client", async () => {
+    // The key is internal addressing. The client gets an id and asks the
+    // permission-checked route; handing out keys would invite direct access.
+    stub([{
+      raw: { id: 5 },
+      mx_work_order_attachment: [
+        { id: 2, file_name: "b.jpg", mime_type: "image/jpeg", width: null,
+          height: null, is_thumbnail: false, r2_key: "work-orders/5/2.jpg" }
+      ]
+    }]);
+    const res = await fetchWorkOrdersFromPg({ env: ENV, maintainxLocationIds: [1] });
+    expect(JSON.stringify(res.extrasById.get(5)?.attachments)).not.toContain("work-orders/");
+  });
+
+  it("yields an empty list when the work order has none", async () => {
+    stub([{ raw: { id: 9 } }]);
+    const res = await fetchWorkOrdersFromPg({ env: ENV, maintainxLocationIds: [1] });
+    expect(res.extrasById.get(9)?.attachments).toEqual([]);
+  });
+});
+
 describe("fetchWorkRequestsFromPg", () => {
   it("filters to the two statuses the Requests tab surfaces", async () => {
     stub(rawRows(1));
