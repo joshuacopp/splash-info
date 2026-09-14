@@ -34,6 +34,7 @@
 //   invocations automatically (eventType: scheduled).
 
 import { authenticate, type Session } from "@splash/auth";
+import { MX_WEBHOOK_PATH, handleMxWebhook } from "./mx-webhook.js";
 import {
   getLocationsByContactEmail,
   getMaintainXTeamsByIds,
@@ -73,6 +74,13 @@ interface Env extends SupabaseEnv {
   MAINTAINX_BASE_URL: string;
   /** Populated for parity with damage-worker; not consumed in v1. */
   APPS_WEB_BASE_URL: string;
+  /** MaintainX webhook signing secret, returned by POST /subscriptions and
+   *  re-readable from GET /subscriptions/{id}/secret.
+   *  `wrangler secret put MAINTAINX_WEBHOOK_SECRET`.
+   *
+   *  Optional in the type, fatal in effect: unbound, every delivery is
+   *  refused with 401 rather than falling open. */
+  MAINTAINX_WEBHOOK_SECRET?: string;
 }
 
 // Brief 72: pagination limits.
@@ -228,11 +236,25 @@ interface ListResponse {
  * ============================================================ */
 
 export default {
-  async fetch(request: Request, env: Env, _ctx: ExecutionContext): Promise<Response> {
+  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
     const path = url.pathname.replace(/^\/+/, "");
 
     try {
+      // ---- THE ONE UNAUTHENTICATED ROUTE ----------------------------------
+      //
+      // Deliberately first, and deliberately an EXACT equality check on a
+      // single constant. MaintainX cannot hold a Supabase session, so the HMAC
+      // in mx-webhook-verify.ts is the entire gate. A prefix match here would
+      // silently expose anything later added under the same stem; equality
+      // cannot widen by accident.
+      //
+      // Everything below this block calls authenticate(). This is the only
+      // thing that does not.
+      if (path === MX_WEBHOOK_PATH) {
+        return handleMxWebhook(request, env, ctx);
+      }
+
       if (path === "workorders/api/list" && request.method === "GET") {
         const auth = await authenticate(request, env);
         if (auth.status !== "authenticated") return jsonError(401, "unauthorized");

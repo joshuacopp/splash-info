@@ -55,6 +55,26 @@ workers_dev = true
 # nothing routes to the apex; staging keeps working unchanged.
 routes = [
   { pattern = "staging.splashcarwashes.info/workorders/api/*", zone_name = "splashcarwashes.info" },
+
+  # MaintainX webhook receiver — apex, bound EARLY and deliberately narrow.
+  #
+  # This is a single exact path, NOT the /workorders/api/* wildcard on the line
+  # below it. Uncommenting Phase B would route this worker's whole API surface
+  # on production, which is the thing the UI cutover gates; the webhook needs
+  # one path and should not drag the rest forward with it. Cloudflare resolves
+  # most-specific-first, so this out-ranks apps/web's apex `/*` catch-all
+  # without touching anything else.
+  #
+  # Safe to expose ahead of the cutover: the route carries no session, reads no
+  # cookie, and is gated entirely by the HMAC in src/mx-webhook-verify.ts.
+  #
+  # The subscription URL registered with MaintainX is baked into the
+  # subscription and cannot be edited without PATCH /subscriptions/{id} — which
+  # is why this is the apex and not staging or workers.dev. A production
+  # integration pointed at a host named "staging" invites someone to tear it
+  # down.
+  { pattern = "splashcarwashes.info/workorders/api/mx-webhook", zone_name = "splashcarwashes.info" },
+
   # === CUTOVER PHASE B — uncomment the line(s) below + push at the flip window ===
   # { pattern = "splashcarwashes.info/workorders/api/*", zone_name = "splashcarwashes.info" }
 ]
@@ -81,6 +101,17 @@ routes = [
 #                         the endpoint returns 503 and the page surfaces a
 #                         friendly "integration not configured" empty state.
 #                         The parts surface does NOT need it.
+# MAINTAINX_WEBHOOK_SECRET — secret. `wrangler secret put MAINTAINX_WEBHOOK_SECRET`.
+#                         The signing secret for the webhook subscriptions,
+#                         returned in the POST /subscriptions 201 body and
+#                         re-readable from GET /subscriptions/{id}/secret.
+#                         NOT the same value as MAINTAINX_API_KEY.
+#
+#                         Unbound, every delivery is refused with 401 rather
+#                         than falling open — which from the outside is
+#                         indistinguishable from an attack, so a `no_secret`
+#                         line in Workers Logs is the signal that the worker
+#                         deployed without it.
 
 # Brief 70 — non-secret env vars consumed by the MaintainX read path.
 #   MAINTAINX_BASE_URL — REST root (no trailing /workorders). Mirrors the
