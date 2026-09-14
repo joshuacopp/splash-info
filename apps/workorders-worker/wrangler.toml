@@ -102,9 +102,21 @@ routes = [
 #                         friendly "integration not configured" empty state.
 #                         The parts surface does NOT need it.
 # MAINTAINX_WEBHOOK_SECRET — secret. `wrangler secret put MAINTAINX_WEBHOOK_SECRET`.
-#                         The signing secret for the webhook subscriptions,
-#                         returned in the POST /subscriptions 201 body and
-#                         re-readable from GET /subscriptions/{id}/secret.
+#                         A COMMA-SEPARATED LIST, not one value. Measured
+#                         2026-09-14: MaintainX issues one signing secret per
+#                         SUBSCRIPTION, not per endpoint URL — seven
+#                         subscriptions on this one URL returned seven
+#                         different secrets. One subscription is one event (the
+#                         create body is a oneOf over single-value enums), so
+#                         covering seven events means holding seven keys;
+#                         verification tries each.
+#
+#                         Adding an eighth event later means appending its
+#                         secret and re-binding, or that event silently 401s.
+#
+#                         scripts/create-mx-subscriptions.mjs prints the list
+#                         ready to paste. Each value is also re-readable from
+#                         GET /subscriptions/{id}/secret.
 #                         NOT the same value as MAINTAINX_API_KEY.
 #
 #                         Unbound, every delivery is refused with 401 rather

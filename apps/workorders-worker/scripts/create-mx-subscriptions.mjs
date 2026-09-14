@@ -38,10 +38,12 @@
 //   id from mx_webhook_subscription, so losing the terminal output is
 //   recoverable.
 //
-//   Whether MaintainX issues ONE secret per URL or one per subscription is not
-//   documented. This script checks: if the seven come back with differing
-//   secrets it says so loudly, because the receiver verifies against a single
-//   MAINTAINX_WEBHOOK_SECRET and would silently reject six of seven events.
+//   MEASURED 2026-09-14: MaintainX issues one secret PER SUBSCRIPTION, not per
+//   URL. Seven subscriptions on one URL returned seven different secrets, and
+//   since the create API is a oneOf over single-value event enums there is no
+//   way to cover several events with one subscription. So the receiver holds
+//   all of them: MAINTAINX_WEBHOOK_SECRET takes a comma-separated list and
+//   verification tries each. This script prints that list ready to paste.
 
 const BASE_URL = process.env.MAINTAINX_BASE_URL ?? "https://api.getmaintainx.com/v1";
 const WEBHOOK_URL =
@@ -211,30 +213,36 @@ async function main() {
     return;
   }
 
-  // Does one URL share one secret, or does every subscription get its own?
-  // Undocumented, and it decides whether a single MAINTAINX_WEBHOOK_SECRET can
-  // work at all.
-  const distinct = new Set([...secrets.values()].filter(Boolean));
-  console.log("\n----------------------------------------------------------");
-  if (distinct.size === 1) {
-    console.log("All subscriptions share ONE signing secret, as hoped.\n");
-    console.log("Set it on the worker:\n");
-    console.log("  cd apps/workorders-worker");
-    console.log("  pnpm exec wrangler secret put MAINTAINX_WEBHOOK_SECRET\n");
-    console.log("Secret (shown once here; also at GET /subscriptions/{id}/secret):\n");
-    console.log(`  ${[...distinct][0]}\n`);
+  // MEASURED 2026-09-14: MaintainX issues one secret PER SUBSCRIPTION, not per
+  // URL, so the receiver takes a comma-separated list and tries each. Blank
+  // lines are separate console.log("") calls rather than newline escapes --
+  // this file is generated through shell heredocs, which mangle them.
+  const values = [...secrets.values()].filter(Boolean);
+  const distinct = new Set(values);
+  console.log("");
+  console.log("----------------------------------------------------------");
+  if (distinct.size <= 1 && values.length > 0) {
+    console.log("All subscriptions share ONE signing secret.");
   } else {
-    console.error(
-      `PROBLEM: ${distinct.size} DIFFERENT secrets across ${created.length} subscriptions.\n` +
-        "The receiver verifies against a single MAINTAINX_WEBHOOK_SECRET, so it would\n" +
-        "accept one event type and silently 401 the rest. Options: keep one\n" +
-        "subscription per secret and bind several, or delete all but one and\n" +
-        "re-create. Per-event secrets:\n"
+    // Not a problem -- the receiver takes a list -- but worth stating,
+    // because adding an eighth event later means appending its secret too.
+    console.log(
+      `MaintainX issued ${distinct.size} secrets for ${values.length} subscriptions (one per subscription).`
     );
-    for (const [eventType, secret] of secrets) {
-      console.error(`  ${eventType}: ${secret}`);
-    }
+    console.log("The receiver verifies against every value, so bind them all.");
+    console.log("NOTE: adding another event later means appending its secret and re-binding.");
   }
+  console.log("");
+  console.log("Bind them as ONE comma-separated value:");
+  console.log("");
+  console.log("  cd apps/workorders-worker");
+  console.log("  pnpm exec wrangler secret put MAINTAINX_WEBHOOK_SECRET");
+  console.log("");
+  console.log("Paste exactly this at the prompt (one line, no spaces):");
+  console.log("");
+  console.log(`  ${values.join(",")}`);
+  console.log("");
+  console.log("Each is re-readable from GET /subscriptions/{id}/secret.");
   console.log("----------------------------------------------------------");
   console.log("\nRecorded in mx_webhook_subscription:");
   for (const c of created) console.log(`  ${c.id}  ${c.eventType}`);

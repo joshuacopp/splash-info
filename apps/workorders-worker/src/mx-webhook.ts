@@ -49,8 +49,12 @@ export const MX_WEBHOOK_PATH = "workorders/api/mx-webhook";
 export interface MxWebhookEnv {
   SUPABASE_URL: string;
   SUPABASE_SERVICE_KEY: string;
-  /** Subscription signing secret. `wrangler secret put MAINTAINX_WEBHOOK_SECRET`.
-   *  Unbound means every delivery is refused -- verification returns
+  /** Subscription signing secrets, COMMA-SEPARATED. MaintainX issues one per
+   *  subscription rather than per URL (measured 2026-09-14), so this holds one
+   *  value per subscribed event and verification tries each -- see
+   *  parseSecrets in ./mx-webhook-verify.ts.
+   *
+   *  Unbound means every delivery is refused: verification returns
    *  `no_secret` rather than falling open. */
   MAINTAINX_WEBHOOK_SECRET?: string;
 }

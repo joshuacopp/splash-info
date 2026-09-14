@@ -17,6 +17,7 @@ import { describe, expect, it } from "vitest";
 import {
   MX_TIMESTAMP_TOLERANCE_SECONDS,
   hmacSha256Hex,
+  parseSecrets,
   parseSignatureHeader,
   timingSafeEqualHex,
   verifyMaintainXWebhook
@@ -228,5 +229,87 @@ describe("verifyMaintainXWebhook", () => {
       signatureHeader: header(ms, sig)
     });
     expect(r).toEqual({ ok: true, timestampSeconds: Number(TS) });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Multiple signing secrets.
+//
+// MEASURED 2026-09-14 against the live API: MaintainX issues one secret PER
+// SUBSCRIPTION, not per endpoint URL. Seven subscriptions on one URL returned
+// seven different secrets. One subscription is one event (the create body is a
+// oneOf over single-value enums), so covering seven events means the receiver
+// must hold seven keys.
+// ---------------------------------------------------------------------------
+
+describe("parseSecrets", () => {
+  it.each([
+    ["comma", "a,b,c"],
+    ["space", "a b c"],
+    // Built with String.fromCharCode(10) rather than an escape: this file
+    // was generated through shell heredocs, which mangled the escape twice.
+    ["newline", ["a", "b", "c"].join(String.fromCharCode(10))],
+    ["mixed with padding", " a , b " + String.fromCharCode(10) + " c "]
+  ])("splits on %s", (_label, raw) => {
+    expect(parseSecrets(raw)).toEqual(["a", "b", "c"]);
+  });
+
+  it("treats a lone secret as a one-item list", () => {
+    expect(parseSecrets(SECRET)).toEqual([SECRET]);
+  });
+
+  it.each([
+    ["undefined", undefined],
+    ["empty", ""],
+    ["separators only", " , , "]
+  ])("yields nothing for %s", (_label, raw) => {
+    expect(parseSecrets(raw as string | undefined)).toEqual([]);
+  });
+});
+
+describe("verifyMaintainXWebhook with several secrets", () => {
+  // The real shape: MaintainX secrets look like mx_<uuid>_<uuid>.
+  const OTHERS = [
+    "mx_4976147a-fdf5-47ce-a14c-9b0b74417cfd_27943b37-7a07-467b-a713-28b9e2f894a8",
+    "mx_ee008fc0-0217-4c6e-9cff-300361c4e8ac_799350ac-cd11-4c72-ba4e-0eb21c24c0d7"
+  ];
+  const base = { rawBody: BODY, nowSeconds: NOW, signatureHeader: header(TS, SIG) };
+
+  it("accepts when the matching secret is first", async () => {
+    const r = await verifyMaintainXWebhook({ ...base, secret: `${SECRET},${OTHERS[0]}` });
+    expect(r.ok).toBe(true);
+  });
+
+  it("accepts when the matching secret is last", async () => {
+    const r = await verifyMaintainXWebhook({
+      ...base,
+      secret: `${OTHERS[0]},${OTHERS[1]},${SECRET}`
+    });
+    expect(r.ok).toBe(true);
+  });
+
+  it("accepts when the list is space separated", async () => {
+    const r = await verifyMaintainXWebhook({ ...base, secret: `${OTHERS[0]} ${SECRET}` });
+    expect(r.ok).toBe(true);
+  });
+
+  it("rejects when none of them match", async () => {
+    const r = await verifyMaintainXWebhook({ ...base, secret: OTHERS.join(",") });
+    expect(r).toEqual({ ok: false, reason: "mismatch" });
+  });
+
+  it("rejects a separators-only value as no_secret, never as accepted", async () => {
+    const r = await verifyMaintainXWebhook({ ...base, secret: " , , " });
+    expect(r).toEqual({ ok: false, reason: "no_secret" });
+  });
+
+  it("still enforces the window when several secrets are configured", async () => {
+    // A valid signature under a known key must not bypass the replay check.
+    const r = await verifyMaintainXWebhook({
+      ...base,
+      secret: `${OTHERS[0]},${SECRET}`,
+      nowSeconds: Number(TS) + MX_TIMESTAMP_TOLERANCE_SECONDS + 1
+    });
+    expect(r).toEqual({ ok: false, reason: "expired" });
   });
 });

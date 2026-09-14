@@ -149,13 +149,34 @@ export async function hmacSha256Hex(secret: string, message: string): Promise<st
   return toHex(signature);
 }
 
+/**
+ * Split the configured secret value into candidates.
+ *
+ * MEASURED 2026-09-14: MaintainX issues one signing secret PER SUBSCRIPTION,
+ * not per endpoint URL. Seven subscriptions pointing at one URL came back with
+ * seven different secrets. Since the create API is a oneOf over single-value
+ * event enums -- one subscription is one event -- there is no way to cover
+ * seven events with one secret, so the receiver has to hold all of them.
+ *
+ * Accepts comma, space or newline separated values so one
+ * `wrangler secret put` covers the set.
+ */
+export function parseSecrets(configured: string | undefined): string[] {
+  if (!configured) return [];
+  return configured
+    .split(/[\s,]+/)
+    .map((s) => s.trim())
+    .filter((s) => s !== "");
+}
+
 export interface VerifyWebhookInput {
   /** Raw header value, or null when absent. */
   signatureHeader: string | null;
   /** The body EXACTLY as received -- `await request.text()`, never a
    *  re-serialised object. */
   rawBody: string;
-  /** The subscription signing secret. */
+  /** One or more signing secrets, comma/space/newline separated. See
+   *  parseSecrets -- MaintainX issues one per subscription. */
   secret: string | undefined;
   /** Injectable for tests. Seconds since epoch. */
   nowSeconds?: number;
@@ -172,7 +193,8 @@ export interface VerifyWebhookInput {
 export async function verifyMaintainXWebhook(
   input: VerifyWebhookInput
 ): Promise<WebhookVerifyResult> {
-  if (!input.secret) return { ok: false, reason: "no_secret" };
+  const secrets = parseSecrets(input.secret);
+  if (secrets.length === 0) return { ok: false, reason: "no_secret" };
   if (input.signatureHeader === null || input.signatureHeader === "") {
     return { ok: false, reason: "missing_header" };
   }
@@ -192,16 +214,21 @@ export async function verifyMaintainXWebhook(
   // The signed message is the timestamp AS SENT, not the normalised seconds --
   // MaintainX signed the literal string, so re-deriving it from a converted
   // number would not reproduce the digest.
-  const expected = await hmacSha256Hex(
-    input.secret,
-    `${parsed.timestamp}.${input.rawBody}`
-  );
+  const message = `${parsed.timestamp}.${input.rawBody}`;
+  const offered = parsed.signatures.map((s) => s.toLowerCase());
 
-  // Hex case is not secret-dependent, so normalising is not a timing leak.
-  const expectedLower = expected.toLowerCase();
-  for (const candidate of parsed.signatures) {
-    if (timingSafeEqualHex(candidate.toLowerCase(), expectedLower)) {
-      return { ok: true, timestampSeconds };
+  // Every configured secret is tried. Trying N keys is not a weakening: each
+  // candidate still requires knowing a real secret, and an attacker gains
+  // nothing from there being several. The cost is N HMACs of a small body,
+  // which is microseconds -- and it only runs after the timestamp window has
+  // already rejected replays.
+  for (const secret of secrets) {
+    const expected = (await hmacSha256Hex(secret, message)).toLowerCase();
+    for (const candidate of offered) {
+      // Hex case is not secret-dependent, so normalising is not a timing leak.
+      if (timingSafeEqualHex(candidate, expected)) {
+        return { ok: true, timestampSeconds };
+      }
     }
   }
   return { ok: false, reason: "mismatch" };
