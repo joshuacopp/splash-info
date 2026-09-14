@@ -86,16 +86,40 @@ function inList(ids: readonly number[]): string {
     .join(",");
 }
 
+/**
+ * Total row count from PostgREST's Content-Range header.
+ *
+ * Shape is `<first>-<last>/<total>`, or `* /0` for an empty result. Returns
+ * null when the header is missing or unparseable, which the caller treats as
+ * "fall back to counting rows" rather than as an error.
+ */
+function parseContentRangeTotal(header: string | null): number | null {
+  if (!header) return null;
+  const slash = header.lastIndexOf("/");
+  if (slash < 0) return null;
+  const total = header.slice(slash + 1).trim();
+  if (total === "*" || total === "") return null;
+  const n = Number(total);
+  return Number.isFinite(n) && n >= 0 ? n : null;
+}
+
 async function selectJson<T>(
   env: PgListEnv,
   url: string
-): Promise<{ ok: true; rows: T[] } | { ok: false; error: string; status: number }> {
+): Promise<
+  | { ok: true; rows: T[]; total: number | null }
+  | { ok: false; error: string; status: number }
+> {
   try {
     const res = await fetch(url, {
       headers: {
         apikey: env.SUPABASE_SERVICE_KEY,
         Authorization: `Bearer ${env.SUPABASE_SERVICE_KEY}`,
-        Accept: "application/json"
+        Accept: "application/json",
+        // Asks PostgREST to report the FULL matching count in Content-Range,
+        // not just how many rows it sent. See the truncation note below for
+        // why counting the returned rows cannot work.
+        Prefer: "count=exact"
       }
     });
     if (!res.ok) {
@@ -105,12 +129,41 @@ async function selectJson<T>(
         status: res.status
       };
     }
-    return { ok: true, rows: (await res.json()) as T[] };
+    return {
+      ok: true,
+      rows: (await res.json()) as T[],
+      total: parseContentRangeTotal(res.headers.get("content-range"))
+    };
   } catch (err) {
     // status 0 mirrors the MaintainX client's convention for "never got an
     // answer", which handleList already maps to a 504.
     return { ok: false, error: err instanceof Error ? err.message : String(err), status: 0 };
   }
+}
+
+/**
+ * Was this result cut short?
+ *
+ * MEASURED 2026-09-14, and the reason this is not a row count: PostgREST
+ * enforces its own `db-max-rows` ceiling (1000 on this project) ON TOP of the
+ * `limit` in the query. The obvious trick -- ask for cap+1 and treat the extra
+ * row as proof of more -- therefore CANNOT FIRE at a cap of 1000, because the
+ * 1001st row is exactly the one PostgREST refuses to send.
+ *
+ * It was caught by comparing the two sources for a real operator: MaintainX
+ * reported truncated for 9 locations holding 1,042 active work orders and this
+ * module reported not-truncated for the same 1,046 rows. The visible symptom
+ * would have been the page quietly dropping the 46 oldest rows with no banner,
+ * where the MaintainX path shows one -- silent loss, and only on the operators
+ * with the most work.
+ *
+ * So truncation is decided by the authoritative count when we have one, and
+ * only falls back to the row-length heuristic when the header is missing --
+ * where it is still correct for any cap below db-max-rows.
+ */
+function isTruncated(total: number | null, returned: number, cap: number): boolean {
+  if (total !== null) return total > cap;
+  return returned > cap;
 }
 
 export interface PgWorkOrderResult {
@@ -168,8 +221,8 @@ export async function fetchWorkOrdersFromPg(input: {
     };
   }
 
-  const truncated = res.rows.length > cap;
-  const rows = truncated ? res.rows.slice(0, cap) : res.rows;
+  const truncated = isTruncated(res.total, res.rows.length, cap);
+  const rows = res.rows.length > cap ? res.rows.slice(0, cap) : res.rows;
 
   // A row whose raw is null or not an object is unusable. It should not
   // happen -- the ingest writes raw on every upsert -- but dropping it beats
@@ -237,8 +290,8 @@ export async function fetchWorkRequestsFromPg(input: {
     };
   }
 
-  const truncated = res.rows.length > cap;
-  const rows = truncated ? res.rows.slice(0, cap) : res.rows;
+  const truncated = isTruncated(res.total, res.rows.length, cap);
+  const rows = res.rows.length > cap ? res.rows.slice(0, cap) : res.rows;
 
   const workRequests: RawWorkRequest[] = [];
   for (const row of rows) {

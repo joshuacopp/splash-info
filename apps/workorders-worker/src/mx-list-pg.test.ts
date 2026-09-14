@@ -23,18 +23,29 @@ const ENV: PgListEnv = {
 
 let lastUrl = "";
 
-/** Answer with `rows`, recording the URL that asked for them. */
-function stub(rows: unknown[], init?: { status?: number; body?: string }) {
+/**
+ * Answer with `rows`, recording the URL that asked for them.
+ *
+ * `total` models PostgREST's Content-Range: the count of ALL matching rows,
+ * which is not the same as how many were sent. Pass it to reproduce the
+ * db-max-rows ceiling -- 1000 rows returned out of 1046 matching.
+ */
+function stub(
+  rows: unknown[],
+  init?: { status?: number; body?: string; total?: number | null }
+) {
   lastUrl = "";
   vi.stubGlobal("fetch", async (input: RequestInfo | URL) => {
     lastUrl = String(input);
     if (init?.status && init.status >= 400) {
       return new Response(init.body ?? "err", { status: init.status });
     }
-    return new Response(JSON.stringify(rows), {
-      status: 200,
-      headers: { "Content-Type": "application/json" }
-    });
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    const total = init && "total" in init ? init.total : rows.length;
+    if (total !== null && total !== undefined) {
+      headers["Content-Range"] = `0-${Math.max(rows.length - 1, 0)}/${total}`;
+    }
+    return new Response(JSON.stringify(rows), { status: 200, headers });
   });
 }
 
@@ -96,6 +107,58 @@ describe("fetchWorkOrdersFromPg query", () => {
 });
 
 describe("fetchWorkOrdersFromPg truncation", () => {
+  it("asks PostgREST for an exact count", async () => {
+    // Without this the truncation flag is a guess -- see the regression below.
+    let sentPrefer: string | null = null;
+    vi.stubGlobal("fetch", async (_i: RequestInfo | URL, init?: RequestInit) => {
+      sentPrefer = new Headers(init?.headers).get("Prefer");
+      return new Response("[]", {
+        status: 200,
+        headers: { "Content-Type": "application/json", "Content-Range": "*/0" }
+      });
+    });
+    await fetchWorkOrdersFromPg({ env: ENV, maintainxLocationIds: [1] });
+    expect(sentPrefer).toContain("count=exact");
+  });
+
+  it("reports truncated from the COUNT, not the rows returned", async () => {
+    // THE REGRESSION. PostgREST caps responses at db-max-rows (1000 here) on
+    // top of our `limit`, so at a cap of 1000 the 1001st row -- the one the
+    // old length check needed -- can never arrive. Measured against a real
+    // operator: 1046 matching rows, 1000 sent, truncated reported false, and
+    // the page silently dropped 46 rows with no banner.
+    stub(rawRows(1000), { total: 1046 });
+    const res = await fetchWorkOrdersFromPg({
+      env: ENV,
+      maintainxLocationIds: [1],
+      maxWorkOrders: 1000
+    });
+    expect(res.truncated).toBe(true);
+    expect(res.workOrders).toHaveLength(1000);
+  });
+
+  it("is not truncated when the count equals the cap exactly", async () => {
+    stub(rawRows(1000), { total: 1000 });
+    const res = await fetchWorkOrdersFromPg({
+      env: ENV,
+      maintainxLocationIds: [1],
+      maxWorkOrders: 1000
+    });
+    expect(res.truncated).toBe(false);
+  });
+
+  it("falls back to row length when Content-Range is absent", async () => {
+    // Still correct for any cap below db-max-rows, which is every cap the
+    // caller actually passes except the 1000 case above.
+    stub(rawRows(11), { total: null });
+    const res = await fetchWorkOrdersFromPg({
+      env: ENV,
+      maintainxLocationIds: [1],
+      maxWorkOrders: 10
+    });
+    expect(res.truncated).toBe(true);
+  });
+
   it("asks for one more row than the cap", async () => {
     stub(rawRows(1));
     await fetchWorkOrdersFromPg({ env: ENV, maintainxLocationIds: [1], maxWorkOrders: 200 });
