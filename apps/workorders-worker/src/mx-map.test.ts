@@ -93,3 +93,35 @@ describe("money edge cases", () => {
     expect(mapped?.parts[0]?.unit_cost_cents).toBe(12301);
   });
 });
+
+describe("deleted_at is cleared on every successful map", () => {
+  // Work order 118834534 was soft-deleted at 13:18 on 2026-09-14 while
+  // testing the delete webhook, restored in MaintainX minutes later, and
+  // re-synced every few minutes after that -- and stayed invisible to
+  // operators for hours, because nothing but the delete paths ever wrote the
+  // column. Reaching the mapper means a fetch SUCCEEDED, which is proof the
+  // entity exists, so the map must contradict a stale delete.
+
+  it("emits deleted_at: null", () => {
+    const mapped = workOrder({});
+    expect(mapped?.row.deleted_at).toBeNull();
+  });
+
+  it("emits the KEY, not merely a nullish value", () => {
+    // PostgREST leaves an absent column untouched on upsert, so omitting the
+    // key would leave a stale delete in place -- which is exactly the bug.
+    // `toBeNull` alone passes against a mapper that drops the key entirely.
+    const mapped = workOrder({});
+    expect(Object.keys(mapped?.row ?? {})).toContain("deleted_at");
+  });
+
+  it("still omits the columns that are genuinely owned elsewhere", () => {
+    // first_seen_at is a DB default that an upsert would reset; the two count
+    // columns belong to the comment and attachment passes. Clearing
+    // deleted_at must not be read as licence to emit those too.
+    const keys = Object.keys(workOrder({})?.row ?? {});
+    expect(keys).not.toContain("first_seen_at");
+    expect(keys).not.toContain("comment_count");
+    expect(keys).not.toContain("attachment_count");
+  });
+});

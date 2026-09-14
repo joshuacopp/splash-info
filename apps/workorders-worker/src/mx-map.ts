@@ -28,10 +28,22 @@
 //   - `comment_count` / `attachment_count` — owned by the comment and
 //     attachment passes. A work-order sweep that emitted them would zero out
 //     whatever those passes had just written.
-//   - `deleted_at` — owned by reconciliation. MaintainX never sends it (0 of
-//     100 rows measured), so a delete is observable only as disappearance from
-//     a walk, and only the reconciler knows the difference between "gone" and
-//     "not on this page".
+// `deleted_at` USED TO BE in that list, on the reasoning that MaintainX never
+// sends it and only a reconciler can tell "gone" from "not on this page". That
+// was half right, and the missing half made soft-deletes IRREVERSIBLE: nothing
+// else writes the column, so a row marked deleted stayed hidden forever even
+// while MaintainX kept updating it. Measured 2026-09-14 on work order
+// 118834534 -- deleted at 13:18 while testing the delete webhook, restored in
+// MaintainX minutes later, re-synced every few minutes since, and still
+// invisible to operators hours afterwards.
+//
+// It is now written as NULL on every map, because reaching this function means
+// a fetch SUCCEEDED and the entity therefore exists. The asymmetry is the
+// point: absence from a list walk is weak evidence (the list lags its own
+// writes by an hour or two), but a successful read is proof. Deletion is still
+// only recorded by the two paths that have real evidence for it -- a
+// WORK_ORDER_DELETE webhook, or a 404 on re-fetch -- and each now survives
+// only until the next successful read contradicts it.
 //
 // `labor_cost_cents` is also absent: MaintainX exposes labor duration but no
 // rate, so cost is computed downstream from the Beekeeper rate. `labor_seconds`
@@ -296,6 +308,10 @@ export function mapWorkOrder(
     expenditure_cents: expenditureCents,
     labor_seconds: laborSeconds,
     total_cost_cents: partCostCents + expenditureCents,
+
+    // See the header: proof of existence, not an omission. Clearing this is
+    // what makes a soft delete recoverable.
+    deleted_at: null,
 
     raw,
     synced_at: syncedAt
