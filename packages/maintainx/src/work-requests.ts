@@ -273,6 +273,87 @@ export async function fetchMaintainXWorkRequests(
   };
 }
 
+/**
+ * Fetch ONE work request by id -- `GET /v1/workrequests/{id}`.
+ *
+ * The webhook receiver's re-fetch path. Unlike the work-order equivalent there
+ * is no expand asymmetry to work around: the single and list endpoints offer
+ * the same four tokens (asset, location, work_order, extra_fields), so a
+ * single-entity response maps to the same row a page would produce.
+ *
+ * Fail-soft like everything else here: resolves with `workRequest: null` and an
+ * `error` rather than throwing. A 404 is reported as ok:false with status 404,
+ * which the caller reads as "deleted upstream", not as a transport failure.
+ */
+export async function fetchMaintainXWorkRequest(input: {
+  id: number;
+  apiKey: string;
+  baseUrl: string;
+  expand?: readonly string[];
+  signal?: AbortSignal;
+}): Promise<{
+  ok: boolean;
+  workRequest: RawWorkRequest | null;
+  error: string | null;
+  status: number;
+}> {
+  const base = `${trimBase(input.baseUrl)}/workrequests/${input.id}`;
+  const url =
+    input.expand && input.expand.length > 0
+      ? `${base}?${input.expand.map((e) => `expand=${encodeURIComponent(e)}`).join("&")}`
+      : base;
+
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      method: "GET",
+      headers: { Authorization: `Bearer ${input.apiKey}`, Accept: "application/json" },
+      signal: input.signal
+    });
+  } catch (e) {
+    return {
+      ok: false,
+      workRequest: null,
+      error: e instanceof Error ? e.message : String(e),
+      status: 0
+    };
+  }
+
+  if (!res.ok) {
+    return { ok: false, workRequest: null, error: await mxError(res), status: res.status };
+  }
+
+  let parsed: unknown = null;
+  try {
+    parsed = await res.json();
+  } catch {
+    return {
+      ok: false,
+      workRequest: null,
+      error: `MX ${res.status}: response was not valid JSON`,
+      status: res.status
+    };
+  }
+
+  // Live responses wrap as { workRequest: {...} }; a bare object is accepted
+  // too, matching the defensive envelope handling on every other read here.
+  const obj = (parsed && typeof parsed === "object" ? parsed : {}) as Record<string, unknown>;
+  const body = (obj.workRequest ?? obj.data ?? obj) as RawWorkRequest;
+  if (typeof body?.id !== "number") {
+    return {
+      ok: false,
+      workRequest: null,
+      error: `MX ${res.status}: response missing work-request id`,
+      status: res.status
+    };
+  }
+  return { ok: true, workRequest: body, error: null, status: res.status };
+}
+
+/** Expand tokens for a single work-request re-fetch. Same set the list
+ *  endpoint offers, so there is no partial-response trap here. */
+export const SINGLE_WORK_REQUEST_EXPAND = ["asset", "location", "work_order"] as const;
+
 /* ============================================================
  * CREATE + photo upload (Briefs 74 / 76).
  *

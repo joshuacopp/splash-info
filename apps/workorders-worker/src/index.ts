@@ -35,6 +35,7 @@
 
 import { authenticate, type Session } from "@splash/auth";
 import { MX_WEBHOOK_PATH, handleMxWebhook } from "./mx-webhook.js";
+import { processMxWebhookDelivery } from "./mx-webhook-process.js";
 import {
   getLocationsByContactEmail,
   getMaintainXTeamsByIds,
@@ -252,7 +253,13 @@ export default {
       // Everything below this block calls authenticate(). This is the only
       // thing that does not.
       if (path === MX_WEBHOOK_PATH) {
-        return handleMxWebhook(request, env, ctx);
+        return handleMxWebhook(request, env, ctx, {
+          // Runs after the 202, inside ctx.waitUntil(). Never throws -- a
+          // rejection there would be an unhandled rejection with no response
+          // left to attach it to.
+          process: (delivery, eventRowId) =>
+            processMxWebhookDelivery(env, delivery, eventRowId)
+        });
       }
 
       if (path === "workorders/api/list" && request.method === "GET") {

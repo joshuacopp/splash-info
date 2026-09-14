@@ -37,7 +37,11 @@
 //   makes that harmless: two deliveries for one id produce two identical reads
 //   of current state. Nothing here may assume ordering.
 
-import { verifyMaintainXWebhook, MX_SIGNATURE_HEADER } from "./mx-webhook-verify.js";
+import {
+  MX_SIGNATURE_HEADER,
+  parseSignatureHeader,
+  verifyMaintainXWebhook
+} from "./mx-webhook-verify.js";
 
 /** Exact path. index.ts matches on equality -- see the bypass note above. */
 export const MX_WEBHOOK_PATH = "workorders/api/mx-webhook";
@@ -149,19 +153,31 @@ export function parseDelivery(rawBody: string): ParsedDelivery | null {
  * ============================================================ */
 
 /**
- * Record a verified delivery and return its row id.
+ * Persistence rule: a delivery is logged when it carried a WELL-FORMED
+ * signature header, verified or not.
  *
- * Only VERIFIED deliveries are persisted. The table has a signature_verified
- * column defaulting to false, and it is tempting to log rejects too -- but this
- * route is unauthenticated and reachable by anyone, so persisting unverified
- * bodies hands the internet an unbounded INSERT. Rejects go to Workers Logs
- * (observability is on for this worker) where they are rate-limited by the
- * platform and cost us no storage. The column stays as the schema defines it.
+ * The two populations hitting this path look nothing alike. Anything with no
+ * header is ambient internet noise -- scanners POSTing `{}` at every path they
+ * can find -- and persisting it hands anyone with a shell loop an unbounded
+ * INSERT on a public endpoint. Anything that bothered to send `t=...,v1=...`
+ * is either MaintainX or someone deliberately imitating it, and those are the
+ * rows worth having: a `mismatch` is how a rotated secret becomes visible
+ * instead of silently eating deliveries, and `expired` is how a replay does.
+ *
+ * A forged-but-well-formed header can still write rows. That is a targeted act
+ * rather than background traffic, and it shows up in the table as a burst of
+ * signature_verified=false, which is itself the alert.
+ *
+ * Rejected rows are stamped processed_at on the way in: they are terminal, and
+ * the pending index (processed_at is null) is the cron drain's work queue --
+ * an unprocessable reject must never land in it.
  */
 async function recordDelivery(
   env: MxWebhookEnv,
-  delivery: ParsedDelivery
+  delivery: ParsedDelivery,
+  rejectedReason?: string
 ): Promise<string | null> {
+  const now = new Date().toISOString();
   const res = await fetch(`${env.SUPABASE_URL}/rest/v1/mx_webhook_event`, {
     method: "POST",
     headers: {
@@ -176,8 +192,11 @@ async function recordDelivery(
         entity_kind: delivery.entityKind,
         entity_id: delivery.entityId,
         occurred_at: delivery.occurredAt,
-        signature_verified: true,
-        payload: delivery.payload
+        signature_verified: rejectedReason === undefined,
+        payload: delivery.payload,
+        ...(rejectedReason === undefined
+          ? {}
+          : { processed_at: now, process_error: `rejected: ${rejectedReason}` })
       }
     ])
   });
@@ -251,6 +270,21 @@ export async function handleMxWebhook(
     // means the worker is deployed without its secret and is refusing real
     // traffic, which looks identical to an attack from the outside.
     console.warn(`[mx-webhook] rejected: ${verified.reason}`);
+
+    // Persist only if it was signed -- see recordDelivery. Re-parsing the
+    // header costs one string split and only happens on the failure path.
+    if (parseSignatureHeader(request.headers.get(MX_SIGNATURE_HEADER)) !== null) {
+      const rejected = parseDelivery(rawBody) ?? {
+        // Signed, but the body is not a shape we can read. Still worth a row:
+        // the interesting fact is that something signed it.
+        eventType: "__UNPARSEABLE__",
+        entityKind: "OTHER" as const,
+        entityId: null,
+        occurredAt: null,
+        payload: { _raw: rawBody.slice(0, 2000) }
+      };
+      await recordDelivery(env, rejected, verified.reason);
+    }
     return new Response("unauthorized", { status: 401 });
   }
 

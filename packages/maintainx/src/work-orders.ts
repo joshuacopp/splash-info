@@ -151,6 +151,27 @@ export interface FetchResult {
 const ACTIVE_STATUSES = ["OPEN", "IN_PROGRESS", "ON_HOLD"] as const;
 
 /**
+ * Everything ingest asks for that the SINGLE work-order endpoint can actually
+ * return -- INGEST_EXPAND minus `categories`, which has no expand on
+ * `GET /workorders/{id}` even though the LIST endpoint offers it.
+ *
+ * That asymmetry is a data-loss trap. A caller who re-fetches one work order
+ * and maps it with the same mapper it uses for a page gets `categories: []`,
+ * because the mapper reads absent as empty rather than as unknown -- and
+ * upserting that blanks a populated column. Callers using this list must omit
+ * the categories column from the write entirely rather than send an empty one.
+ */
+export const SINGLE_WORK_ORDER_EXPAND = [
+  "assignees",
+  "location",
+  "parts",
+  "expenditures",
+  "times",
+  "time_items",
+  "asset"
+] as const;
+
+/**
  * Every status MaintainX emits on a work order.
  *
  * USE AS DOCUMENTATION, NOT AS A `statuses` FILTER. Sending all six is
@@ -205,9 +226,28 @@ export async function fetchMaintainXWorkOrder(input: {
   id: number;
   apiKey: string;
   baseUrl: string;
+  /**
+   * Expand tokens. NOTE the single-work-order endpoint's enum is NOT the same
+   * as the list endpoint's: it offers assignees, asset, estimated_time,
+   * location, parts, times, time_items, expenditures and the *_extra_fields
+   * variants -- but NOT `categories`, which the list endpoint does offer and
+   * which ingest sends.
+   *
+   * That asymmetry is a data-loss trap for any caller that maps a
+   * single-entity response with the same mapper it uses for a page: the
+   * mapper reads an absent `categories` as an empty array, not as "unknown",
+   * and upserting that blanks a populated column. Callers re-fetching one work
+   * order must omit the categories column from the write rather than send an
+   * empty one. See SINGLE_WORK_ORDER_EXPAND below.
+   */
+  expand?: readonly string[];
   signal?: AbortSignal;
 }): Promise<{ ok: boolean; workOrder: RawWorkOrder | null; error: string | null; status: number }> {
-  const url = `${trimBase(input.baseUrl)}/workorders/${input.id}`;
+  const base = `${trimBase(input.baseUrl)}/workorders/${input.id}`;
+  const url =
+    input.expand && input.expand.length > 0
+      ? `${base}?${input.expand.map((e) => `expand=${encodeURIComponent(e)}`).join("&")}`
+      : base;
 
   let res: Response;
   try {
