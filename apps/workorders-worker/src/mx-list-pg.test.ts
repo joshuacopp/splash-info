@@ -159,34 +159,93 @@ describe("fetchWorkOrdersFromPg truncation", () => {
     expect(res.truncated).toBe(true);
   });
 
-  it("asks for one more row than the cap", async () => {
-    stub(rawRows(1));
-    await fetchWorkOrdersFromPg({ env: ENV, maintainxLocationIds: [1], maxWorkOrders: 200 });
-    expect(lastUrl).toContain("limit=201");
+  it("pages at PostgREST's db-max-rows, not at a product cap", async () => {
+    // The old code asked for cap+1 and treated the extra row as proof of more.
+    // PostgREST refuses to send it, so that check could not fire at a cap of
+    // 1000 -- which is exactly the bug ee618c4 fixed. Paging removes the cap
+    // instead of detecting it.
+    stub(rawRows(5));
+    await fetchWorkOrdersFromPg({ env: ENV, maintainxLocationIds: [1] });
+    expect(lastUrl).toContain("limit=1000");
+    expect(lastUrl).toContain("offset=0");
   });
 
-  it("reports truncated and trims to the cap when the extra row comes back", async () => {
-    stub(rawRows(11));
+  it("fetches a second page when the first comes back full", async () => {
+    // A short page is the end signal; a full one is not.
+    const pages = [rawRows(1000), rawRows(7)];
+    let n = 0;
+    vi.stubGlobal("fetch", async (input: RequestInfo | URL) => {
+      lastUrl = String(input);
+      const body = pages[Math.min(n, pages.length - 1)]!;
+      n += 1;
+      return new Response(JSON.stringify(body), {
+        status: 200,
+        headers: {
+          "Content-Type": "application/json",
+          "Content-Range": `0-${body.length - 1}/1007`
+        }
+      });
+    });
+
+    const res = await fetchWorkOrdersFromPg({ env: ENV, maintainxLocationIds: [1] });
+    expect(res.pageCount).toBe(2);
+    expect(res.workOrders).toHaveLength(1007);
+    expect(res.truncated).toBe(false);
+    expect(lastUrl).toContain("offset=1000");
+  });
+
+  it("is NOT truncated once it has read everything", async () => {
+    // 1,046 rows used to trip the banner because the cap was 1000. Now it just
+    // reads them.
+    stub(rawRows(500), { total: 500 });
+    const res = await fetchWorkOrdersFromPg({ env: ENV, maintainxLocationIds: [1] });
+    expect(res.truncated).toBe(false);
+  });
+
+  it("orders by a TOTAL sort so paging cannot repeat or skip a row", async () => {
+    // mx_updated_at is not unique; without the id tiebreak two pages taken
+    // under different orderings can return the same row twice and miss
+    // another. Silent, and impossible to spot from the rendered page.
+    stub(rawRows(1));
+    await fetchWorkOrdersFromPg({ env: ENV, maintainxLocationIds: [1] });
+    expect(lastUrl).toContain("order=mx_updated_at.desc.nullslast,id.asc");
+  });
+
+  it("stops at the safety ceiling and reports truncation", async () => {
+    stub(rawRows(50), { total: 10_000 });
     const res = await fetchWorkOrdersFromPg({
       env: ENV,
       maintainxLocationIds: [1],
-      maxWorkOrders: 10
+      maxWorkOrders: 50
     });
     expect(res.truncated).toBe(true);
-    expect(res.workOrders).toHaveLength(10);
+  });
+});
+
+describe("fetchWorkOrdersFromPg overdue-preventive filter", () => {
+  it("excludes >90-day-overdue preventives IN SQL", async () => {
+    // They were fetched and then discarded in JS: a 9-location operator pulled
+    // 1,066 rows to display 173, and tripped a truncation banner on rows
+    // nobody would ever see. 71% waste account-wide.
+    stub(rawRows(1));
+    await fetchWorkOrdersFromPg({ env: ENV, maintainxLocationIds: [1] });
+    expect(lastUrl).toContain("or=(type.is.null,type.neq.PREVENTIVE,due_date.is.null,due_date.gte.");
   });
 
-  it("is not truncated when the result exactly fills the cap", async () => {
-    // The off-by-one that would show a truncation banner on a full-but-
-    // complete page.
-    stub(rawRows(10));
-    const res = await fetchWorkOrdersFromPg({
-      env: ENV,
-      maintainxLocationIds: [1],
-      maxWorkOrders: 10
-    });
-    expect(res.truncated).toBe(false);
-    expect(res.workOrders).toHaveLength(10);
+  it("keeps null-typed work orders, which `neq` alone would drop", async () => {
+    // PostgREST `neq` does not match NULLs, so without the explicit
+    // `type.is.null` arm a null-typed work order vanishes from the page.
+    stub(rawRows(1));
+    await fetchWorkOrdersFromPg({ env: ENV, maintainxLocationIds: [1] });
+    expect(lastUrl).toContain("type.is.null");
+  });
+
+  it("keeps preventives that have no due date", async () => {
+    // Matches bucketByType: only a PARSEABLE due date older than the cutoff
+    // drops a preventive.
+    stub(rawRows(1));
+    await fetchWorkOrdersFromPg({ env: ENV, maintainxLocationIds: [1] });
+    expect(lastUrl).toContain("due_date.is.null");
   });
 });
 

@@ -749,15 +749,17 @@ async function handleList(
     // One round trip each, no cursor walk, no upstream timeout to bound --
     // so the AbortControllers above are simply not used on this path.
     const [pgWorkOrders, pgRequests] = await Promise.all([
+      // No row cap passed on purpose. MAX_WORK_ORDERS_SINGLE / _MULTI exist
+      // because of MaintainX's paging, and inheriting them here re-imposed a
+      // 200-row limit on single-location operators for no reason. The Postgres
+      // reader pages to exhaustion against its own safety ceiling.
       fetchWorkOrdersFromPg({
         env,
-        maintainxLocationIds: mappedMxIds,
-        maxWorkOrders
+        maintainxLocationIds: mappedMxIds
       }),
       fetchWorkRequestsFromPg({
         env,
-        maintainxLocationIds: mappedMxIds,
-        maxWorkRequests: MAX_WORK_REQUESTS
+        maintainxLocationIds: mappedMxIds
       })
     ]);
     result = pgWorkOrders;

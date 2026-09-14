@@ -58,23 +58,48 @@ const ACTIVE_STATUSES = ["OPEN", "IN_PROGRESS", "ON_HOLD"] as const;
 const REQUEST_STATUSES = ["PENDING", "REJECTED"] as const;
 
 /**
- * Row ceilings, matching MAX_WORK_ORDERS_MULTI / MAX_WORK_REQUESTS on the
- * MaintainX path. These are only fallbacks -- handleList passes its own -- but
- * they match so a future caller that omits the argument cannot quietly get a
- * different truncation point than the source it is replacing.
- *
- * We ask for one MORE row than the cap: getting it back is how truncation is
- * detected without a second count query.
- *
- * Worth noting for later: the caps exist because of MaintainX's paging, not
- * ours. A single-location operator is capped at 200 here purely to match what
- * the live path does today, and Postgres could serve the full set in one
- * query. Raising it is an easy win AFTER the cutover -- doing it during would
- * mean the two sources disagree, which is exactly what the comparison period
- * needs to rule out.
+ * PostgREST returns at most `db-max-rows` (1000 on this project) per request,
+ * whatever `limit` says. That is a transport limit, not a product decision, so
+ * the reader pages through it rather than surfacing it to operators.
  */
-const MAX_ROWS = 1000;
-const MAX_REQUEST_ROWS = 1000;
+const PAGE_SIZE = 1000;
+
+/**
+ * Safety ceiling, NOT a product cap.
+ *
+ * The old 1000-row cap came from MaintainX's paging and was inherited
+ * wholesale. It bit for a reason worth remembering: the page discards
+ * preventives more than 90 days overdue AFTER fetching them, so a 9-location
+ * operator was pulling 1,066 rows to display 173 -- 84% waste -- and tripping
+ * a truncation banner on rows nobody would ever see. Account-wide the waste
+ * was 71%.
+ *
+ * That filter now runs in SQL (see overdueCutoffIso), so the fetch is roughly
+ * the size of the result. This ceiling exists only so a pathological query
+ * cannot walk forever; at 20,000 it is far above the ~1,200 displayable rows
+ * that exist account-wide, and `truncated` finally means "there is genuinely
+ * more to show" rather than "we stopped reading".
+ */
+const MAX_ROWS = 20_000;
+const MAX_REQUEST_ROWS = 20_000;
+
+/** Mirrors PREVENTATIVE_MAX_OVERDUE_DAYS in index.ts (Brief 79). */
+const PREVENTATIVE_MAX_OVERDUE_DAYS = 90;
+
+/**
+ * The cutoff `bucketByType` applies in JS, expressed for SQL.
+ *
+ * It floors to the UTC DAY before subtracting, because the JS filter compares
+ * whole day numbers (`Math.floor(ms / 86_400_000)`). Using an instant instead
+ * would move the boundary by up to a day and quietly disagree with the
+ * in-memory filter that still runs behind it.
+ */
+function overdueCutoffIso(nowMs = Date.now()): string {
+  const todayUtcMidnight = Math.floor(nowMs / 86_400_000) * 86_400_000;
+  return new Date(
+    todayUtcMidnight - PREVENTATIVE_MAX_OVERDUE_DAYS * 86_400_000
+  ).toISOString();
+}
 
 /** The row shape the widened select returns. Embedded resources come back as
  *  arrays, or absent when the parent has none. */
@@ -253,34 +278,6 @@ async function selectJson<T>(
   }
 }
 
-/**
- * Was this result cut short?
- *
- * MEASURED 2026-09-14, and the reason this is not a row count: PostgREST
- * enforces its own `db-max-rows` ceiling (1000 on this project) ON TOP of the
- * `limit` in the query. The obvious trick -- ask for cap+1 and treat the extra
- * row as proof of more -- therefore CANNOT FIRE at a cap of 1000, because the
- * 1001st row is exactly the one PostgREST refuses to send.
- *
- * It was caught by comparing the two sources for a real operator: MaintainX
- * reported truncated for 9 locations holding 1,042 active work orders and this
- * module reported not-truncated for the same 1,046 rows. The visible symptom
- * would have been the page quietly dropping the 46 oldest rows with no banner,
- * where the MaintainX path shows one -- silent loss, and only on the operators
- * with the most work.
- *
- * So truncation is decided by the authoritative count when we have one, and
- * only falls back to the row-length heuristic when the header is missing --
- * where it is still correct for any cap below db-max-rows.
- */
-function isTruncated(total: number | null, returned: number, cap: number): boolean {
-  if (total !== null) return total > cap;
-  return returned > cap;
-}
-
-/** One comment, as the expanded row renders it. `authorId` is resolved to a
- *  name by the caller against the same maintainx_users cache the assignee
- *  list uses -- this module does no name resolution of its own. */
 export interface PgComment {
   id: number | string;
   authorId: number | null;
@@ -378,7 +375,7 @@ export async function fetchWorkOrdersFromPg(input: {
   maintainxLocationIds: readonly number[];
   maxWorkOrders?: number;
 }): Promise<PgWorkOrderResult> {
-  const cap = input.maxWorkOrders ?? MAX_ROWS;
+  const ceiling = input.maxWorkOrders ?? MAX_ROWS;
   const ids = inList(input.maintainxLocationIds);
   if (ids === "") {
     return {
@@ -394,9 +391,9 @@ export async function fetchWorkOrdersFromPg(input: {
 
   // One query for the work orders AND everything the expanded row needs.
   // PostgREST resource embedding follows the foreign keys on
-  // mx_work_order_comment / _part / _expenditure, so comments cost no extra
-  // round trip -- which is the whole reason they can be shown at all. On the
-  // MaintainX path they would be one API call PER WORK ORDER.
+  // mx_work_order_comment / _part / _expenditure / _attachment, so comments
+  // cost no extra round trip -- which is the whole reason they can be shown at
+  // all. On the MaintainX path they would be one API call PER WORK ORDER.
   const embed =
     `raw,part_cost_cents,expenditure_cents,total_cost_cents,labor_seconds,` +
     `mx_work_order_comment(id,author_id,content,mx_created_at),` +
@@ -404,44 +401,72 @@ export async function fetchWorkOrdersFromPg(input: {
     `mx_work_order_expenditure(description,type,quantity,cost_per_unit_cents,row_total_cents),` +
     `mx_work_order_attachment(id,file_name,mime_type,width,height,is_thumbnail,r2_key)`;
 
-  const url =
+  // The >90-day-overdue preventive filter, in SQL. bucketByType applies the
+  // same rule in JS afterwards and still does -- it is what the MaintainX path
+  // relies on -- but doing it here as well is what stops us fetching rows only
+  // to discard them. MEASURED 2026-09-14: a 9-location operator fetched 1,066
+  // rows to display 173.
+  //
+  // Expressed as the KEEP condition, because PostgREST has no NOT(AND):
+  //   type is null OR type != PREVENTIVE OR due_date is null OR due_date >= cutoff
+  // `type.is.null` is in there because `neq` does not match NULLs, and a
+  // null-typed work order must not silently vanish.
+  const cutoff = encodeURIComponent(overdueCutoffIso());
+  const keepFilter =
+    `&or=(type.is.null,type.neq.PREVENTIVE,due_date.is.null,due_date.gte.${cutoff})`;
+
+  const base =
     `${input.env.SUPABASE_URL}/rest/v1/mx_work_order` +
     `?select=${embed}` +
-    // Newest comments first, capped per work order. The limit is applied to
-    // the EMBEDDED resource, so it bounds each parent's list rather than the
-    // result as a whole.
     `&mx_work_order_comment.order=mx_created_at.desc` +
     `&mx_work_order_comment.limit=${COMMENT_LIMIT}` +
     `&mx_work_order_part.order=ordinal.asc` +
     `&mx_work_order_expenditure.order=ordinal.asc` +
-    // Only mirrored rows: an attachment without bytes in R2 has no servable
-    // source, so including it would render a broken image in the expanded row.
     `&mx_work_order_attachment.r2_key=not.is.null` +
     `&mx_work_order_attachment.order=is_thumbnail.desc,mx_created_at.asc` +
     `&status=in.(${ACTIVE_STATUSES.join(",")})` +
     `&deleted_at=is.null` +
     `&mx_location_id=in.(${ids})` +
-    // Newest-touched first, so a truncated result keeps the rows an operator
-    // is most likely to be looking for -- the same bias as the MaintainX
-    // path's `sort=-updatedAt`.
-    `&order=mx_updated_at.desc.nullslast` +
-    `&limit=${cap + 1}`;
+    keepFilter +
+    // Stable order is REQUIRED for paging, not just nice: two pages taken
+    // under different orderings can repeat a row and skip another. id breaks
+    // ties so the sort is total, since mx_updated_at is not unique.
+    `&order=mx_updated_at.desc.nullslast,id.asc`;
 
-  const res = await selectJson<PgWorkOrderRow>(input.env, url);
-  if (!res.ok) {
-    return {
-      ok: false,
-      workOrders: [],
-      extrasById: new Map(),
-      truncated: false,
-      pageCount: 1,
-      error: res.error,
-      status: res.status
-    };
+  const rows: PgWorkOrderRow[] = [];
+  let total: number | null = null;
+  let pageCount = 0;
+
+  // Pages until the matching set is exhausted or the safety ceiling is hit.
+  // PostgREST caps each response at db-max-rows regardless of `limit`, so this
+  // loop -- not a bigger limit -- is what removes the old 1000-row cap.
+  while (rows.length < ceiling) {
+    const url = `${base}&limit=${PAGE_SIZE}&offset=${rows.length}`;
+    const res = await selectJson<PgWorkOrderRow>(input.env, url);
+    pageCount += 1;
+    if (!res.ok) {
+      return {
+        ok: false,
+        workOrders: [],
+        extrasById: new Map(),
+        truncated: false,
+        pageCount,
+        error: res.error,
+        status: res.status
+      };
+    }
+    if (total === null) total = res.total;
+    rows.push(...res.rows);
+
+    // A short page means the end, whatever the count header claimed.
+    if (res.rows.length < PAGE_SIZE) break;
+    if (total !== null && rows.length >= total) break;
   }
 
-  const truncated = isTruncated(res.total, res.rows.length, cap);
-  const rows = res.rows.length > cap ? res.rows.slice(0, cap) : res.rows;
+  // Truncation is now a real statement about the data: there are more
+  // DISPLAYABLE rows than we are willing to return. Before the SQL filter it
+  // fired on rows the page discarded anyway.
+  const truncated = total !== null ? total > rows.length : rows.length >= ceiling;
 
   // A row whose raw is null or not an object is unusable. It should not
   // happen -- the ingest writes raw on every upsert -- but dropping it beats
@@ -464,7 +489,7 @@ export async function fetchWorkOrdersFromPg(input: {
     console.error(`[mx-pg] dropped ${skipped} work order row(s) with unusable raw payload`);
   }
 
-  return { ok: true, workOrders, extrasById, truncated, pageCount: 1, error: null, status: 200 };
+  return { ok: true, workOrders, extrasById, truncated, pageCount, error: null, status: 200 };
 }
 
 export interface PgWorkRequestResult {
@@ -494,28 +519,40 @@ export async function fetchWorkRequestsFromPg(input: {
     return { ok: true, workRequests: [], truncated: false, pageCount: 1, error: null, status: 200 };
   }
 
-  const url =
+  const base =
     `${input.env.SUPABASE_URL}/rest/v1/mx_work_request` +
     `?select=raw` +
     `&request_status=in.(${REQUEST_STATUSES.join(",")})` +
     `&mx_location_id=in.(${ids})` +
-    `&order=mx_created_at.desc.nullslast` +
-    `&limit=${cap + 1}`;
+    // id breaks ties so the sort is total -- see the note on the work-order
+    // query; an unstable order repeats and skips rows across pages.
+    `&order=mx_created_at.desc.nullslast,id.asc`;
 
-  const res = await selectJson<{ raw: unknown }>(input.env, url);
-  if (!res.ok) {
-    return {
-      ok: false,
-      workRequests: [],
-      truncated: false,
-      pageCount: 1,
-      error: res.error,
-      status: res.status
-    };
+  const rows: Array<{ raw: unknown }> = [];
+  let total: number | null = null;
+  let pageCount = 0;
+
+  while (rows.length < cap) {
+    const url = `${base}&limit=${PAGE_SIZE}&offset=${rows.length}`;
+    const res = await selectJson<{ raw: unknown }>(input.env, url);
+    pageCount += 1;
+    if (!res.ok) {
+      return {
+        ok: false,
+        workRequests: [],
+        truncated: false,
+        pageCount,
+        error: res.error,
+        status: res.status
+      };
+    }
+    if (total === null) total = res.total;
+    rows.push(...res.rows);
+    if (res.rows.length < PAGE_SIZE) break;
+    if (total !== null && rows.length >= total) break;
   }
 
-  const truncated = isTruncated(res.total, res.rows.length, cap);
-  const rows = res.rows.length > cap ? res.rows.slice(0, cap) : res.rows;
+  const truncated = total !== null ? total > rows.length : rows.length >= cap;
 
   const workRequests: RawWorkRequest[] = [];
   for (const row of rows) {
@@ -524,5 +561,5 @@ export async function fetchWorkRequestsFromPg(input: {
     }
   }
 
-  return { ok: true, workRequests, truncated, pageCount: 1, error: null, status: 200 };
+  return { ok: true, workRequests, truncated, pageCount, error: null, status: 200 };
 }
