@@ -63,6 +63,7 @@ import {
   type PgWorkOrderExtras
 } from "./mx-list-pg.js";
 import { runMxReconcile } from "./mx-reconcile.js";
+import { runMxAttachmentMirror } from "./mx-attachments.js";
 import { handlePartsRequest } from "./parts.js";
 import { runMaintainXUserTeamSync, type SyncResult } from "./sync.js";
 
@@ -93,6 +94,10 @@ interface Env extends SupabaseEnv {
   /** MaintainX bearer token. Same value as on splash-damage (Brief 42).
    *  Optional: when unbound the worker returns 503. */
   MAINTAINX_API_KEY?: string;
+  /** R2 mirror of MaintainX attachments (splash-workorder-files). Optional so
+   *  an unbound bucket degrades to "no images" rather than breaking the page;
+   *  the mirror pass reports it and skips. */
+  WORKORDER_FILES?: R2Bucket;
   /** REST root, no trailing /workorders. `[vars]` entry. */
   MAINTAINX_BASE_URL: string;
   /** Populated for parity with damage-worker; not consumed in v1. */
@@ -454,6 +459,22 @@ export default {
             console.log("workorders-worker mx ingest complete:", JSON.stringify(result));
           } catch (err) {
             console.error("workorders-worker mx ingest failed:", err);
+          }
+
+          // Attachment mirror LAST of the three. Images are the least urgent
+          // thing on this tick and a slow download must not delay either the
+          // drain or the sweep that keep the work orders themselves current.
+          // Its own try for the same reason the other two have one.
+          try {
+            const mirror = await runMxAttachmentMirror(env);
+            // Silent when a pass did nothing, which is the steady state once
+            // the backfill is done -- otherwise this logs every 5 minutes
+            // forever and buries the passes that mattered.
+            if (mirror.mirrored > 0 || mirror.failed > 0 || mirror.skipped) {
+              console.log("workorders-worker mx attachment mirror:", JSON.stringify(mirror));
+            }
+          } catch (err) {
+            console.error("workorders-worker mx attachment mirror failed:", err);
           }
           return;
         }

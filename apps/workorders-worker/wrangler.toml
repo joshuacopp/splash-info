@@ -164,6 +164,23 @@ routes = [
 #                        immediately, so for very recent work orders the mirror
 #                        is legitimately AHEAD of what the list returns and a
 #                        raw count looks like a mismatch in both directions.
+# R2 mirror for MaintainX attachments (2026-09-14).
+#
+# Its OWN bucket, not a share of splash-parts-manuals. Every feature in this
+# repo owns one, and CLAUDE.md records what cross-worker bucket sharing cost
+# last time: forms-worker needed PROMO_FILES bound, step (b) of a three-step
+# change was missed, and promo materials silently vanished from emails with no
+# error anywhere. Only this worker binds this bucket; apps/web serves the bytes
+# by proxying through the WORKORDERS_WORKER service binding (Brief 88 pattern),
+# so there is no second binding to forget.
+#
+# Why a copy exists at all: MaintainX hands back presigned S3 URLs with
+# X-Amz-Expires=3600. They cannot be stored and re-used later, and there is no
+# key to re-sign with. The bytes have to be taken while the link is live.
+[[r2_buckets]]
+binding     = "WORKORDER_FILES"
+bucket_name = "splash-workorder-files"
+
 [vars]
 MAINTAINX_BASE_URL = "https://api.getmaintainx.com/v1"
 APPS_WEB_BASE_URL  = "https://splashcarwashes.info"

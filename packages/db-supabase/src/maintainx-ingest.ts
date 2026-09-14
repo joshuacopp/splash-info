@@ -410,6 +410,37 @@ export function upsertMxWorkRequests(
  * MaintainX is NOT pruned by this: the same evidence problem as work-order
  * deletion, and an orphan row costs one R2 object rather than a wrong answer.
  */
+/**
+ * Record the outcome of ONE attachment copy.
+ *
+ * Separate from the metadata upsert on purpose: these columns belong to the
+ * mirror and the mapper must never emit them (emitting `r2_key` from a
+ * work-order sweep would blank a copy already made and the mirror would
+ * re-download it forever).
+ *
+ * `mirror_attempts` is incremented by the caller rather than here — PostgREST
+ * cannot express `attempts = attempts + 1`, and the caller already read the
+ * row, so it knows the value. Recording the attempt on FAILURE as well as
+ * success is what stops a permanently-broken attachment being retried every
+ * five minutes until the end of time.
+ */
+export async function recordMxAttachmentMirror(
+  env: SupabaseWriteEnv,
+  attachmentId: number,
+  patch: {
+    r2_key?: string | null;
+    r2_bytes?: number | null;
+    mirrored_at?: string | null;
+    mirror_error?: string | null;
+    mirror_attempts: number;
+  }
+): Promise<{ ok: boolean; status: number; error: string | null }> {
+  const r = await rest(env, "PATCH", "mx_work_order_attachment", {
+    id: `eq.${attachmentId}`
+  }, { body: patch, prefer: "return=minimal" });
+  return { ok: r.ok, status: r.status, error: r.error };
+}
+
 export function upsertMxWorkOrderAttachments(
   env: SupabaseWriteEnv,
   rows: MxWorkOrderAttachmentRow[]
