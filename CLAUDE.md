@@ -3514,12 +3514,29 @@ URL-based — service bindings don't apply to those.
   calls. The mirror gets them via PostgREST resource embedding in the
   SAME query (`mx_work_order_comment(...)`, capped at the 20 newest
   per work order — one work order carries 174). Attachments are NOT
-  shown: the webhook expand does not fetch them and MaintainX's CDN
-  rejects un-keyed hotlinks. If that is wanted, copy the bytes into
-  the existing `splash-parts-manuals` R2 bucket at ingest and serve
-  through apps/web's `PARTS_FILES` binding (the Parts Directory
-  pattern) rather than building a live proxy, which would
-  re-authenticate to MaintainX on every image load.
+  shown, and the reason constrains the design. `raw.attachments[]`
+  carries `{id, url, fileName, mimeType, width, height, createdAt}`,
+  but the `url` is a PRESIGNED S3 LINK WITH `X-Amz-Expires=3600` —
+  it dies one hour after the sync that fetched it. So a proxy is not
+  merely worse than copying, it CANNOT WORK: by the time an operator
+  expands a row the stored URL is usually dead, and there is no key
+  to re-sign with (the signature is AWS-side, not an API-key gate).
+  The bytes have to be copied while the link is live, i.e. during
+  ingest, into R2 — the existing `splash-parts-manuals` bucket or a
+  sibling — and served through apps/web's `PARTS_FILES` binding, the
+  Parts Directory pattern. The destination table ALREADY EXISTS and
+  is designed for exactly this — `mx_work_order_attachment` in
+  `supabase/maintainx-ingest-01-tables.sql` carries `r2_key`,
+  `r2_bytes`, `mirrored_at`, `mirror_error`, `mirror_attempts` and a
+  pending index `where r2_key is null`, and its table comment records
+  the 60-minute expiry. It has 0 rows: nothing populates it yet.
+  Building this means (1) writing attachment metadata from
+  `raw.attachments[]` during ingest, (2) a mirror pass over the
+  pending index that RE-FETCHES `GET /workorders/{id}` for a fresh
+  signed URL before downloading (the stored one is expired by then),
+  PUTs to R2 and sets `r2_key`, (3) a serve route, and (4) rendering.
+  Note workorders-worker currently has NO R2 binding at all, so step
+  2 needs one added.
 
 - **MaintainX money is CENTS** (2026-09-14) - The API sends integer
   cents and the schema stores integer cents: `unitCost: 12300` IS
