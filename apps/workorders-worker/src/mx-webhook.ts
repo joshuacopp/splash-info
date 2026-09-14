@@ -72,28 +72,39 @@ export type MxEntityKind = "WORK_ORDER" | "WORK_REQUEST" | "COMMENT" | "OTHER";
 /**
  * Which entity an event is about, and which root-level id field carries it.
  *
- * Payloads carry `<entity>Id` at the root (plus `<entity>ExternalId`, `orgId`,
- * `occurredAt`). Embedded entity objects are thin subsets -- the embedded
- * newWorkOrder has 14 fields, no id and no status -- so the root id is the
- * only thing read here.
+ * MEASURED from 128 live deliveries, 2026-09-14. Do not infer these; MaintainX
+ * is not consistent with itself and the shapes below are what it actually
+ * sends:
  *
- * Events not in this table are stored with kind OTHER and never processed:
- * subscribing to something new should be a deliberate code change, not a
- * silent no-op that looks like it worked.
+ *   NEW_WORK_ORDER              workOrderId, customerId, userId
+ *   WORK_ORDER_STATUS_CHANGE    workOrderId, oldStatus, newStatus, customerId, userId
+ *   NEW_COMMENT_ON_WORK_ORDER   workOrderId, comment, type
+ *   NEW_WORK_REQUEST            workRequestId
+ *   WORK_REQUEST_STATUS_CHANGE  requestId, oldStatus, newStatus   <- NOT workRequestId
+ *
+ * The last line is the trap: the two work-request events name the same entity
+ * with different keys. Both spellings are accepted on both events rather than
+ * relying on which one fired.
+ *
+ * WORK_ORDER_CHANGE and WORK_ORDER_DELETE are subscribed but have not been
+ * observed yet, so `workOrderId` there is an assumption by analogy with the
+ * three work-order events that HAVE been seen. If either ever logs
+ * "carried no entity id", this is the line to check.
  */
 const EVENT_ROUTING: Record<string, { kind: MxEntityKind; idFields: string[] }> = {
   NEW_WORK_ORDER: { kind: "WORK_ORDER", idFields: ["workOrderId"] },
   WORK_ORDER_CHANGE: { kind: "WORK_ORDER", idFields: ["workOrderId"] },
   WORK_ORDER_STATUS_CHANGE: { kind: "WORK_ORDER", idFields: ["workOrderId"] },
   WORK_ORDER_DELETE: { kind: "WORK_ORDER", idFields: ["workOrderId"] },
-  NEW_WORK_REQUEST: { kind: "WORK_REQUEST", idFields: ["workRequestId"] },
-  WORK_REQUEST_STATUS_CHANGE: { kind: "WORK_REQUEST", idFields: ["workRequestId"] },
-  // The comment payload identifies the work order it belongs to; comments are
-  // fetched per work order (GET /workorders/{id}/comments), never per comment.
-  NEW_COMMENT_ON_WORK_ORDER: {
-    kind: "COMMENT",
-    idFields: ["workOrderId", "commentWorkOrderId"]
-  }
+  NEW_WORK_REQUEST: { kind: "WORK_REQUEST", idFields: ["workRequestId", "requestId"] },
+  WORK_REQUEST_STATUS_CHANGE: {
+    kind: "WORK_REQUEST",
+    idFields: ["requestId", "workRequestId"]
+  },
+  // Comments identify their work order; the comment body rides along in the
+  // payload and is deliberately ignored -- comments are re-fetched per work
+  // order via GET /workorders/{id}/comments, never written from the webhook.
+  NEW_COMMENT_ON_WORK_ORDER: { kind: "COMMENT", idFields: ["workOrderId"] }
 };
 
 export interface ParsedDelivery {
@@ -130,13 +141,23 @@ export function parseDelivery(rawBody: string): ParsedDelivery | null {
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
   const bag = parsed as Record<string, unknown>;
 
-  // MaintainX sends the event under `type`; `event` is accepted as a fallback
-  // because the payload schema is documented less precisely than the
-  // subscription schema.
-  const eventType =
-    (typeof bag.type === "string" && bag.type) ||
-    (typeof bag.event === "string" && bag.event) ||
-    "";
+  // The field is `eventType`. NOT `type` -- on a comment payload `type` is the
+  // COMMENT's type ("TEXT"), and reading it as the event produced rows logged
+  // as event_type=TEXT before this was measured.
+  //
+  // `type` and `event` remain as fallbacks but only when their value is an
+  // event we actually route, so a payload that means something else by `type`
+  // can never be mistaken for one.
+  let eventType = typeof bag.eventType === "string" ? bag.eventType : "";
+  if (!eventType) {
+    for (const key of ["type", "event"]) {
+      const v = bag[key];
+      if (typeof v === "string" && v in EVENT_ROUTING) {
+        eventType = v;
+        break;
+      }
+    }
+  }
   if (!eventType) return null;
 
   const route = EVENT_ROUTING[eventType];
