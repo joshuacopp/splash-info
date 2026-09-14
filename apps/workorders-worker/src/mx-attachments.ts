@@ -304,10 +304,16 @@ export async function runMxAttachmentMirror(
     result.skipped = `sync state: ${state.error}`;
     return result;
   }
-  // The cursor rides in `watermark`, which is a text column. There is no
-  // dedicated cursor semantic for "last id seen" and adding a column for one
-  // pass is not worth it.
-  const cursor = Number(state.state?.watermark ?? "0");
+  // The `cursor` column, which is text. NOT `watermark` -- that one is
+  // timestamptz, and putting a work-order id in it is a 400 from PostgREST.
+  // The failure mode was worse than a lost write: the id never advanced, so
+  // the pass re-did the same 12 work orders every five minutes, doing real
+  // MaintainX calls each time and never reaching the 13th.
+  //
+  // `cursor` is also what the backfill passes use, but this key is
+  // deliberately not a member of MX_BACKFILL_PASSES, so the dispatcher's
+  // isComplete() never reads it.
+  const cursor = Number(state.state?.cursor ?? "0");
   const afterId = Number.isFinite(cursor) ? cursor : 0;
 
   const scope = await nextWorkOrders(env, afterId, WORK_ORDERS_PER_PASS);
@@ -322,7 +328,7 @@ export async function runMxAttachmentMirror(
     // records their metadata but only this pass can copy the bytes.
     result.backfillComplete = true;
     await writeMxSyncState(env, MX_PASS_ATTACHMENTS, {
-      watermark: "0",
+      cursor: "0",
       last_run_at: new Date().toISOString(),
       last_success_at: new Date().toISOString(),
       last_status: "OK",
@@ -401,7 +407,7 @@ export async function runMxAttachmentMirror(
   }
 
   await writeMxSyncState(env, MX_PASS_ATTACHMENTS, {
-    watermark: String(lastId),
+    cursor: String(lastId),
     last_run_at: new Date().toISOString(),
     last_success_at: new Date().toISOString(),
     last_status: "OK",
