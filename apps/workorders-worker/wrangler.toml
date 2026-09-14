@@ -167,7 +167,10 @@ routes = [
 [vars]
 MAINTAINX_BASE_URL = "https://api.getmaintainx.com/v1"
 APPS_WEB_BASE_URL  = "https://splashcarwashes.info"
-# WORKORDERS_READ_SOURCE = "postgres"   # <- the cutover, when verified
+# CUTOVER 2026-09-14: /workorders now reads the local mirror, not live
+# MaintainX calls. Roll back by commenting this line and pushing -- the
+# MaintainX path is untouched and an unset value resolves back to it.
+WORKORDERS_READ_SOURCE = "postgres"
 
 # Brief 71 — daily MaintainX user/team sync. 11:30 UTC = 6:30 AM ET. Runs
 # BEFORE the damage-worker daily summary cron at 13:00 UTC so any new
