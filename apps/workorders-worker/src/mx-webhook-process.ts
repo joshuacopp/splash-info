@@ -59,6 +59,18 @@ export interface MxWebhookProcessEnv {
  *  the cron drain is the better outcome. */
 const PROCESS_TIMEOUT_MS = 20_000;
 
+/**
+ * How many times a retryable failure is retried before the row is given up on
+ * and stamped terminal.
+ *
+ * The drain runs every 5 minutes, so five attempts spans ~25 minutes. Past
+ * that the failure is not transient and retrying forever would hide it: a row
+ * that stops being pending is a row that shows up in the stamped-with-error
+ * query someone actually reads. The incremental poller remains the backstop
+ * for anything whose updatedAt moves.
+ */
+export const MAX_PROCESS_ATTEMPTS = 5;
+
 /** Comment pages to walk for one work order. Comments arrive newest-first and
  *  a webhook fires per comment, so the first page is almost always enough; the
  *  cap exists so a pathological thread cannot run the budget out. */
@@ -66,21 +78,80 @@ const MAX_COMMENT_PAGES = 3;
 
 export type ProcessOutcome =
   | { ok: true; detail: string }
-  | { ok: false; error: string };
+  /**
+   * `retryable` decides whether the delivery stays in the drain's work queue.
+   *
+   * TRUE means the input was fine and the world was not: MaintainX 5xx, a
+   * network abort, a Supabase write that lost a race, a secret not yet bound.
+   * Reading the same id again later can succeed, so the row stays pending.
+   *
+   * FALSE means re-reading changes nothing: a payload with no entity id, an
+   * event we do not route, a record the mapper deterministically rejects. The
+   * row is stamped terminal with its error so it is visible without clogging
+   * the queue. Getting this wrong in the FALSE direction silently drops real
+   * data; in the TRUE direction it burns attempts on something hopeless, which
+   * MAX_PROCESS_ATTEMPTS then caps. The asymmetry is why the default for
+   * anything unrecognised (the catch-all below) is TRUE.
+   */
+  | { ok: false; error: string; retryable: boolean };
 
 /* ============================================================
  * Delivery-log bookkeeping
  * ============================================================ */
 
-/** Stamp the mx_webhook_event row terminal. Best-effort: losing the stamp
- *  means the cron drain reprocesses, which is harmless because every write
- *  here is an upsert. */
+/**
+ * Record the result of one processing attempt on the mx_webhook_event row.
+ *
+ * THIS FUNCTION DECIDES WHETHER A DELIVERY IS RETRIED. `processed_at` is the
+ * queue predicate -- mx_webhook_event_pending_idx is `where processed_at is
+ * null` -- so stamping it is the act of removing the row from the drain's work
+ * queue. Three outcomes:
+ *
+ *   success            -> processed_at set, error cleared. Done.
+ *   terminal failure   -> processed_at set, error recorded. Never retried,
+ *                         because retrying cannot change the answer.
+ *   retryable failure  -> processed_at LEFT NULL, attempts incremented, error
+ *                         recorded. The drain picks it up again.
+ *
+ * Until 2026-09-14 this stamped processed_at unconditionally, which meant a
+ * MaintainX 502 was recorded as "done, with an error" and the delivery was
+ * lost -- the pending index could only ever catch rows whose waitUntil died
+ * before reaching this function. Retryable failures now stay in the queue,
+ * which is what makes the drain worth running.
+ *
+ * `attempt` is this attempt's number, 1-based: the inline waitUntil path is
+ * always attempt 1, and the drain passes the row's stored attempts + 1. Once
+ * it reaches MAX_PROCESS_ATTEMPTS a retryable failure is given up on and
+ * stamped terminal, so a permanently broken row cannot occupy the queue
+ * forever.
+ *
+ * Best-effort: if the PATCH itself fails the row simply stays pending and the
+ * drain reprocesses it, which is harmless because every write is an upsert.
+ */
 async function stampEvent(
   env: MxWebhookProcessEnv,
   eventRowId: string | null,
-  outcome: ProcessOutcome
+  outcome: ProcessOutcome,
+  attempt: number
 ): Promise<void> {
   if (!eventRowId) return;
+
+  const exhausted = !outcome.ok && outcome.retryable && attempt >= MAX_PROCESS_ATTEMPTS;
+  const keepPending = !outcome.ok && outcome.retryable && !exhausted;
+
+  const patch: Record<string, unknown> = {
+    attempts: attempt,
+    process_error: outcome.ok
+      ? null
+      : (exhausted
+          ? `gave up after ${attempt} attempt(s): ${outcome.error}`
+          : outcome.error
+        ).slice(0, 2000)
+  };
+  // Only stamped when the row is leaving the queue. Left absent -- not set to
+  // null -- so a retry never clears a stamp written by a concurrent attempt.
+  if (!keepPending) patch.processed_at = new Date().toISOString();
+
   try {
     const res = await fetch(
       `${env.SUPABASE_URL}/rest/v1/mx_webhook_event?id=eq.${encodeURIComponent(eventRowId)}`,
@@ -92,10 +163,7 @@ async function stampEvent(
           "Content-Type": "application/json",
           Prefer: "return=minimal"
         },
-        body: JSON.stringify({
-          processed_at: new Date().toISOString(),
-          process_error: outcome.ok ? null : outcome.error.slice(0, 2000)
-        })
+        body: JSON.stringify(patch)
       }
     );
     if (!res.ok) {
@@ -156,13 +224,20 @@ async function processWorkOrder(
     // Treat it exactly like WORK_ORDER_DELETE rather than erroring: the
     // outcome we want -- the row marked gone -- is the same.
     if (fetched.status === 404) return softDeleteWorkOrder(env, workOrderId);
-    return { ok: false, error: `fetch work order ${workOrderId}: ${fetched.error ?? fetched.status}` };
+    return {
+      ok: false,
+      error: `fetch work order ${workOrderId}: ${fetched.error ?? fetched.status}`,
+      retryable: true
+    };
   }
 
   const locations = await fetchMxLocationMap(env);
   const syncedAt = new Date().toISOString();
   const mapped = mapWorkOrder(fetched.workOrder, locations.map, syncedAt);
-  if (!mapped) return { ok: false, error: `work order ${workOrderId} did not map` };
+  // Deterministic: the same payload maps the same way every time.
+  if (!mapped) {
+    return { ok: false, error: `work order ${workOrderId} did not map`, retryable: false };
+  }
 
   // See the header: categories has no single-entity expand, and an absent key
   // is left untouched by PostgREST. Sending `categories: []` would blank it.
@@ -170,7 +245,11 @@ async function processWorkOrder(
 
   const parentWrite = await upsertMxWorkOrders(env, [row as typeof mapped.row]);
   if (!parentWrite.ok) {
-    return { ok: false, error: `upsert work order ${workOrderId}: ${parentWrite.error ?? "unknown"}` };
+    return {
+      ok: false,
+      error: `upsert work order ${workOrderId}: ${parentWrite.error ?? "unknown"}`,
+      retryable: true
+    };
   }
 
   // Children only after the parent: every child table has an ON DELETE CASCADE
@@ -182,7 +261,11 @@ async function processWorkOrder(
   ]);
   const failed = children.find((c) => !c.ok);
   if (failed) {
-    return { ok: false, error: `child write for ${workOrderId}: ${failed.error ?? "unknown"}` };
+    return {
+      ok: false,
+      error: `child write for ${workOrderId}: ${failed.error ?? "unknown"}`,
+      retryable: true
+    };
   }
 
   return {
@@ -228,7 +311,8 @@ async function softDeleteWorkOrder(
   if (!res.ok) {
     return {
       ok: false,
-      error: `soft delete ${workOrderId}: ${res.status} ${(await res.text()).slice(0, 300)}`
+      error: `soft delete ${workOrderId}: ${res.status} ${(await res.text()).slice(0, 300)}`,
+      retryable: true
     };
   }
   return { ok: true, detail: `work order ${workOrderId} soft-deleted` };
@@ -250,19 +334,26 @@ async function processWorkRequest(
   if (!fetched.ok || !fetched.workRequest) {
     return {
       ok: false,
-      error: `fetch work request ${workRequestId}: ${fetched.error ?? fetched.status}`
+      error: `fetch work request ${workRequestId}: ${fetched.error ?? fetched.status}`,
+      retryable: true
     };
   }
 
   const locations = await fetchMxLocationMap(env);
   const row = mapWorkRequest(fetched.workRequest, locations.map, new Date().toISOString());
-  if (!row) return { ok: false, error: `work request ${workRequestId} did not map` };
+  if (!row) {
+    return { ok: false, error: `work request ${workRequestId} did not map`, retryable: false };
+  }
 
   // No expand asymmetry on this resource -- the single and list endpoints
   // offer the same tokens -- so the full row is safe to write.
   const write = await upsertMxWorkRequests(env, [row]);
   if (!write.ok) {
-    return { ok: false, error: `upsert work request ${workRequestId}: ${write.error ?? "unknown"}` };
+    return {
+      ok: false,
+      error: `upsert work request ${workRequestId}: ${write.error ?? "unknown"}`,
+      retryable: true
+    };
   }
   return { ok: true, detail: `work request ${workRequestId} refreshed` };
 }
@@ -286,7 +377,11 @@ async function processComments(
         signal
       });
     if (!res.ok) {
-      return { ok: false, error: `fetch comments ${workOrderId}: ${res.error ?? res.status}` };
+      return {
+        ok: false,
+        error: `fetch comments ${workOrderId}: ${res.error ?? res.status}`,
+        retryable: true
+      };
     }
     for (const raw of res.comments) {
       const row = mapComment(raw, workOrderId, syncedAt);
@@ -306,7 +401,11 @@ async function processComments(
 
   const write = await upsertMxWorkOrderComments(env, rows);
   if (!write.ok) {
-    return { ok: false, error: `upsert comments ${workOrderId}: ${write.error ?? "unknown"}` };
+    return {
+      ok: false,
+      error: `upsert comments ${workOrderId}: ${write.error ?? "unknown"}`,
+      retryable: true
+    };
   }
   return { ok: true, detail: `${rows.length} comment(s) on ${workOrderId} refreshed` };
 }
@@ -324,7 +423,11 @@ async function processComments(
 export async function processMxWebhookDelivery(
   env: MxWebhookProcessEnv,
   delivery: ParsedDelivery,
-  eventRowId: string | null
+  eventRowId: string | null,
+  /** This attempt's 1-based number. The inline webhook path leaves it at 1;
+   *  the cron drain passes the row's stored attempts + 1 so the ceiling in
+   *  stampEvent counts across invocations rather than restarting each time. */
+  attempt = 1
 ): Promise<void> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), PROCESS_TIMEOUT_MS);
@@ -334,9 +437,13 @@ export async function processMxWebhookDelivery(
     if (!env.MAINTAINX_API_KEY) {
       // Deployment state, not a delivery problem -- but the row must still be
       // stamped so it is visible rather than silently pending forever.
-      outcome = { ok: false, error: "MAINTAINX_API_KEY not bound" };
+      outcome = { ok: false, error: "MAINTAINX_API_KEY not bound", retryable: true };
     } else if (delivery.entityId === null) {
-      outcome = { ok: false, error: `${delivery.eventType} carried no entity id` };
+      outcome = {
+        ok: false,
+        error: `${delivery.eventType} carried no entity id`,
+        retryable: false
+      };
     } else if (delivery.eventType === "WORK_ORDER_DELETE") {
       outcome = await softDeleteWorkOrder(env, delivery.entityId);
     } else if (delivery.entityKind === "WORK_ORDER") {
@@ -348,10 +455,16 @@ export async function processMxWebhookDelivery(
     } else {
       // OTHER: recorded, never processed. Subscribing to a new event should be
       // a code change, not a silent no-op that looks like it worked.
-      outcome = { ok: false, error: `unrouted event ${delivery.eventType}` };
+      outcome = { ok: false, error: `unrouted event ${delivery.eventType}`, retryable: false };
     }
   } catch (err) {
-    outcome = { ok: false, error: err instanceof Error ? err.message : String(err) };
+    // Unrecognised, so retryable -- see the note on ProcessOutcome. An abort
+    // from PROCESS_TIMEOUT_MS lands here and is exactly the transient case.
+    outcome = {
+      ok: false,
+      error: err instanceof Error ? err.message : String(err),
+      retryable: true
+    };
   } finally {
     clearTimeout(timer);
   }
@@ -359,9 +472,14 @@ export async function processMxWebhookDelivery(
   if (outcome.ok) {
     console.log(`[mx-webhook] ${delivery.eventType}: ${outcome.detail}`);
   } else {
-    console.error(`[mx-webhook] ${delivery.eventType} failed: ${outcome.error}`);
+    const fate = !outcome.retryable
+      ? "terminal"
+      : attempt >= MAX_PROCESS_ATTEMPTS
+        ? `giving up after ${attempt}`
+        : `will retry (attempt ${attempt}/${MAX_PROCESS_ATTEMPTS})`;
+    console.error(`[mx-webhook] ${delivery.eventType} failed [${fate}]: ${outcome.error}`);
   }
 
-  await stampEvent(env, eventRowId, outcome);
+  await stampEvent(env, eventRowId, outcome, attempt);
   await stampSubscription(env, delivery.eventType);
 }

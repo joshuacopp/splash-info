@@ -17,11 +17,12 @@
 //   A Cloudflare Queue would be the textbook answer here and is deliberately
 //   NOT used. It would add a binding, a consumer and a second deploy surface to
 //   buy durability we already have: mx_webhook_event rows are written before
-//   the ack, and mx_webhook_event_pending_idx (processed_at is null) is exactly
-//   the backlog a drain would read. If waitUntil dies mid-flight the row stays
-//   unprocessed and is recoverable; a queue would move that same recovery
-//   somewhere more expensive. Revisit if delivery volume ever makes waitUntil
-//   contention real.
+//   the ack, and mx_webhook_event_pending_idx (processed_at is null) is the
+//   backlog. mx-webhook-drain.ts reads it on the 5-minute cron, so a delivery
+//   whose waitUntil died -- or whose processing failed transiently -- is
+//   retried rather than lost. A queue would move that same recovery somewhere
+//   more expensive. Revisit if delivery volume ever makes waitUntil contention
+//   real.
 //
 // WHAT A WEBHOOK IS ALLOWED TO DO
 //
@@ -330,8 +331,9 @@ export async function handleMxWebhook(
   if (deps.process) {
     ctx.waitUntil(
       deps.process(delivery, eventRowId).catch((err) => {
-        // Swallowed on purpose: the row is already written with processed_at
-        // null, so the pending index is the retry surface. Throwing here would
+        // Swallowed on purpose. processMxWebhookDelivery does not throw and
+        // stamps its own outcome; if it died before doing so the row still has
+        // processed_at null and the cron drain retries it. Throwing here would
         // only produce an unhandled rejection after the response has gone.
         console.error(
           `[mx-webhook] processing failed for ${delivery.eventType} ${delivery.entityId}:`,

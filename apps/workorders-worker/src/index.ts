@@ -56,6 +56,7 @@ import {
   type RawWorkRequest
 } from "@splash/maintainx";
 import { runMxIngest } from "./mx-ingest.js";
+import { runMxWebhookDrain } from "./mx-webhook-drain.js";
 import { handlePartsRequest } from "./parts.js";
 import { runMaintainXUserTeamSync, type SyncResult } from "./sync.js";
 
@@ -329,7 +330,10 @@ export default {
   // `controller.cron`:
   //
   //   "30 11 * * *"  daily MaintainX user/team sync (Brief 71).
-  //   "*/5 * * * *"  MaintainX -> Postgres ingest (Brief 74). Deliberately
+  //   "*/5 * * * *"  webhook drain then MaintainX -> Postgres ingest
+  //                  (Brief 74). The drain retries deliveries the inline
+  //                  waitUntil path did not finish; see mx-webhook-drain.ts.
+  //                  The ingest is deliberately
   //                  chunked: one pass per invocation, bounded by
   //                  TIME_BUDGET_MS / PAGE_BUDGET in mx-ingest.ts and resumed
   //                  from the cursor in mx_sync_state. The 6-month backfill
@@ -349,6 +353,27 @@ export default {
     ctx.waitUntil(
       (async () => {
         if (cron === MX_INGEST_CRON) {
+          // Drain BEFORE ingest, and in its own try. Order matters: the ingest
+          // is budgeted to use most of the tick, so running it first would
+          // routinely leave the drain no time and the backlog would only ever
+          // clear on a tick where the ingest happened to finish early. The
+          // drain's own budget is the smaller of the two for the same reason
+          // in reverse -- it must not starve the ingest.
+          //
+          // Separate try blocks because these are independent jobs sharing a
+          // tick: a drain that throws must not stop the sweep that is the
+          // backstop for everything the drain failed to apply.
+          try {
+            const drained = await runMxWebhookDrain(env);
+            // Silent on the common case -- an empty queue every 5 minutes is
+            // noise that would bury the passes that did something.
+            if (drained.claimed > 0) {
+              console.log("workorders-worker mx webhook drain:", JSON.stringify(drained));
+            }
+          } catch (err) {
+            console.error("workorders-worker mx webhook drain failed:", err);
+          }
+
           try {
             const result = await runMxIngest(env);
             console.log("workorders-worker mx ingest complete:", JSON.stringify(result));
