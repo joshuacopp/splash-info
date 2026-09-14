@@ -57,7 +57,11 @@ import {
 } from "@splash/maintainx";
 import { runMxIngest } from "./mx-ingest.js";
 import { runMxWebhookDrain } from "./mx-webhook-drain.js";
-import { fetchWorkOrdersFromPg, fetchWorkRequestsFromPg } from "./mx-list-pg.js";
+import {
+  fetchWorkOrdersFromPg,
+  fetchWorkRequestsFromPg,
+  type PgWorkOrderExtras
+} from "./mx-list-pg.js";
 import { runMxReconcile } from "./mx-reconcile.js";
 import { handlePartsRequest } from "./parts.js";
 import { runMaintainXUserTeamSync, type SyncResult } from "./sync.js";
@@ -147,6 +151,46 @@ interface AssigneeOut {
   email: string | null;
 }
 
+/** A comment on the expanded row. Author resolved against the same
+ *  maintainx_users cache the assignee list uses; `author` is null when the id
+ *  is absent or not in the cache, which renders as "Unknown" rather than
+ *  hiding the comment -- the text is the point, not the attribution. */
+interface CommentOut {
+  id: string;
+  author: string | null;
+  content: string;
+  createdAt: string | null;
+}
+
+/**
+ * Cost breakdown. Present only on the Postgres path -- the MaintainX list
+ * endpoint does not carry costs, and fetching them live would be one API call
+ * per work order.
+ *
+ * Every figure is CENTS, matching the MaintainX API and the schema. Formatting
+ * to dollars is the UI's job; doing it here would invite the same 100x error
+ * that had these columns wrong until 9a920d1.
+ */
+interface CostOut {
+  partCents: number;
+  expenditureCents: number;
+  totalCents: number;
+  laborSeconds: number | null;
+  parts: Array<{
+    name: string;
+    quantity: number | null;
+    unitCostCents: number | null;
+    lineTotalCents: number | null;
+  }>;
+  expenditures: Array<{
+    description: string;
+    type: string | null;
+    quantity: number | null;
+    costPerUnitCents: number | null;
+    rowTotalCents: number | null;
+  }>;
+}
+
 interface WorkOrderOut {
   id: number;
   sequentialId: number | null;
@@ -161,6 +205,16 @@ interface WorkOrderOut {
   assignees: AssigneeOut[];
   categories: string[];
   locationId: number | null;
+  /** Newest-first, capped. Empty on the MaintainX path and for a work order
+   *  with no comments -- the UI cannot tell those apart, and does not need to:
+   *  both render as "no comments". */
+  comments: CommentOut[];
+  /** True when older comments exist beyond the cap. */
+  commentsTruncated: boolean;
+  /** Null when nothing was recorded, which is the common case: 28 of 22,910
+   *  work orders carry a cost. Null renders as no cost section at all rather
+   *  than a row of zeroes. */
+  cost: CostOut | null;
 }
 
 interface GroupOut {
@@ -553,10 +607,12 @@ async function handleList(
     pageCount: number;
   };
 
+  let extrasById = new Map<number, PgWorkOrderExtras>();
+
   if (source === "postgres") {
     // One round trip each, no cursor walk, no upstream timeout to bound --
     // so the AbortControllers above are simply not used on this path.
-    [result, requestsResult] = await Promise.all([
+    const [pgWorkOrders, pgRequests] = await Promise.all([
       fetchWorkOrdersFromPg({
         env,
         maintainxLocationIds: mappedMxIds,
@@ -568,6 +624,12 @@ async function handleList(
         maxWorkRequests: MAX_WORK_REQUESTS
       })
     ]);
+    result = pgWorkOrders;
+    requestsResult = pgRequests;
+    // Comments and costs ride along from the same query. Read off the
+    // concrete return rather than widening `result`, which is deliberately
+    // only the shape both sources share.
+    extrasById = pgWorkOrders.extrasById;
     clearTimeout(woTimeout);
     clearTimeout(requestsTimeout);
   } else {
@@ -638,6 +700,14 @@ async function handleList(
   for (const id of collectRequestCreatorIds(visibleRequests)) {
     if (!userIds.includes(id)) userIds.push(id);
   }
+  // Comment authors share the same cache. Without this every comment renders
+  // unattributed, which is the kind of thing that looks like a data problem
+  // rather than a missing lookup.
+  for (const extras of extrasById.values()) {
+    for (const c of extras.comments) {
+      if (c.authorId != null && !userIds.includes(c.authorId)) userIds.push(c.authorId);
+    }
+  }
   const teamIds = collectAssigneeIdsByType(result.workOrders, "TEAM");
   const [users, teams] = await Promise.all([
     userIds.length ? getMaintainXUsersByIds(env, userIds) : Promise.resolve(new Map<number, MaintainXUserRow>()),
@@ -658,8 +728,14 @@ async function handleList(
   for (const loc of accessible) {
     if (loc.maintainx_id != null) accessibleByMxId.set(loc.maintainx_id, loc);
   }
-  const reactive = groupByLocation(buckets.reactive, users, teams, accessibleByMxId);
-  const preventive = groupByLocation(buckets.preventive, users, teams, accessibleByMxId);
+  const reactive = groupByLocation(buckets.reactive, users, teams, accessibleByMxId, extrasById);
+  const preventive = groupByLocation(
+    buckets.preventive,
+    users,
+    teams,
+    accessibleByMxId,
+    extrasById
+  );
 
   // Brief 74 — harvest MX-side location names so the New Request tab's
   // Location dropdown (and Brief 80's request group headers) can label
@@ -852,11 +928,15 @@ function groupByLocation(
   workOrders: RawWorkOrder[],
   users: Map<number, MaintainXUserRow>,
   teams: Map<number, MaintainXTeamRow>,
-  accessibleByMxId: Map<number, UserAccessibleLocation>
+  accessibleByMxId: Map<number, UserAccessibleLocation>,
+  /** Comments + costs by work order id. Empty on the MaintainX path, which is
+   *  why every consumer treats absence as "none" rather than an error. */
+  extrasById: Map<number, PgWorkOrderExtras> = new Map()
 ): GroupOut[] {
   const buckets = new Map<number, { header: string; items: WorkOrderOut[] }>();
   for (const wo of workOrders) {
-    const projected = projectWorkOrder(wo, users, teams);
+    const extras = typeof wo.id === "number" ? extrasById.get(wo.id) : undefined;
+    const projected = projectWorkOrder(wo, users, teams, extras);
     if (!projected) continue;
     const mxIdRaw = projected.locationId;
     if (mxIdRaw == null) continue;
@@ -974,7 +1054,8 @@ function projectCategories(raw: RawWorkOrder["categories"]): string[] {
 function projectWorkOrder(
   wo: RawWorkOrder,
   users: Map<number, MaintainXUserRow>,
-  teams: Map<number, MaintainXTeamRow>
+  teams: Map<number, MaintainXTeamRow>,
+  extras?: PgWorkOrderExtras
 ): WorkOrderOut | null {
   if (typeof wo.id !== "number" || !Number.isFinite(wo.id)) return null;
   return {
@@ -992,7 +1073,49 @@ function projectWorkOrder(
       : null,
     assignees: projectAssignees(wo.assignees, users, teams),
     categories: projectCategories(wo.categories),
-    locationId: extractRawLocationId(wo)
+    locationId: extractRawLocationId(wo),
+    comments: projectComments(extras, users),
+    commentsTruncated: extras?.commentsTruncated ?? false,
+    cost: projectCost(extras)
+  };
+}
+
+function projectComments(
+  extras: PgWorkOrderExtras | undefined,
+  users: Map<number, MaintainXUserRow>
+): CommentOut[] {
+  if (!extras) return [];
+  return extras.comments.map((c) => ({
+    id: String(c.id),
+    author: c.authorId != null ? (users.get(c.authorId)?.full_name ?? null) : null,
+    content: c.content,
+    createdAt: c.createdAt
+  }));
+}
+
+/**
+ * Cost, or null when there is nothing to show.
+ *
+ * "Nothing to show" is every total being zero AND no line items -- not merely
+ * a zero total. A work order can carry parts whose unit costs are all zero,
+ * and hiding those would lose the fact that parts were used at all.
+ */
+function projectCost(extras: PgWorkOrderExtras | undefined): CostOut | null {
+  if (!extras) return null;
+  const partCents = extras.partCostCents ?? 0;
+  const expenditureCents = extras.expenditureCents ?? 0;
+  const totalCents = extras.totalCostCents ?? 0;
+  const hasLines = extras.parts.length > 0 || extras.expenditures.length > 0;
+  if (partCents === 0 && expenditureCents === 0 && totalCents === 0 && !hasLines) {
+    return null;
+  }
+  return {
+    partCents,
+    expenditureCents,
+    totalCents,
+    laborSeconds: extras.laborSeconds,
+    parts: extras.parts,
+    expenditures: extras.expenditures
   };
 }
 

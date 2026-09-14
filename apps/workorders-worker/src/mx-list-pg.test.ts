@@ -244,6 +244,120 @@ describe("fetchWorkOrdersFromPg failures", () => {
   });
 });
 
+describe("fetchWorkOrdersFromPg extras (comments + cost)", () => {
+  /** A row shaped like the widened select returns, modelled on work order
+   *  118834534 -- a real one carrying a part, an expenditure and a comment. */
+  function rowWithExtras(over: Record<string, unknown> = {}) {
+    return {
+      raw: { id: 118834534, title: "test request - copp" },
+      part_cost_cents: 12300,
+      expenditure_cents: 123400,
+      total_cost_cents: 135700,
+      labor_seconds: 3600,
+      mx_work_order_comment: [
+        { id: 1, author_id: 443948, content: "adding a test comment", mx_created_at: "2026-09-14T13:04:34.512Z" }
+      ],
+      mx_work_order_part: [
+        { name: "Test part for cost", quantity_used: 1, unit_cost_cents: 12300, line_total_cents: 12300 }
+      ],
+      mx_work_order_expenditure: [
+        { description: "Other: Parts", type: "OTHER", quantity: 1, cost_per_unit_cents: 123400, row_total_cents: 123400 }
+      ],
+      ...over
+    };
+  }
+
+  it("asks for comments, parts and expenditures in ONE query", async () => {
+    // The point of reading from the mirror. On the MaintainX path comments are
+    // a separate endpoint -- one call per work order -- so a 150-row page
+    // could not show them at all.
+    stub([]);
+    await fetchWorkOrdersFromPg({ env: ENV, maintainxLocationIds: [1] });
+    expect(lastUrl).toContain("mx_work_order_comment(");
+    expect(lastUrl).toContain("mx_work_order_part(");
+    expect(lastUrl).toContain("mx_work_order_expenditure(");
+  });
+
+  it("caps comments per work order and takes the newest", async () => {
+    // One work order carries 174 comments; an expanded row must not dump them.
+    stub([]);
+    await fetchWorkOrdersFromPg({ env: ENV, maintainxLocationIds: [1] });
+    expect(lastUrl).toContain("mx_work_order_comment.limit=20");
+    expect(lastUrl).toContain("mx_work_order_comment.order=mx_created_at.desc");
+  });
+
+  it("keys extras by work order id", async () => {
+    stub([rowWithExtras()]);
+    const res = await fetchWorkOrdersFromPg({ env: ENV, maintainxLocationIds: [1] });
+    expect(res.extrasById.get(118834534)).toBeDefined();
+  });
+
+  it("carries cost through as CENTS, unconverted", async () => {
+    // 123400 is $1,234.00. Any division here would reintroduce the 100x class
+    // of bug that had these columns wrong until 9a920d1 -- formatting belongs
+    // at the render site.
+    stub([rowWithExtras()]);
+    const res = await fetchWorkOrdersFromPg({ env: ENV, maintainxLocationIds: [1] });
+    expect(res.extrasById.get(118834534)).toMatchObject({
+      partCostCents: 12300,
+      expenditureCents: 123400,
+      totalCostCents: 135700
+    });
+  });
+
+  it("projects comment author id without resolving a name", async () => {
+    // Name resolution belongs to the caller, against the shared users cache.
+    stub([rowWithExtras()]);
+    const res = await fetchWorkOrdersFromPg({ env: ENV, maintainxLocationIds: [1] });
+    const c = res.extrasById.get(118834534)!.comments[0]!;
+    expect(c).toMatchObject({ authorId: 443948, content: "adding a test comment" });
+  });
+
+  it("drops empty and whitespace-only comments", async () => {
+    // They render as an empty bubble attributed to someone, which reads as a
+    // bug rather than as an empty comment.
+    stub([rowWithExtras({
+      mx_work_order_comment: [
+        { id: 1, author_id: 1, content: "   ", mx_created_at: null },
+        { id: 2, author_id: 1, content: "", mx_created_at: null },
+        { id: 3, author_id: 1, content: "real", mx_created_at: null }
+      ]
+    })]);
+    const res = await fetchWorkOrdersFromPg({ env: ENV, maintainxLocationIds: [1] });
+    const comments = res.extrasById.get(118834534)!.comments;
+    expect(comments).toHaveLength(1);
+    expect(comments[0]!.content).toBe("real");
+  });
+
+  it("flags truncation when the comment cap is hit exactly", async () => {
+    const many = Array.from({ length: 20 }, (_, i) => ({
+      id: i, author_id: 1, content: `c${i}`, mx_created_at: null
+    }));
+    stub([rowWithExtras({ mx_work_order_comment: many })]);
+    const res = await fetchWorkOrdersFromPg({ env: ENV, maintainxLocationIds: [1] });
+    expect(res.extrasById.get(118834534)!.commentsTruncated).toBe(true);
+  });
+
+  it("does not flag truncation below the cap", async () => {
+    stub([rowWithExtras()]);
+    const res = await fetchWorkOrdersFromPg({ env: ENV, maintainxLocationIds: [1] });
+    expect(res.extrasById.get(118834534)!.commentsTruncated).toBe(false);
+  });
+
+  it("handles a work order with no extras at all", async () => {
+    // The overwhelmingly common case: no comments, no cost. Embedded
+    // resources come back absent, not as empty arrays.
+    stub([{ raw: { id: 999 } }]);
+    const res = await fetchWorkOrdersFromPg({ env: ENV, maintainxLocationIds: [1] });
+    expect(res.extrasById.get(999)).toMatchObject({
+      comments: [],
+      parts: [],
+      expenditures: [],
+      totalCostCents: null
+    });
+  });
+});
+
 describe("fetchWorkRequestsFromPg", () => {
   it("filters to the two statuses the Requests tab surfaces", async () => {
     stub(rawRows(1));

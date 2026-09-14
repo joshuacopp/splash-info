@@ -76,6 +76,93 @@ const REQUEST_STATUSES = ["PENDING", "REJECTED"] as const;
 const MAX_ROWS = 1000;
 const MAX_REQUEST_ROWS = 1000;
 
+/** The row shape the widened select returns. Embedded resources come back as
+ *  arrays, or absent when the parent has none. */
+interface PgWorkOrderRow {
+  raw: unknown;
+  part_cost_cents?: number | null;
+  expenditure_cents?: number | null;
+  total_cost_cents?: number | null;
+  labor_seconds?: number | null;
+  mx_work_order_comment?: Array<{
+    id: number | string;
+    author_id: number | null;
+    content: string | null;
+    mx_created_at: string | null;
+  }> | null;
+  mx_work_order_part?: Array<{
+    name: string | null;
+    quantity_used: number | null;
+    unit_cost_cents: number | null;
+    line_total_cents: number | null;
+  }> | null;
+  mx_work_order_expenditure?: Array<{
+    description: string | null;
+    type: string | null;
+    quantity: number | null;
+    cost_per_unit_cents: number | null;
+    row_total_cents: number | null;
+  }> | null;
+}
+
+/** Integer cents or null. Guards against a string arriving from PostgREST for
+ *  a bigint column, which it does for values beyond JS's safe integer range --
+ *  not reachable for money here, but the coercion is free. */
+function cents(v: unknown): number | null {
+  if (v === null || v === undefined) return null;
+  const n = typeof v === "number" ? v : Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+function projectExtras(row: PgWorkOrderRow): PgWorkOrderExtras {
+  const rawComments = Array.isArray(row.mx_work_order_comment)
+    ? row.mx_work_order_comment
+    : [];
+
+  // A comment with no body is noise in the UI -- it renders as an empty
+  // bubble attributed to someone, which reads like a bug.
+  const comments: PgComment[] = rawComments
+    .filter((c) => typeof c.content === "string" && c.content.trim() !== "")
+    .map((c) => ({
+      id: c.id,
+      authorId: typeof c.author_id === "number" ? c.author_id : null,
+      content: (c.content as string).trim(),
+      createdAt: c.mx_created_at ?? null
+    }));
+
+  const parts: PgPartLine[] = (Array.isArray(row.mx_work_order_part) ? row.mx_work_order_part : [])
+    .map((p) => ({
+      name: p.name?.trim() || "(unnamed part)",
+      quantity: cents(p.quantity_used),
+      unitCostCents: cents(p.unit_cost_cents),
+      lineTotalCents: cents(p.line_total_cents)
+    }));
+
+  const expenditures: PgExpenditureLine[] = (
+    Array.isArray(row.mx_work_order_expenditure) ? row.mx_work_order_expenditure : []
+  ).map((e) => ({
+    description: e.description?.trim() || "(no description)",
+    type: e.type ?? null,
+    quantity: cents(e.quantity),
+    costPerUnitCents: cents(e.cost_per_unit_cents),
+    rowTotalCents: cents(e.row_total_cents)
+  }));
+
+  return {
+    partCostCents: cents(row.part_cost_cents),
+    expenditureCents: cents(row.expenditure_cents),
+    totalCostCents: cents(row.total_cost_cents),
+    laborSeconds: cents(row.labor_seconds),
+    comments,
+    parts,
+    expenditures,
+    // The embed asked for COMMENT_LIMIT; getting exactly that many back is the
+    // only signal available that more exist, since an embedded resource
+    // carries no count of its own.
+    commentsTruncated: rawComments.length >= COMMENT_LIMIT
+  };
+}
+
 /** PostgREST `in.(...)` needs the list inline. Ids are numbers we produced
  *  ourselves, never operator input, but they are still coerced through
  *  Number() at the boundary so a malformed value cannot reach the query. */
@@ -166,9 +253,71 @@ function isTruncated(total: number | null, returned: number, cap: number): boole
   return returned > cap;
 }
 
+/** One comment, as the expanded row renders it. `authorId` is resolved to a
+ *  name by the caller against the same maintainx_users cache the assignee
+ *  list uses -- this module does no name resolution of its own. */
+export interface PgComment {
+  id: number | string;
+  authorId: number | null;
+  content: string;
+  createdAt: string | null;
+}
+
+export interface PgPartLine {
+  name: string;
+  quantity: number | null;
+  unitCostCents: number | null;
+  lineTotalCents: number | null;
+}
+
+export interface PgExpenditureLine {
+  description: string;
+  type: string | null;
+  quantity: number | null;
+  costPerUnitCents: number | null;
+  rowTotalCents: number | null;
+}
+
+/**
+ * Everything the expanded row needs that is NOT in the MaintainX payload.
+ *
+ * Kept beside the work orders rather than merged into `raw` on purpose: raw is
+ * what MaintainX sent, and quietly adding our own keys to it would make a
+ * later reader unable to tell the two apart. The caller zips them by id.
+ *
+ * COMMENTS ARE THE REASON THIS IS WORTH HAVING. They are not on the work order
+ * payload at all -- MaintainX serves them from a separate endpoint, one call
+ * per work order, which is why the live path never showed them. Reading them
+ * from the mirror costs nothing extra because they arrive in the same query.
+ */
+export interface PgWorkOrderExtras {
+  partCostCents: number | null;
+  expenditureCents: number | null;
+  totalCostCents: number | null;
+  laborSeconds: number | null;
+  comments: PgComment[];
+  parts: PgPartLine[];
+  expenditures: PgExpenditureLine[];
+  /** True when the comment list was capped -- see COMMENT_LIMIT. */
+  commentsTruncated: boolean;
+}
+
+/**
+ * Newest comments kept per work order.
+ *
+ * MEASURED 2026-09-14: 396 comments across every active work order
+ * account-wide, so the cap is not about total volume. It is about the long
+ * tail -- one work order carries 174 comments on its own, and an expanded row
+ * that dumps 174 of anything is not readable. The newest are the ones an
+ * operator opens the row to see; the rest stay one click away in MaintainX.
+ */
+const COMMENT_LIMIT = 20;
+
 export interface PgWorkOrderResult {
   ok: boolean;
   workOrders: RawWorkOrder[];
+  /** Keyed by work order id. Absent for a work order with no extras at all. */
+  extrasById: Map<number, PgWorkOrderExtras>;
   truncated: boolean;
   /** Always 1: one round trip, whatever the row count. Kept so the response
    *  field stays populated and comparable with the MaintainX path's call
@@ -194,12 +343,38 @@ export async function fetchWorkOrdersFromPg(input: {
   const cap = input.maxWorkOrders ?? MAX_ROWS;
   const ids = inList(input.maintainxLocationIds);
   if (ids === "") {
-    return { ok: true, workOrders: [], truncated: false, pageCount: 1, error: null, status: 200 };
+    return {
+      ok: true,
+      workOrders: [],
+      extrasById: new Map(),
+      truncated: false,
+      pageCount: 1,
+      error: null,
+      status: 200
+    };
   }
+
+  // One query for the work orders AND everything the expanded row needs.
+  // PostgREST resource embedding follows the foreign keys on
+  // mx_work_order_comment / _part / _expenditure, so comments cost no extra
+  // round trip -- which is the whole reason they can be shown at all. On the
+  // MaintainX path they would be one API call PER WORK ORDER.
+  const embed =
+    `raw,part_cost_cents,expenditure_cents,total_cost_cents,labor_seconds,` +
+    `mx_work_order_comment(id,author_id,content,mx_created_at),` +
+    `mx_work_order_part(name,quantity_used,unit_cost_cents,line_total_cents),` +
+    `mx_work_order_expenditure(description,type,quantity,cost_per_unit_cents,row_total_cents)`;
 
   const url =
     `${input.env.SUPABASE_URL}/rest/v1/mx_work_order` +
-    `?select=raw` +
+    `?select=${embed}` +
+    // Newest comments first, capped per work order. The limit is applied to
+    // the EMBEDDED resource, so it bounds each parent's list rather than the
+    // result as a whole.
+    `&mx_work_order_comment.order=mx_created_at.desc` +
+    `&mx_work_order_comment.limit=${COMMENT_LIMIT}` +
+    `&mx_work_order_part.order=ordinal.asc` +
+    `&mx_work_order_expenditure.order=ordinal.asc` +
     `&status=in.(${ACTIVE_STATUSES.join(",")})` +
     `&deleted_at=is.null` +
     `&mx_location_id=in.(${ids})` +
@@ -209,11 +384,12 @@ export async function fetchWorkOrdersFromPg(input: {
     `&order=mx_updated_at.desc.nullslast` +
     `&limit=${cap + 1}`;
 
-  const res = await selectJson<{ raw: unknown }>(input.env, url);
+  const res = await selectJson<PgWorkOrderRow>(input.env, url);
   if (!res.ok) {
     return {
       ok: false,
       workOrders: [],
+      extrasById: new Map(),
       truncated: false,
       pageCount: 1,
       error: res.error,
@@ -228,19 +404,24 @@ export async function fetchWorkOrdersFromPg(input: {
   // happen -- the ingest writes raw on every upsert -- but dropping it beats
   // handing the projection something it will read undefined fields off.
   const workOrders: RawWorkOrder[] = [];
+  const extrasById = new Map<number, PgWorkOrderExtras>();
   let skipped = 0;
   for (const row of rows) {
-    if (row.raw && typeof row.raw === "object" && !Array.isArray(row.raw)) {
-      workOrders.push(row.raw as RawWorkOrder);
-    } else {
+    if (!row.raw || typeof row.raw !== "object" || Array.isArray(row.raw)) {
       skipped += 1;
+      continue;
     }
+    const wo = row.raw as RawWorkOrder;
+    workOrders.push(wo);
+
+    const id = typeof wo.id === "number" ? wo.id : null;
+    if (id !== null) extrasById.set(id, projectExtras(row));
   }
   if (skipped > 0) {
     console.error(`[mx-pg] dropped ${skipped} work order row(s) with unusable raw payload`);
   }
 
-  return { ok: true, workOrders, truncated, pageCount: 1, error: null, status: 200 };
+  return { ok: true, workOrders, extrasById, truncated, pageCount: 1, error: null, status: 200 };
 }
 
 export interface PgWorkRequestResult {

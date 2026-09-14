@@ -43,6 +43,8 @@ import { DueDatePill } from "./DueDatePill";
 import { NewRequestForm } from "./NewRequestForm";
 import type {
   AccessibleLocation,
+  WorkOrderComment,
+  WorkOrderCost,
   WorkOrderItem,
   WorkOrdersCurrentUser,
   WorkOrdersGroup,
@@ -976,8 +978,175 @@ function ExpandedRow({ wo, colSpan }: { wo: WorkOrderItem; colSpan: number }) {
             {wo.description ? wo.description : "(no description)"}
           </p>
         </div>
+        <CostSection cost={wo.cost ?? null} />
+        <CommentsSection
+          comments={wo.comments ?? []}
+          truncated={wo.commentsTruncated ?? false}
+          workOrderId={wo.id}
+        />
       </td>
     </tr>
+  );
+}
+
+/** Cents to "$1,234.56". One place, so a currency bug has one home -- the
+ *  cents/dollars confusion that put these values 100x out until 9a920d1 is
+ *  exactly the mistake worth centralising against. */
+function formatCents(cents: number): string {
+  return (cents / 100).toLocaleString("en-US", {
+    style: "currency",
+    currency: "USD"
+  });
+}
+
+function formatLaborSeconds(seconds: number): string {
+  const h = Math.floor(seconds / 3600);
+  const m = Math.round((seconds % 3600) / 60);
+  if (h === 0) return `${m}m`;
+  return m === 0 ? `${h}h` : `${h}h ${m}m`;
+}
+
+/**
+ * Cost breakdown, rendered only when something was recorded.
+ *
+ * Absent for most work orders by a wide margin -- 28 of 22,910 carry a cost --
+ * so this renders NOTHING rather than a row of zeroes. An always-present
+ * "Cost: $0.00" would train operators to ignore the section on the rare
+ * occasion it says something.
+ */
+function CostSection({ cost }: { cost: WorkOrderCost | null }) {
+  if (!cost) return null;
+  const hasLines = cost.parts.length > 0 || cost.expenditures.length > 0;
+  return (
+    <div className="mt-4 rounded-md border border-gray-light/70 bg-white/60 p-3">
+      <div className="mb-2 flex flex-wrap items-baseline gap-x-6 gap-y-1">
+        <p className="text-[11px] font-semibold uppercase tracking-wide text-splash-navy/60">
+          Cost
+        </p>
+        <span className="text-base font-semibold text-splash-navy">
+          {formatCents(cost.totalCents)}
+        </span>
+        {cost.partCents > 0 ? (
+          <span className="text-xs text-splash-navy/70">
+            Parts {formatCents(cost.partCents)}
+          </span>
+        ) : null}
+        {cost.expenditureCents > 0 ? (
+          <span className="text-xs text-splash-navy/70">
+            Other {formatCents(cost.expenditureCents)}
+          </span>
+        ) : null}
+        {cost.laborSeconds != null && cost.laborSeconds > 0 ? (
+          <span className="text-xs text-splash-navy/70">
+            Labor {formatLaborSeconds(cost.laborSeconds)}
+          </span>
+        ) : null}
+      </div>
+
+      {hasLines ? (
+        <table className="w-full text-xs">
+          <tbody>
+            {cost.parts.map((p, i) => (
+              <tr key={`p${i}`} className="border-t border-gray-light/50">
+                <td className="py-1 pr-2 text-splash-navy/90">{p.name}</td>
+                <td className="w-16 py-1 pr-2 text-right text-splash-navy/60">
+                  {p.quantity != null ? `x${p.quantity}` : ""}
+                </td>
+                <td className="w-24 py-1 text-right text-splash-navy/90">
+                  {p.lineTotalCents != null
+                    ? formatCents(p.lineTotalCents)
+                    : p.unitCostCents != null
+                      ? formatCents(p.unitCostCents)
+                      : "—"}
+                </td>
+              </tr>
+            ))}
+            {cost.expenditures.map((e, i) => (
+              <tr key={`e${i}`} className="border-t border-gray-light/50">
+                <td className="py-1 pr-2 text-splash-navy/90">
+                  {e.description}
+                  {e.type ? (
+                    <span className="ml-1 text-splash-navy/50">({e.type})</span>
+                  ) : null}
+                </td>
+                <td className="w-16 py-1 pr-2 text-right text-splash-navy/60">
+                  {e.quantity != null ? `x${e.quantity}` : ""}
+                </td>
+                <td className="w-24 py-1 text-right text-splash-navy/90">
+                  {e.rowTotalCents != null ? formatCents(e.rowTotalCents) : "—"}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      ) : null}
+    </div>
+  );
+}
+
+/**
+ * Comments, newest first.
+ *
+ * These are the part of the expanded row that could not exist before the
+ * Postgres cutover: MaintainX serves comments from a per-work-order endpoint,
+ * so showing them on a list of 150 rows would have meant 150 API calls. From
+ * the mirror they arrive in the same query as the work orders.
+ */
+function CommentsSection({
+  comments,
+  truncated,
+  workOrderId
+}: {
+  comments: WorkOrderComment[];
+  truncated: boolean;
+  workOrderId: number;
+}) {
+  return (
+    <div className="mt-4">
+      <p className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-splash-navy/60">
+        Comments{comments.length > 0 ? ` (${comments.length}${truncated ? "+" : ""})` : ""}
+      </p>
+      {comments.length === 0 ? (
+        <p className="text-sm text-splash-navy/60">No comments.</p>
+      ) : (
+        <ul className="space-y-2">
+          {comments.map((c) => (
+            <li
+              key={c.id}
+              className="rounded-md border border-gray-light/60 bg-white/70 px-3 py-2"
+            >
+              <div className="mb-0.5 flex items-baseline gap-2">
+                <span className="text-xs font-semibold text-splash-navy">
+                  {c.author ?? "Unknown"}
+                </span>
+                {c.createdAt ? (
+                  <span
+                    className="text-[11px] text-splash-navy/50"
+                    title={c.createdAt}
+                  >
+                    {formatRelativeTime(c.createdAt)}
+                  </span>
+                ) : null}
+              </div>
+              <p className="whitespace-pre-wrap text-sm text-splash-navy/90">
+                {c.content}
+              </p>
+            </li>
+          ))}
+        </ul>
+      )}
+      {truncated ? (
+        <a
+          href={`https://app.getmaintainx.com/workorders/${workOrderId}`}
+          target="_blank"
+          rel="noreferrer"
+          onClick={(e) => e.stopPropagation()}
+          className="mt-1.5 inline-block text-xs font-semibold text-splash-blue hover:underline"
+        >
+          Older comments in MaintainX ↗
+        </a>
+      ) : null}
+    </div>
   );
 }
 

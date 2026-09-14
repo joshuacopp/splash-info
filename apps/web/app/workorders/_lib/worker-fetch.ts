@@ -31,6 +31,48 @@ export interface WorkOrderItem {
   assignees: WorkOrderAssignee[];
   categories: string[];
   locationId: number | null;
+  /** Newest-first, capped by the worker. Empty when there are none AND when
+   *  the worker served from MaintainX -- the UI treats both as "no comments",
+   *  because MaintainX does not carry comments on the list payload. */
+  comments?: WorkOrderComment[];
+  /** True when older comments exist beyond the worker's cap. */
+  commentsTruncated?: boolean;
+  /** Null/absent when nothing was recorded, which is the common case. */
+  cost?: WorkOrderCost | null;
+}
+
+export interface WorkOrderComment {
+  id: string;
+  /** Null when the author is not in the maintainx_users cache. */
+  author: string | null;
+  content: string;
+  createdAt: string | null;
+}
+
+export interface WorkOrderCostLine {
+  name: string;
+  quantity: number | null;
+  unitCostCents: number | null;
+  lineTotalCents: number | null;
+}
+
+export interface WorkOrderExpenditureLine {
+  description: string;
+  type: string | null;
+  quantity: number | null;
+  costPerUnitCents: number | null;
+  rowTotalCents: number | null;
+}
+
+/** All figures are CENTS. Formatting happens at the render site -- see
+ *  formatCents -- so there is one place a currency bug can live. */
+export interface WorkOrderCost {
+  partCents: number;
+  expenditureCents: number;
+  totalCents: number;
+  laborSeconds: number | null;
+  parts: WorkOrderCostLine[];
+  expenditures: WorkOrderExpenditureLine[];
 }
 
 export interface WorkOrdersGroup {
