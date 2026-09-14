@@ -125,3 +125,64 @@ describe("deleted_at is cleared on every successful map", () => {
     expect(keys).not.toContain("attachment_count");
   });
 });
+
+describe("attachment metadata", () => {
+  // Shape copied from a live payload on work order 118918502, which carries
+  // 25 of these. The url is ~2 KB of presigned S3 query string.
+  const REAL_ATTACHMENT = {
+    id: 272727625,
+    url: "https://maintainx-uploads-production.s3.us-west-2.amazonaws.com/x_camera2.jpg?X-Amz-Expires=3600&X-Amz-Signature=abc",
+    width: 960,
+    height: 1280,
+    fileName: "camera2.jpg",
+    mimeType: "image/jpeg",
+    createdAt: "2026-09-14T17:36:40.988Z"
+  };
+
+  it("maps the metadata fields", () => {
+    const mapped = workOrder({ attachments: [REAL_ATTACHMENT] });
+    expect(mapped?.attachments[0]).toMatchObject({
+      id: 272727625,
+      file_name: "camera2.jpg",
+      mime_type: "image/jpeg",
+      width: 960,
+      height: 1280
+    });
+  });
+
+  it("NEVER stores the url", () => {
+    // The presigned link carries X-Amz-Expires=3600 and is dead an hour after
+    // the sync that fetched it. Persisting it would create a column that looks
+    // usable, works in every test, and fails in production an hour later.
+    const mapped = workOrder({ attachments: [REAL_ATTACHMENT] });
+    const keys = Object.keys(mapped?.attachments[0] ?? {});
+    expect(keys).not.toContain("url");
+    expect(JSON.stringify(mapped?.attachments)).not.toContain("X-Amz-Signature");
+  });
+
+  it("never emits the mirror columns, which the mirror pass owns", () => {
+    // Emitting r2_key from a work-order sweep would blank a copy already made
+    // and the mirror would re-download it on every sync, forever.
+    const keys = Object.keys(workOrder({ attachments: [REAL_ATTACHMENT] })?.attachments[0] ?? {});
+    for (const owned of ["r2_key", "r2_bytes", "mirrored_at", "mirror_error", "mirror_attempts"]) {
+      expect(keys).not.toContain(owned);
+    }
+  });
+
+  it("drops an attachment with no id and de-duplicates repeats", () => {
+    const mapped = workOrder({
+      attachments: [
+        REAL_ATTACHMENT,
+        { ...REAL_ATTACHMENT },
+        { fileName: "no-id.jpg" }
+      ]
+    });
+    expect(mapped?.attachments).toHaveLength(1);
+  });
+
+  it("returns [] when the payload has no attachments key at all", () => {
+    // Indistinguishable from "has none" -- which is exactly why callers must
+    // never treat [] as licence to prune existing rows.
+    expect(workOrder({})?.attachments).toEqual([]);
+  });
+});

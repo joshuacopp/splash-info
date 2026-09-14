@@ -232,6 +232,34 @@ export interface MxWorkOrderTimeItemRow {
   synced_at?: string;
 }
 
+/**
+ * One MaintainX attachment, as mirrored metadata.
+ *
+ * DELIBERATELY NO `url`. MaintainX hands back a presigned S3 link with
+ * X-Amz-Expires=3600, so a stored URL is dead an hour after the sync that
+ * fetched it and there is no key to re-sign with. Serving therefore has to go
+ * through the R2 copy, and the mirror columns below are how that copy is
+ * tracked. Storing the URL would create a field that looks usable and is not.
+ *
+ * The mirror columns are owned by the mirror pass, NOT by the mapper -- the
+ * mapper only ever writes metadata. Emitting `r2_key` from a work-order sweep
+ * would blank a copy that had already been made, the same class of mistake as
+ * emitting `first_seen_at`.
+ */
+export interface MxWorkOrderAttachmentRow {
+  id: number;
+  work_order_id: number;
+
+  file_name?: string | null;
+  mime_type?: string | null;
+  width?: number | null;
+  height?: number | null;
+  is_thumbnail?: boolean;
+  mx_created_at?: string | null;
+
+  synced_at?: string;
+}
+
 // ---------------------------------------------------------------------------
 // Low-level PostgREST plumbing
 // ---------------------------------------------------------------------------
@@ -365,6 +393,28 @@ export function upsertMxWorkRequests(
   rows: MxWorkRequestRow[]
 ): Promise<MxWriteResult> {
   return upsertInBatches(env, "mx_work_request", "id", rows, MX_WORK_REQUEST_BATCH);
+}
+
+/**
+ * Attachment metadata.
+ *
+ * UPSERT, never replace. The parts / expenditures / time-items helpers below
+ * delete-then-insert because their keys are synthetic and a removed line has
+ * to disappear. Attachments have a stable MaintainX id AND carry mirror state
+ * (`r2_key`, `mirrored_at`, `mirror_attempts`) that belongs to the mirror pass
+ * -- deleting the row would throw away the record of a copy already made and
+ * the mirror would redo the download on the next sync, forever.
+ *
+ * The row type deliberately omits every mirror column, so an upsert here
+ * updates metadata and leaves the copy alone. An attachment deleted in
+ * MaintainX is NOT pruned by this: the same evidence problem as work-order
+ * deletion, and an orphan row costs one R2 object rather than a wrong answer.
+ */
+export function upsertMxWorkOrderAttachments(
+  env: SupabaseWriteEnv,
+  rows: MxWorkOrderAttachmentRow[]
+): Promise<MxWriteResult> {
+  return upsertInBatches(env, "mx_work_order_attachment", "id", rows, MX_COMMENT_BATCH);
 }
 
 // ---------------------------------------------------------------------------

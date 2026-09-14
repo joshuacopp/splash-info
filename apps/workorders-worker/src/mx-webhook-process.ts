@@ -39,6 +39,7 @@ import {
   replaceMxWorkOrderExpenditures,
   replaceMxWorkOrderParts,
   replaceMxWorkOrderTimeItems,
+  upsertMxWorkOrderAttachments,
   upsertMxWorkOrderComments,
   upsertMxWorkOrders,
   upsertMxWorkRequests,
@@ -257,7 +258,14 @@ async function processWorkOrder(
   const children = await Promise.all([
     replaceMxWorkOrderParts(env, workOrderId, mapped.parts),
     replaceMxWorkOrderExpenditures(env, workOrderId, mapped.expenditures),
-    replaceMxWorkOrderTimeItems(env, workOrderId, mapped.timeItems)
+    replaceMxWorkOrderTimeItems(env, workOrderId, mapped.timeItems),
+    // Metadata only; the mirror pass copies the bytes later. Skipped entirely
+    // when empty, because an empty list does NOT mean "no attachments" -- a
+    // response whose expand omitted them looks identical, and writing on that
+    // basis would be acting on absence of evidence.
+    mapped.attachments.length > 0
+      ? upsertMxWorkOrderAttachments(env, mapped.attachments)
+      : Promise.resolve({ ok: true as const, written: 0, requests: 0, status: 200, error: null })
   ]);
   const failed = children.find((c) => !c.ok);
   if (failed) {

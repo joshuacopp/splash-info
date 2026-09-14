@@ -56,6 +56,7 @@ import type {
   MxWorkOrderRow,
   MxWorkOrderCommentRow,
   MxWorkRequestRow,
+  MxWorkOrderAttachmentRow,
   MxWorkOrderPartRow,
   MxWorkOrderExpenditureRow,
   MxWorkOrderTimeItemRow
@@ -213,6 +214,10 @@ export interface MappedWorkOrder {
   parts: MxWorkOrderPartRow[];
   expenditures: MxWorkOrderExpenditureRow[];
   timeItems: MxWorkOrderTimeItemRow[];
+  /** Metadata only -- the bytes are copied later by the mirror pass. Empty
+   *  when the payload carried no attachments, which includes every response
+   *  whose expand did not ask for them. */
+  attachments: MxWorkOrderAttachmentRow[];
   /** True when this work order is worth a comment fetch. Gating on this turns
    *  ~20,000 requests into ~1,900: `updatedAt` does not move on comments, so
    *  `lastMessageSentAt` is the only evidence any comment exists at all. */
@@ -317,7 +322,61 @@ export function mapWorkOrder(
     synced_at: syncedAt
   };
 
-  return { row, parts, expenditures, timeItems, hasComments: lastMessageSentAt !== null };
+  const attachments = mapAttachments(id, asArray(bag.attachments), syncedAt);
+
+  return {
+    row,
+    parts,
+    expenditures,
+    timeItems,
+    attachments,
+    hasComments: lastMessageSentAt !== null
+  };
+}
+
+/**
+ * Attachment METADATA. The bytes are not touched here.
+ *
+ * `url` is read and discarded on purpose. MaintainX returns a presigned S3
+ * link with X-Amz-Expires=3600, so persisting it would store a field that
+ * looks usable and stops working an hour later -- the mirror pass re-fetches
+ * the work order for a fresh link when it is ready to download. See the
+ * comment on MxWorkOrderAttachmentRow.
+ *
+ * An absent `attachments` key means the response's expand did not ask for
+ * them, NOT that the work order has none. That distinction matters: this
+ * returns [] either way, and the caller must therefore never treat [] as
+ * evidence to prune existing rows.
+ */
+function mapAttachments(
+  workOrderId: number,
+  rows: unknown[],
+  syncedAt: string
+): MxWorkOrderAttachmentRow[] {
+  const out: MxWorkOrderAttachmentRow[] = [];
+  const seen = new Set<number>();
+
+  for (const entry of rows) {
+    const att = asRecord(entry);
+    const attachmentId = int(first(att, ["id", "attachmentId"]));
+    // The primary key is the MaintainX attachment id. No id means nowhere to
+    // put it; a repeat would collide inside one statement.
+    if (attachmentId === null || seen.has(attachmentId)) continue;
+    seen.add(attachmentId);
+
+    out.push({
+      id: attachmentId,
+      work_order_id: workOrderId,
+      file_name: str(first(att, ["fileName", "name", "filename"])),
+      mime_type: str(first(att, ["mimeType", "contentType", "mime"])),
+      width: int(att.width),
+      height: int(att.height),
+      mx_created_at: iso(att.createdAt),
+      synced_at: syncedAt
+    });
+  }
+
+  return out;
 }
 
 /** Accepts `[123]`, `[{id: 123}]`, or a single object/number, and returns a

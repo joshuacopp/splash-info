@@ -58,6 +58,7 @@ import {
   fetchMxLocationMap,
   getMxSyncState,
   writeMxSyncState,
+  upsertMxWorkOrderAttachments,
   upsertMxWorkOrders,
   upsertMxWorkRequests,
   replaceMxWorkOrderPartsForPage,
@@ -71,6 +72,7 @@ import {
   type MxWorkOrderCommentRow,
   type MxWorkOrderRow,
   type MxWorkRequestRow,
+  type MxWorkOrderAttachmentRow,
   type MxWorkOrderPartRow,
   type MxWorkOrderExpenditureRow,
   type MxWorkOrderTimeItemRow,
@@ -392,6 +394,7 @@ async function runWorkOrderPass(
     const parts: MxWorkOrderPartRow[] = [];
     const expenditures: MxWorkOrderExpenditureRow[] = [];
     const timeItems: MxWorkOrderTimeItemRow[] = [];
+    const attachments: MxWorkOrderAttachmentRow[] = [];
 
     for (const raw of page.workOrders) {
       const mapped = mapWorkOrder(raw, locations, syncedAt);
@@ -400,6 +403,7 @@ async function runWorkOrderPass(
       parts.push(...mapped.parts);
       expenditures.push(...mapped.expenditures);
       timeItems.push(...mapped.timeItems);
+      attachments.push(...mapped.attachments);
       if (mapped.row.mx_updated_at && (!maxUpdatedAt || mapped.row.mx_updated_at > maxUpdatedAt)) {
         maxUpdatedAt = mapped.row.mx_updated_at;
       }
@@ -415,7 +419,8 @@ async function runWorkOrderPass(
     const childWrite = await writeChildren(env, pageIds, options.prune, {
       parts,
       expenditures,
-      timeItems
+      timeItems,
+      attachments
     });
     budget.requests += childWrite.requests;
     if (!childWrite.ok) return fail(childWrite.error ?? "child write failed");
@@ -465,6 +470,7 @@ interface ChildRows {
   parts: MxWorkOrderPartRow[];
   expenditures: MxWorkOrderExpenditureRow[];
   timeItems: MxWorkOrderTimeItemRow[];
+  attachments: MxWorkOrderAttachmentRow[];
 }
 
 async function writeChildren(
@@ -497,6 +503,19 @@ async function writeChildren(
   );
   requests += timeWrite.requests;
   if (!timeWrite.ok) return { ok: false, requests, error: `time items: ${timeWrite.error}` };
+
+  // Upserted, never scoped-and-replaced like the three above. Attachments
+  // carry mirror state (r2_key and friends) owned by the mirror pass, so a
+  // delete-then-insert would discard the record of a copy already made and the
+  // mirror would re-download it forever. `prune` is deliberately not applied
+  // for the same reason.
+  if (child.attachments.length > 0) {
+    const attachWrite = await upsertMxWorkOrderAttachments(env, child.attachments);
+    requests += attachWrite.requests;
+    if (!attachWrite.ok) {
+      return { ok: false, requests, error: `attachments: ${attachWrite.error}` };
+    }
+  }
 
   return { ok: true, requests, error: null };
 }
