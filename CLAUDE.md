@@ -391,10 +391,20 @@ When given a new task:
   `MAINTAINX_API_KEY` unbound → 503 (page surfaces "integration not
   configured"), MaintainX non-2xx → 502, network/abort → 504. The
   default export is `{ fetch, scheduled }`; the scheduled handler
-  (`[triggers] crons = ["30 11 * * *"]` — 11:30 UTC, fires before
-  the damage-worker daily summary at 13:00 UTC) runs the daily
-  MaintainX user/team sync into Supabase tables `maintainx_users` /
-  `maintainx_teams`. The `POST /sync-maintainx-users` endpoint runs
+  (`[triggers] crons = ["30 11 * * *", "*/5 * * * *"]`) dispatches on
+  the literal `controller.cron` string, so editing a schedule in
+  wrangler.toml without editing the matching constant in
+  `src/index.ts` does not throw — it silently stops running that pass
+  (the fall-through arm logs loudly for exactly that reason).
+  11:30 UTC (fires before the damage-worker daily summary at 13:00
+  UTC) runs the daily MaintainX user/team sync into Supabase tables
+  `maintainx_users` / `maintainx_teams`, and since 2026-09-14 ALSO
+  runs `runMxReconcile` in its own try block — see the MaintainX
+  reconciliation glossary entry. Every 5 minutes runs the webhook
+  drain FIRST and then the MaintainX → Postgres ingest, again in
+  separate try blocks: they are independent jobs sharing a tick, and
+  the ingest is the backstop for whatever the drain could not apply,
+  so neither may take the other down. The `POST /sync-maintainx-users` endpoint runs
   the same sync on demand, gated to a hardcoded super-admin email
   allow-list with a `session.dcRole === "super_admin"` fallback.
   The list response shape buckets work orders by `wo.type ===
@@ -3454,6 +3464,151 @@ URL-based — service bindings don't apply to those.
   uses `submitted_at` too — Brief 84 grounded correctly on it).
   Tables don't universally have `created_at`; probe Supabase
   column schemas before inferring.
+
+- **MaintainX Postgres mirror** (2026-09-14) - `/workorders` reads a
+  local mirror of MaintainX, not the live API. Flipped via
+  `WORKORDERS_READ_SOURCE = "postgres"` in
+  `apps/workorders-worker/wrangler.toml`; unset or unrecognised
+  resolves to `"maintainx"`, so a typo cannot move operators onto the
+  other source, and ROLLBACK IS COMMENTING THAT ONE LINE AND PUSHING —
+  no code change, the MaintainX path is untouched. super_admins can
+  override per request with `?source=postgres|maintainx`, and every
+  response carries a `source` field saying which one answered. That
+  field is the only way to attribute a response; check it before
+  concluding anything from a comparison.
+  **The read path returns `raw`, not typed columns.**
+  `apps/workorders-worker/src/mx-list-pg.ts` hands back
+  `RawWorkOrder` / `RawWorkRequest` in the same result shape as the
+  MaintainX client, so bucketing, grouping, assignee resolution, the
+  preventive-overdue filter and projection are all the SAME CODE that
+  served MaintainX. The response shape therefore cannot drift and
+  apps/web needed no change. Projecting from typed columns would be
+  faster and would mean reimplementing every one of those steps
+  against a second set of field names with no way to prove the two
+  agreed.
+  **Three query predicates are load-bearing and fail silently if
+  dropped**: `status=in.(OPEN,IN_PROGRESS,ON_HOLD)`,
+  `deleted_at=is.null`, and `mx_location_id=in.(...)` — the last is
+  the permission boundary and is asserted explicitly in tests.
+  **Truncation must come from `Prefer: count=exact` + Content-Range,
+  never from counting returned rows.** PostgREST enforces
+  `db-max-rows` (1000) ON TOP of the query's `limit`, so the
+  ask-for-cap-plus-one trick cannot fire at a cap of 1000 — the
+  1001st row is exactly the one it refuses to send. Measured: 1,046
+  matching rows, 1,000 returned, truncation reported false, the page
+  silently dropping 46 rows with no banner where the MaintainX path
+  shows one. The 1000-row cap is now the binding constraint rather
+  than the data; paging past it with Range headers is an easy
+  post-cutover win.
+  **Comparing the two sources requires excluding a trailing window.**
+  MaintainX's LIST endpoint lags its own writes by an hour or two,
+  while the webhook path re-fetches by id immediately — so for recent
+  work orders the mirror is legitimately AHEAD of the list, and a raw
+  count looks like a mismatch in BOTH directions at once. Compare on
+  `mx_updated_at < now() - interval '3 hours'`. Verified at cutover:
+  38 of 39 createdAt-months matched exactly account-wide, the 39th
+  (current month) being the mirror ahead by exactly that lag.
+  Expanded rows carry comments and a cost breakdown, which the live
+  path could not show: MaintainX serves comments from a
+  per-work-order endpoint, so a 150-row page would have meant 150 API
+  calls. The mirror gets them via PostgREST resource embedding in the
+  SAME query (`mx_work_order_comment(...)`, capped at the 20 newest
+  per work order — one work order carries 174). Attachments are NOT
+  shown: the webhook expand does not fetch them and MaintainX's CDN
+  rejects un-keyed hotlinks. If that is wanted, copy the bytes into
+  the existing `splash-parts-manuals` R2 bucket at ingest and serve
+  through apps/web's `PARTS_FILES` binding (the Parts Directory
+  pattern) rather than building a live proxy, which would
+  re-authenticate to MaintainX on every image load.
+
+- **MaintainX money is CENTS** (2026-09-14) - The API sends integer
+  cents and the schema stores integer cents: `unitCost: 12300` IS
+  $123.00, `costPerUnit: 350` IS $3.50. `money()` in
+  `apps/workorders-worker/src/mx-map.ts` multiplied anything not
+  literally ending in `Cents` by 100, so the mapper and the schema
+  disagreed from the first row ever written and every cost was stored
+  100x too large ($780,654 of work orders that were really
+  $7,806.54). Fixed in `9a920d1`; 62 historical rows corrected by
+  `supabase/maintainx-cost-backfill-01.sql`, which is marked APPLIED
+  and MUST NOT BE RE-RUN — dividing twice is unrecoverable, and the
+  inflated value cannot be derived back from the corrected one.
+  Anything crossing a wire or a function boundary stays in cents;
+  convert only at the render site (`formatCents` in
+  `WorkOrdersTabsClient.tsx`). `labor_cost_cents` is NOT written by
+  the mapper at all — MaintainX exposes labor duration but no rate,
+  so labour cost is computed downstream from the Beekeeper rate and
+  `total_cost_cents` is parts + expenditures only. Cost is recorded
+  on very few work orders (28 of 22,910, and closed ones are no
+  better populated than open — 0.14% vs 0.03%), so cost UI must
+  render NOTHING when absent rather than a row of zeroes.
+
+- **`mx_work_order.deleted_at` semantics** (2026-09-14) - Written as
+  NULL on EVERY successful map, because reaching the mapper means a
+  fetch succeeded and that is proof the entity exists. Only two paths
+  ever SET it, both holding real evidence: a `WORK_ORDER_DELETE`
+  webhook, or a 404 on re-fetch. Each survives only until the next
+  successful read contradicts it, which is also what makes
+  at-least-once unordered delivery safe — a CHANGE arriving after a
+  genuine DELETE re-fetches, 404s and soft-deletes again.
+  It was previously OMITTED from the mapper, documented as "owned by
+  reconciliation" on the reasoning that absence from a list walk is
+  weak evidence of deletion. True, but nothing ever CLEARED the
+  column, which made a soft delete a ONE-WAY DOOR: a row marked
+  deleted stayed hidden forever while every later sync faithfully
+  updated its status, costs and `raw`. Caught when an operator
+  noticed a work order missing from Binghamton hours after it had
+  been restored in MaintainX and re-synced repeatedly. When emitting
+  this column, emit the KEY — PostgREST leaves an absent column
+  untouched on upsert, so dropping the key reproduces the bug while
+  passing a naive null check. `first_seen_at`, `comment_count` and
+  `attachment_count` remain genuinely owned elsewhere and must stay
+  absent.
+
+- **Webhook delivery retries** (2026-09-14) - `processed_at` on
+  `mx_webhook_event` is the drain's queue predicate
+  (`mx_webhook_event_pending_idx` is `where processed_at is null`),
+  so STAMPING IT IS THE ACT OF GIVING UP ON A DELIVERY. `stampEvent`
+  in `mx-webhook-process.ts` stamps it only when the row is genuinely
+  leaving the queue: success, or a terminal failure (no entity id, an
+  unrouted event, a record the mapper deterministically rejects).
+  Retryable failures — MaintainX 5xx, a timeout, a Supabase blip, an
+  unbound secret — leave it NULL, increment `attempts`, and are
+  retried by `runMxWebhookDrain` on the 5-minute cron until
+  `MAX_PROCESS_ATTEMPTS` (5). Anything unrecognised defaults to
+  RETRYABLE: misclassifying in that direction burns attempts,
+  misclassifying the other way silently drops data.
+  It previously stamped `processed_at` on every outcome, so a
+  transient error was recorded as "done, with an error" and the
+  delivery was lost. The pending index could then only ever catch
+  rows whose `waitUntil` died before reaching the stamp — an
+  almost-always-empty index that read as health and was actually the
+  symptom. The drain runs BEFORE the ingest on the shared tick and
+  takes the smaller budget of the two: the ingest is designed to use
+  most of the window, so running it first would routinely starve the
+  drain.
+
+- **MaintainX reconciliation** (2026-09-14) - `runMxReconcile` on the
+  daily 11:30 UTC cron re-arms the unbounded live pass by clearing
+  `mx_sync_state.work_orders_live.last_success_at` (`isComplete` is
+  `cursor IS NULL AND last_success_at IS NOT NULL`), and the existing
+  dispatcher re-walks and upserts every active work order over the
+  following ticks. It DECLINES when re-arming would hurt: mid-cursor
+  (clearing state under a running walk loses the resume point, and a
+  daily restart would mean it never finishes), first backfill
+  incomplete, never run, or state unreadable — a failed read must
+  never be treated as "safe to proceed".
+  WHY IT EXISTS: the incremental sweep asks for rows whose
+  `updatedAt` is newer than the watermark, so a row skipped while the
+  watermark ran ahead (the empty-200 bug fixed in `27d8083`) has an
+  `updatedAt` PERMANENTLY behind it and the sweep will never ask for
+  it again. Fixing that bug did not undo it — 51 active work orders
+  were missing, invisible, and reported by nothing until someone
+  walked MaintainX by hand and diffed. STILL MISSING: it heals rows
+  absent locally but does not retire rows active locally and gone
+  upstream. That needs a per-id confirmation before touching
+  anything, because absence from a list walk is not evidence of
+  deletion while the list lags its own writes; the shape of the fix
+  is written into `mx-reconcile.ts`.
 - **`age_days`** (Brief 68) - Server-computed days-since-submission
   field on the `/manage/api/claims` list response. Lives in the
   `listClaims` SELECT projection in `packages/db-d1/src/claims.ts` as
