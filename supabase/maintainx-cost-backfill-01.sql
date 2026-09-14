@@ -1,3 +1,17 @@
+-- =========================================================================
+-- APPLIED 2026-09-14 13:47Z. DO NOT RUN AGAIN.
+--
+-- Corrected 8 part rows, 26 expenditure rows, 28 work orders. Work-order
+-- costs went from a reported $780,654.00 to the true $7,806.54; the reported
+-- part ("Test part for cost") reads 12300 = $123.00.
+--
+-- Re-running would divide correct values by 100 a second time. The synced_at
+-- cutoff below stops that -- every surviving row was written after it -- and
+-- the `% 100 = 0` guard is a second, independent stop. Both would have to fail
+-- together to do damage. Left here as the record of what ran, not as something
+-- to run.
+-- =========================================================================
+
 -- One-off correction for costs that were stored 100x too large.
 --
 -- WHAT WENT WRONG
@@ -45,6 +59,18 @@
 --   written properly anyway so that a re-run after a partial application, or a
 --   run delayed by a day, cannot double-divide.
 --
+--
+-- SECOND GUARD (added at run time, 2026-09-14): every inflated value is an
+-- integer number of cents multiplied by 100, so it is ALWAYS an exact multiple
+-- of 100. Requiring `% 100 = 0` therefore never skips a row that needs fixing,
+-- but it does refuse to divide a value that cannot have come from the broken
+-- mapper. Redundant with the synced_at cutoff by design -- the two guards fail
+-- independently, and the cost of being wrong here is unrecoverable.
+--
+-- VERIFIED before running: labor_cost_cents is 0 on all 22,749 rows (the mapper
+-- never writes it; labour cost is computed downstream from the Beekeeper rate),
+-- so it is not part of this correction.
+--
 -- IDEMPOTENCY
 --
 --   This is NOT idempotent on its own -- dividing twice is a real hazard. The
@@ -60,7 +86,7 @@ begin;
 -- it was written by the broken mapper; everything after is already correct.
 -- ---------------------------------------------------------------------------
 create temporary table _cutoff on commit drop as
-select timestamptz '2026-09-14 00:00:00+00' as at;   -- <<< EDIT ME
+select timestamptz '2026-09-14 13:47:00+00' as at;   -- deploy of 9a920d1
 
 -- Before: what we are about to change.
 select 'BEFORE' as phase,
@@ -90,14 +116,17 @@ update public.mx_work_order_part p
    set unit_cost_cents = round(p.unit_cost_cents / 100.0)
   from _cutoff
  where p.synced_at < _cutoff.at
-   and coalesce(p.unit_cost_cents, 0) <> 0;
+   and coalesce(p.unit_cost_cents, 0) <> 0
+   and p.unit_cost_cents % 100 = 0;
 
 update public.mx_work_order_expenditure e
    set cost_per_unit_cents = round(e.cost_per_unit_cents / 100.0),
        row_total_cents     = round(e.row_total_cents / 100.0)
   from _cutoff
  where e.synced_at < _cutoff.at
-   and (coalesce(e.cost_per_unit_cents, 0) <> 0 or coalesce(e.row_total_cents, 0) <> 0);
+   and (coalesce(e.cost_per_unit_cents, 0) <> 0 or coalesce(e.row_total_cents, 0) <> 0)
+   and coalesce(e.cost_per_unit_cents, 0) % 100 = 0
+   and coalesce(e.row_total_cents, 0) % 100 = 0;
 
 -- The three work-order columns are derived sums the mapper computes from the
 -- same inflated inputs, so they carry the identical 100x error and are divided
@@ -112,7 +141,10 @@ update public.mx_work_order w
  where w.synced_at < _cutoff.at
    and (coalesce(w.total_cost_cents, 0) <> 0
      or coalesce(w.part_cost_cents, 0) <> 0
-     or coalesce(w.expenditure_cents, 0) <> 0);
+     or coalesce(w.expenditure_cents, 0) <> 0)
+   and coalesce(w.part_cost_cents, 0) % 100 = 0
+   and coalesce(w.expenditure_cents, 0) % 100 = 0
+   and coalesce(w.total_cost_cents, 0) % 100 = 0;
 
 -- After: the same totals, which should now be 1/100 of the BEFORE figure.
 select 'AFTER' as phase,
