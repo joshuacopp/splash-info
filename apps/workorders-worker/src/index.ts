@@ -58,6 +58,7 @@ import {
 import { runMxIngest } from "./mx-ingest.js";
 import { runMxWebhookDrain } from "./mx-webhook-drain.js";
 import { fetchWorkOrdersFromPg, fetchWorkRequestsFromPg } from "./mx-list-pg.js";
+import { runMxReconcile } from "./mx-reconcile.js";
 import { handlePartsRequest } from "./parts.js";
 import { runMaintainXUserTeamSync, type SyncResult } from "./sync.js";
 
@@ -409,6 +410,19 @@ export default {
             console.log("workorders-worker scheduled sync complete:", JSON.stringify(result));
           } catch (err) {
             console.error("workorders-worker scheduled sync failed:", err);
+          }
+
+          // Daily reconciliation. Schedules a full re-walk of the active queue
+          // so a row the incremental sweep can no longer see -- one skipped
+          // while the watermark ran ahead of it, whose updatedAt is now
+          // permanently behind -- is found without anyone noticing first.
+          // Separate try: it must not be able to take the user sync down, and
+          // the user sync must not stop it running.
+          try {
+            const rec = await runMxReconcile(env);
+            console.log("workorders-worker mx reconcile:", JSON.stringify(rec));
+          } catch (err) {
+            console.error("workorders-worker mx reconcile failed:", err);
           }
           return;
         }
