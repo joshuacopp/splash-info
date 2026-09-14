@@ -47,8 +47,19 @@ export const INGEST_PAGE_LIMIT = 200;
  * deliberately a constant rather than something callers assemble ad hoc.
  *
  * Deliberately absent, because MaintainX has no expand for them:
- * `attachments` (needs a per-work-order `GET /workorders/{id}` — Phase 3),
- * `recurrenceInfo`, `requester`, `workRequest`, `teams`, `vendors`.
+ * `attachments` (PROBED 2026-09-14: `expand=attachments` is a 400 — the error
+ * names the valid set, and attachments are not in it. The full set needs a
+ * per-work-order `GET /workorders/{id}`, which DOES return them with no
+ * expand token at all), `recurrenceInfo`, `requester`, `workRequest`,
+ * `teams`, `vendors`.
+ *
+ * `thumbnail` IS expandable and is the cheap half of attachment coverage: it
+ * returns a complete attachment object (id, url, fileName, mimeType, width,
+ * height) for the work order's primary photo, on the LIST endpoint, for no
+ * extra requests. Measured on the same probe: 40 of 100 open work orders
+ * carry one. The full set still needs the per-work-order call, so a work
+ * order with 25 photos contributes exactly 1 here — see `is_thumbnail` on
+ * mx_work_order_attachment, which exists to keep the two apart.
  */
 export const INGEST_EXPAND = [
   "assignees",
@@ -58,7 +69,8 @@ export const INGEST_EXPAND = [
   "expenditures",
   "times",
   "time_items",
-  "asset"
+  "asset",
+  "thumbnail"
 ] as const;
 
 /** Statuses that constitute the live queue. Pass A of the backfill walks

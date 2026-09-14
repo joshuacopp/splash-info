@@ -186,3 +186,60 @@ describe("attachment metadata", () => {
     expect(workOrder({})?.attachments).toEqual([]);
   });
 });
+
+describe("thumbnail attachments", () => {
+  // PROBED 2026-09-14: `expand=thumbnail` works on the LIST endpoint and
+  // returns a complete attachment object; `expand=attachments` is a 400. So
+  // the thumbnail is the only photo a bulk walk ever sees, and it arrives on
+  // its own key rather than inside `attachments`.
+  const THUMB = {
+    id: 272769048,
+    fileName: "IMG_1298.HEIC",
+    mimeType: "image/jpeg",
+    width: 960,
+    height: 1280,
+    createdAt: "2026-09-14T19:03:17.325Z",
+    url: "https://maintainx-uploads-production.s3.amazonaws.com/x?X-Amz-Signature=zzz"
+  };
+
+  it("maps a thumbnail even when `attachments` is absent", () => {
+    // The list-walk case: no attachments key at all, thumbnail present.
+    const mapped = workOrder({ thumbnail: THUMB });
+    expect(mapped?.attachments).toHaveLength(1);
+    expect(mapped?.attachments[0]).toMatchObject({ id: 272769048, is_thumbnail: true });
+  });
+
+  it("marks it as the thumbnail so it can be told from the rest", () => {
+    const mapped = workOrder({ thumbnail: THUMB });
+    expect(mapped?.attachments[0]?.is_thumbnail).toBe(true);
+  });
+
+  it("does not store the thumbnail's url either", () => {
+    const mapped = workOrder({ thumbnail: THUMB });
+    expect(JSON.stringify(mapped?.attachments)).not.toContain("X-Amz-Signature");
+  });
+
+  it("keeps the thumbnail marker when the same id also appears in attachments", () => {
+    // The single-GET case: the thumbnail is repeated inside `attachments`,
+    // unmarked. De-duping must keep the MARKED entry, not the later plain one.
+    const mapped = workOrder({
+      thumbnail: THUMB,
+      attachments: [{ id: 272769048, fileName: "IMG_1298.HEIC", mimeType: "image/jpeg" }]
+    });
+    expect(mapped?.attachments).toHaveLength(1);
+    expect(mapped?.attachments[0]?.is_thumbnail).toBe(true);
+  });
+
+  it("keeps both when the thumbnail is not among the attachments", () => {
+    const mapped = workOrder({
+      thumbnail: THUMB,
+      attachments: [{ id: 999, fileName: "other.jpg", mimeType: "image/jpeg" }]
+    });
+    expect(mapped?.attachments).toHaveLength(2);
+    expect(mapped?.attachments.filter((a) => a.is_thumbnail)).toHaveLength(1);
+  });
+
+  it("ignores a thumbnail with no id", () => {
+    expect(workOrder({ thumbnail: { fileName: "x.jpg" } })?.attachments).toEqual([]);
+  });
+});

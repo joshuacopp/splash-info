@@ -322,7 +322,7 @@ export function mapWorkOrder(
     synced_at: syncedAt
   };
 
-  const attachments = mapAttachments(id, asArray(bag.attachments), syncedAt);
+  const attachments = mapAttachments(id, asArray(bag.attachments), bag.thumbnail, syncedAt);
 
   return {
     row,
@@ -351,10 +351,33 @@ export function mapWorkOrder(
 function mapAttachments(
   workOrderId: number,
   rows: unknown[],
+  thumbnail: unknown,
   syncedAt: string
 ): MxWorkOrderAttachmentRow[] {
   const out: MxWorkOrderAttachmentRow[] = [];
   const seen = new Set<number>();
+
+  // The thumbnail arrives by a DIFFERENT route to the rest and is the only
+  // attachment the list walk ever sees (`expand=thumbnail` works; there is no
+  // `expand=attachments`). It goes first so that when a single-GET later
+  // returns the same id inside `attachments`, the de-dupe keeps this entry and
+  // its is_thumbnail marker rather than overwriting it with an unmarked one.
+  const thumbRecord = asRecord(thumbnail);
+  const thumbId = int(first(thumbRecord, ["id", "attachmentId"]));
+  if (thumbId !== null) {
+    seen.add(thumbId);
+    out.push({
+      id: thumbId,
+      work_order_id: workOrderId,
+      file_name: str(first(thumbRecord, ["fileName", "name", "filename"])),
+      mime_type: str(first(thumbRecord, ["mimeType", "contentType", "mime"])),
+      width: int(thumbRecord.width),
+      height: int(thumbRecord.height),
+      is_thumbnail: true,
+      mx_created_at: iso(thumbRecord.createdAt),
+      synced_at: syncedAt
+    });
+  }
 
   for (const entry of rows) {
     const att = asRecord(entry);
