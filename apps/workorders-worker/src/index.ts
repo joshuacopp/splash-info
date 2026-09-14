@@ -57,6 +57,7 @@ import {
 } from "@splash/maintainx";
 import { runMxIngest } from "./mx-ingest.js";
 import { runMxWebhookDrain } from "./mx-webhook-drain.js";
+import { fetchWorkOrdersFromPg, fetchWorkRequestsFromPg } from "./mx-list-pg.js";
 import { handlePartsRequest } from "./parts.js";
 import { runMaintainXUserTeamSync, type SyncResult } from "./sync.js";
 
@@ -69,6 +70,21 @@ const USER_SYNC_CRON = "30 11 * * *";
 const MX_INGEST_CRON = "*/5 * * * *";
 
 interface Env extends SupabaseEnv {
+  /**
+   * Where GET /workorders/api/list reads from.
+   *
+   *   "maintainx" (default) — live API calls, the behaviour since Brief 70.
+   *   "postgres"            — the local mirror the ingest and webhooks fill.
+   *
+   * Unset or unrecognised means "maintainx": a typo in wrangler.toml must not
+   * silently move every operator onto the other source. The flip is a `[vars]`
+   * edit and therefore a push, which is deliberate -- this repo deploys from
+   * pushes and a read-path swap should be visible in the diff.
+   *
+   * Individual operators can override per request with `?source=` before the
+   * global flip; see resolveReadSource.
+   */
+  WORKORDERS_READ_SOURCE?: string;
   /** MaintainX bearer token. Same value as on splash-damage (Brief 42).
    *  Optional: when unbound the worker returns 503. */
   MAINTAINX_API_KEY?: string;
@@ -231,6 +247,10 @@ interface ListResponse {
   /** Brief 74 — passed through to the New Request tab's form. */
   accessibleLocations: AccessibleLocationOut[];
   currentUser: CurrentUserOut;
+  /** Which source answered. Additive and ignored by apps/web; it exists so a
+   *  response can be attributed during the Postgres cutover -- without it,
+   *  "did this come from the mirror?" is unanswerable from the payload. */
+  source: ReadSource;
 }
 
 /* ============================================================
@@ -266,7 +286,7 @@ export default {
       if (path === "workorders/api/list" && request.method === "GET") {
         const auth = await authenticate(request, env);
         if (auth.status !== "authenticated") return jsonError(401, "unauthorized");
-        return handleList(env, auth.session);
+        return handleList(env, auth.session, resolveReadSource(env, url, auth.session));
       }
 
       if (path === "workorders/api/sync-maintainx-users" && request.method === "POST") {
@@ -401,6 +421,30 @@ export default {
   }
 } satisfies ExportedHandler<Env>;
 
+export type ReadSource = "maintainx" | "postgres";
+
+/**
+ * Decide which source answers this request.
+ *
+ * The `[vars]` entry is the global setting. `?source=` overrides it for ONE
+ * request and only for a super_admin, which is what makes a cutover checkable:
+ * an operator with the right role can load the same page from both sources and
+ * diff them, on production data, without moving anyone else. A non-super_admin
+ * passing `?source=` is ignored rather than rejected -- it is not an attack,
+ * and failing their page load over a stray query param would be worse than
+ * serving them the default.
+ *
+ * Anything unrecognised resolves to "maintainx". The safe direction is the one
+ * that has been serving operators since Brief 70.
+ */
+function resolveReadSource(env: Env, url: URL, session: Session): ReadSource {
+  const override = url.searchParams.get("source");
+  if (override && isSyncTriggerAllowed(session)) {
+    if (override === "postgres" || override === "maintainx") return override;
+  }
+  return env.WORKORDERS_READ_SOURCE === "postgres" ? "postgres" : "maintainx";
+}
+
 function isSyncTriggerAllowed(session: Session): boolean {
   const email = session.email?.trim().toLowerCase() ?? "";
   if (email && SYNC_ADMIN_EMAILS.has(email)) return true;
@@ -411,11 +455,19 @@ function isSyncTriggerAllowed(session: Session): boolean {
  * GET /workorders/api/list — pure email-on-locations gate.
  * ============================================================ */
 
-async function handleList(env: Env, session: Session): Promise<Response> {
+async function handleList(
+  env: Env,
+  session: Session,
+  source: ReadSource = "maintainx"
+): Promise<Response> {
   const email = session.email?.trim().toLowerCase() ?? "";
   if (!email) return jsonError(401, "no session email");
 
-  if (!env.MAINTAINX_API_KEY) {
+  // Only the MaintainX path needs the bearer token. The Postgres path reads a
+  // mirror that the ingest and webhook receiver filled earlier, so an unbound
+  // key stops the data going stale but does not stop the page rendering --
+  // which is one of the reasons for having the mirror at all.
+  if (source === "maintainx" && !env.MAINTAINX_API_KEY) {
     return jsonError(503, "MaintainX integration not configured");
   }
 
@@ -446,7 +498,8 @@ async function handleList(env: Env, session: Session): Promise<Response> {
       mappedLocationCount: 0,
       email,
       accessibleLocations: buildAccessibleLocations(accessible, new Map()),
-      currentUser
+      currentUser,
+      source
     } satisfies ListResponse);
   }
 
@@ -469,37 +522,79 @@ async function handleList(env: Env, session: Session): Promise<Response> {
     TIMEOUT_REQUESTS_MS
   );
 
-  let result;
-  let requestsResult;
-  try {
+  // Structurally typed rather than importing either source's result type: the
+  // point is that the two are interchangeable here, and naming one of them
+  // would suggest the other is the special case.
+  let result: {
+    ok: boolean;
+    workOrders: RawWorkOrder[];
+    truncated: boolean;
+    pageCount: number;
+    status: number;
+  };
+  let requestsResult: {
+    ok: boolean;
+    workRequests: RawWorkRequest[];
+    truncated: boolean;
+    pageCount: number;
+  };
+
+  if (source === "postgres") {
+    // One round trip each, no cursor walk, no upstream timeout to bound --
+    // so the AbortControllers above are simply not used on this path.
     [result, requestsResult] = await Promise.all([
-      fetchMaintainXWorkOrders({
-        apiKey: env.MAINTAINX_API_KEY,
-        baseUrl: env.MAINTAINX_BASE_URL,
+      fetchWorkOrdersFromPg({
+        env,
         maintainxLocationIds: mappedMxIds,
-        paginate: shouldPaginate,
-        maxWorkOrders,
-        signal: woController.signal
+        maxWorkOrders
       }),
-      fetchMaintainXWorkRequests({
-        apiKey: env.MAINTAINX_API_KEY,
-        baseUrl: env.MAINTAINX_BASE_URL,
+      fetchWorkRequestsFromPg({
+        env,
         maintainxLocationIds: mappedMxIds,
-        // Docs confirm `statuses=` on /workrequests — pre-filter to the
-        // two we surface so the cursor walk skips APPROVED/DONE entirely.
-        statuses: Array.from(REQUEST_VISIBLE_STATUSES),
-        maxWorkRequests: MAX_WORK_REQUESTS,
-        signal: requestsController.signal
+        maxWorkRequests: MAX_WORK_REQUESTS
       })
     ]);
-  } finally {
     clearTimeout(woTimeout);
     clearTimeout(requestsTimeout);
+  } else {
+    // The early return above already rejected an unbound key on this path.
+    // Re-checking rather than asserting keeps the guarantee local: if that
+    // guard is ever narrowed, this fails loudly here instead of sending
+    // `undefined` as a bearer token and reading the 401 as an outage.
+    const apiKey = env.MAINTAINX_API_KEY;
+    if (!apiKey) return jsonError(503, "MaintainX integration not configured");
+
+    try {
+      [result, requestsResult] = await Promise.all([
+        fetchMaintainXWorkOrders({
+          apiKey,
+          baseUrl: env.MAINTAINX_BASE_URL,
+          maintainxLocationIds: mappedMxIds,
+          paginate: shouldPaginate,
+          maxWorkOrders,
+          signal: woController.signal
+        }),
+        fetchMaintainXWorkRequests({
+          apiKey,
+          baseUrl: env.MAINTAINX_BASE_URL,
+          maintainxLocationIds: mappedMxIds,
+          // Docs confirm `statuses=` on /workrequests — pre-filter to the
+          // two we surface so the cursor walk skips APPROVED/DONE entirely.
+          statuses: Array.from(REQUEST_VISIBLE_STATUSES),
+          maxWorkRequests: MAX_WORK_REQUESTS,
+          signal: requestsController.signal
+        })
+      ]);
+    } finally {
+      clearTimeout(woTimeout);
+      clearTimeout(requestsTimeout);
+    }
   }
 
   if (!result.ok) {
-    if (result.status === 0) return jsonError(504, "MaintainX timeout");
-    return jsonError(502, `MaintainX upstream returned ${result.status}`);
+    const upstream = source === "postgres" ? "Postgres" : "MaintainX";
+    if (result.status === 0) return jsonError(504, `${upstream} timeout`);
+    return jsonError(502, `${upstream} upstream returned ${result.status}`);
   }
 
   // Brief 80 — filter work requests to the visible statuses (PENDING /
@@ -581,7 +676,7 @@ async function handleList(env: Env, session: Session): Promise<Response> {
   );
 
   console.log(
-    `workorders-worker list: email=${email} mappedMxIds=${mappedMxIds.length} paginate=${shouldPaginate} pageCount=${result.pageCount} workOrders=${result.workOrders.length} truncated=${result.truncated} droppedOverduePreventive=${buckets.droppedOverduePreventive} requestsOk=${requestsResult.ok} requestsPageCount=${requestsResult.pageCount} requestsFetched=${requestsResult.workRequests.length} requestsVisible=${visibleRequests.length} requestsTruncated=${requestsResult.truncated}`
+    `workorders-worker list: source=${source} email=${email} mappedMxIds=${mappedMxIds.length} paginate=${shouldPaginate} pageCount=${result.pageCount} workOrders=${result.workOrders.length} truncated=${result.truncated} droppedOverduePreventive=${buckets.droppedOverduePreventive} requestsOk=${requestsResult.ok} requestsPageCount=${requestsResult.pageCount} requestsFetched=${requestsResult.workRequests.length} requestsVisible=${visibleRequests.length} requestsTruncated=${requestsResult.truncated}`
   );
 
   return json({
@@ -596,7 +691,8 @@ async function handleList(env: Env, session: Session): Promise<Response> {
     mappedLocationCount: mappedMxIds.length,
     email,
     accessibleLocations: buildAccessibleLocations(accessible, mxNamesByLocId),
-    currentUser
+    currentUser,
+    source
   } satisfies ListResponse);
 }
 
