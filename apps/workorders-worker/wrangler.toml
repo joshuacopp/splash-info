@@ -131,9 +131,43 @@ routes = [
 #   APPS_WEB_BASE_URL  — populated for parity with damage-worker so future
 #                        cross-link rendering inside responses can reuse it.
 #                        Not consumed in this brief's v1 endpoint shape.
+#
+#   WORKORDERS_READ_SOURCE — where GET /workorders/api/list reads from.
+#                        "maintainx" (default, and what any unrecognised value
+#                        resolves to) keeps the live API calls. "postgres"
+#                        serves the local mirror the ingest and the webhook
+#                        receiver fill.
+#
+#                        LEFT UNSET ON PURPOSE. Do not set it to "postgres"
+#                        without first confirming the mirror agrees with
+#                        MaintainX: on 2026-09-14 it was short ~51 active work
+#                        orders, a hole the watermark-advance bug (fixed in
+#                        27d8083) had left behind and which the incremental
+#                        sweep can never find, because those rows' updatedAt is
+#                        permanently behind the watermark.
+#
+#                        To check before flipping, as a super_admin:
+#                          /workorders/api/list?source=postgres
+#                          /workorders/api/list?source=maintainx
+#                        and diff. The per-request override is super_admin-only
+#                        and the response carries a `source` field saying which
+#                        one answered.
+#
+#                        To compare in bulk, against the whole account:
+#                          select count(*) from mx_work_order
+#                           where status in ('OPEN','IN_PROGRESS','ON_HOLD')
+#                             and deleted_at is null
+#                             and mx_updated_at < now() - interval '3 hours';
+#                        Exclude a trailing window like that when comparing:
+#                        MaintainX's LIST endpoint lags its own writes by an
+#                        hour or two, while our webhook path re-fetches by id
+#                        immediately, so for very recent work orders the mirror
+#                        is legitimately AHEAD of what the list returns and a
+#                        raw count looks like a mismatch in both directions.
 [vars]
 MAINTAINX_BASE_URL = "https://api.getmaintainx.com/v1"
 APPS_WEB_BASE_URL  = "https://splashcarwashes.info"
+# WORKORDERS_READ_SOURCE = "postgres"   # <- the cutover, when verified
 
 # Brief 71 — daily MaintainX user/team sync. 11:30 UTC = 6:30 AM ET. Runs
 # BEFORE the damage-worker daily summary cron at 13:00 UTC so any new
