@@ -72,52 +72,76 @@ export interface DigestResult {
  * Eastern-time day boundaries
  * ============================================================ */
 
-/**
- * Start of the current Eastern day, as an ISO instant.
- *
- * Cloudflare crons are UTC-only and the operator thinks in Eastern calendar
- * days, so the window has to be derived rather than assumed. The offset is
- * probed from Intl rather than hardcoded to -05:00/-04:00, which is the same
- * approach the jotform worker settled on (Brief 114/115) after stamping
- * Eastern wall-clock values as UTC and being four hours out.
- *
- * KNOWN GAP: the cron fires at 02:00 UTC, which is 22:00 Eastern the same
- * evening, so the window is [Eastern midnight, 22:00] and activity in the
- * last two hours of the day is not reported that night -- nor the next, since
- * the next run covers the next Eastern day. Reporting a full calendar day
- * would mean sending yesterday's news at 10pm tonight, which is worse. Moving
- * the cron later shrinks the tail.
- */
-export function easternDayStart(now: Date): { startIso: string; label: string } {
-  const fmt = new Intl.DateTimeFormat("en-US", {
-    timeZone: "America/New_York",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    hour12: false,
-    timeZoneName: "longOffset"
-  });
-  const parts = new Map(fmt.formatToParts(now).map((p) => [p.type, p.value]));
-  const y = parts.get("year")!;
-  const m = parts.get("month")!;
-  const d = parts.get("day")!;
-  // "GMT-04:00" -> "-04:00". The offset at THIS instant, so DST is handled by
-  // the platform rather than by a rule we would have to maintain.
-  const offset = (parts.get("timeZoneName") ?? "GMT+00:00").replace("GMT", "") || "+00:00";
+const EASTERN_PARTS = new Intl.DateTimeFormat("en-US", {
+  timeZone: "America/New_York",
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+  timeZoneName: "longOffset"
+});
 
-  const startIso = new Date(`${y}-${m}-${d}T00:00:00${offset}`).toISOString();
+/** The UTC offset in force at `at`, as "-04:00" / "-05:00". Read from the
+ *  platform's tz database rather than a rule of our own -- hardcoding -04:00 is
+ *  wrong for four months of the year. */
+function easternOffsetAt(at: Date): string {
+  const parts = new Map(EASTERN_PARTS.formatToParts(at).map((p) => [p.type, p.value]));
+  return (parts.get("timeZoneName") ?? "GMT+00:00").replace("GMT", "") || "+00:00";
+}
+
+/**
+ * Eastern-day start for the day CONTAINING `at`, as an ISO instant.
+ *
+ * The offset has to be the one in force AT MIDNIGHT, which is not necessarily
+ * the one in force at `at`: on the two changeover days a year they differ, and
+ * using the wrong one puts the boundary an hour into the neighbouring day. So
+ * the first offset is only a guess, and the second read -- taken at the instant
+ * the guess produced -- is the one that decides. A second pass is enough: after
+ * it, the offset used and the offset in force at the result agree.
+ */
+function easternDayStartOf(at: Date): string {
+  const parts = new Map(EASTERN_PARTS.formatToParts(at).map((p) => [p.type, p.value]));
+  const ymd = `${parts.get("year")}-${parts.get("month")}-${parts.get("day")}`;
+
+  const guess = new Date(`${ymd}T00:00:00${easternOffsetAt(at)}`);
+  const settled = new Date(`${ymd}T00:00:00${easternOffsetAt(guess)}`);
+  return settled.toISOString();
+}
+
+/**
+ * The Eastern calendar day that has just ENDED, as a closed window.
+ *
+ * The cron fires at 05:00 UTC, which is 1 AM Eastern in summer and midnight in
+ * winter -- at or after midnight either way, so the previous day is always
+ * complete. 04:00 UTC was the obvious choice and is wrong: it is midnight
+ * Eastern only under DST and 11 PM the rest of the year, which would silently
+ * reintroduce a one-hour gap every November.
+ *
+ * Reporting the PREVIOUS day rather than the current one is what closes the
+ * gap entirely, and it is also forced: at exactly midnight Eastern "the day
+ * containing now" is the new day, so a current-day window would be empty.
+ *
+ * The previous day's start is found by stepping back 12 hours from today's
+ * start and re-deriving -- which lands solidly inside the previous day on the
+ * 23- and 25-hour days either side of a DST change, where subtracting a fixed
+ * 24 hours would not.
+ */
+export function easternReportingDay(now: Date): {
+  startIso: string;
+  endIso: string;
+  label: string;
+} {
+  const endIso = easternDayStartOf(now);
+  const midPrevious = new Date(Date.parse(endIso) - 12 * 60 * 60 * 1000);
+  const startIso = easternDayStartOf(midPrevious);
 
   const label = new Intl.DateTimeFormat("en-US", {
     timeZone: "America/New_York",
     weekday: "long",
     month: "long",
     day: "numeric"
-  }).format(now);
+  }).format(midPrevious);
 
-  return { startIso, label };
+  return { startIso, endIso, label };
 }
 
 /* ============================================================
@@ -180,7 +204,8 @@ interface WorkOrderRow {
  */
 async function gatherActivity(
   env: MxDigestEnv,
-  sinceIso: string
+  sinceIso: string,
+  untilIso: string
 ): Promise<{
   workOrders: Map<number, WorkOrderRow>;
   commentsByWo: Map<number, CommentRow[]>;
@@ -188,6 +213,11 @@ async function gatherActivity(
 } | null> {
   const locIds = DIGEST_SITES.map((s) => s.mxLocationId).join(",");
   const since = encodeURIComponent(sinceIso);
+  // Closed at the top as well as the bottom. The window is a finished
+  // calendar day, so anything after midnight belongs to tomorrow's digest --
+  // without this bound a late-firing cron would pull the next day's activity
+  // into the wrong email and then report it again.
+  const until = encodeURIComponent(untilIso);
 
   // 1. Comments written today, on reactive work orders at these sites.
   //    The `mx_work_order!inner(...)` embed applies the site + type filter at
@@ -198,6 +228,7 @@ async function gatherActivity(
       `?select=work_order_id,author_id,content,mx_created_at,` +
       `mx_work_order!inner(mx_location_id,type,deleted_at)` +
       `&mx_created_at=gte.${since}` +
+      `&mx_created_at=lt.${until}` +
       `&mx_work_order.mx_location_id=in.(${locIds})` +
       `&mx_work_order.type=not.eq.PREVENTIVE` +
       `&mx_work_order.deleted_at=is.null` +
@@ -212,6 +243,7 @@ async function gatherActivity(
       `?select=work_order_id,description,type,quantity,row_total_cents,` +
       `mx_work_order!inner(mx_location_id,type,deleted_at)` +
       `&first_seen_at=gte.${since}` +
+      `&first_seen_at=lt.${until}` +
       `&mx_work_order.mx_location_id=in.(${locIds})` +
       `&mx_work_order.type=not.eq.PREVENTIVE` +
       `&mx_work_order.deleted_at=is.null` +
@@ -228,7 +260,8 @@ async function gatherActivity(
       `&mx_location_id=in.(${locIds})` +
       `&type=not.eq.PREVENTIVE` +
       `&deleted_at=is.null` +
-      `&mx_updated_at=gte.${since}`
+      `&mx_updated_at=gte.${since}` +
+      `&mx_updated_at=lt.${until}`
   );
   if (touched === null) return null;
 
@@ -327,8 +360,8 @@ export async function runMxDailyDigest(env: MxDigestEnv, now = new Date()): Prom
     skipped: null
   };
 
-  const { startIso, label } = easternDayStart(now);
-  const activity = await gatherActivity(env, startIso);
+  const { startIso, endIso, label } = easternReportingDay(now);
+  const activity = await gatherActivity(env, startIso, endIso);
   if (activity === null) {
     result.skipped = "activity read failed";
     return result;

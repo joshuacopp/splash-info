@@ -201,13 +201,17 @@ WORKORDERS_READ_SOURCE = "postgres"
 # strings EXACTLY — changing a schedule here without changing USER_SYNC_CRON /
 # MX_INGEST_CRON there stops that pass silently.
 [triggers]
-# "0 2 * * *" = 02:00 UTC = 10 PM Eastern (9 PM once DST ends -- Cloudflare
-# crons have no timezone, so the wall-clock send time shifts by an hour in
-# November while the digest window stays an Eastern calendar day).
+# "0 5 * * *" = 05:00 UTC, which is 1 AM Eastern in summer and midnight in
+# winter -- at or AFTER Eastern midnight year-round, which is what lets the
+# digest report a COMPLETE calendar day. 04:00 UTC looks like the natural
+# choice and is wrong: it is Eastern midnight only under DST and 11 PM the
+# rest of the year, so it would silently drop the last hour of every winter
+# day. Cloudflare crons carry no timezone, so this has to be picked for the
+# worst case rather than today's.
 # Slot inventory across the account: 11:00 forms cleanup, 11:30 workorders
 # user sync + reconcile, 12:00 forms approval digest, 13:00 damage daily
-# summary, 02:00 this.
-crons = ["30 11 * * *", "*/5 * * * *", "0 2 * * *"]
+# summary, 05:00 this.
+crons = ["30 11 * * *", "*/5 * * * *", "0 5 * * *"]
 
 # Brief 63 (2026-05-07): keeps Workers Logs sticky across deploys. Without
 # this, CF Builds re-provisions the worker on every push and the dashboard

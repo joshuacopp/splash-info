@@ -75,10 +75,11 @@ import { runMaintainXUserTeamSync, type SyncResult } from "./sync.js";
 // pass. The fall-through arm of the branch below logs loudly for that reason.
 const USER_SYNC_CRON = "30 11 * * *";
 const MX_INGEST_CRON = "*/5 * * * *";
-/** 02:00 UTC = 10 PM Eastern. Must match wrangler.toml exactly -- the
- *  dispatcher compares the literal string, so a schedule edited in one
- *  place and not the other silently stops running. */
-const DAILY_DIGEST_CRON = "0 2 * * *";
+/** 05:00 UTC -- 1 AM Eastern in summer, midnight in winter, so it is always
+ *  at or after Eastern midnight and the previous day is always complete. Must
+ *  match wrangler.toml exactly: the dispatcher compares the literal string, so
+ *  a schedule edited in one place and not the other silently stops running. */
+const DAILY_DIGEST_CRON = "0 5 * * *";
 
 interface Env extends SupabaseEnv {
   /**

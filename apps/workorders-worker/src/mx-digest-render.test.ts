@@ -11,7 +11,7 @@
 //     exactly what is asserted below.
 
 import { describe, expect, it } from "vitest";
-import { easternDayStart } from "./mx-daily-digest";
+import { easternReportingDay } from "./mx-daily-digest";
 import { renderDailyDigestEmail, type DigestSite } from "./mx-digest-render";
 
 const BASE = "https://splashcarwashes.info";
@@ -149,25 +149,82 @@ describe("escaping", () => {
   });
 });
 
-describe("easternDayStart", () => {
-  it("returns Eastern midnight for a late-evening send", () => {
-    // 02:00 UTC on the 16th is 22:00 EDT on the 15th, so the window opens at
-    // Eastern midnight on the 15th -- 04:00 UTC that day.
-    const { startIso } = easternDayStart(new Date("2026-09-16T02:00:00Z"));
-    expect(startIso).toBe("2026-09-15T04:00:00.000Z");
-  });
+describe("easternReportingDay", () => {
+  // The cron fires at 05:00 UTC so the previous Eastern day is always
+  // complete. These pin the boundary arithmetic, which is the part that would
+  // silently report the wrong 24 hours.
 
-  it("labels the day in Eastern, not UTC", () => {
-    // The naive read of that instant is the 16th. The operator's day is the
-    // 15th, and the label has to agree with the window.
-    const { label } = easternDayStart(new Date("2026-09-16T02:00:00Z"));
+  it("reports the full previous Eastern day in summer (EDT)", () => {
+    // 05:00 UTC on the 16th is 1 AM EDT, so the day that just ended is the
+    // 15th: midnight-to-midnight Eastern = 04:00 UTC to 04:00 UTC.
+    const { startIso, endIso, label } = easternReportingDay(
+      new Date("2026-09-16T05:00:00Z")
+    );
+    expect(startIso).toBe("2026-09-15T04:00:00.000Z");
+    expect(endIso).toBe("2026-09-16T04:00:00.000Z");
     expect(label).toContain("September 15");
   });
 
-  it("follows DST rather than assuming an offset", () => {
-    // January is EST (-05:00), so Eastern midnight is 05:00 UTC. Hardcoding
-    // -04:00 would put the window an hour out for four months of the year.
-    const { startIso } = easternDayStart(new Date("2027-01-16T02:00:00Z"));
+  it("reports the full previous Eastern day in winter (EST)", () => {
+    // 05:00 UTC in January is EXACTLY Eastern midnight -- the boundary case
+    // that makes a current-day window empty, and the reason the window is the
+    // previous day rather than the day so far.
+    const { startIso, endIso, label } = easternReportingDay(
+      new Date("2027-01-16T05:00:00Z")
+    );
     expect(startIso).toBe("2027-01-15T05:00:00.000Z");
+    expect(endIso).toBe("2027-01-16T05:00:00.000Z");
+    expect(label).toContain("January 15");
+  });
+
+  it("covers a whole day, never a partial one", () => {
+    // The tail gap this replaced was real: a 10 PM send left 10 PM-midnight
+    // reported by nobody, that night or ever.
+    for (const at of ["2026-09-16T05:00:00Z", "2027-01-16T05:00:00Z"]) {
+      const { startIso, endIso } = easternReportingDay(new Date(at));
+      const hours = (Date.parse(endIso) - Date.parse(startIso)) / 3_600_000;
+      expect(hours).toBe(24);
+    }
+  });
+
+  it("handles the 23-hour spring-forward day", () => {
+    // DST began 2026-03-08, so that Eastern day is 23 hours: midnight EST
+    // (05:00 UTC) to midnight EDT (04:00 UTC the next day). Reading the offset
+    // at midday instead of at midnight -- which is what the first version of
+    // this did -- puts the start an hour early and double-reports that hour.
+    const { startIso, endIso, label } = easternReportingDay(
+      new Date("2026-03-09T05:00:00Z")
+    );
+    expect(startIso).toBe("2026-03-08T05:00:00.000Z");
+    expect(endIso).toBe("2026-03-09T04:00:00.000Z");
+    expect(label).toContain("March 8");
+    expect((Date.parse(endIso) - Date.parse(startIso)) / 3_600_000).toBe(23);
+  });
+
+  it("handles the 25-hour fall-back day", () => {
+    // The mirror image: DST ended 2026-11-01, so that day runs midnight EDT
+    // (04:00 UTC) to midnight EST (05:00 UTC the next day) and the hour from
+    // 1 to 2 AM happens twice. Both of them belong in this day's digest.
+    const { startIso, endIso, label } = easternReportingDay(
+      new Date("2026-11-02T05:00:00Z")
+    );
+    expect(startIso).toBe("2026-11-01T04:00:00.000Z");
+    expect(endIso).toBe("2026-11-02T05:00:00.000Z");
+    expect(label).toContain("November 1");
+    expect((Date.parse(endIso) - Date.parse(startIso)) / 3_600_000).toBe(25);
+  });
+
+  it("leaves no gap between one day's window and the next", () => {
+    // Each day's end must be the next day's start, or activity in between is
+    // reported by nobody -- the failure mode the 10 PM send had, silently.
+    for (const [first, second] of [
+      ["2026-03-08T05:00:00Z", "2026-03-09T05:00:00Z"],
+      ["2026-11-01T05:00:00Z", "2026-11-02T05:00:00Z"],
+      ["2026-09-15T05:00:00Z", "2026-09-16T05:00:00Z"]
+    ] as const) {
+      expect(easternReportingDay(new Date(first)).endIso).toBe(
+        easternReportingDay(new Date(second)).startIso
+      );
+    }
   });
 });
