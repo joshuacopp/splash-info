@@ -500,7 +500,12 @@ export default {
             // Silent when a pass did nothing, which is the steady state once
             // the backfill is done -- otherwise this logs every 5 minutes
             // forever and buries the passes that mattered.
-            if (mirror.mirrored > 0 || mirror.failed > 0 || mirror.skipped) {
+            if (
+              mirror.mirrored > 0 ||
+              mirror.failed > 0 ||
+              mirror.metadataFailures > 0 ||
+              mirror.skipped
+            ) {
               console.log("workorders-worker mx attachment mirror:", JSON.stringify(mirror));
             }
           } catch (err) {

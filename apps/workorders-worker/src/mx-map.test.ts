@@ -243,3 +243,40 @@ describe("thumbnail attachments", () => {
     expect(workOrder({ thumbnail: { fileName: "x.jpg" } })?.attachments).toEqual([]);
   });
 });
+
+describe("attachment rows carry a UNIFORM key set", () => {
+  // PostgREST derives an upsert's column list from the payload keys and
+  // rejects a batch whose rows disagree (PGRST102 -> 400). The thumbnail is
+  // mapped on a different code path to the rest, so the two shapes can drift
+  // apart without anything failing locally.
+  //
+  // MEASURED 2026-09-15: they had drifted. `is_thumbnail` was set on the
+  // thumbnail and omitted on everything else, so any parent with BOTH a
+  // thumbnail and attachments 400'd on every tick. Silently -- the caller
+  // skips to the next parent without recording an attempt or an error, so the
+  // rows sat at mirror_attempts = 0 looking like they had never been reached.
+
+  const THUMB = { id: 1, fileName: "t.jpg", mimeType: "image/jpeg", createdAt: null };
+  const ATT = { id: 2, fileName: "a.jpg", mimeType: "image/jpeg", createdAt: null };
+
+  it("emits identical keys for a thumbnail and a plain attachment", () => {
+    const mapped = workOrder({ thumbnail: THUMB, attachments: [ATT] });
+    const rows = mapped?.attachments ?? [];
+    expect(rows).toHaveLength(2);
+    const keys = rows.map((r) => Object.keys(r).sort().join(","));
+    expect(new Set(keys).size).toBe(1);
+  });
+
+  it("emits is_thumbnail on the plain attachment too, as false", () => {
+    const mapped = workOrder({ thumbnail: THUMB, attachments: [ATT] });
+    const plain = mapped?.attachments.find((a) => a.id === 2);
+    expect(Object.keys(plain ?? {})).toContain("is_thumbnail");
+    expect(plain?.is_thumbnail).toBe(false);
+  });
+
+  it("stays uniform across several attachments with no thumbnail", () => {
+    const mapped = workOrder({ attachments: [ATT, { ...ATT, id: 3 }] });
+    const keys = (mapped?.attachments ?? []).map((r) => Object.keys(r).sort().join(","));
+    expect(new Set(keys).size).toBe(1);
+  });
+});

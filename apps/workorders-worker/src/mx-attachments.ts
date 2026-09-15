@@ -108,6 +108,18 @@ export interface AttachmentMirrorResult {
   attachmentsFound: number;
   mirrored: number;
   failed: number;
+  /**
+   * Parents whose attachment METADATA write failed, so nothing could be
+   * copied for them.
+   *
+   * Counted separately from `failed` (which is per-attachment download
+   * failures) because it has a different cause and a different fix. It exists
+   * at all because a metadata failure used to be invisible: the code logged
+   * and moved on, leaving no attempt and no error on any row, so a PGRST102
+   * 400 on every tick looked exactly like "not reached yet". A non-zero here
+   * means look at the worker log, not at mirror_error.
+   */
+  metadataFailures: number;
   skipped: string | null;
   backfillComplete: boolean;
 }
@@ -429,7 +441,8 @@ async function mirrorPendingRequests(
 
     const meta = await upsertMxWorkOrderAttachments(env, attachments);
     if (!meta.ok) {
-      console.error(`[mx-attach] request metadata upsert failed for ${row.id}: ${meta.error}`);
+      result.metadataFailures += 1;
+      console.error(`[mx-attach] metadata upsert failed for request ${row.id}: ${meta.error}`);
       continue;
     }
 
@@ -469,6 +482,7 @@ export async function runMxAttachmentMirror(
     attachmentsFound: 0,
     mirrored: 0,
     failed: 0,
+    metadataFailures: 0,
     skipped: null,
     backfillComplete: false
   };
@@ -561,7 +575,8 @@ export async function runMxAttachmentMirror(
     // does is not needed here -- only the attachment rows are written.
     const meta = await upsertMxWorkOrderAttachments(env, mapped.attachments);
     if (!meta.ok) {
-      console.error(`[mx-attach] metadata upsert failed for ${row.id}: ${meta.error}`);
+      result.metadataFailures += 1;
+      console.error(`[mx-attach] metadata upsert failed for work order ${row.id}: ${meta.error}`);
       continue;
     }
 
@@ -609,7 +624,8 @@ export async function runMxAttachmentMirror(
       requests_scanned: result.requestsScanned,
       attachments_found: result.attachmentsFound,
       mirrored: result.mirrored,
-      failed: result.failed
+      failed: result.failed,
+      metadata_failures: result.metadataFailures
     }
   });
 

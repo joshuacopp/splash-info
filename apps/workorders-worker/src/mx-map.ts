@@ -406,6 +406,15 @@ function mapAttachments(
       mime_type: str(first(att, ["mimeType", "contentType", "mime"])),
       width: int(att.width),
       height: int(att.height),
+      // Emitted even though it is the default. PostgREST derives an upsert's
+      // column list from the payload keys and rejects a batch whose rows
+      // disagree (PGRST102). The thumbnail above sets is_thumbnail, so
+      // omitting it here made any parent with BOTH a thumbnail and other
+      // attachments a 400 -- silently, because the caller just skips to the
+      // next parent without recording an attempt or an error. Same bug class
+      // as 71ccb83 (first_seen_at on mixed pages). Every row in this array
+      // must carry the same keys.
+      is_thumbnail: false,
       mx_created_at: iso(att.createdAt),
       synced_at: syncedAt
     });
