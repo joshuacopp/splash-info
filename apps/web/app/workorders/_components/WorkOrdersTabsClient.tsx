@@ -777,6 +777,7 @@ function RequestExpandedRow({
             {wr.description ? wr.description : "(no description)"}
           </p>
         </div>
+        <PhotosSection attachments={wr.attachments ?? []} />
       </td>
     </tr>
   );

@@ -322,7 +322,12 @@ export function mapWorkOrder(
     synced_at: syncedAt
   };
 
-  const attachments = mapAttachments(id, asArray(bag.attachments), bag.thumbnail, syncedAt);
+  const attachments = mapAttachments(
+    { work_order_id: id },
+    asArray(bag.attachments),
+    bag.thumbnail,
+    syncedAt
+  );
 
   return {
     row,
@@ -348,8 +353,15 @@ export function mapWorkOrder(
  * returns [] either way, and the caller must therefore never treat [] as
  * evidence to prune existing rows.
  */
+/** Exactly one parent, matching the CHECK constraint on the table. Passed as
+ *  an object rather than two optional ids so a caller cannot set both or
+ *  neither without it being obvious at the call site. */
+type AttachmentParent =
+  | { work_order_id: number; work_request_id?: never }
+  | { work_request_id: number; work_order_id?: never };
+
 function mapAttachments(
-  workOrderId: number,
+  parent: AttachmentParent,
   rows: unknown[],
   thumbnail: unknown,
   syncedAt: string
@@ -368,7 +380,7 @@ function mapAttachments(
     seen.add(thumbId);
     out.push({
       id: thumbId,
-      work_order_id: workOrderId,
+      ...parent,
       file_name: str(first(thumbRecord, ["fileName", "name", "filename"])),
       mime_type: str(first(thumbRecord, ["mimeType", "contentType", "mime"])),
       width: int(thumbRecord.width),
@@ -389,7 +401,7 @@ function mapAttachments(
 
     out.push({
       id: attachmentId,
-      work_order_id: workOrderId,
+      ...parent,
       file_name: str(first(att, ["fileName", "name", "filename"])),
       mime_type: str(first(att, ["mimeType", "contentType", "mime"])),
       width: int(att.width),
@@ -605,6 +617,34 @@ export function mapComment(
 /* ============================================================
  * Work requests
  * ============================================================ */
+
+/**
+ * Attachment metadata for a WORK REQUEST.
+ *
+ * Standalone rather than folded into mapWorkRequest's return, because that
+ * function returns a bare row and two callers depend on that shape. Only the
+ * mirror pass needs request attachments, so widening the common path to serve
+ * one consumer would be the wrong trade.
+ *
+ * PROBED 2026-09-15: `GET /workrequests/{id}` returns `attachments[]` AND a
+ * `thumbnail` object, both carrying presigned URLs, with no expand token. The
+ * LIST endpoint returns neither -- which is why a per-request call is the only
+ * way to see them, exactly as on the work-order side.
+ */
+export function mapWorkRequestAttachments(
+  raw: RawWorkRequest,
+  syncedAt: string
+): MxWorkOrderAttachmentRow[] {
+  const id = int(raw.id);
+  if (id === null) return [];
+  const bag = raw as unknown as Record<string, unknown>;
+  return mapAttachments(
+    { work_request_id: id },
+    asArray(bag.attachments),
+    bag.thumbnail,
+    syncedAt
+  );
+}
 
 export function mapWorkRequest(
   raw: RawWorkRequest,

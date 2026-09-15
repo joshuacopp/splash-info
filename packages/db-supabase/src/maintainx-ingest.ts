@@ -248,7 +248,12 @@ export interface MxWorkOrderTimeItemRow {
  */
 export interface MxWorkOrderAttachmentRow {
   id: number;
-  work_order_id: number;
+  /** EXACTLY ONE of work_order_id / work_request_id is set, enforced by a
+   *  CHECK constraint. A row with neither is unreachable and unservable; a row
+   *  with both would have permissions that depend on which lookup the serve
+   *  route did first, which is how an ambiguity becomes a security bug. */
+  work_order_id?: number | null;
+  work_request_id?: number | null;
 
   file_name?: string | null;
   mime_type?: string | null;

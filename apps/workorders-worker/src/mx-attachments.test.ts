@@ -197,23 +197,72 @@ describe("guards", () => {
   });
 });
 
+describe("pending work requests", () => {
+  it("scopes to PENDING only, not REJECTED", async () => {
+    // 15 pending against 1,443 rejected. A rejected request is work that will
+    // not happen; mirroring those is ~1,443 calls and ~3 GB for photos nobody
+    // opens the page to see. Widening is one constant, but deliberately so.
+    const { bucket } = fakeBucket();
+    stub({ scope: [] });
+    await runMxAttachmentMirror({ ...BASE_ENV, WORKORDER_FILES: bucket } as MxAttachmentEnv);
+    const reqCall = calls.find((c) => c.url.includes("mx_work_request?select=id"));
+    expect(reqCall).toBeDefined();
+    expect(reqCall!.url).toContain("request_status=in.(PENDING)");
+    expect(reqCall!.url).not.toContain("REJECTED");
+  });
+
+  it("sweeps requests even when the work-order scope is exhausted", async () => {
+    // Requests are not cursor-driven. If they only ran on ticks with
+    // work-order scope left, they would stall the moment the backfill
+    // completed -- which is most ticks.
+    const { bucket } = fakeBucket();
+    stub({ scope: [], syncState: { key: "work_order_attachments", cursor: "999" } });
+    const res = await runMxAttachmentMirror({
+      ...BASE_ENV,
+      WORKORDER_FILES: bucket
+    } as MxAttachmentEnv);
+    expect(res.backfillComplete).toBe(true);
+    expect(calls.some((c) => c.url.includes("mx_work_request?select=id"))).toBe(true);
+  });
+
+  it("reports requests scanned separately from work orders", async () => {
+    const { bucket } = fakeBucket();
+    stub({ scope: [] });
+    const res = await runMxAttachmentMirror({
+      ...BASE_ENV,
+      WORKORDER_FILES: bucket
+    } as MxAttachmentEnv);
+    expect(res).toHaveProperty("requestsScanned");
+  });
+});
+
 describe("attachmentR2Key", () => {
-  it("namespaces by work order", () => {
-    expect(attachmentR2Key(118834534, 272727625, "image/jpeg")).toBe(
-      "work-orders/118834534/272727625.jpg"
-    );
+  it("namespaces by owner kind and id", () => {
+    expect(
+      attachmentR2Key({ kind: "work-orders", id: 118834534 }, 272727625, "image/jpeg")
+    ).toBe("work-orders/118834534/272727625.jpg");
+  });
+
+  it("keeps work requests in their own prefix", () => {
+    // Separate prefixes so an R2 listing is readable and a future cleanup can
+    // scope to one kind without touching the other.
+    expect(
+      attachmentR2Key({ kind: "work-requests", id: 13921023 }, 272725227, "image/jpeg")
+    ).toBe("work-requests/13921023/272725227.jpg");
   });
 
   it("maps the mime types we actually see", () => {
-    expect(attachmentR2Key(1, 2, "image/png")).toMatch(/\.png$/);
-    expect(attachmentR2Key(1, 2, "image/heic")).toMatch(/\.heic$/);
-    expect(attachmentR2Key(1, 2, "application/pdf")).toMatch(/\.pdf$/);
+    const wo = { kind: "work-orders" as const, id: 1 };
+    expect(attachmentR2Key(wo, 2, "image/png")).toMatch(/\.png$/);
+    expect(attachmentR2Key(wo, 2, "image/heic")).toMatch(/\.heic$/);
+    expect(attachmentR2Key(wo, 2, "application/pdf")).toMatch(/\.pdf$/);
   });
 
   it("omits the extension rather than guessing one", () => {
     // mime_type is what the serve route sets Content-Type from, so a wrong
     // suffix would be worse than none.
-    expect(attachmentR2Key(1, 2, null)).toBe("work-orders/1/2");
-    expect(attachmentR2Key(1, 2, "application/x-weird")).toBe("work-orders/1/2");
+    const wo = { kind: "work-orders" as const, id: 1 };
+    expect(attachmentR2Key(wo, 2, null)).toBe("work-orders/1/2");
+    expect(attachmentR2Key(wo, 2, "application/x-weird")).toBe("work-orders/1/2");
   });
 });

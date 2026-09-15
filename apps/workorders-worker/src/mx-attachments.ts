@@ -33,7 +33,12 @@
 //   broken thing, whereas preventives are routine checklists. The narrow scope
 //   is what makes a per-work-order call affordable at all.
 
-import { fetchMaintainXWorkOrder, SINGLE_WORK_ORDER_EXPAND } from "@splash/maintainx";
+import {
+  fetchMaintainXWorkOrder,
+  fetchMaintainXWorkRequest,
+  SINGLE_WORK_ORDER_EXPAND,
+  SINGLE_WORK_REQUEST_EXPAND
+} from "@splash/maintainx";
 import {
   fetchMxLocationMap,
   getMxSyncState,
@@ -42,7 +47,7 @@ import {
   writeMxSyncState,
   type SupabaseEnv
 } from "@splash/db-supabase";
-import { mapWorkOrder } from "./mx-map.js";
+import { mapWorkOrder, mapWorkRequestAttachments } from "./mx-map.js";
 
 /** Bookkeeping key in mx_sync_state. */
 export const MX_PASS_ATTACHMENTS = "work_order_attachments";
@@ -77,8 +82,29 @@ const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
  *  permanently-broken one is retried every five minutes forever. */
 const MAX_MIRROR_ATTEMPTS = 4;
 
+/**
+ * Work-request statuses whose photos are mirrored.
+ *
+ * PENDING only, operator-chosen. There are 15 of them against 1,443 REJECTED,
+ * and a rejected request is work that will not happen -- its photos are not
+ * what anyone opens the page to see. Widening is a one-line edit here, but it
+ * is 1,443 API calls and roughly 3 GB at the ~2 MB/photo measured on the
+ * work-order side, so it should be a deliberate decision rather than a drift.
+ *
+ * A request that becomes a WORK ORDER carries its photos onto that work order
+ * (verified on 118834534), so promoted requests are already covered by the
+ * work-order sweep and are not double-mirrored here.
+ */
+const REQUEST_STATUSES_TO_MIRROR = ["PENDING"] as const;
+
+/** Requests inspected per pass. Smaller than the work-order budget because
+ *  they ride the same tick AFTER it -- the 15 pending requests clear in two
+ *  passes, and the point is to not starve the work-order sweep. */
+const REQUESTS_PER_PASS = 8;
+
 export interface AttachmentMirrorResult {
   workOrdersScanned: number;
+  requestsScanned: number;
   attachmentsFound: number;
   mirrored: number;
   failed: number;
@@ -86,16 +112,23 @@ export interface AttachmentMirrorResult {
   backfillComplete: boolean;
 }
 
-/** R2 object key. Namespaced by work order so a prefix listing is useful and
- *  a future cleanup can scope itself. The attachment id is unique account-wide
+/** Which entity an attachment hangs off. The prefix keeps the two apart in R2
+ *  so a listing is readable and a future cleanup can scope to one kind. */
+export interface AttachmentOwner {
+  kind: "work-orders" | "work-requests";
+  id: number;
+}
+
+/** R2 object key. Namespaced by owner so a prefix listing is useful and a
+ *  future cleanup can scope itself. The attachment id is unique account-wide
  *  and is what the serve route looks up. */
 export function attachmentR2Key(
-  workOrderId: number,
+  owner: AttachmentOwner,
   attachmentId: number,
   mimeType: string | null
 ): string {
   const ext = extensionFor(mimeType);
-  return `work-orders/${workOrderId}/${attachmentId}${ext}`;
+  return `${owner.kind}/${owner.id}/${attachmentId}${ext}`;
 }
 
 function extensionFor(mimeType: string | null): string {
@@ -207,7 +240,7 @@ async function existingMirrorState(
 async function copyOne(
   env: MxAttachmentEnv,
   bucket: R2Bucket,
-  workOrderId: number,
+  owner: AttachmentOwner,
   attachmentId: number,
   mimeType: string | null,
   url: string,
@@ -245,7 +278,7 @@ async function copyOne(
       return { ok: false, bytes: 0, error };
     }
 
-    const key = attachmentR2Key(workOrderId, attachmentId, mimeType);
+    const key = attachmentR2Key(owner, attachmentId, mimeType);
     await bucket.put(key, body, {
       httpMetadata: { contentType: mimeType ?? "application/octet-stream" }
     });
@@ -272,6 +305,157 @@ async function copyOne(
 }
 
 /**
+ * Pending work requests with at least one attachment still un-mirrored.
+ *
+ * Unlike the work-order scope this is NOT cursor-driven. There are 15 pending
+ * requests; a cursor would be machinery for a set that fits in two passes, and
+ * it would also go stale the moment a request stops being pending. Instead the
+ * pass asks each time for requests it has not finished, which is
+ * self-correcting: a request that gets approved simply stops being returned.
+ *
+ * "Not finished" cannot be expressed as a join in PostgREST, so this returns
+ * candidates and the caller skips the ones already complete. With 15 rows that
+ * is cheaper than being clever.
+ */
+async function nextWorkRequests(
+  env: MxAttachmentEnv,
+  limit: number
+): Promise<Array<{ id: number }> | null> {
+  const url =
+    `${env.SUPABASE_URL}/rest/v1/mx_work_request` +
+    `?select=id` +
+    `&request_status=in.(${REQUEST_STATUSES_TO_MIRROR.join(",")})` +
+    `&order=mx_created_at.desc.nullslast` +
+    `&limit=${limit}`;
+  try {
+    const res = await fetch(url, {
+      headers: {
+        apikey: env.SUPABASE_SERVICE_KEY,
+        Authorization: `Bearer ${env.SUPABASE_SERVICE_KEY}`
+      }
+    });
+    if (!res.ok) {
+      console.error(
+        `[mx-attach] request scope read failed: ${res.status} ${(await res.text()).slice(0, 200)}`
+      );
+      return null;
+    }
+    return (await res.json()) as Array<{ id: number }>;
+  } catch (err) {
+    console.error("[mx-attach] request scope read threw:", err);
+    return null;
+  }
+}
+
+/** Mirror state for one request's attachments, keyed by attachment id. */
+async function existingRequestMirrorState(
+  env: MxAttachmentEnv,
+  workRequestId: number
+): Promise<Map<number, { mirrored: boolean; attempts: number }>> {
+  const out = new Map<number, { mirrored: boolean; attempts: number }>();
+  const url =
+    `${env.SUPABASE_URL}/rest/v1/mx_work_order_attachment` +
+    `?select=id,r2_key,mirror_attempts&work_request_id=eq.${workRequestId}`;
+  try {
+    const res = await fetch(url, {
+      headers: {
+        apikey: env.SUPABASE_SERVICE_KEY,
+        Authorization: `Bearer ${env.SUPABASE_SERVICE_KEY}`
+      }
+    });
+    if (!res.ok) return out;
+    const rows = (await res.json()) as Array<{
+      id: number;
+      r2_key: string | null;
+      mirror_attempts: number | null;
+    }>;
+    for (const r of rows) {
+      out.set(r.id, { mirrored: r.r2_key !== null, attempts: r.mirror_attempts ?? 0 });
+    }
+  } catch {
+    // "Nothing known" -- re-downloads at worst.
+  }
+  return out;
+}
+
+/**
+ * Mirror photos for pending work requests. Same shape as the work-order sweep:
+ * single-GET for fresh presigned URLs, download immediately, record state.
+ *
+ * Returns how many requests it looked at. Runs AFTER the work-order sweep on
+ * the shared budget, so it gets whatever time is left -- work orders are the
+ * page's primary content and must not be starved by 15 requests.
+ */
+async function mirrorPendingRequests(
+  env: MxAttachmentEnv,
+  bucket: R2Bucket,
+  apiKey: string,
+  startedAt: number,
+  result: AttachmentMirrorResult
+): Promise<void> {
+  if (Date.now() - startedAt > BUDGET_MS) return;
+
+  const requests = await nextWorkRequests(env, REQUESTS_PER_PASS);
+  if (requests === null || requests.length === 0) return;
+
+  for (const row of requests) {
+    if (Date.now() - startedAt > BUDGET_MS) break;
+
+    const known = await existingRequestMirrorState(env, row.id);
+
+    const fetched = await fetchMaintainXWorkRequest({
+      id: row.id,
+      apiKey,
+      baseUrl: env.MAINTAINX_BASE_URL,
+      expand: SINGLE_WORK_REQUEST_EXPAND
+    });
+    if (!fetched.ok || !fetched.workRequest) continue;
+    result.requestsScanned += 1;
+
+    const attachments = mapWorkRequestAttachments(
+      fetched.workRequest,
+      new Date().toISOString()
+    );
+    if (attachments.length === 0) continue;
+    result.attachmentsFound += attachments.length;
+
+    // Everything already copied? Skip the metadata write too -- a no-op upsert
+    // every five minutes on every pending request is pure noise.
+    const pending = attachments.filter((a) => {
+      const prior = known.get(a.id);
+      return !prior?.mirrored && (prior?.attempts ?? 0) < MAX_MIRROR_ATTEMPTS;
+    });
+    if (pending.length === 0) continue;
+
+    const meta = await upsertMxWorkOrderAttachments(env, attachments);
+    if (!meta.ok) {
+      console.error(`[mx-attach] request metadata upsert failed for ${row.id}: ${meta.error}`);
+      continue;
+    }
+
+    const rawBag = fetched.workRequest as unknown as Record<string, unknown>;
+    const urlById = collectAttachmentUrls(rawBag);
+
+    for (const att of pending) {
+      if (Date.now() - startedAt > BUDGET_MS) break;
+      const url = urlById.get(att.id);
+      if (!url) continue;
+      const copied = await copyOne(
+        env,
+        bucket,
+        { kind: "work-requests", id: row.id },
+        att.id,
+        att.mime_type ?? null,
+        url,
+        known.get(att.id)?.attempts ?? 0
+      );
+      if (copied.ok) result.mirrored += 1;
+      else result.failed += 1;
+    }
+  }
+}
+
+/**
  * One bounded pass. Never throws -- the caller is a scheduled handler shared
  * with two other jobs.
  */
@@ -281,6 +465,7 @@ export async function runMxAttachmentMirror(
   const startedAt = Date.now();
   const result: AttachmentMirrorResult = {
     workOrdersScanned: 0,
+    requestsScanned: 0,
     attachmentsFound: 0,
     mirrored: 0,
     failed: 0,
@@ -327,6 +512,10 @@ export async function runMxAttachmentMirror(
     // picks up attachments added to work orders already visited -- the webhook
     // records their metadata but only this pass can copy the bytes.
     result.backfillComplete = true;
+    // Requests are swept even on the work-order wrap-up tick. They are not
+    // cursor-driven, so skipping them here would mean they only ever run on
+    // ticks that happen to have work-order scope left.
+    await mirrorPendingRequests(env, bucket, apiKey, startedAt, result);
     await writeMxSyncState(env, MX_PASS_ATTACHMENTS, {
       cursor: "0",
       last_run_at: new Date().toISOString(),
@@ -395,7 +584,7 @@ export async function runMxAttachmentMirror(
       const copied = await copyOne(
         env,
         bucket,
-        row.id,
+        { kind: "work-orders", id: row.id },
         att.id,
         att.mime_type ?? null,
         url,
@@ -406,6 +595,10 @@ export async function runMxAttachmentMirror(
     }
   }
 
+  // After the work orders, with whatever budget is left. Work orders are the
+  // page's primary content; 15 pending requests must not starve them.
+  await mirrorPendingRequests(env, bucket, apiKey, startedAt, result);
+
   await writeMxSyncState(env, MX_PASS_ATTACHMENTS, {
     cursor: String(lastId),
     last_run_at: new Date().toISOString(),
@@ -413,6 +606,7 @@ export async function runMxAttachmentMirror(
     last_status: "OK",
     stats: {
       work_orders_scanned: result.workOrdersScanned,
+      requests_scanned: result.requestsScanned,
       attachments_found: result.attachmentsFound,
       mirrored: result.mirrored,
       failed: result.failed

@@ -182,20 +182,10 @@ function projectExtras(row: PgWorkOrderRow): PgWorkOrderExtras {
     rowTotalCents: cents(e.row_total_cents)
   }));
 
-  const attachments: PgAttachment[] = (
-    Array.isArray(row.mx_work_order_attachment) ? row.mx_work_order_attachment : []
-  )
-    // Belt and braces: the query already filters on r2_key, but a servable
-    // attachment is defined by having bytes and nothing else should decide it.
-    .filter((a) => typeof a.r2_key === "string" && a.r2_key !== "")
-    .map((a) => ({
-      id: a.id,
-      fileName: a.file_name,
-      mimeType: a.mime_type,
-      width: cents(a.width),
-      height: cents(a.height),
-      isThumbnail: a.is_thumbnail === true
-    }));
+  // Belt and braces: the query already filters on r2_key, but a servable
+  // attachment is defined by having bytes and nothing else decides it. Shared
+  // with the work-request path so the two cannot disagree.
+  const attachments = projectAttachments(row.mx_work_order_attachment);
 
   return {
     attachments,
@@ -211,6 +201,42 @@ function projectExtras(row: PgWorkOrderRow): PgWorkOrderExtras {
     // carries no count of its own.
     commentsTruncated: rawComments.length >= COMMENT_LIMIT
   };
+}
+
+interface PgAttachmentRow {
+  id: number;
+  file_name: string | null;
+  mime_type: string | null;
+  width: number | null;
+  height: number | null;
+  is_thumbnail: boolean | null;
+  r2_key: string | null;
+}
+
+interface PgWorkRequestRow {
+  raw: unknown;
+  mx_work_order_attachment?: PgAttachmentRow[] | null;
+}
+
+/**
+ * Embedded attachment rows -> the client shape.
+ *
+ * Shared by work orders and work requests deliberately: "servable" means "has
+ * bytes in R2" and that rule must not be able to differ between the two. The
+ * r2_key is dropped here and never reaches the client -- it is internal
+ * addressing, and the client asks the permission-checked route by id instead.
+ */
+function projectAttachments(rows: PgAttachmentRow[] | null | undefined): PgAttachment[] {
+  return (Array.isArray(rows) ? rows : [])
+    .filter((a) => typeof a.r2_key === "string" && a.r2_key !== "")
+    .map((a) => ({
+      id: a.id,
+      fileName: a.file_name,
+      mimeType: a.mime_type,
+      width: cents(a.width),
+      height: cents(a.height),
+      isThumbnail: a.is_thumbnail === true
+    }));
 }
 
 /** PostgREST `in.(...)` needs the list inline. Ids are numbers we produced
@@ -495,6 +521,10 @@ export async function fetchWorkOrdersFromPg(input: {
 export interface PgWorkRequestResult {
   ok: boolean;
   workRequests: RawWorkRequest[];
+  /** Mirrored photos by work-request id. Same rule as the work-order side:
+   *  only rows with bytes in R2, because an un-mirrored one has no servable
+   *  source and would render as a broken image. */
+  attachmentsById: Map<number, PgAttachment[]>;
   truncated: boolean;
   pageCount: number;
   error: string | null;
@@ -516,30 +546,41 @@ export async function fetchWorkRequestsFromPg(input: {
   const cap = input.maxWorkRequests ?? MAX_REQUEST_ROWS;
   const ids = inList(input.maintainxLocationIds);
   if (ids === "") {
-    return { ok: true, workRequests: [], truncated: false, pageCount: 1, error: null, status: 200 };
+    return {
+      ok: true,
+      workRequests: [],
+      attachmentsById: new Map(),
+      truncated: false,
+      pageCount: 1,
+      error: null,
+      status: 200
+    };
   }
 
   const base =
     `${input.env.SUPABASE_URL}/rest/v1/mx_work_request` +
-    `?select=raw` +
+    `?select=raw,mx_work_order_attachment(id,file_name,mime_type,width,height,is_thumbnail,r2_key)` +
+    `&mx_work_order_attachment.r2_key=not.is.null` +
+    `&mx_work_order_attachment.order=is_thumbnail.desc,mx_created_at.asc` +
     `&request_status=in.(${REQUEST_STATUSES.join(",")})` +
     `&mx_location_id=in.(${ids})` +
     // id breaks ties so the sort is total -- see the note on the work-order
     // query; an unstable order repeats and skips rows across pages.
     `&order=mx_created_at.desc.nullslast,id.asc`;
 
-  const rows: Array<{ raw: unknown }> = [];
+  const rows: PgWorkRequestRow[] = [];
   let total: number | null = null;
   let pageCount = 0;
 
   while (rows.length < cap) {
     const url = `${base}&limit=${PAGE_SIZE}&offset=${rows.length}`;
-    const res = await selectJson<{ raw: unknown }>(input.env, url);
+    const res = await selectJson<PgWorkRequestRow>(input.env, url);
     pageCount += 1;
     if (!res.ok) {
       return {
         ok: false,
         workRequests: [],
+        attachmentsById: new Map(),
         truncated: false,
         pageCount,
         error: res.error,
@@ -555,11 +596,25 @@ export async function fetchWorkRequestsFromPg(input: {
   const truncated = total !== null ? total > rows.length : rows.length >= cap;
 
   const workRequests: RawWorkRequest[] = [];
+  const attachmentsById = new Map<number, PgAttachment[]>();
   for (const row of rows) {
-    if (row.raw && typeof row.raw === "object" && !Array.isArray(row.raw)) {
-      workRequests.push(row.raw as RawWorkRequest);
-    }
+    if (!row.raw || typeof row.raw !== "object" || Array.isArray(row.raw)) continue;
+    const wr = row.raw as RawWorkRequest;
+    workRequests.push(wr);
+
+    const id = typeof wr.id === "number" ? wr.id : null;
+    if (id === null) continue;
+    const atts = projectAttachments(row.mx_work_order_attachment);
+    if (atts.length > 0) attachmentsById.set(id, atts);
   }
 
-  return { ok: true, workRequests, truncated, pageCount, error: null, status: 200 };
+  return {
+    ok: true,
+    workRequests,
+    attachmentsById,
+    truncated,
+    pageCount,
+    error: null,
+    status: 200
+  };
 }

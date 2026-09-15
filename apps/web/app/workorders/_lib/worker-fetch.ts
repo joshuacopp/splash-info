@@ -125,6 +125,9 @@ export interface WorkRequestItem {
   /** Set once staff promote the request; null while PENDING/REJECTED. */
   workOrderId: number | null;
   creator: WorkRequestCreator | null;
+  /** Mirrored photos, thumbnail first. Only PENDING requests are mirrored, so
+   *  a REJECTED one renders without photos even when MaintainX has them. */
+  attachments?: WorkOrderAttachment[];
 }
 
 export interface WorkRequestsGroup {

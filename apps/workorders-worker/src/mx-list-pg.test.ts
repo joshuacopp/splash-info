@@ -489,6 +489,61 @@ describe("fetchWorkOrdersFromPg attachments", () => {
   });
 });
 
+describe("fetchWorkRequestsFromPg attachments", () => {
+  it("embeds only attachments that have bytes in R2", async () => {
+    stub([]);
+    await fetchWorkRequestsFromPg({ env: ENV, maintainxLocationIds: [1] });
+    expect(lastUrl).toContain("mx_work_order_attachment.r2_key=not.is.null");
+  });
+
+  it("orders the thumbnail first", async () => {
+    stub([]);
+    await fetchWorkRequestsFromPg({ env: ENV, maintainxLocationIds: [1] });
+    expect(lastUrl).toContain("mx_work_order_attachment.order=is_thumbnail.desc");
+  });
+
+  it("keys photos by work-request id", async () => {
+    stub([{
+      raw: { id: 13921023, title: "Hydraulic line leaking in tunnel" },
+      mx_work_order_attachment: [
+        { id: 272725230, file_name: "photo.jpeg", mime_type: "image/jpeg",
+          width: 960, height: 1280, is_thumbnail: true, r2_key: "work-requests/13921023/272725230.jpg" }
+      ]
+    }]);
+    const res = await fetchWorkRequestsFromPg({ env: ENV, maintainxLocationIds: [1] });
+    expect(res.attachmentsById.get(13921023)?.[0]).toMatchObject({
+      id: 272725230,
+      isThumbnail: true
+    });
+  });
+
+  it("never exposes the r2 key", async () => {
+    stub([{
+      raw: { id: 7 },
+      mx_work_order_attachment: [
+        { id: 1, file_name: "a.jpg", mime_type: "image/jpeg", width: null,
+          height: null, is_thumbnail: false, r2_key: "work-requests/7/1.jpg" }
+      ]
+    }]);
+    const res = await fetchWorkRequestsFromPg({ env: ENV, maintainxLocationIds: [1] });
+    expect(JSON.stringify([...res.attachmentsById.values()])).not.toContain("work-requests/");
+  });
+
+  it("omits requests with no mirrored photos from the map", async () => {
+    // Absence keeps the map small and lets the caller default to [] without a
+    // second "is it empty" check at every render site.
+    stub([{ raw: { id: 9 } }]);
+    const res = await fetchWorkRequestsFromPg({ env: ENV, maintainxLocationIds: [1] });
+    expect(res.attachmentsById.has(9)).toBe(false);
+  });
+
+  it("returns an empty map for a caller with no locations", async () => {
+    stub([]);
+    const res = await fetchWorkRequestsFromPg({ env: ENV, maintainxLocationIds: [] });
+    expect(res.attachmentsById.size).toBe(0);
+  });
+});
+
 describe("fetchWorkRequestsFromPg", () => {
   it("filters to the two statuses the Requests tab surfaces", async () => {
     stub(rawRows(1));

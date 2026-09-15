@@ -273,6 +273,11 @@ interface WorkRequestOut {
   workOrderId: number | null;
   /** Null when creatorId is absent or unresolved in the users cache. */
   creator: RequestCreatorOut | null;
+  /** Mirrored photos, thumbnail first. Empty on the MaintainX path and for
+   *  anything not yet copied into R2. Only PENDING requests are mirrored --
+   *  see REQUEST_STATUSES_TO_MIRROR in mx-attachments.ts -- so a REJECTED one
+   *  renders without photos even when MaintainX has them. */
+  attachments: AttachmentOut[];
 }
 
 interface RequestGroupOut {
@@ -600,10 +605,15 @@ async function handleAttachment(
   // One read: the attachment plus the owning work order's location, via the
   // FK embed. Doing it in two would open a window where the second answer no
   // longer matches the first.
+  // Both parents are embedded with !left, not !inner. An attachment has
+  // exactly one (CHECK-enforced), so an inner join on either would drop every
+  // row belonging to the other kind -- which would have made request photos
+  // 404 while looking like a permission failure.
   const url =
     `${env.SUPABASE_URL}/rest/v1/mx_work_order_attachment` +
-    `?select=id,work_order_id,r2_key,mime_type,file_name,` +
-    `mx_work_order!inner(mx_location_id,deleted_at)` +
+    `?select=id,work_order_id,work_request_id,r2_key,mime_type,file_name,` +
+    `mx_work_order!left(mx_location_id,deleted_at),` +
+    `mx_work_request!left(mx_location_id)` +
     `&id=eq.${attachmentId}` +
     `&limit=1`;
 
@@ -612,6 +622,7 @@ async function handleAttachment(
     mime_type: string | null;
     file_name: string | null;
     mx_work_order: { mx_location_id: number | null; deleted_at: string | null } | null;
+    mx_work_request: { mx_location_id: number | null } | null;
   }>;
   try {
     const res = await fetch(url, {
@@ -627,10 +638,18 @@ async function handleAttachment(
   }
 
   const row = rows[0];
-  if (!row || !row.r2_key || !row.mx_work_order) return jsonError(404, "not found");
-  if (row.mx_work_order.deleted_at !== null) return jsonError(404, "not found");
+  if (!row || !row.r2_key) return jsonError(404, "not found");
 
-  const locationId = row.mx_work_order.mx_location_id;
+  // Resolve the location through whichever parent this attachment has. A
+  // soft-deleted work order is treated as absent -- serving photos for a work
+  // order the list will not show would leak past the page's own filter.
+  let locationId: number | null = null;
+  if (row.mx_work_order) {
+    if (row.mx_work_order.deleted_at !== null) return jsonError(404, "not found");
+    locationId = row.mx_work_order.mx_location_id;
+  } else if (row.mx_work_request) {
+    locationId = row.mx_work_request.mx_location_id;
+  }
   if (locationId === null) return jsonError(404, "not found");
 
   const accessible = await getLocationsByContactEmail(env, email);
@@ -744,6 +763,7 @@ async function handleList(
   };
 
   let extrasById = new Map<number, PgWorkOrderExtras>();
+  let requestAttachmentsById = new Map<number, AttachmentOut[]>();
 
   if (source === "postgres") {
     // One round trip each, no cursor walk, no upstream timeout to bound --
@@ -768,6 +788,7 @@ async function handleList(
     // concrete return rather than widening `result`, which is deliberately
     // only the shape both sources share.
     extrasById = pgWorkOrders.extrasById;
+    requestAttachmentsById = pgRequests.attachmentsById;
     clearTimeout(woTimeout);
     clearTimeout(requestsTimeout);
   } else {
@@ -900,7 +921,8 @@ async function handleList(
   const requestGroups = groupRequestsByLocation(
     visibleRequests,
     users,
-    accessibleByMxId
+    accessibleByMxId,
+    requestAttachmentsById
   );
 
   console.log(
@@ -1289,10 +1311,26 @@ function collectRequestCreatorIds(requests: RawWorkRequest[]): number[] {
   return [...out];
 }
 
+function projectWorkRequestWithAttachments(
+  wr: RawWorkRequest,
+  users: Map<number, MaintainXUserRow>,
+  attachmentsById: Map<number, AttachmentOut[]>
+): WorkRequestOut | null {
+  const projected = projectWorkRequest(wr, users);
+  if (!projected) return null;
+  const id = typeof wr.id === "number" ? wr.id : null;
+  return {
+    ...projected,
+    attachments: (id !== null ? attachmentsById.get(id) : undefined) ?? []
+  };
+}
+
+/** Everything except photos, which only the Postgres path can supply -- the
+ *  wrapper above adds them. */
 function projectWorkRequest(
   wr: RawWorkRequest,
   users: Map<number, MaintainXUserRow>
-): WorkRequestOut | null {
+): Omit<WorkRequestOut, "attachments"> | null {
   if (typeof wr.id !== "number" || !Number.isFinite(wr.id)) return null;
   const creatorId =
     typeof wr.creatorId === "number" && Number.isFinite(wr.creatorId)
@@ -1340,11 +1378,14 @@ function compareWorkRequests(a: WorkRequestOut, b: WorkRequestOut): number {
 function groupRequestsByLocation(
   requests: RawWorkRequest[],
   users: Map<number, MaintainXUserRow>,
-  accessibleByMxId: Map<number, UserAccessibleLocation>
+  accessibleByMxId: Map<number, UserAccessibleLocation>,
+  /** Mirrored photos by request id. Empty on the MaintainX path, which is why
+   *  every consumer treats absence as "none" rather than an error. */
+  attachmentsById: Map<number, AttachmentOut[]> = new Map()
 ): RequestGroupOut[] {
   const buckets = new Map<number, { header: string; items: WorkRequestOut[] }>();
   for (const wr of requests) {
-    const projected = projectWorkRequest(wr, users);
+    const projected = projectWorkRequestWithAttachments(wr, users, attachmentsById);
     if (!projected) continue;
     const mxIdRaw = projected.locationId;
     if (mxIdRaw == null) continue;
