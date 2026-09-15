@@ -64,6 +64,7 @@ import {
 } from "./mx-list-pg.js";
 import { runMxReconcile } from "./mx-reconcile.js";
 import { runMxAttachmentMirror } from "./mx-attachments.js";
+import { runMxDailyDigest } from "./mx-daily-digest.js";
 import { handlePartsRequest } from "./parts.js";
 import { runMaintainXUserTeamSync, type SyncResult } from "./sync.js";
 
@@ -74,6 +75,10 @@ import { runMaintainXUserTeamSync, type SyncResult } from "./sync.js";
 // pass. The fall-through arm of the branch below logs loudly for that reason.
 const USER_SYNC_CRON = "30 11 * * *";
 const MX_INGEST_CRON = "*/5 * * * *";
+/** 02:00 UTC = 10 PM Eastern. Must match wrangler.toml exactly -- the
+ *  dispatcher compares the literal string, so a schedule edited in one
+ *  place and not the other silently stops running. */
+const DAILY_DIGEST_CRON = "0 2 * * *";
 
 interface Env extends SupabaseEnv {
   /**
@@ -533,6 +538,19 @@ export default {
             console.log("workorders-worker mx reconcile:", JSON.stringify(rec));
           } catch (err) {
             console.error("workorders-worker mx reconcile failed:", err);
+          }
+          return;
+        }
+
+        if (cron === DAILY_DIGEST_CRON) {
+          try {
+            const digest = await runMxDailyDigest(env);
+            // Always logged, including the nothing-happened case: this runs
+            // once a day, so a quiet line is cheap and its ABSENCE is the
+            // signal that the cron did not fire at all.
+            console.log("workorders-worker daily digest:", JSON.stringify(digest));
+          } catch (err) {
+            console.error("workorders-worker daily digest failed:", err);
           }
           return;
         }
