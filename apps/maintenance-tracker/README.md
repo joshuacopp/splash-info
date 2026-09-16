@@ -8,12 +8,23 @@ Export → build → apply, the same shape as `apps/damage-worker/daily`, becaus
 the compute belongs in Redshift and the joining belongs in Supabase.
 
 ```powershell
-.\export_punches.ps1                                   # Redshift -> punches_raw.csv
 # dump site centres once: site_number,latitude,longitude,geofence_radius_m
-python build_punches.py punches_raw.csv sites.csv > mt_punch.sql
 $env:SUPABASE_DB_URL = "<Supabase connection string (URI)>"
+
+# Layer A - punch fidelity
+.\export_punches.ps1                                   # Redshift -> punches_raw.csv
+python build_punches.py punches_raw.csv sites.csv > mt_punch.sql
 node apply_punches.mjs mt_punch.sql
+
+# Layer B - GPS dwell
+psql "service=splashdb" --csv -P pager=off -f queries_dwell.sql -o dwell_raw.csv
+python build_dwell.py dwell_raw.csv sites.csv > mt_gps_dwell.sql
+node apply_punches.mjs mt_gps_dwell.sql            # same applier, any .sql file
 ```
+
+**Redshift access is READ-ONLY and must stay that way.** It is a company-wide
+warehouse; every query here is a `SELECT`. Nothing in this pipeline writes to
+it — the only writes go to Supabase.
 
 Redshift is reached through the **existing `splashdb` pg_service entry** the
 car-counts export already uses — `razayya_agent_collector` is a schema inside
@@ -41,3 +52,26 @@ of the same thing every morning.
 Non-mobile punches (`source_type` admin / pc) are PTO and manual corrections and
 never carry GPS. Exclude them from the denominator rather than scoring them as
 failures.
+
+## Layer B — what a "stay" is, and what it is not
+
+Geotab logs densely while moving (median gap **5 s**) and goes quiet while
+parked: of 25,534 gaps over 5 minutes, **25,491 involve under 100 m of
+movement**. Only 20% of pings are at speed ≤ 3 at all. A stay is therefore
+encoded mostly as the *absence* of pings, and PLAN.md §5's description
+("consecutive GPS points below a speed threshold") would miss nearly all of it.
+
+Stays are sessionised on **implied speed** between consecutive pings, not on
+raw step distance. That distinction is not academic — the first version used a
+150 m distance threshold, which at 5-second pings tolerates **108 km/h**, and
+whole motorway drives collapsed into single "stays": 90% of intervals spanned
+over 300 m, one was 43 minutes and 7.4 km at up to 66. After the fix, 99.6% of
+intervals sit under 100 m of spread.
+
+**It tracks the vehicle, not the person.** A mechanic can be at a site with the
+van parked elsewhere, or riding with a colleague. `mt_device_person` gives the
+likely driver, never a proven one.
+
+Most dwell hours are overnight parking at home, which is expected and is not an
+exception — 13,741 h of stays over the window, of which 1,869 h (14%) are inside
+a site geofence, across 3,315 intervals of which 41% match a site.
