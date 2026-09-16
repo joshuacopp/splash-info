@@ -144,9 +144,26 @@ cross-checked against 886,870 Geotab pings — 56 of 57 candidates had vehicles
 sitting still at them. Site 241 (Exton, PA) had one punch and zero pings and was
 excluded rather than written.
 
-28 rows still null: 25 sites the maintenance team never punches at, Geneva III
-(158) which has no address in the table, and duplicate-`site_number` twins.
-Those need a geocoder or hand-set values. **The tracker cannot score them.**
+**Second pass, same day — `locations-coordinates-03-geocoded.sql` takes it to
+85 of 86.** The remaining 26 were geocoded with the **US Census Bureau**
+geocoder (free, no key, authoritative for US addresses), cross-checked against
+**OpenStreetMap Nominatim** as an independent second opinion. 18 of 26 agreed
+within 250 m; Geotab dwell arbitrated the two that did not (137, 149) and chose
+Census both times.
+
+**The acceptance rule differs by provenance and that is deliberate.** Zero
+Geotab dwell FALSIFIES a punch-derived coordinate — it came from a punch
+claiming somebody stood there. It says nothing about a geocoded one, which
+comes from the address alone; the team simply never visits Delaware. Applying
+the punch-pass rule here would have thrown away good coordinates for every site
+outside the team's territory.
+
+Uncertainty lives in `geofence_radius_m`: 150 m where both geocoders agreed
+closely, up to 300 m for the two single-source sites with nothing corroborating
+them (241 Exton, 252 Wilmington).
+
+**One row is still null: Geneva III (158) has no address in the table at all.**
+It needs an address before it can have a coordinate.
 
 **G2 — device→person. `mt_device_person`, 13 rows**,
 `supabase/mt-device-person-01.sql`. Verified against live data, not transcribed.
