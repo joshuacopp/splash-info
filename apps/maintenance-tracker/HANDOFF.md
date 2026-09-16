@@ -125,3 +125,46 @@ untouched. They are the bulk of the manual effort and none of them was blocked
 by the two items above — those were sequenced first only because the event log
 loses history for every day it does not exist, and the sweep leaves labor
 invisible for every hour it does not run.
+
+---
+
+## Phase 0 gaps — closed 2026-09-16
+
+**Redshift is reachable through the existing `splashdb` pg_service entry** that
+`apps/damage-worker/daily/export_car_counts.ps1` uses. `razayya_agent_collector`
+is a SCHEMA inside splashdb, not a separate database. No new connection needed:
+
+    PGCLIENTENCODING=UTF8 psql "service=splashdb" --csv -P pager=off -c "..."
+
+**G1 — site coordinates. 58 of 86 rows populated, no geocoder used.**
+`supabase/locations-coordinates-01.sql` (columns) +
+`locations-coordinates-02-backfill.sql` (values). Derived from Connecteam punch
+coordinates matched to sites on ZIP **and** street number together, then
+cross-checked against 886,870 Geotab pings — 56 of 57 candidates had vehicles
+sitting still at them. Site 241 (Exton, PA) had one punch and zero pings and was
+excluded rather than written.
+
+28 rows still null: 25 sites the maintenance team never punches at, Geneva III
+(158) which has no address in the table, and duplicate-`site_number` twins.
+Those need a geocoder or hand-set values. **The tracker cannot score them.**
+
+**G2 — device→person. `mt_device_person`, 13 rows**,
+`supabase/mt-device-person-01.sql`. Verified against live data, not transcribed.
+
+**Correction to PLAN.md §G2:** the table lists `b36D` Dylan Keith as an exact
+match. It is not — Connecteam stores "Dylan  Keith" with a DOUBLE SPACE. The
+trailing spaces the plan documented are real and were handled by trimming; this
+one is invisible whitespace mid-string and would not have been caught by any
+normalisation rule written in advance.
+
+**G3 — answered: the email join gets 8 of 13, and it is a join AND a seed file.**
+The 5 misses are exactly the 5 whose Connecteam address is personal rather than
+`@splashcarwashes.com` — the two systems hold genuinely different addresses, so
+normalisation cannot help. All 5 resolve unambiguously on full name. Resolved
+once and stored as `mt_device_person.maintainx_user_id`.
+
+Email comparison was done on md5 hashes so addresses never crossed between the
+two databases.
+
+**Phase 1 (Layer A, punch fidelity) is unblocked** for the 58 sites that have a
+centre.
