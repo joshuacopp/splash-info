@@ -1,8 +1,9 @@
 // Tests for the current-week preventive on-time figure.
 //
-// The two things worth guarding are the ones that would produce a WRONG
-// PERCENTAGE rather than an error: the shape of the query window, and the
-// on-time comparison. Both fail silently -- a number still appears.
+// The point of most of these is that the failure they guard against is a
+// WRONG PERCENTAGE rather than an error. A number still appears either way,
+// which is what makes it dangerous: the page would quietly disagree with the
+// MaintainX report the operator checks it against.
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { fetchPmOnTime } from "./mx-pm-ontime";
@@ -47,43 +48,40 @@ const WEDNESDAY = new Date("2026-09-16T16:00:00Z");
 afterEach(() => vi.unstubAllGlobals());
 
 describe("the query window", () => {
-  it("runs from Monday 00:00 Eastern to the end of today, not the end of the week", () => {
-    // The whole-week denominator is the trap: on a Wednesday it counts
-    // Thursday-Sunday's work as failed. MEASURED, that reads 61.5% against a
-    // true 77.3%.
+  it("spans the whole Mon-Sun week, including work not yet due", async () => {
+    // Under MaintainX's definition future work BELONGS in the denominator:
+    // being not-yet-due is what makes a row score as on time. Stopping at
+    // today would drop rows the reference report counts.
     const urls = stubFetch([]);
-    return fetchPmOnTime({ env: ENV, mxLocationIds: [1187635], now: WEDNESDAY }).then(() => {
-      const url = decodeURIComponent(urls[0]!);
-      expect(url).toContain("due_date=gte.2026-09-14T04:00:00.000Z");
-      expect(url).toContain("due_date=lt.2026-09-17T04:00:00.000Z");
-    });
+    await fetchPmOnTime({ env: ENV, mxLocationIds: [1187635], now: WEDNESDAY });
+    const url = decodeURIComponent(urls[0]!);
+    expect(url).toContain("due_date=gte.2026-09-14T04:00:00.000Z");
+    expect(url).toContain("due_date=lt.2026-09-21T04:00:00.000Z");
   });
 
-  it("stops at the end of the week even if `now` has run past it", () => {
-    // A stale clock must not pull next week's work into this week's figure.
+  it("ends the week correctly when the week contains a DST change", async () => {
+    // The week of Mon 2026-10-26 is 169 hours long: DST ends on the Sunday.
+    // Adding a flat seven days would land an hour short of Monday midnight.
     const urls = stubFetch([]);
-    return fetchPmOnTime({
+    await fetchPmOnTime({
       env: ENV,
-      mxLocationIds: [1187635],
-      // Sunday 9 PM Eastern -- the last hours of the week.
-      now: new Date("2026-09-21T01:00:00Z")
-    }).then(() => {
-      const url = decodeURIComponent(urls[0]!);
-      expect(url).toContain("due_date=gte.2026-09-14T04:00:00.000Z");
-      expect(url).toContain("due_date=lt.2026-09-21T04:00:00.000Z");
+      mxLocationIds: [1],
+      now: new Date("2026-10-28T16:00:00Z")
     });
+    const url = decodeURIComponent(urls[0]!);
+    expect(url).toContain("due_date=gte.2026-10-26T04:00:00.000Z");
+    expect(url).toContain("due_date=lt.2026-11-02T05:00:00.000Z");
   });
 
-  it("asks only for preventive, undeleted work at the caller's locations", () => {
+  it("asks only for preventive, undeleted work at the caller's locations", async () => {
     // The location filter is the permission boundary. Dropping it would widen
     // the figure to the whole company with no visible symptom.
     const urls = stubFetch([]);
-    return fetchPmOnTime({ env: ENV, mxLocationIds: [111, 222], now: WEDNESDAY }).then(() => {
-      const url = decodeURIComponent(urls[0]!);
-      expect(url).toContain("type=eq.PREVENTIVE");
-      expect(url).toContain("deleted_at=is.null");
-      expect(url).toContain("mx_location_id=in.(111,222)");
-    });
+    await fetchPmOnTime({ env: ENV, mxLocationIds: [111, 222], now: WEDNESDAY });
+    const url = decodeURIComponent(urls[0]!);
+    expect(url).toContain("type=eq.PREVENTIVE");
+    expect(url).toContain("deleted_at=is.null");
+    expect(url).toContain("mx_location_id=in.(111,222)");
   });
 
   it("returns null without querying when the caller has no locations", async () => {
@@ -93,66 +91,119 @@ describe("the query window", () => {
   });
 });
 
-describe("the on-time test", () => {
-  it("counts completion on the due day as on time", async () => {
+describe("the MaintainX week, reproduced", () => {
+  // The anchor case. These seven rows are Binghamton's real week of
+  // 2026-09-14, and the MaintainX UI reported 5 on time / 2 overdue / 71.4%
+  // for exactly this set. If this test fails, the page and the report the
+  // operator cross-checks it against no longer agree.
+  const BINGHAMTON_WEEK = [
+    // Due Mon 2 PM, still open -> overdue
+    row({ due_date: "2026-09-14T18:00:00Z", status: "OPEN", completed_at: null }),
+    // Due Mon 11 PM, done Mon morning -> on time
+    row({ due_date: "2026-09-15T03:00:00Z", completed_at: "2026-09-14T13:20:45Z" }),
+    // Due Tue 11 PM, still open -> overdue
+    row({ due_date: "2026-09-16T03:00:00Z", status: "OPEN", completed_at: null }),
+    // Due Wed noon, done Mon -> on time
+    row({ due_date: "2026-09-16T16:00:00Z", completed_at: "2026-09-14T18:48:37Z" }),
+    // Due THU 10 AM, open, nothing done -> MaintainX says ON TIME
+    row({ due_date: "2026-09-17T14:00:00Z", status: "OPEN", completed_at: null }),
+    // Due Fri 9 PM, done Mon -> on time
+    row({ due_date: "2026-09-19T01:00:00Z", completed_at: "2026-09-14T13:22:05Z" }),
+    // Due SUN 9 PM, in progress, nothing done -> MaintainX says ON TIME
+    row({ due_date: "2026-09-21T01:00:00Z", status: "IN_PROGRESS", completed_at: null })
+  ];
+
+  it("reports 5 on time and 2 overdue out of 7", async () => {
+    stubFetch(BINGHAMTON_WEEK);
+    const res = await fetchPmOnTime({ env: ENV, mxLocationIds: [1187635], now: WEDNESDAY });
+    expect(res?.overall.due).toBe(7);
+    expect(res?.overall.onTime).toBe(5);
+    expect(res?.overall.overdue).toBe(2);
+    const pct = Math.round((res!.overall.onTime / res!.overall.due) * 1000) / 10;
+    expect(pct).toBe(71.4);
+  });
+
+  it("carries the stricter completed-by-due-date figure alongside it", async () => {
+    // Only three of the seven were actually finished on time. The headline
+    // says 5 because MaintainX counts not-yet-due work as on time; this is
+    // the number that says what was really done.
+    stubFetch(BINGHAMTON_WEEK);
+    const res = await fetchPmOnTime({ env: ENV, mxLocationIds: [1187635], now: WEDNESDAY });
+    expect(res?.overall.completedOnTime).toBe(3);
+    expect(res?.overall.completed).toBe(3);
+  });
+});
+
+describe("classification", () => {
+  it("counts untouched work that is not due yet as on time", async () => {
+    // The defining oddity of the MaintainX definition, pinned deliberately so
+    // nobody "fixes" it back into disagreeing with the report.
+    stubFetch([row({ due_date: "2026-09-19T01:00:00Z", status: "OPEN", completed_at: null })]);
+    const res = await fetchPmOnTime({ env: ENV, mxLocationIds: [1187635], now: WEDNESDAY });
+    expect(res?.overall).toMatchObject({ due: 1, onTime: 1, overdue: 0, completedOnTime: 0 });
+  });
+
+  it("counts untouched work that IS past due as overdue", async () => {
+    stubFetch([row({ due_date: "2026-09-14T18:00:00Z", status: "OPEN", completed_at: null })]);
+    const res = await fetchPmOnTime({ env: ENV, mxLocationIds: [1187635], now: WEDNESDAY });
+    expect(res?.overall).toMatchObject({ due: 1, onTime: 0, overdue: 1 });
+  });
+
+  it("treats work due TODAY as not yet overdue", async () => {
+    // Due today at 9 PM, nothing done, and it is midday. Nobody is late yet.
+    stubFetch([row({ due_date: "2026-09-17T01:00:00Z", status: "OPEN", completed_at: null })]);
+    const res = await fetchPmOnTime({ env: ENV, mxLocationIds: [1187635], now: WEDNESDAY });
+    expect(res?.overall).toMatchObject({ due: 1, onTime: 1, overdue: 0 });
+  });
+
+  it("does not count a late completion as overdue, but keeps it out of completedOnTime", async () => {
+    // MaintainX's red segment is labelled "Not Done Overdue" and its counts
+    // only sum to the total if late completions sit on the green side.
+    stubFetch([row({ due_date: "2026-09-14T18:00:00Z", completed_at: "2026-09-16T14:00:00Z" })]);
+    const res = await fetchPmOnTime({ env: ENV, mxLocationIds: [1187635], now: WEDNESDAY });
+    expect(res?.overall).toMatchObject({
+      due: 1,
+      onTime: 1,
+      overdue: 0,
+      completedOnTime: 0,
+      completed: 1
+    });
+  });
+
+  it("reads the due day in Eastern when UTC has already rolled over", async () => {
+    // Due 9 PM WEDNESDAY Eastern = Thursday 01:00 UTC. In Eastern it is due
+    // today and nobody is late; a UTC reading would place it on Thursday and,
+    // at other hours of the day, on the wrong side of the line entirely.
+    stubFetch([row({ due_date: "2026-09-17T01:00:00Z", status: "OPEN", completed_at: null })]);
+    const res = await fetchPmOnTime({ env: ENV, mxLocationIds: [1187635], now: WEDNESDAY });
+    expect(res?.overall).toMatchObject({ onTime: 1, overdue: 0 });
+  });
+
+  it("scores completion on the due day as completedOnTime", async () => {
     // Due 9 PM Monday, closed out 10 PM Monday. Late by the clock, on time by
     // the day -- and the due-date pills beside this figure work in days.
-    stubFetch([
-      row({ due_date: "2026-09-15T01:00:00Z", completed_at: "2026-09-15T02:00:00Z" })
-    ]);
+    stubFetch([row({ due_date: "2026-09-15T01:00:00Z", completed_at: "2026-09-15T02:00:00Z" })]);
     const res = await fetchPmOnTime({ env: ENV, mxLocationIds: [1187635], now: WEDNESDAY });
-    expect(res?.overall).toEqual({ due: 1, onTime: 1 });
-  });
-
-  it("compares days in EASTERN, not UTC", async () => {
-    // Due 9 PM Monday Eastern (= Tuesday 01:00 UTC), completed 8 PM Monday
-    // Eastern (= Tuesday 00:00 UTC). Both are Monday in Eastern, so this is
-    // on time -- and in UTC both are Tuesday, which would ALSO read on time.
-    // The discriminating case is the next one.
-    stubFetch([
-      row({ due_date: "2026-09-15T01:00:00Z", completed_at: "2026-09-15T00:00:00Z" })
-    ]);
-    const res = await fetchPmOnTime({ env: ENV, mxLocationIds: [1187635], now: WEDNESDAY });
-    expect(res?.overall).toEqual({ due: 1, onTime: 1 });
-  });
-
-  it("catches the case UTC comparison would get wrong", async () => {
-    // Due 11 PM Monday Eastern (Tue 03:00 UTC). Completed 6 PM TUESDAY Eastern
-    // (Tue 22:00 UTC) -- a day late. In UTC both fall on Tuesday and it would
-    // score as on time; in Eastern it is Monday vs Tuesday and it is late.
-    stubFetch([
-      row({ due_date: "2026-09-15T03:00:00Z", completed_at: "2026-09-15T22:00:00Z" })
-    ]);
-    const res = await fetchPmOnTime({ env: ENV, mxLocationIds: [1187635], now: WEDNESDAY });
-    expect(res?.overall).toEqual({ due: 1, onTime: 0 });
-  });
-
-  it("counts an unfinished work order as due but not on time", async () => {
-    stubFetch([row({ status: "OPEN", completed_at: null })]);
-    const res = await fetchPmOnTime({ env: ENV, mxLocationIds: [1187635], now: WEDNESDAY });
-    expect(res?.overall).toEqual({ due: 1, onTime: 0 });
-  });
-
-  it("counts a late completion as due but not on time", async () => {
-    stubFetch([
-      row({ due_date: "2026-09-15T01:00:00Z", completed_at: "2026-09-17T14:00:00Z" })
-    ]);
-    const res = await fetchPmOnTime({ env: ENV, mxLocationIds: [1187635], now: WEDNESDAY });
-    expect(res?.overall).toEqual({ due: 1, onTime: 0 });
+    expect(res?.overall).toMatchObject({ completedOnTime: 1 });
   });
 });
 
 describe("grouping", () => {
   it("splits by location and totals across them", async () => {
     stubFetch([
-      row({ mx_location_id: 1, completed_at: "2026-09-15T01:00:00Z" }),
-      row({ mx_location_id: 1, status: "OPEN", completed_at: null }),
-      row({ mx_location_id: 2, completed_at: "2026-09-15T01:00:00Z" })
+      row({ mx_location_id: 1, completed_at: "2026-09-14T13:00:00Z" }),
+      row({
+        mx_location_id: 1,
+        due_date: "2026-09-14T18:00:00Z",
+        status: "OPEN",
+        completed_at: null
+      }),
+      row({ mx_location_id: 2, completed_at: "2026-09-14T13:00:00Z" })
     ]);
     const res = await fetchPmOnTime({ env: ENV, mxLocationIds: [1, 2], now: WEDNESDAY });
-    expect(res?.byLocation[1]).toEqual({ due: 2, onTime: 1 });
-    expect(res?.byLocation[2]).toEqual({ due: 1, onTime: 1 });
-    expect(res?.overall).toEqual({ due: 3, onTime: 2 });
+    expect(res?.byLocation[1]).toMatchObject({ due: 2, onTime: 1, overdue: 1 });
+    expect(res?.byLocation[2]).toMatchObject({ due: 1, onTime: 1, overdue: 0 });
+    expect(res?.overall).toMatchObject({ due: 3, onTime: 2, overdue: 1 });
   });
 
   it("omits a location with nothing due rather than reporting it as zero", async () => {
@@ -166,13 +217,8 @@ describe("grouping", () => {
 
 describe("failure", () => {
   it("returns null on a non-2xx rather than throwing", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () => new Response("boom", { status: 500 }))
-    );
-    expect(
-      await fetchPmOnTime({ env: ENV, mxLocationIds: [1], now: WEDNESDAY })
-    ).toBeNull();
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("boom", { status: 500 })));
+    expect(await fetchPmOnTime({ env: ENV, mxLocationIds: [1], now: WEDNESDAY })).toBeNull();
   });
 
   it("returns null when the fetch throws rather than failing the page", async () => {
@@ -184,8 +230,6 @@ describe("failure", () => {
         throw new Error("network down");
       })
     );
-    expect(
-      await fetchPmOnTime({ env: ENV, mxLocationIds: [1], now: WEDNESDAY })
-    ).toBeNull();
+    expect(await fetchPmOnTime({ env: ENV, mxLocationIds: [1], now: WEDNESDAY })).toBeNull();
   });
 });

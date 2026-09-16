@@ -670,7 +670,7 @@ function countRecentlyOverdue(workOrders: WorkOrderItem[], now: number): number 
  */
 function PmOnTimeSummary({ pmOnTime }: { pmOnTime: PmOnTime }) {
   if (pmOnTime.overall.due === 0) return null;
-  const { onTime, due } = pmOnTime.overall;
+  const { onTime, due, overdue, completedOnTime } = pmOnTime.overall;
   const weekLabel = new Date(pmOnTime.weekStartIso).toLocaleDateString("en-US", {
     timeZone: "America/New_York",
     month: "short",
@@ -678,32 +678,45 @@ function PmOnTimeSummary({ pmOnTime }: { pmOnTime: PmOnTime }) {
   });
 
   return (
-    <div className="mb-4 flex flex-wrap items-center gap-x-2 gap-y-1 rounded-splash-md border border-gray-light bg-white px-3 py-2 text-sm">
-      <span className="font-semibold text-splash-navy">Preventative on time</span>
-      <OnTimePill bucket={pmOnTime.overall} />
-      <span className="text-xs text-gray-500">
-        {onTime} of {due} due so far this week (from Mon {weekLabel})
-      </span>
+    <div className="mb-4 rounded-splash-md border border-gray-light bg-white px-3 py-2 text-sm">
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+        <span className="font-semibold text-splash-navy">Preventative on time</span>
+        <OnTimePill bucket={pmOnTime.overall} />
+        <span className="text-xs text-gray-500">
+          {onTime} of {due} due this week (from Mon {weekLabel})
+          {overdue > 0 ? ` · ${overdue} overdue` : ""}
+        </span>
+      </div>
+      {/* Said plainly rather than hidden in a tooltip, because the headline
+          counts work that simply is not due yet and a reader who does not know
+          that will over-read a high number early in the week. */}
+      <div className="pt-0.5 text-xs text-gray-500">
+        Matches the MaintainX report, which counts work not yet due as on time.
+        Completed by their due date so far: {completedOnTime} of {due}.
+      </div>
     </div>
   );
 }
 
 /**
- * Current-week preventive on-time rate.
+ * Current-week preventive on-time rate, matching MaintainX's "On Time vs.
+ * Overdue" report so the two screens agree.
  *
- * Rendered only when something was actually due: a site with no PM scheduled
- * this week has no rate, and "0%" would accuse it of failing at nothing. The
- * denominator is carried in the tooltip because a bare percentage over a small
- * denominator invites over-reading -- 2 of 3 is 67% and means very little.
+ * MaintainX counts work that is not due YET as on time, so this figure starts
+ * each Monday near 100% and falls as the week runs. The tooltip carries the
+ * stricter completed-by-due-date count, which is the one to read if the
+ * question is what actually got done.
  *
- * Colour thresholds sit at 90 and 75. MEASURED, the account has run 77-84%
- * week over week for nine weeks, so amber is the normal condition and green is
- * genuinely better than usual. Tinting the typical week red would train people
- * to ignore the colour within a fortnight.
+ * Rendered only when something was due: a site with no PM scheduled this week
+ * has no rate, and "0%" would accuse it of failing at nothing.
+ *
+ * Colour thresholds sit at 90 and 75. Under this definition a healthy week
+ * sits high, so amber means something is already late and red means several
+ * things are.
  */
 function OnTimePill({ bucket }: { bucket: PmOnTimeBucket }) {
   if (bucket.due === 0) return null;
-  const pct = Math.round((bucket.onTime / bucket.due) * 100);
+  const pct = Math.round((bucket.onTime / bucket.due) * 1000) / 10;
   const tone =
     pct >= 90
       ? "bg-emerald-100 text-emerald-800"
@@ -713,7 +726,12 @@ function OnTimePill({ bucket }: { bucket: PmOnTimeBucket }) {
   return (
     <span
       className={`ml-1 inline-block rounded-full px-2 text-[11px] font-semibold ${tone}`}
-      title={`${bucket.onTime} of ${bucket.due} preventative work orders due so far this week (Mon-Sun) were completed on or before their due date`}
+      title={
+        `${bucket.onTime} of ${bucket.due} preventative work orders due this week (Mon-Sun) are not overdue` +
+        ` -- ${bucket.overdue} past due and not done.` +
+        ` Matches the MaintainX On Time vs. Overdue report, which counts work not yet due as on time.` +
+        ` Actually completed by their due date so far: ${bucket.completedOnTime} of ${bucket.due}.`
+      }
     >
       {pct}% on time
     </span>

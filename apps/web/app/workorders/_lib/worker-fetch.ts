@@ -182,10 +182,18 @@ export interface WorkOrdersListResponse {
 }
 
 export interface PmOnTimeBucket {
-  /** Preventive work orders whose due date has passed since Monday. */
+  /** Every preventive work order due this Mon-Sun week. */
   due: number;
-  /** Of those, completed on or before their due day. */
+  /** MaintainX's sense: not currently overdue. Counts work that is not due
+   *  yet, even untouched. This is the headline, chosen to agree with the
+   *  MaintainX report operators check against. */
   onTime: number;
+  /** Past its due day and not done. `onTime + overdue === due`. */
+  overdue: number;
+  /** The stricter reading: actually finished on or before its due day. */
+  completedOnTime: number;
+  /** Finished at all, on time or late. */
+  completed: number;
 }
 
 export interface PmOnTime {
