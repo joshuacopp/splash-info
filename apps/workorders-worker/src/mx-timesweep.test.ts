@@ -168,9 +168,11 @@ describe("runMxTimeSweep behaviour", () => {
     expect(result.refetched).toBe(1);
   });
 
-  it("stands down while the backfill walk is mid-cursor", async () => {
+  it("stands down while a HEALTHY backfill walk is mid-cursor", async () => {
     const calls = stubFetch({
-      syncState: [{ key: "work_orders_live", cursor: "abc", last_success_at: null }]
+      syncState: [
+        { key: "work_orders_live", cursor: "abc", last_success_at: "2026-09-16T00:00:00Z", last_status: "OK" }
+      ]
     });
     const result = await runMxTimeSweep(ENV);
 
@@ -178,14 +180,64 @@ describe("runMxTimeSweep behaviour", () => {
     expect(processWorkOrder).not.toHaveBeenCalled();
     // And it did not even ask for candidates -- the walk in progress is
     // already re-reading these rows.
-    expect(calls.some((c) => c.url.includes("/mx_work_order"))).toBe(false);
+    expect(calls.some((c) => c.url.includes("/mx_work_order") && c.method === "GET")).toBe(false);
+  });
+
+  it("does NOT stand down for a live pass that is stuck in ERROR", async () => {
+    // The regression this pins shipped and had to be fixed the same day.
+    // Measured 2026-09-16: work_orders_live had held a cursor with
+    // last_success_at NULL and last_status ERROR since the mirror went live,
+    // failing the same attachments 21000 every five minutes and keeping its
+    // cursor. Deferring on `cursor` alone therefore meant this sweep would
+    // never run -- not once, ever -- and would leave no trace saying so.
+    //
+    // A pass that has never succeeded must not be able to disable a different
+    // pass as a side effect of its own breakage.
+    stubFetch({
+      syncState: [
+        {
+          key: "work_orders_live",
+          cursor: "2026-08-31T18:00:05.998Z|x|160886",
+          last_success_at: null,
+          last_status: "ERROR"
+        }
+      ],
+      candidates: [{ id: 1, synced_at: null }]
+    });
+    processWorkOrder.mockResolvedValue({ ok: true, detail: "ok" });
+
+    const result = await runMxTimeSweep(ENV);
+
+    expect(result.skipped).toBeNull();
+    expect(result.refetched).toBe(1);
+  });
+
+  it("records every stand-down, so 'skipping forever' cannot look like 'never deployed'", async () => {
+    // Both produce a sweep that does nothing. Without a row they are
+    // indistinguishable from mx_sync_state, which is exactly how the
+    // permanent stand-down above went unnoticed until someone went looking
+    // for a different thing.
+    const calls = stubFetch({
+      syncState: [
+        { key: "work_orders_live", cursor: "abc", last_success_at: "2026-09-16T00:00:00Z", last_status: "OK" }
+      ]
+    });
+    await runMxTimeSweep(ENV);
+
+    const state = calls.find((c) => c.url.includes("/mx_sync_state") && c.method === "POST");
+    expect(state).toBeDefined();
+    const row = (state!.body as Array<{ key: string; stats: { skipped: string | null } }>)[0];
+    expect(row?.key).toBe(MX_PASS_TIMESWEEP);
+    expect(row?.stats.skipped).toBe("live pass is mid-walk");
   });
 
   it("stands down with a reason when the API key is unbound", async () => {
-    stubFetch({ candidates: [{ id: 1, synced_at: null }] });
+    const calls = stubFetch({ candidates: [{ id: 1, synced_at: null }] });
     const result = await runMxTimeSweep({ ...ENV, MAINTAINX_API_KEY: undefined } as Env);
     expect(result.skipped).toBe("MAINTAINX_API_KEY not bound");
     expect(processWorkOrder).not.toHaveBeenCalled();
+    // Recorded, for the same reason as the stand-down above.
+    expect(calls.some((c) => c.url.includes("/mx_sync_state") && c.method === "POST")).toBe(true);
   });
 
   it("reports a failed candidate query instead of looking like an empty pass", async () => {

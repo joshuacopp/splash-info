@@ -187,16 +187,34 @@ export async function runMxTimeSweep(env: MxTimeSweepEnv): Promise<TimeSweepResu
   };
 
   if (!env.MAINTAINX_API_KEY) {
-    return { ...empty, skipped: "MAINTAINX_API_KEY not bound" };
+    return stoodDown(env, empty, startedAt, "MAINTAINX_API_KEY not bound");
   }
 
-  // Deliberately behind the backfill. While the initial walk is still running
-  // it is already re-reading everything, including the rows this would pick,
-  // and competing with it for the tick's budget would slow the thing that
-  // finishes down for the benefit of the thing that never does.
+  // Stand behind a backfill that is actually getting somewhere. While a real
+  // initial walk is running it is already re-reading the rows this would pick,
+  // and competing for the tick's budget would slow the pass that finishes for
+  // the benefit of the one that never does.
+  //
+  // "ACTUALLY GETTING SOMEWHERE" IS THE WHOLE OF IT, and the first version of
+  // this check left it out. It deferred on `cursor` alone, which read as
+  // ordinary politeness and was a permanent shutdown: measured 2026-09-16,
+  // work_orders_live has held cursor "2026-08-31T18:00:05.998Z|..." with
+  // last_success_at NULL and last_status ERROR since the mirror went live,
+  // failing the same attachments 21000 every five minutes and keeping its
+  // cursor each time. A pass that has never once succeeded would have held
+  // this one down forever, silently, and the only symptom would have been a
+  // table that never filled.
+  //
+  // (The same condition in mx-reconcile.ts is doing exactly that to the daily
+  // reconciliation right now. That one is not ours to fix here, but it is the
+  // same trap and it is worth knowing the shape of it.)
+  //
+  // So: defer only to a mid-walk pass that is not currently failing. A pass in
+  // ERROR is not making progress and must not be able to disable a different
+  // pass as a side effect of its own breakage.
   const live = await getMxSyncState(env, MX_PASS_LIVE);
-  if (live.ok && live.state?.cursor) {
-    return { ...empty, skipped: "live pass is mid-walk" };
+  if (live.ok && live.state?.cursor && live.state.last_status !== "ERROR") {
+    return stoodDown(env, empty, startedAt, "live pass is mid-walk");
   }
 
   const candidates = await selectCandidates(env, WORK_ORDERS_PER_PASS);
@@ -237,6 +255,30 @@ export async function runMxTimeSweep(env: MxTimeSweepEnv): Promise<TimeSweepResu
   return result;
 }
 
+/**
+ * Record a pass that declined to run, and return the result.
+ *
+ * EVERY exit path goes through recordPass, including the ones that do nothing.
+ * The first version returned early on the stand-down branches without writing,
+ * which meant a sweep that stood down forever left NO row in mx_sync_state at
+ * all -- and "no row" is what a sweep that was never deployed looks like too.
+ * The two were indistinguishable from the table, which is how the permanent
+ * stand-down above nearly went unnoticed.
+ *
+ * A skip is not a failure, so last_status stays OK and last_error stays null;
+ * the reason lives in stats.skipped, where a human reading the row can see
+ * both that it ran and why it did nothing.
+ */
+function stoodDown(
+  env: MxTimeSweepEnv,
+  empty: TimeSweepResult,
+  startedAt: number,
+  reason: string
+): Promise<TimeSweepResult> {
+  const result = { ...empty, skipped: reason };
+  return recordPass(env, result, startedAt, null).then(() => result);
+}
+
 /** Bookkeeping, so "is the sweep running, and is it getting anywhere" is
  *  answerable from the table rather than from log retention. Best-effort:
  *  a failed write here must not make a completed pass look like it failed. */
@@ -257,6 +299,9 @@ async function recordPass(
       refetched: result.refetched,
       failed: result.failed,
       budget_hit: result.budgetHit,
+      // Present and null on a normal pass, so a stand-down is a value change
+      // rather than an absent key someone has to notice is missing.
+      skipped: result.skipped,
       elapsed_ms: Date.now() - startedAt
     }
   }).catch(() => {
