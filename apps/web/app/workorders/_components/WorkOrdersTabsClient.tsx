@@ -489,7 +489,7 @@ function LocationBlock({
   // the rows it sits above.
   const now = useMemo(() => Date.now(), []);
   const overdueCount = useMemo(
-    () => countLongOverdue(block.preventive, now),
+    () => countRecentlyOverdue(block.preventive, now),
     [block.preventive, now]
   );
 
@@ -617,20 +617,28 @@ function CollapsibleSection({
   );
 }
 
-/** Preventative work overdue by more than a week, per location.
+/** Preventative work that went overdue within the last week, per location.
  *
- *  The threshold is what makes this worth showing. Preventative work orders
- *  are overdue constantly and by a day or two routinely, so a plain overdue
- *  count would be large at every site on every page load and would be ignored
- *  within a week. A week past due is the point at which it has been skipped
- *  rather than delayed. */
-const OVERDUE_BADGE_DAYS = 7;
+ *  WHY THIS IS A WINDOW AND NOT A FLOOR
+ *
+ *  Preventative work orders RECUR. A daily task sitting 17 days past due is
+ *  not seventeen days of accumulated backlog -- it is one row that should have
+ *  been regenerated and was not, and counting it says nothing about whether
+ *  the site is keeping up. Deep-overdue PM is a data artifact, and mixing
+ *  artifacts into an operational count makes the count untrustworthy in the
+ *  exact situation it exists to flag.
+ *
+ *  So the badge answers "what fell behind this week", where every row it
+ *  counts is still plausibly actionable. Anything older is excluded
+ *  deliberately, not overlooked -- it is visible on the rows themselves, which
+ *  carry the real figure. */
+const OVERDUE_WINDOW_DAYS = 7;
 
-function countLongOverdue(workOrders: WorkOrderItem[], now: number): number {
+function countRecentlyOverdue(workOrders: WorkOrderItem[], now: number): number {
   let n = 0;
   for (const wo of workOrders) {
     const days = overdueDays(wo.dueDate, now);
-    if (days !== null && days > OVERDUE_BADGE_DAYS) n += 1;
+    if (days !== null && days > 0 && days <= OVERDUE_WINDOW_DAYS) n += 1;
   }
   return n;
 }
@@ -639,9 +647,9 @@ function OverduePill({ count }: { count: number }) {
   return (
     <span
       className="ml-1 inline-block rounded-full bg-red-100 px-2 text-[11px] font-semibold text-red-800"
-      title={`${count} preventative work order${count === 1 ? "" : "s"} more than ${OVERDUE_BADGE_DAYS} days past due`}
+      title={`${count} preventative work order${count === 1 ? "" : "s"} went overdue in the last ${OVERDUE_WINDOW_DAYS} days. Older overdue rows are excluded -- on recurring work they are usually stale rows rather than real backlog.`}
     >
-      {count} overdue 7+ days
+      {count} overdue past 7 days
     </span>
   );
 }
