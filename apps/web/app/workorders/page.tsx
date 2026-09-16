@@ -64,6 +64,7 @@ function Body({ data }: { data: WorkOrdersListResponse }) {
       mappedLocationCount={data.mappedLocationCount}
       accessibleLocations={data.accessibleLocations}
       currentUser={data.currentUser}
+      pmOnTime={data.pmOnTime ?? null}
     />
   );
 }

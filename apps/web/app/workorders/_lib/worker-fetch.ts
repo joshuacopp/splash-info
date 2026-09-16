@@ -175,6 +175,27 @@ export interface WorkOrdersListResponse {
   /** Brief 74 additions — populated for the New Request tab. */
   accessibleLocations: AccessibleLocation[];
   currentUser: WorkOrdersCurrentUser;
+  /** Current-week preventive on-time rate. Null when the worker could not
+   *  answer — the MaintainX read path has no access to completed work orders,
+   *  so it never populates this. Render nothing rather than a zero. */
+  pmOnTime: PmOnTime | null;
+}
+
+export interface PmOnTimeBucket {
+  /** Preventive work orders whose due date has passed since Monday. */
+  due: number;
+  /** Of those, completed on or before their due day. */
+  onTime: number;
+}
+
+export interface PmOnTime {
+  /** Keyed by MaintainX location id, as a string once it crosses JSON. A
+   *  location with nothing due this week is ABSENT, not zero — "none was due"
+   *  and "none was done on time" must not render alike. */
+  byLocation: Record<string, PmOnTimeBucket>;
+  overall: PmOnTimeBucket;
+  weekStartIso: string;
+  throughIso: string;
 }
 
 export type WorkOrdersListResult =

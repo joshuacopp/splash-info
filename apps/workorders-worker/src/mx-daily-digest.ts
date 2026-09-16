@@ -38,6 +38,7 @@ import {
   type SupabaseEnv
 } from "@splash/db-supabase";
 import { renderDailyDigestEmail, type DigestSite, type DigestWorkOrder } from "./mx-digest-render.js";
+import { easternDayStartOf } from "./eastern-time.js";
 
 /** MaintainX location ids for the trial sites. Resolved 2026-09-15 from
  *  `locations`; none of them carry alias ids, so the canonical id is the whole
@@ -72,40 +73,8 @@ export interface DigestResult {
  * Eastern-time day boundaries
  * ============================================================ */
 
-const EASTERN_PARTS = new Intl.DateTimeFormat("en-US", {
-  timeZone: "America/New_York",
-  year: "numeric",
-  month: "2-digit",
-  day: "2-digit",
-  timeZoneName: "longOffset"
-});
-
-/** The UTC offset in force at `at`, as "-04:00" / "-05:00". Read from the
- *  platform's tz database rather than a rule of our own -- hardcoding -04:00 is
- *  wrong for four months of the year. */
-function easternOffsetAt(at: Date): string {
-  const parts = new Map(EASTERN_PARTS.formatToParts(at).map((p) => [p.type, p.value]));
-  return (parts.get("timeZoneName") ?? "GMT+00:00").replace("GMT", "") || "+00:00";
-}
-
-/**
- * Eastern-day start for the day CONTAINING `at`, as an ISO instant.
- *
- * The offset has to be the one in force AT MIDNIGHT, which is not necessarily
- * the one in force at `at`: on the two changeover days a year they differ, and
- * using the wrong one puts the boundary an hour into the neighbouring day. So
- * the first offset is only a guess, and the second read -- taken at the instant
- * the guess produced -- is the one that decides. A second pass is enough: after
- * it, the offset used and the offset in force at the result agree.
- */
-function easternDayStartOf(at: Date): string {
-  const parts = new Map(EASTERN_PARTS.formatToParts(at).map((p) => [p.type, p.value]));
-  const ymd = `${parts.get("year")}-${parts.get("month")}-${parts.get("day")}`;
-
-  const guess = new Date(`${ymd}T00:00:00${easternOffsetAt(at)}`);
-  const settled = new Date(`${ymd}T00:00:00${easternOffsetAt(guess)}`);
-  return settled.toISOString();
-}
+// Boundaries live in eastern-time.ts so the digest, the due-date pills and the
+// on-time percentage cannot disagree about when a day starts.
 
 /**
  * The Eastern calendar day that has just ENDED, as a closed window.

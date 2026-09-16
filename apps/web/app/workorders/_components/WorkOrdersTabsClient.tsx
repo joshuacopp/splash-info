@@ -50,7 +50,9 @@ import type {
   WorkOrdersCurrentUser,
   WorkOrdersGroup,
   WorkRequestItem,
-  WorkRequestsGroup
+  WorkRequestsGroup,
+  PmOnTime,
+  PmOnTimeBucket
 } from "../_lib/worker-fetch";
 
 interface Props {
@@ -67,6 +69,9 @@ interface Props {
   /** Brief 74 — passed through to the New Request form. */
   accessibleLocations: AccessibleLocation[];
   currentUser: WorkOrdersCurrentUser;
+  /** Current-week preventive on-time rate. Null on the MaintainX read path,
+   *  which cannot see completed work orders. */
+  pmOnTime: PmOnTime | null;
 }
 
 // Brief 81 — the page is now location-first: one block per location, each
@@ -296,6 +301,8 @@ export function WorkOrdersTabsClient(props: Props) {
         </button>
       </div>
 
+      {props.pmOnTime ? <PmOnTimeSummary pmOnTime={props.pmOnTime} /> : null}
+
       {props.truncated ? <TruncatedNotice /> : null}
       {props.requestsTruncated ? <RequestsTruncatedNotice /> : null}
 
@@ -313,6 +320,7 @@ export function WorkOrdersTabsClient(props: Props) {
             expanded={expanded}
             onToggle={toggle}
             onNewRequest={openNewRequest}
+            onTime={props.pmOnTime?.byLocation[String(block.maintainx_id)] ?? null}
           />
         ))
       )}
@@ -476,12 +484,16 @@ function LocationBlock({
   block,
   expanded,
   onToggle,
-  onNewRequest
+  onNewRequest,
+  onTime
 }: {
   block: LocationBlockData;
   expanded: Set<string>;
   onToggle: (id: number) => void;
   onNewRequest: (locationId: number | null) => void;
+  /** This location's current-week preventive on-time bucket, or null when
+   *  nothing was due or the worker could not answer. */
+  onTime: PmOnTimeBucket | null;
 }) {
   // Pinned once per mount rather than read at each call site, so every row and
   // badge in this block is measured against the same instant -- a page left
@@ -526,7 +538,12 @@ function LocationBlock({
           title="Preventative"
           count={block.preventive.length}
           defaultOpen={false}
-          badge={overdueCount > 0 ? <OverduePill count={overdueCount} /> : undefined}
+          badge={
+            <>
+              {overdueCount > 0 ? <OverduePill count={overdueCount} /> : null}
+              {onTime ? <OnTimePill bucket={onTime} /> : null}
+            </>
+          }
         >
           <WorkOrderTable
             workOrders={block.preventive}
@@ -641,6 +658,66 @@ function countRecentlyOverdue(workOrders: WorkOrderItem[], now: number): number 
     if (days !== null && days > 0 && days <= OVERDUE_WINDOW_DAYS) n += 1;
   }
   return n;
+}
+
+/**
+ * Roll-up across every location the operator can see.
+ *
+ * Deliberately shows the raw counts next to the percentage. A single-site
+ * manager's week can be 4 work orders, where one slip is 25 points -- the
+ * percentage alone would read as a collapse. The counts make the weight of the
+ * number visible without needing a footnote.
+ */
+function PmOnTimeSummary({ pmOnTime }: { pmOnTime: PmOnTime }) {
+  if (pmOnTime.overall.due === 0) return null;
+  const { onTime, due } = pmOnTime.overall;
+  const weekLabel = new Date(pmOnTime.weekStartIso).toLocaleDateString("en-US", {
+    timeZone: "America/New_York",
+    month: "short",
+    day: "numeric"
+  });
+
+  return (
+    <div className="mb-4 flex flex-wrap items-center gap-x-2 gap-y-1 rounded-splash-md border border-gray-light bg-white px-3 py-2 text-sm">
+      <span className="font-semibold text-splash-navy">Preventative on time</span>
+      <OnTimePill bucket={pmOnTime.overall} />
+      <span className="text-xs text-gray-500">
+        {onTime} of {due} due so far this week (from Mon {weekLabel})
+      </span>
+    </div>
+  );
+}
+
+/**
+ * Current-week preventive on-time rate.
+ *
+ * Rendered only when something was actually due: a site with no PM scheduled
+ * this week has no rate, and "0%" would accuse it of failing at nothing. The
+ * denominator is carried in the tooltip because a bare percentage over a small
+ * denominator invites over-reading -- 2 of 3 is 67% and means very little.
+ *
+ * Colour thresholds sit at 90 and 75. MEASURED, the account has run 77-84%
+ * week over week for nine weeks, so amber is the normal condition and green is
+ * genuinely better than usual. Tinting the typical week red would train people
+ * to ignore the colour within a fortnight.
+ */
+function OnTimePill({ bucket }: { bucket: PmOnTimeBucket }) {
+  if (bucket.due === 0) return null;
+  const pct = Math.round((bucket.onTime / bucket.due) * 100);
+  const tone =
+    pct >= 90
+      ? "bg-emerald-100 text-emerald-800"
+      : pct >= 75
+        ? "bg-amber-100 text-amber-800"
+        : "bg-red-100 text-red-800";
+  return (
+    <span
+      className={`ml-1 inline-block rounded-full px-2 text-[11px] font-semibold ${tone}`}
+      title={`${bucket.onTime} of ${bucket.due} preventative work orders due so far this week (Mon-Sun) were completed on or before their due date`}
+    >
+      {pct}% on time
+    </span>
+  );
 }
 
 function OverduePill({ count }: { count: number }) {

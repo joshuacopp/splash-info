@@ -65,6 +65,7 @@ import {
 import { runMxReconcile } from "./mx-reconcile.js";
 import { runMxAttachmentMirror } from "./mx-attachments.js";
 import { runMxDailyDigest } from "./mx-daily-digest.js";
+import { fetchPmOnTime, type PmOnTimeResult } from "./mx-pm-ontime.js";
 import { handlePartsRequest } from "./parts.js";
 import { runMaintainXUserTeamSync, type SyncResult } from "./sync.js";
 
@@ -337,6 +338,11 @@ interface ListResponse {
    *  response can be attributed during the Postgres cutover -- without it,
    *  "did this come from the mirror?" is unanswerable from the payload. */
   source: ReadSource;
+  /** Current-week preventive on-time rate, per location and overall. Null when
+   *  the mirror could not answer, or on the MaintainX read path, which has no
+   *  access to completed work orders -- the page renders nothing rather than
+   *  an invented figure. */
+  pmOnTime: PmOnTimeResult | null;
 }
 
 /* ============================================================
@@ -746,7 +752,10 @@ async function handleList(
       email,
       accessibleLocations: buildAccessibleLocations(accessible, new Map()),
       currentUser,
-      source
+      source,
+      // No locations means no denominator. Null, not a zeroed bucket -- a
+      // caller cannot tell 0/0 from "we failed to look" once it is rendered.
+      pmOnTime: null
     } satisfies ListResponse);
   }
 
@@ -949,8 +958,16 @@ async function handleList(
     requestAttachmentsById
   );
 
+  // Only the mirror can answer this: it needs COMPLETED work orders, which the
+  // MaintainX list path does not fetch. Fail-soft -- a null here costs a
+  // percentage, an exception would cost the whole list.
+  const pmOnTime =
+    source === "postgres"
+      ? await fetchPmOnTime({ env, mxLocationIds: mappedMxIds })
+      : null;
+
   console.log(
-    `workorders-worker list: source=${source} email=${email} mappedMxIds=${mappedMxIds.length} paginate=${shouldPaginate} pageCount=${result.pageCount} workOrders=${result.workOrders.length} truncated=${result.truncated} droppedOverduePreventive=${buckets.droppedOverduePreventive} requestsOk=${requestsResult.ok} requestsPageCount=${requestsResult.pageCount} requestsFetched=${requestsResult.workRequests.length} requestsVisible=${visibleRequests.length} requestsTruncated=${requestsResult.truncated}`
+    `workorders-worker list: source=${source} email=${email} mappedMxIds=${mappedMxIds.length} paginate=${shouldPaginate} pageCount=${result.pageCount} workOrders=${result.workOrders.length} truncated=${result.truncated} droppedOverduePreventive=${buckets.droppedOverduePreventive} requestsOk=${requestsResult.ok} requestsPageCount=${requestsResult.pageCount} requestsFetched=${requestsResult.workRequests.length} requestsVisible=${visibleRequests.length} requestsTruncated=${requestsResult.truncated} pmOnTime=${pmOnTime ? `${pmOnTime.overall.onTime}/${pmOnTime.overall.due}` : "null"}`
   );
 
   return json({
@@ -966,7 +983,8 @@ async function handleList(
     email,
     accessibleLocations: buildAccessibleLocations(accessible, mxNamesByLocId),
     currentUser,
-    source
+    source,
+    pmOnTime
   } satisfies ListResponse);
 }
 

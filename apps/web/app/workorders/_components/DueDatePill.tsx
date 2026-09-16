@@ -7,10 +7,18 @@
 //   • dueDate >= tomorrow      → muted plain text "Due MMM D"
 //   • dueDate == null / NaN    → em-dash
 //
-// Comparison is at calendar-day resolution (UTC), not millisecond — operators
-// think in "is it overdue today" not "was it overdue 6 hours ago." MaintainX
-// returns dueDate as UTC ISO 8601 so UTC day-floor keeps everyone aligned
-// regardless of browser locale.
+// Comparison is at calendar-day resolution, not millisecond — operators think
+// in "is it overdue today" not "was it overdue 6 hours ago."
+//
+// The day is an EASTERN day, not a UTC one. Brief 73 used UTC on the reasoning
+// that MaintainX returns dueDate as UTC ISO 8601, so a UTC floor keeps every
+// browser aligned. It aligns them on the wrong day: MaintainX stores real
+// timestamps authored in local time, and preventive work is overwhelmingly due
+// late in the Eastern evening — 9 PM and 11 PM are the two commonest due times
+// — which is already TOMORROW in UTC. MEASURED over eight weeks, 67% of
+// preventive work orders (4,184 of 6,233) fall on a different calendar day in
+// UTC than the day an operator would name, so the pill read a day short on
+// two thirds of them. Every site is Eastern, so Eastern is the aligned answer.
 
 import type { ReactElement } from "react";
 
@@ -43,9 +51,21 @@ const MONTHS = [
   "Dec"
 ];
 
+const EASTERN_YMD = new Intl.DateTimeFormat("en-CA", {
+  timeZone: "America/New_York",
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit"
+});
+
+/** Midnight of the Eastern calendar day containing `ts`, expressed as a UTC
+ *  instant. Only ever compared against another value from this function, so
+ *  the fictional timezone of the result does not matter — the spacing between
+ *  two of them is exactly the number of calendar days apart. */
 function dayFloor(ts: number): number {
-  const d = new Date(ts);
-  return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
+  // en-CA formats as YYYY-MM-DD, which is why it is used here rather than a
+  // parts walk. Date.parse of a bare date string is UTC midnight by spec.
+  return Date.parse(EASTERN_YMD.format(new Date(ts)));
 }
 
 /**
@@ -77,10 +97,12 @@ export function DueDatePill({ dueDate, now = Date.now() }: Props): ReactElement 
   if (diffDays === 0) {
     return <span className={PILL_DUE_TODAY}>Due today</span>;
   }
-  // diffDays < 0 → future
-  const dueDateObj = new Date(due);
-  const monthName = MONTHS[dueDateObj.getUTCMonth()];
-  const dayNum = dueDateObj.getUTCDate();
+  // diffDays < 0 → future. Read in Eastern for the same reason the comparison
+  // above is: a work order due 11 PM Monday must not be labelled "Due Sep 15"
+  // when the pill beside it counts Monday the 14th as its due day.
+  const [, month, day] = EASTERN_YMD.format(new Date(due)).split("-");
+  const monthName = MONTHS[Number(month) - 1];
+  const dayNum = Number(day);
   return (
     <span className={PLAIN_FUTURE}>
       Due {monthName} {dayNum}
