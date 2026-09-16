@@ -322,12 +322,33 @@ export function mapWorkOrder(
     synced_at: syncedAt
   };
 
-  const attachments = mapAttachments(
-    { work_order_id: id },
-    asArray(bag.attachments),
-    bag.thumbnail,
-    syncedAt
-  );
+  // PREVENTIVE work orders contribute no attachment rows. Operator decision,
+  // 2026-09-16, and it is a scoping call rather than a tidy-up.
+  //
+  // Preventive work is assigned to sites and done by site staff -- 20,447 of
+  // 23,159 rows, a different population from the thirteen mechanics this
+  // tooling is about (PLAN.md §2.1). Their images are site photos: the one
+  // that froze the live walk for days was a picture of the Springfield
+  // building, reused as a cover image across four unrelated work orders there.
+  // Nothing renders them, nothing reports on them, and mirroring them into R2
+  // costs a download each.
+  //
+  // Skipping them here also removes most of the shared-id surface, since three
+  // of the four work orders on that photo were preventive. That is a
+  // consequence, not the reason -- upsertMxWorkOrderAttachments de-dupes
+  // regardless, and reactive work orders can still share an image.
+  //
+  // Reversible: delete the condition and the next sweep writes them again. The
+  // 72 preventive rows already stored are left alone; they are inert.
+  const attachments =
+    row.type === "PREVENTIVE"
+      ? []
+      : mapAttachments(
+          { work_order_id: id },
+          asArray(bag.attachments),
+          bag.thumbnail,
+          syncedAt
+        );
 
   return {
     row,

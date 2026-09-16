@@ -66,6 +66,7 @@ import { runMxReconcile } from "./mx-reconcile.js";
 import { runMxTimeSweep } from "./mx-timesweep.js";
 import { runMxAttachmentMirror } from "./mx-attachments.js";
 import { runMxDailyDigest } from "./mx-daily-digest.js";
+import { runMxIngestHealth } from "./mx-health.js";
 import { fetchPmOnTime, type PmOnTimeResult } from "./mx-pm-ontime.js";
 import { handlePartsRequest } from "./parts.js";
 import { runMaintainXUserTeamSync, type SyncResult } from "./sync.js";
@@ -110,6 +111,10 @@ interface Env extends SupabaseEnv {
   MAINTAINX_BASE_URL: string;
   /** Populated for parity with damage-worker; not consumed in v1. */
   APPS_WEB_BASE_URL: string;
+  /** Recipient of the daily ingest health alert (src/mx-health.ts). `[vars]`
+   *  entry, not a secret. Unset means the check still runs and logs but sends
+   *  nothing. */
+  INGEST_ALERT_EMAIL?: string;
   /** MaintainX webhook signing secret, returned by POST /subscriptions and
    *  re-readable from GET /subscriptions/{id}/secret.
    *  `wrangler secret put MAINTAINX_WEBHOOK_SECRET`.
@@ -573,6 +578,23 @@ export default {
         }
 
         if (cron === DAILY_DIGEST_CRON) {
+          // Health check FIRST, and in its own try. It is the cheapest thing on
+          // this tick (one SELECT) and it is the one that reports on everything
+          // else, so it must not be behind a job that can fail or run long.
+          //
+          // It exists because on 2026-09-16 work_orders_live was found stuck on
+          // one cursor since the mirror went live, taking the daily reconcile
+          // down with it. Every fact needed to notice was already in
+          // mx_sync_state; nothing read it.
+          try {
+            const health = await runMxIngestHealth(env);
+            // Always logged, healthy included -- once a day is cheap, and the
+            // absence of this line is how you notice the CHECK stopped.
+            console.log("workorders-worker mx ingest health:", JSON.stringify(health));
+          } catch (err) {
+            console.error("workorders-worker mx ingest health failed:", err);
+          }
+
           try {
             const digest = await runMxDailyDigest(env);
             // Always logged, including the nothing-happened case: this runs

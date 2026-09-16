@@ -184,6 +184,20 @@ bucket_name = "splash-workorder-files"
 [vars]
 MAINTAINX_BASE_URL = "https://api.getmaintainx.com/v1"
 APPS_WEB_BASE_URL  = "https://splashcarwashes.info"
+
+# Where the daily ingest health alert goes (src/mx-health.ts), checked on the
+# 05:00 UTC cron alongside the digest.
+#
+# Non-secret on purpose: it is diff-able, and changing it is a push rather than
+# a secret rotation. Same posture as damage-worker's INCIDENTS_EMAIL.
+#
+# Unset means the check still runs and still logs; it just sends nothing.
+#
+# It exists because work_orders_live sat in ERROR on one cursor from the day
+# the mirror went live until 2026-09-16, and silently held the daily
+# reconciliation down behind it the whole time. Everything needed to notice was
+# already in mx_sync_state and nothing was reading it.
+INGEST_ALERT_EMAIL = "josh.copp@splashcarwashes.com"
 # CUTOVER 2026-09-14: /workorders now reads the local mirror, not live
 # MaintainX calls. Roll back by commenting this line and pushing -- the
 # MaintainX path is untouched and an unset value resolves back to it.
