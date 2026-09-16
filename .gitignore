@@ -51,3 +51,11 @@ coverage/
 ~$*
 ~WRL*.tmp
 *.tmp
+
+# Maintenance-tracker planning doc. Carries the full mechanic roster (names,
+# Connecteam ids) and the appendix names the probe artifacts as name-bearing
+# too. Deliberately kept out of the repo; it was swept in once by a
+# directory-wide `git add apps/maintenance-tracker/` and had to be removed by
+# rewriting the commit. HANDOFF.md and README.md are tracked and carry no roster.
+apps/maintenance-tracker/PLAN.md
+apps/MAINTENANCE_TRACKER_PLAN.md
