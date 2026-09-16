@@ -150,9 +150,22 @@ def main():
             r["is_mechanic"] = None
             vals.append("(" + ", ".join(sql_lit(r.get(c)) for c in cols) + ")")
         print(",\n".join(vals))
+        # EVERY non-key column is refreshed, deliberately. An earlier version
+        # listed only the site-match and day-flag columns, which made a re-run
+        # silently useless for exactly the corrections most likely to need one:
+        # fix a timezone, re-export after a duration bug, re-round a coordinate,
+        # and the upsert would report success while leaving the old value in
+        # place. A partial SET list on a generated upsert is a trap -- if a
+        # column is worth writing on insert it is worth refreshing on conflict.
         print("""on conflict (shift_id) do update set
+  connecteam_user_id = excluded.connecteam_user_id,
+  start_utc = excluded.start_utc, end_utc = excluded.end_utc,
+  timezone = excluded.timezone, duration_minutes = excluded.duration_minutes,
+  source_type = excluded.source_type,
+  in_lat = excluded.in_lat, in_lon = excluded.in_lon,
   in_site_number = excluded.in_site_number, in_distance_m = excluded.in_distance_m,
   in_within_geofence = excluded.in_within_geofence,
+  out_lat = excluded.out_lat, out_lon = excluded.out_lon,
   out_site_number = excluded.out_site_number, out_distance_m = excluded.out_distance_m,
   out_within_geofence = excluded.out_within_geofence,
   is_first_of_day = excluded.is_first_of_day, is_last_of_day = excluded.is_last_of_day,

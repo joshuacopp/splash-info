@@ -9,7 +9,21 @@ the compute belongs in Redshift and the joining belongs in Supabase.
 
 ```powershell
 # dump site centres once: site_number,latitude,longitude,geofence_radius_m
-$env:SUPABASE_DB_URL = "<Supabase connection string (URI)>"
+#
+# Use the SESSION POOLER string, not the one labelled "Direct connection".
+# Supabase → Project Settings → Database → Connection string → Session pooler:
+#   postgresql://postgres.<project-ref>:<pw>@aws-1-us-east-2.pooler.supabase.com:5432/postgres
+#
+# The direct host (db.<project-ref>.supabase.co) resolves over IPv6 ONLY. On an
+# IPv4 network psql fails with "could not translate host name ... to address",
+# which reads like a typo or a dead project rather than what it is. The pooler
+# answers on IPv4. Session mode (5432) not transaction mode (6543): the generated
+# file is one BEGIN/COMMIT and session mode is the one that holds a real
+# transaction across statements.
+#
+# Region is in the hostname and the prefix is NOT always aws-0 -- this project is
+# aws-1-us-east-2. Copy the host from the dashboard rather than assuming.
+$env:SUPABASE_DB_URL = "<Supabase Session pooler connection string>"
 
 # Layer A - punch fidelity
 .\export_punches.ps1                                   # Redshift -> punches_raw.csv

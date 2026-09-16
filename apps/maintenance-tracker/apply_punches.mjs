@@ -5,9 +5,17 @@
  *   node apps/maintenance-tracker/apply_punches.mjs mt_punch.sql [--dry-run]
  *
  * Needs SUPABASE_DB_URL in the environment -- the Postgres connection string
- * from Supabase → Project Settings → Database → Connection string (URI). It is
- * NOT the service-role key: this runs real SQL, not PostgREST calls, because a
- * 2,700-row upsert through the REST API would be thousands of round trips.
+ * from Supabase → Project Settings → Database → Connection string. Take the
+ * SESSION POOLER one (aws-N-<region>.pooler.supabase.com:5432), NOT the one
+ * labelled "Direct connection": db.<ref>.supabase.co resolves over IPv6 only,
+ * so on an IPv4 network it fails with "could not translate host name ... to
+ * address" -- a message that looks like a typo rather than a network-family
+ * mismatch. Port 5432 (session) not 6543 (transaction): the generated file is
+ * a single BEGIN/COMMIT.
+ *
+ * It is NOT the service-role key: this runs real SQL, not PostgREST calls,
+ * because a 2,700-row upsert through the REST API would be thousands of round
+ * trips.
  *
  * Why psql rather than a node pg client: no new dependency, and psql is
  * already a prerequisite for the export half of this pipeline.
