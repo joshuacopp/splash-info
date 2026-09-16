@@ -39,7 +39,7 @@ import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { PriorityPill } from "./PriorityPill";
 import { StatusPill } from "./StatusPill";
 import { RequestStatusPill } from "./RequestStatusPill";
-import { DueDatePill } from "./DueDatePill";
+import { DueDatePill, overdueDays } from "./DueDatePill";
 import { NewRequestForm } from "./NewRequestForm";
 import type {
   AccessibleLocation,
@@ -483,6 +483,16 @@ function LocationBlock({
   onToggle: (id: number) => void;
   onNewRequest: (locationId: number | null) => void;
 }) {
+  // Pinned once per mount rather than read at each call site, so every row and
+  // badge in this block is measured against the same instant -- a page left
+  // open across UTC midnight otherwise renders a header that disagrees with
+  // the rows it sits above.
+  const now = useMemo(() => Date.now(), []);
+  const overdueCount = useMemo(
+    () => countLongOverdue(block.preventive, now),
+    [block.preventive, now]
+  );
+
   return (
     <section className="mb-8">
       <div className="mb-3 flex items-center justify-between gap-3">
@@ -516,6 +526,7 @@ function LocationBlock({
           title="Preventative"
           count={block.preventive.length}
           defaultOpen={false}
+          badge={overdueCount > 0 ? <OverduePill count={overdueCount} /> : undefined}
         >
           <WorkOrderTable
             workOrders={block.preventive}
@@ -561,11 +572,16 @@ function CollapsibleSection({
   title,
   count,
   defaultOpen,
+  badge,
   children
 }: {
   title: string;
   count: number;
   defaultOpen: boolean;
+  /** Extra indicator beside the count, e.g. the overdue tally on Preventative.
+   *  Only rendered on a non-empty section: a section with nothing in it cannot
+   *  have anything overdue, so a badge there would be noise. */
+  badge?: ReactNode;
   children: ReactNode;
 }) {
   const [open, setOpen] = useState(defaultOpen);
@@ -594,9 +610,39 @@ function CollapsibleSection({
         <Chevron expanded={open} />
         <span className="font-semibold text-splash-navy">{title}</span>
         <CountPill count={count} />
+        {badge}
       </button>
       {open ? <div className="border-t border-gray-light">{children}</div> : null}
     </div>
+  );
+}
+
+/** Preventative work overdue by more than a week, per location.
+ *
+ *  The threshold is what makes this worth showing. Preventative work orders
+ *  are overdue constantly and by a day or two routinely, so a plain overdue
+ *  count would be large at every site on every page load and would be ignored
+ *  within a week. A week past due is the point at which it has been skipped
+ *  rather than delayed. */
+const OVERDUE_BADGE_DAYS = 7;
+
+function countLongOverdue(workOrders: WorkOrderItem[], now: number): number {
+  let n = 0;
+  for (const wo of workOrders) {
+    const days = overdueDays(wo.dueDate, now);
+    if (days !== null && days > OVERDUE_BADGE_DAYS) n += 1;
+  }
+  return n;
+}
+
+function OverduePill({ count }: { count: number }) {
+  return (
+    <span
+      className="ml-1 inline-block rounded-full bg-red-100 px-2 text-[11px] font-semibold text-red-800"
+      title={`${count} preventative work order${count === 1 ? "" : "s"} more than ${OVERDUE_BADGE_DAYS} days past due`}
+    >
+      {count} overdue 7+ days
+    </span>
   );
 }
 

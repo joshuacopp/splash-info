@@ -48,15 +48,28 @@ function dayFloor(ts: number): number {
   return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
 }
 
+/**
+ * Whole days a work order is past due: positive = overdue, 0 = due today,
+ * negative = still ahead of it. Null when there is no usable due date.
+ *
+ * Exported because the section headers count overdue work orders and the rows
+ * beneath them label each one. Two implementations of "overdue" would be two
+ * chances to disagree, and a header that contradicts the rows under it is
+ * worse than no header -- so both read this.
+ */
+export function overdueDays(dueDate: string | null, now = Date.now()): number | null {
+  if (!dueDate) return null;
+  const due = new Date(dueDate).getTime();
+  if (Number.isNaN(due)) return null;
+  return Math.floor((dayFloor(now) - dayFloor(due)) / 86_400_000);
+}
+
 export function DueDatePill({ dueDate, now = Date.now() }: Props): ReactElement {
   if (!dueDate) return <span className="text-xs text-gray-400">—</span>;
 
   const due = new Date(dueDate).getTime();
-  if (Number.isNaN(due)) return <span className="text-xs text-gray-400">—</span>;
-
-  const dueDay = dayFloor(due);
-  const nowDay = dayFloor(now);
-  const diffDays = Math.floor((nowDay - dueDay) / 86_400_000);
+  const diffDays = overdueDays(dueDate, now);
+  if (diffDays === null) return <span className="text-xs text-gray-400">—</span>;
 
   if (diffDays > 0) {
     return <span className={PILL_OVERDUE}>Overdue {diffDays}d</span>;
