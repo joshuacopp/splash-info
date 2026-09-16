@@ -446,11 +446,80 @@ export async function recordMxAttachmentMirror(
   return { ok: r.ok, status: r.status, error: r.error };
 }
 
+/**
+ * Upsert attachment metadata, collapsing repeats of the same id.
+ *
+ * WHY THE DEDUPE IS NOT OPTIONAL. One MaintainX attachment can be returned on
+ * SEVERAL work orders. Measured 2026-09-16: attachment 222410195, a photo
+ * uploaded 2026-04-18, comes back on three different Springfield work orders
+ * -- two as their `thumbnail`, one as a real attachment -- with a byte-identical
+ * payload each time.
+ *
+ * A caller batching a page of work orders therefore hands us the same id twice
+ * in one array, and Postgres refuses the whole command:
+ *
+ *   ON CONFLICT DO UPDATE command cannot affect row a second time   (21000)
+ *
+ * That is not a lost attachment, it is a lost PAGE -- and in the live walk it
+ * was a lost walk, because the pass returns the error without advancing its
+ * cursor and re-reads the identical page five minutes later, forever. It had
+ * been doing exactly that since the mirror went live, and because
+ * mx-reconcile.ts declines while the live pass is mid-cursor, it had silently
+ * taken the daily reconciliation down with it. One shared photo.
+ *
+ * WHICH DUPLICATE WINS, AND WHY IT MATTERS LESS THAN IT LOOKS. First wins,
+ * deterministically. The schema cannot express sharing -- exactly one of
+ * work_order_id / work_request_id, enforced by a CHECK -- so an attachment on
+ * three work orders has to be attributed to one of them whatever we do here.
+ * Ownership already churns across passes for that reason, independently of
+ * this function: whichever pass last saw the attachment owns it.
+ *
+ * KNOWN CONSEQUENCE, NOT FIXED HERE. The attachment serve route resolves
+ * permission through the OWNING work order's location, so a shared
+ * attachment's visibility follows whichever work order last won. Today all
+ * three Springfield work orders share one location, so nothing is reachable
+ * that was not already -- but the mechanism is order-dependent, which is a bad
+ * property for an authorization path. Modelling the relation properly (a join
+ * table, or a composite (work_order_id, id) key) is the real fix and is a
+ * decision about that path rather than a cleanup; it is deliberately left
+ * open.
+ */
 export function upsertMxWorkOrderAttachments(
   env: SupabaseWriteEnv,
   rows: MxWorkOrderAttachmentRow[]
 ): Promise<MxWriteResult> {
-  return upsertInBatches(env, "mx_work_order_attachment", "id", rows, MX_COMMENT_BATCH);
+  return upsertInBatches(
+    env,
+    "mx_work_order_attachment",
+    "id",
+    dedupeById(rows),
+    MX_COMMENT_BATCH
+  );
+}
+
+/**
+ * Collapse rows sharing an `id`, keeping the first.
+ *
+ * First rather than last on purpose: mapAttachments emits the thumbnail entry
+ * ahead of the attachments array precisely so a de-dupe keeps the one carrying
+ * `is_thumbnail: true` (see the note in mx-map.ts), and reversing that here
+ * would quietly undo it.
+ *
+ * Deliberately NOT applied inside upsertInBatches for every table. The other
+ * upserts key on ids that are unique by construction within a page, and a
+ * silent global de-dupe would hide a genuine duplicate-key bug in one of them
+ * rather than surfacing it.
+ */
+function dedupeById<T extends { id: number }>(rows: T[]): T[] {
+  if (rows.length < 2) return rows;
+  const seen = new Set<number>();
+  const out: T[] = [];
+  for (const row of rows) {
+    if (seen.has(row.id)) continue;
+    seen.add(row.id);
+    out.push(row);
+  }
+  return out;
 }
 
 /**

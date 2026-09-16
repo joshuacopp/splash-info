@@ -353,6 +353,10 @@ async function runWorkOrderPass(
    *  Only committed when the walk completes; advancing it mid-pass would
    *  permanently skip whatever the interrupted pass had not reached. */
   let maxUpdatedAt: string | null = null;
+  /** Attachment rows this run failed to write on pages that advanced anyway.
+   *  See the non-fatal branch in writeChildren for why advancing is correct
+   *  and why the count has to surface somewhere durable. */
+  let attachmentsFailed = 0;
 
   const fail = async (error: string): Promise<MxPassResult> => {
     await writeMxSyncState(env, key, {
@@ -424,6 +428,7 @@ async function runWorkOrderPass(
     });
     budget.requests += childWrite.requests;
     if (!childWrite.ok) return fail(childWrite.error ?? "child write failed");
+    attachmentsFailed += childWrite.attachmentsFailed ?? 0;
 
     rows += workOrders.length;
     pages += 1;
@@ -445,7 +450,16 @@ async function runWorkOrderPass(
       last_status: complete && pages === 1 && rows === 0 ? "EMPTY" : complete ? "OK" : "PARTIAL",
       last_error: null,
       ...(complete ? { last_success_at: now } : {}),
-      stats: { pages, rows, max_updated_at: maxUpdatedAt }
+      stats: {
+        pages,
+        rows,
+        max_updated_at: maxUpdatedAt,
+        // Present and 0 on a healthy pass, so a recurring attachment failure is
+        // a value change rather than an absent key nobody notices. Non-zero
+        // means pages advanced past metadata that did not write -- recoverable
+        // via the attachment mirror pass, but worth knowing about.
+        attachments_failed: attachmentsFailed
+      }
     });
     budget.requests += 1;
     if (!checkpoint.ok) return fail(`checkpoint: ${checkpoint.error ?? "unknown"}`);
@@ -478,7 +492,16 @@ async function writeChildren(
   pageIds: number[],
   prune: boolean,
   child: ChildRows
-): Promise<{ ok: boolean; requests: number; error: string | null }> {
+): Promise<{
+  ok: boolean;
+  requests: number;
+  error: string | null;
+  /** Attachment rows whose write failed on a page that advanced anyway. Surfaced
+   *  in the pass stats so a recurring failure is visible in mx_sync_state rather
+   *  than only in log retention. Absent on the early-return failure paths above,
+   *  which fail the page outright. */
+  attachmentsFailed?: number;
+}> {
   const scope = (rows: Array<{ work_order_id: number }>): number[] =>
     prune ? pageIds : Array.from(new Set(rows.map((r) => r.work_order_id)));
 
@@ -513,11 +536,40 @@ async function writeChildren(
     const attachWrite = await upsertMxWorkOrderAttachments(env, child.attachments);
     requests += attachWrite.requests;
     if (!attachWrite.ok) {
-      return { ok: false, requests, error: `attachments: ${attachWrite.error}` };
+      // NON-FATAL, DELIBERATELY, AND THIS IS THE IMPORTANT LINE IN THIS FILE.
+      //
+      // Until 2026-09-16 this returned an error, which failed the page, which
+      // meant the pass returned without advancing its cursor, which meant the
+      // next tick re-read the identical page and failed identically. The live
+      // walk sat on one page from the day the mirror went live -- and because
+      // mx-reconcile.ts declines while the live pass is mid-cursor, the daily
+      // reconciliation was silently off for the whole of that time too.
+      //
+      // The trigger was a duplicate attachment id inside one page batch, now
+      // de-duped in upsertMxWorkOrderAttachments. But the SHAPE of the failure
+      // is the part worth preventing: attachment metadata is the least
+      // critical thing written here, and it was able to veto the most critical
+      // -- the work orders themselves, and every pass downstream of the cursor.
+      //
+      // It is recoverable independently, which is what makes advancing safe:
+      // mx-attachments.ts writes this same metadata on its own pass, and the
+      // per-work-order paths (webhook refetch, time sweep) write it too. A
+      // page that advances past a failed attachment write loses nothing
+      // permanently.
+      //
+      // Loud rather than swallowed: the count rides back on the result so it
+      // lands in the pass's mx_sync_state stats, where a non-zero value is
+      // visible without log retention.
+      console.error(
+        `[mx-ingest] attachment write failed for ${child.attachments.length} row(s); ` +
+          `page advancing anyway (metadata is recoverable via the attachment ` +
+          `mirror pass): ${attachWrite.error}`
+      );
+      return { ok: true, requests, error: null, attachmentsFailed: child.attachments.length };
     }
   }
 
-  return { ok: true, requests, error: null };
+  return { ok: true, requests, error: null, attachmentsFailed: 0 };
 }
 
 /* ============================================================
