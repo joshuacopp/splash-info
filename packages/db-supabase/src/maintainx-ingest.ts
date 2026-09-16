@@ -453,6 +453,100 @@ export function upsertMxWorkOrderAttachments(
   return upsertInBatches(env, "mx_work_order_attachment", "id", rows, MX_COMMENT_BATCH);
 }
 
+/**
+ * One observed change to a work order, for the append-only event log.
+ *
+ * WHY THIS TABLE IS NOT LIKE THE OTHERS. Every other mirror table holds
+ * CURRENT STATE and can be rebuilt from MaintainX at any time -- a bad row is
+ * fixed by re-fetching. This one holds OBSERVATIONS, and MaintainX exposes no
+ * retroactive event history: a transition not recorded when it happened is
+ * gone for good. Nothing may overwrite a row here and nothing may skip a write
+ * because the current state is already known.
+ *
+ * `observed_at` and `occurred_at` are different instants and both matter.
+ * occurred_at is MaintainX's own timestamp for the change; observed_at is when
+ * the delivery reached us. They run about 0.2s apart in the normal case, and
+ * when they do not, the gap is the finding.
+ */
+export interface MxWorkOrderEventRow {
+  work_order_id: number;
+  /** CREATED | STATUS_CHANGE | ASSIGNEE_CHANGE | COMMENT | DELETED | CHANGE */
+  event_type: string;
+  /** WEBHOOK | SWEEP | BACKFILL */
+  source: string;
+  occurred_at?: string | null;
+  observed_at?: string;
+  old_value?: unknown;
+  new_value?: unknown;
+  /** MaintainX user id of whoever made the change. NOT an FK -- maintainx_users
+   *  is a daily-synced cache, and a user created upstream an hour ago must not
+   *  be able to take an event row down with it. */
+  actor_user_id?: number | null;
+  /** The delivery this was derived from. The dedup key: webhook delivery is
+   *  at-least-once and the drain retries, so without it a retry either
+   *  duplicates the observation or has to skip it. */
+  webhook_event_id?: string | null;
+}
+
+/**
+ * Append observations, ignoring any already recorded.
+ *
+ * `resolution=ignore-duplicates`, NOT merge-duplicates: a retry of a delivery
+ * we already folded must leave the existing row exactly as it is. Merging
+ * would rewrite observed_at on every retry and quietly move the timestamp that
+ * the whole table exists to preserve.
+ *
+ * `on_conflict` is set explicitly and must stay set. PostgREST sends
+ * ignore-duplicates as a bare ON CONFLICT DO NOTHING without it, which
+ * Postgres rejects -- surfacing as a 409 that looks like a genuine collision
+ * rather than a missing parameter. That is the Brief 133 bug verbatim
+ * (see packages/db-supabase/src/outbound-emails.ts); do not repeat it here.
+ */
+export function insertMxWorkOrderEvents(
+  env: SupabaseWriteEnv,
+  rows: MxWorkOrderEventRow[]
+): Promise<MxWriteResult> {
+  if (rows.length === 0) return Promise.resolve(emptyResult());
+  return upsertInBatchesIgnoring(
+    env,
+    "mx_work_order_event",
+    "webhook_event_id",
+    rows,
+    MX_COMMENT_BATCH
+  );
+}
+
+/** upsertInBatches' sibling for append-only tables: an existing row wins. */
+async function upsertInBatchesIgnoring(
+  env: SupabaseWriteEnv,
+  table: string,
+  onConflict: string,
+  rows: unknown[],
+  batchSize: number
+): Promise<MxWriteResult> {
+  if (rows.length === 0) return emptyResult();
+
+  let written = 0;
+  let requests = 0;
+  let status = 0;
+
+  for (let i = 0; i < rows.length; i += batchSize) {
+    const chunk = rows.slice(i, i + batchSize);
+    const r = await rest(env, "POST", table, { on_conflict: onConflict }, {
+      body: chunk,
+      prefer: "resolution=ignore-duplicates,return=minimal"
+    });
+    requests += 1;
+    status = r.status;
+    if (!r.ok) return { ok: false, written, requests, status, error: r.error };
+    // Rows already present are counted as written: the postcondition callers
+    // care about is "this observation is in the table", and it is.
+    written += chunk.length;
+  }
+
+  return { ok: true, written, requests, status, error: null };
+}
+
 // ---------------------------------------------------------------------------
 // 2. Parts: stable composite key, so upsert then prune
 // ---------------------------------------------------------------------------

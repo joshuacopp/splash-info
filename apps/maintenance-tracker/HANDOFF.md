@@ -21,9 +21,22 @@ The MaintainX mirror is live and webhook-driven. **Do not rebuild it.** It lives
 - `src/mx-webhook-verify.ts` — signature verification
 - `src/mx-webhook-drain.ts`, `src/mx-webhook-process.ts` — delivery processing
 - `src/mx-ingest.ts`, `src/sync.ts` — work order fetch and persistence
-- `src/mx-reconcile.ts` — existing reconciliation logic; **the Phase 0 time-item sweep most likely belongs here or alongside it**
+- `src/mx-reconcile.ts` — existing reconciliation logic
 - `src/mx-map.ts` — field mapping
 - `wrangler.toml` — deployment config
+
+**Added 2026-09-16 (Phase 0, not yet pushed — see the ordering note at the bottom):**
+
+- `src/mx-event-log.ts` — folds each verified webhook delivery into
+  `mx_work_order_event`. The deliberate exception to the "no payload field is
+  ever written" rule; the header explains why it is safe here and must not
+  travel.
+- `src/mx-timesweep.ts` — the Phase 0 time-item sweep. It ended up as its own
+  module rather than alongside `mx-reconcile.ts`: reconcile re-arms a walk and
+  writes one field, this rotates a candidate set and refetches, and they share
+  no machinery. It reuses `processWorkOrder` (now exported from
+  `mx-webhook-process.ts`) rather than reimplementing fetch-map-upsert.
+- `supabase/maintainx-event-log-01.sql` — schema + backfill + PGRST102 re-arm.
 
 ## Supabase tables (the data lives here, not in the repo)
 
@@ -32,7 +45,9 @@ The MaintainX mirror is live and webhook-driven. **Do not rebuild it.** It lives
 - `public.mx_work_order_time_item` — time entries: `work_order_id`, `ordinal`, `duration_total_seconds`, `quantity_hours`, `first_seen`
 - `public.mx_work_order_expenditure` — costs, stored in **cents** (`cost_per_unit_cents`, `row_total_cents`)
 - `public.mx_webhook_subscription` — 7 rows, no property-filter column
-- `public.mx_work_order_event` — **exists but is empty.** Declared and never populated. Writing to it is a Phase 0 task. It misled an earlier revision; do not mistake it for the event log.
+- `public.mx_work_order_event` — ~~exists but is empty~~ **written as of 2026-09-16.** The webhook path folds every verified delivery into it, and `supabase/maintainx-event-log-01.sql` backfills the 1,408 deliveries already stored as `source = 'BACKFILL'`. Two columns were added that the original DDL lacked: `webhook_event_id` (dedup key) and `actor_user_id` (who made the change — half of the Layer C question, and the DDL had nowhere to put it).
+  - **Correction to the plan.** PLAN.md §5, §6 and Phase 0 all state that this history accrues only from the day the writer ships and cannot be bought back later. That is true going forward and was false going backward: `mx_webhook_event` had held every verified delivery since 2026-09-14, `oldStatus`/`newStatus`/`occurredAt`/`userId` intact. Two days were recoverable by a SELECT.
+  - **For whoever computes intervals:** 100 of the first 741 status changes were made by user 520201, "MX Friendly Integration Bot - Splash Car Wash". A bot transition is not a mechanic flipping a toggle, and §7's IN_PROGRESS rate is currently measured against a denominator that includes them.
 - `public.locations` — needs a migration adding `latitude`, `longitude`, `geofence_radius_m`, `geo_source`, `geo_verified_at`. No PostGIS.
 
 Tables the plan calls for creating: `mt_punch`, `mt_gps_dwell`, `mt_device_person`, `mt_compliance_day`, `mt_punch_allocation`.
@@ -43,7 +58,8 @@ Verified empirically on work order 118834534, 2026-09-16. Full detail in §5 and
 
 1. **Time entries fire no webhook of any kind** — timer-recorded and hand-added alike. TIME rows trip no trigger.
 2. **Timer start does fire one, indirectly** — it auto-transitions OPEN → IN_PROGRESS, which emits an ordinary `WORK_ORDER_STATUS_CHANGE` indistinguishable from a manual tap. Timer stop emits nothing.
-3. **Every webhook payload is a bare envelope.** MaintainX documents a `newWorkOrder.costs.rows[]` block; zero of 1,338 stored events contain `newWorkOrder`, `costs`, or `durationTotal`. Ingestion and subscription config were both tested and ruled out. Treat every event as "something changed, go refetch."
+3. **Every webhook payload is a bare envelope** *as far as labor and cost go.* MaintainX documents a `newWorkOrder.costs.rows[]` block; zero of 1,338 stored events contain `newWorkOrder`, `costs`, or `durationTotal`. Ingestion and subscription config were both tested and ruled out. Treat every event as "something changed, go refetch."
+   - **Narrowed 2026-09-16.** "Bare envelope" is right about labor and cost and wrong as a general statement, which matters now that the payloads are being folded into an event log. Measured across all 1,408: `WORK_ORDER_STATUS_CHANGE` carries `oldStatus`/`newStatus` and sometimes `oldSubStatus`/`newSubStatus` (the hold reason — the only place it is recorded); 25 of 56 `WORK_ORDER_CHANGE` deliveries carry `addedAssigneeIds`/`removedAssigneeIds`, occasionally team ids; nearly all carry `userId`. `oldStatus` in particular exists **nowhere else** — a refetch returns the status a work order is in now, never the one it left.
 4. **Labor is latent, not lost.** Unsynced time sits in MaintainX and flushes in full on the next refetch of any kind (observed: `labor_seconds` 4145 → 11372 in one operation).
 5. **`mx_updated_at` never advances for time or cost edits.** This is the governing constraint: **any sweep keyed on `updated_at` is structurally blind to exactly the rows it exists to capture.** Select candidates another way — recently-touched reactive work orders, or anything left in IN_PROGRESS past an age threshold — and refetch unconditionally.
 6. **Use `duration_total_seconds`, never `quantity_hours`.** The latter is a lossy four-decimal rounding that compounds when summed.
@@ -69,6 +85,43 @@ Verified by day, `mx_webhook_event`:
 
 Last occurrence 2026-09-15 15:36 UTC.
 
-**Residual work, small:** the ~32 historical events that failed this way are still unprocessed and need a re-drain to clear. They are not lost — the drain retries pending rows, and these were stamped as terminal failures, so clearing `processed_at` on those specific rows re-arms them.
+**Residual work, smaller than stated.** Measured 2026-09-16 before acting: the 32 rows span 12 work orders, **all 12 have been re-synced since their last failure**, and 10 of the 12 now carry mirrored attachment rows — later deliveries healed them, because the child writes are full replaces. The actual residue is two work orders whose attachments are still unmirrored: **118398492** (raw shows 1, mirror holds 0) and **119041977** (raw 2, mirror 0). Section 4 of `supabase/maintainx-event-log-01.sql` re-arms all 32 anyway — it also resets `attempts`, without which the drain passes 6 against a ceiling of 5 and re-stamps them terminal on the first hiccup.
+
+Their EVENTS were never at risk: the event-log backfill reads `mx_webhook_event.payload` directly and is independent of whether processing succeeded.
 
 Worth carrying forward as a pattern rather than a bug: it failed **silently**. No exception, no alert — a child write 400'd and the row simply never appeared. That is the same failure shape as items 1, 3 and 5 above, and it is the dominant risk in this codebase.
+
+---
+
+## Deploy ordering — 2026-09-16 Phase 0 work
+
+**SQL applied 2026-09-16. Worker code written, validated, and NOT pushed.**
+
+The ordering was: SQL first, push second, because the writer inserts with
+`on_conflict=webhook_event_id` and until that column existed every delivery
+would have failed retryable for ~25 minutes before stamping terminal.
+
+Verified straight after applying: 1,216 rows in `mx_work_order_event`, all
+`source = 'BACKFILL'`; PGRST102 count 0; the 32 deliveries back in the drain's
+pending queue. Interval pairing returns 25 closed reactive `IN_PROGRESS` spans
+averaging 80.9 minutes, which is the table doing the job it exists for rather
+than merely holding rows.
+
+**What is still not happening:** the deployed worker is the pre-change build,
+so no NEW events are being recorded. Everything through 2026-09-16 is safe in
+the backfill; accumulation restarts on push. The time sweep is likewise not
+running yet, so latent labor is still latent.
+
+The SQL is safe to re-run — every statement is `IF NOT EXISTS`, `ON CONFLICT DO
+NOTHING`, or scoped to rows still carrying the PGRST102 error — and re-running
+it picks up deliveries that landed since, which is a reasonable thing to do if
+the push is delayed.
+
+## Still open in Phase 0
+
+The `locations` migration (G1), the coordinate population and reconcile, the
+13-row `mt_device_person` seed (G2), and the G3 email-join check are all
+untouched. They are the bulk of the manual effort and none of them was blocked
+by the two items above — those were sequenced first only because the event log
+loses history for every day it does not exist, and the sweep leaves labor
+invisible for every hour it does not run.

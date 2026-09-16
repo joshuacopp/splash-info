@@ -63,6 +63,7 @@ import {
   type PgWorkOrderExtras
 } from "./mx-list-pg.js";
 import { runMxReconcile } from "./mx-reconcile.js";
+import { runMxTimeSweep } from "./mx-timesweep.js";
 import { runMxAttachmentMirror } from "./mx-attachments.js";
 import { runMxDailyDigest } from "./mx-daily-digest.js";
 import { fetchPmOnTime, type PmOnTimeResult } from "./mx-pm-ontime.js";
@@ -503,7 +504,29 @@ export default {
             console.error("workorders-worker mx ingest failed:", err);
           }
 
-          // Attachment mirror LAST of the three. Images are the least urgent
+          // Time-item sweep. AFTER the ingest, because the ingest is the
+          // thing that finishes and this one only ever rotates, and BEFORE the
+          // attachment mirror, because unsynced labor is data nobody can see
+          // and an unmirrored image is a picture that loads later.
+          //
+          // This is not a duplicate of the ingest and cannot be folded into
+          // it. The ingest asks MaintainX for work orders whose updatedAt
+          // moved; MaintainX does not move updatedAt for time or cost edits,
+          // so the rows carrying unsynced hours are precisely the rows the
+          // ingest can never be told about. See mx-timesweep.ts.
+          try {
+            const swept = await runMxTimeSweep(env);
+            // Quiet only when a pass did nothing AND nothing went wrong. A
+            // skip reason is always worth a line -- "the sweep has not run for
+            // a week" should be visible, not inferred from silence.
+            if (swept.refetched > 0 || swept.failed > 0 || swept.skipped) {
+              console.log("workorders-worker mx time sweep:", JSON.stringify(swept));
+            }
+          } catch (err) {
+            console.error("workorders-worker mx time sweep failed:", err);
+          }
+
+          // Attachment mirror LAST of the four. Images are the least urgent
           // thing on this tick and a slow download must not delay either the
           // drain or the sweep that keep the work orders themselves current.
           // Its own try for the same reason the other two have one.

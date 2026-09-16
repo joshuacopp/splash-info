@@ -36,6 +36,7 @@ import {
 } from "@splash/maintainx";
 import {
   fetchMxLocationMap,
+  insertMxWorkOrderEvents,
   replaceMxWorkOrderExpenditures,
   replaceMxWorkOrderParts,
   replaceMxWorkOrderTimeItems,
@@ -45,6 +46,7 @@ import {
   upsertMxWorkRequests,
   type MxWorkOrderCommentRow
 } from "@splash/db-supabase";
+import { deriveWorkOrderEvent } from "./mx-event-log.js";
 import { mapComment, mapWorkOrder, mapWorkRequest } from "./mx-map.js";
 import type { ParsedDelivery } from "./mx-webhook.js";
 
@@ -207,7 +209,16 @@ async function stampSubscription(
  * Entity handlers
  * ============================================================ */
 
-async function processWorkOrder(
+/**
+ * Re-read one work order from MaintainX and write it, children and all.
+ *
+ * EXPORTED for mx-timesweep.ts, which needs exactly this and must not be a
+ * second implementation of it. The sweep's whole job is to refetch work orders
+ * unconditionally; if it wrote its own fetch-map-upsert it would be a second
+ * place for the categories trap (see the file header) and the child-ordering
+ * rule to be got wrong, and the two would drift.
+ */
+export async function processWorkOrder(
   env: MxWebhookProcessEnv,
   workOrderId: number,
   signal: AbortSignal
@@ -419,6 +430,43 @@ async function processComments(
 }
 
 /* ============================================================
+ * Event log
+ * ============================================================ */
+
+/**
+ * Fold this delivery into mx_work_order_event.
+ *
+ * Returns null on success AND on "nothing to observe" -- the two are the same
+ * from the caller's point of view, and a work-request delivery having no
+ * work-order event is the normal case, not a failure. Returns a retryable
+ * ProcessOutcome only when the write itself failed.
+ *
+ * See the block comment at the call site for why a failure here is allowed to
+ * fail the whole delivery.
+ */
+async function recordObservation(
+  env: MxWebhookProcessEnv,
+  delivery: ParsedDelivery,
+  eventRowId: string | null
+): Promise<ProcessOutcome | null> {
+  const row = deriveWorkOrderEvent(delivery, eventRowId, new Date().toISOString());
+  if (!row) return null;
+
+  const written = await insertMxWorkOrderEvents(env, [row]);
+  if (written.ok) return null;
+
+  return {
+    ok: false,
+    error: `event log write for ${row.work_order_id}: ${written.error ?? "unknown"}`,
+    // Always retryable. The realistic causes are a Supabase blip or the
+    // migration in supabase/maintainx-event-log-01.sql not having been applied
+    // yet, and both are states the world grows out of. The insert ignores
+    // duplicates, so a retry after a partial success costs nothing.
+    retryable: true
+  };
+}
+
+/* ============================================================
  * Entry point
  * ============================================================ */
 
@@ -442,7 +490,36 @@ export async function processMxWebhookDelivery(
 
   let outcome: ProcessOutcome;
   try {
-    if (!env.MAINTAINX_API_KEY) {
+    // ---- OBSERVATION FIRST, REFETCH SECOND ------------------------------
+    //
+    // Deliberately ahead of everything below, including the API-key check.
+    //
+    // The refetch is recoverable: it is idempotent, the 5-minute incremental
+    // sweep re-reads changed rows, and the daily reconcile re-walks the whole
+    // active queue. Three independent mechanisms will fix a work order that
+    // this delivery failed to refresh.
+    //
+    // The observation is not recoverable by ANY of them. MaintainX serves no
+    // retroactive event history, and `oldStatus` exists nowhere but in this
+    // payload -- a later refetch returns the status the work order is in now,
+    // never the one it left. If this write is skipped, the transition is gone.
+    //
+    // So it runs first and, unlike the telemetry writes at the end of this
+    // file, a failure here FAILS THE DELIVERY as retryable rather than being
+    // logged and swallowed. That couples the mirror to the event log, which is
+    // a real cost: a persistently broken event-log write would stall each
+    // delivery for ~25 minutes of retries before stamping terminal. It is the
+    // right way round anyway, because the mirror has three backstops and this
+    // has none, and because a terminal stamp carrying the error is visible in
+    // the process_error query while a swallowed log line is not.
+    //
+    // A failure short-circuits the chain below rather than returning early, so
+    // the single stamp path at the bottom of this function stays single.
+    const observation = await recordObservation(env, delivery, eventRowId);
+
+    if (observation) {
+      outcome = observation;
+    } else if (!env.MAINTAINX_API_KEY) {
       // Deployment state, not a delivery problem -- but the row must still be
       // stamped so it is visible rather than silently pending forever.
       outcome = { ok: false, error: "MAINTAINX_API_KEY not bound", retryable: true };
