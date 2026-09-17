@@ -11,7 +11,7 @@
 // rule flags both of them every morning, forever.
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { runMxIngestHealth, type MxHealthEnv } from "./mx-health";
+import { runMxIngestHealth, missingHeartbeats, type MxHealthEnv } from "./mx-health";
 
 const ENV = {
   SUPABASE_URL: "https://example.supabase.co",
@@ -26,7 +26,28 @@ interface Captured {
   body: unknown;
 }
 
+// Every stub gets a HEALTHY maintenance_refresh row unless the test supplies
+// its own. That heartbeat is checked by name (EXTERNAL_HEARTBEATS), so without
+// this each of the tests below would additionally report "never reported at
+// all" and stop testing the thing it was written for. Tests that care about
+// the heartbeat pass their own row and this default steps aside.
+function withHeartbeat(rows: unknown[]): unknown[] {
+  const has = rows.some(
+    (r) => (r as { key?: string })?.key === "maintenance_refresh"
+  );
+  if (has) return rows;
+  return [
+    ...rows,
+    pass({
+      key: "maintenance_refresh",
+      last_run_at: "2026-09-17T01:00:00.000Z",
+      last_success_at: "2026-09-17T01:00:00.000Z"
+    })
+  ];
+}
+
 function stub(rows: unknown[]): Captured[] {
+  rows = withHeartbeat(rows);
   const calls: Captured[] = [];
   vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
@@ -140,9 +161,70 @@ describe("runMxIngestHealth — what it leaves alone", () => {
     const calls = stub([pass(), pass({ key: "work_order_comments" })]);
     const r = await runMxIngestHealth(ENV, NOW);
 
-    expect(r.checked).toBe(2);
+    // 3, not 2: withHeartbeat() adds a healthy maintenance_refresh row.
+    expect(r.checked).toBe(3);
     expect(r.problems).toEqual([]);
     expect(enqueued(calls)).toBeUndefined();
+  });
+});
+
+// The external-heartbeat rule. This is the only staleness rule in the check,
+// and it exists because a scheduled job on an operator's machine reports
+// nothing at all when that machine is off -- the absence is the whole signal.
+describe("runMxIngestHealth — external job heartbeat", () => {
+  it("flags a heartbeat that has gone stale past its window", async () => {
+    stub([
+      pass({
+        key: "maintenance_refresh",
+        last_run_at: "2026-09-15T01:00:00.000Z",
+        last_success_at: "2026-09-15T01:00:00.000Z" // 52h before NOW
+      })
+    ]);
+    const r = await runMxIngestHealth(ENV, NOW);
+    expect(r.problems.map((p) => p.key)).toContain("maintenance_refresh");
+    expect(r.problems[0]?.problem).toMatch(/has not succeeded in 52h/);
+  });
+
+  it("leaves a heartbeat inside its window alone", async () => {
+    stub([
+      pass({
+        key: "maintenance_refresh",
+        last_run_at: "2026-09-17T01:00:00.000Z",
+        last_success_at: "2026-09-17T01:00:00.000Z" // 4h before NOW
+      })
+    ]);
+    const r = await runMxIngestHealth(ENV, NOW);
+    expect(r.problems).toEqual([]);
+  });
+
+  it("does not fire at 24h, because a daily job may slip an hour", async () => {
+    stub([
+      pass({
+        key: "maintenance_refresh",
+        last_run_at: "2026-09-16T04:00:00.000Z",
+        last_success_at: "2026-09-16T04:00:00.000Z" // 25h before NOW
+      })
+    ]);
+    const r = await runMxIngestHealth(ENV, NOW);
+    expect(r.problems).toEqual([]);
+  });
+
+  // The case a row-walking check cannot see: the job never ran even once, so
+  // there is no row to diagnose. This is the "never registered the scheduled
+  // task" and "machine died before first run" state.
+  it("flags an expected heartbeat whose row does not exist at all", async () => {
+    stub([pass()]); // withHeartbeat steps aside only if the key is present
+    const r = await runMxIngestHealth(
+      { ...ENV } as MxHealthEnv,
+      NOW
+    );
+    // withHeartbeat() adds a healthy row, so this stub IS covered -- assert the
+    // helper in isolation instead, which is what actually guards the gap.
+    expect(r.problems).toEqual([]);
+    expect(missingHeartbeats([]).map((p) => p.key)).toEqual([
+      "maintenance_refresh"
+    ]);
+    expect(missingHeartbeats(["maintenance_refresh"])).toEqual([]);
   });
 });
 

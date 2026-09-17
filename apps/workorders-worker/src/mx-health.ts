@@ -52,6 +52,35 @@ export interface MxHealthEnv extends SupabaseEnv {
  */
 const STUCK_WALK_HOURS = 24;
 
+/**
+ * Jobs that run on a fixed schedule from OUTSIDE Cloudflare, and how stale
+ * each may get before that is a fault.
+ *
+ * THIS IS THE ONE PLACE STALENESS IS A RULE, and it is a deliberate exception
+ * to the argument in the header above. That argument is about passes which
+ * legitimately complete once and are never run again -- flagging those every
+ * morning would train people to ignore the alert. These are the opposite case.
+ *
+ * `maintenance_refresh` is a Windows scheduled task on an operator's machine
+ * (apps/maintenance-tracker/refresh.ps1), pulling Connecteam and Geotab out of
+ * Redshift, which Cloudflare cannot reach. A desk machine loses power, gets
+ * rebooted by a patch cycle, or is left logged out, and in every one of those
+ * cases it reports NOTHING -- no error, no failed run, no log line. The
+ * absence is the entire signal, and nothing on that machine can raise it,
+ * because the machine is the thing that is missing.
+ *
+ * Without this rule the tracker's dashboard would go on rendering stale
+ * figures indefinitely, looking exactly as authoritative as fresh ones. That
+ * is the same silent-staleness failure the header was written about.
+ *
+ * 36 hours for a daily job: 24 would fire on any run that merely slipped an
+ * hour past this check, and an alert that fires on healthy states is worse
+ * than no alert.
+ */
+const EXTERNAL_HEARTBEATS: Record<string, number> = {
+  maintenance_refresh: 36
+};
+
 export interface HealthProblem {
   key: string;
   /** Short reason, used as the bullet in the email and the log line. */
@@ -105,7 +134,47 @@ function diagnose(row: SyncStateRow, now: number): string | null {
     }
   }
 
+  // 4. An external scheduled job that has gone quiet. See EXTERNAL_HEARTBEATS
+  //    for why staleness is a fault here and nowhere else in this function.
+  const maxAgeHours = EXTERNAL_HEARTBEATS[row.key];
+  if (maxAgeHours !== undefined) {
+    if (row.last_success_at === null) {
+      return "external job has never reported a success";
+    }
+    const age = now - Date.parse(row.last_success_at);
+    if (Number.isFinite(age) && age > maxAgeHours * 3_600_000) {
+      const hours = Math.round(age / 3_600_000);
+      return (
+        `external job has not succeeded in ${hours}h (over ${maxAgeHours}h) ` +
+        "— the machine it runs on may be off, logged out, or restarted"
+      );
+    }
+  }
+
   return null;
+}
+
+/**
+ * An expected heartbeat whose row does not exist at all.
+ *
+ * diagnose() can only judge rows that are present, so a job that has never
+ * once written its heartbeat -- because it was never registered, or the
+ * machine died before its first run -- would be invisible to a check that
+ * only walks what it finds. The missing row is exactly the state worth
+ * hearing about, so it is looked for by name rather than waited for.
+ */
+export function missingHeartbeats(keys: Iterable<string>): HealthProblem[] {
+  const present = new Set(keys);
+  return Object.keys(EXTERNAL_HEARTBEATS)
+    .filter((k) => !present.has(k))
+    .map((key) => ({
+      key,
+      problem: "expected scheduled job has never reported at all (no row)",
+      lastStatus: null,
+      lastError: null,
+      lastSuccessAt: null,
+      lastRunAt: null
+    }));
 }
 
 /**
@@ -159,6 +228,11 @@ export async function runMxIngestHealth(
       lastRunAt: row.last_run_at
     });
   }
+
+  // Expected-but-absent heartbeats. A job that has never written a row cannot
+  // be caught by the loop above, and "never ran once" is the state most worth
+  // hearing about.
+  result.problems.push(...missingHeartbeats(rows.map((r) => r.key)));
 
   if (result.problems.length === 0) {
     // Logged on the healthy path too. This runs once a day, so one quiet line

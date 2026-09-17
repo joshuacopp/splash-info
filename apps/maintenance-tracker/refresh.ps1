@@ -62,6 +62,11 @@
 param(
     [switch]$DryRun,
     [switch]$SkipCrosswalk,
+    # Skip entirely if a run already succeeded within this many hours. 0 = always
+    # run. The scheduled tasks pass a value so that the catch-up triggers (boot,
+    # and the second DST-straddling daily slot) cost nothing when the day's real
+    # run has already happened. Manual runs default to 0 and always do the work.
+    [int]$IfStale = 0,
     [int]$MinPunchRows = 2000,
     [int]$MinDwellRows = 2500
 )
@@ -137,8 +142,79 @@ function Invoke-Supabase($sqlPath) {
 
 function Row-Count($csv) { (Get-Content $csv | Measure-Object -Line).Lines - 1 }
 
+<#
+    THE HEARTBEAT, AND WHY IT IS IN mx_sync_state
+      This job runs on a machine in an office. It can lose power, be
+      restarted by a patch cycle, or simply be left logged out, and in every
+      one of those cases it reports nothing at all -- no error, no log line,
+      no failed run. The absence IS the whole signal, and nothing on this
+      machine can raise it, because the machine is the thing that is missing.
+
+      So the heartbeat is written to Supabase, where Cloudflare can see it:
+      workorders-worker's 05:00 UTC health check (src/mx-health.ts) reads
+      mx_sync_state every morning and emails when a row looks wrong. Putting
+      the row in that same table means the existing watchdog covers this job
+      with one rule rather than a second alerting path nobody maintains.
+
+      Failures are recorded too, not just successes. A run that fails every
+      night is a different fault from a machine that is off, and the health
+      check can only tell them apart if the failing case leaves a row saying
+      ERROR rather than leaving the timestamp untouched.
+#>
+function Write-Heartbeat($status, $errText, $statsJson) {
+    try {
+        $f = Join-Path $work 'heartbeat.sql'
+        $e = if ($errText) { "'" + ($errText -replace "'", "''") + "'" } else { 'null' }
+        Set-Content -Path $f -Encoding utf8 -Value @"
+insert into mx_sync_state (key, last_run_at, last_success_at, last_status, last_error, stats)
+values ('maintenance_refresh', now(),
+        $(if ($status -eq 'OK') { 'now()' } else { 'null' }),
+        '$status', $e, '$statsJson'::jsonb)
+on conflict (key) do update set
+  last_run_at = excluded.last_run_at,
+  last_success_at = coalesce(excluded.last_success_at, mx_sync_state.last_success_at),
+  last_status = excluded.last_status,
+  last_error = excluded.last_error,
+  stats = excluded.stats,
+  updated_at = now();
+"@
+        & psql (Resolve-SupabaseUrl) -v ON_ERROR_STOP=1 -P pager=off --no-psqlrc -f $f | Out-Null
+    } catch {
+        # Never let the heartbeat take the run down. A refresh that worked and
+        # failed to say so is far better than one rolled back for bookkeeping.
+        Say "WARNING: could not write heartbeat: $($_.Exception.Message)" 'Yellow'
+    }
+}
+
 Say "maintenance tracker refresh starting (log: $logFile)"
 if ($DryRun) { Say "DRY RUN - nothing will be written to Supabase" 'Yellow' }
+
+# ---- stale check -------------------------------------------------------------
+# Lets the catch-up triggers fire freely. They exist to cover a missed run, and
+# on a normal day they should cost one cheap query and stop.
+if ($IfStale -gt 0 -and -not $DryRun) {
+    $age = (& psql (Resolve-SupabaseUrl) -t -A -P pager=off --no-psqlrc -c @'
+select coalesce(round(extract(epoch from (now() - last_success_at))/3600)::int, 99999)
+from mx_sync_state where key = 'maintenance_refresh';
+'@) 2>$null
+    if ($LASTEXITCODE -eq 0 -and $age -and ([int]$age) -lt $IfStale) {
+        Say "last success was ${age}h ago (under -IfStale $IfStale) - nothing to do." 'DarkGray'
+        return
+    }
+    Say ("no successful run in the last {0}h - proceeding" -f $IfStale)
+}
+
+# A script-scope trap rather than wrapping every step in try/catch: it covers
+# everything below without re-indenting the whole file, and $ErrorActionPreference
+# is Stop so every failure here is terminating and reaches it. `break` re-throws
+# after recording, so the task still exits non-zero and Task Scheduler still
+# shows a failed run -- the heartbeat is in addition to that, not instead of it.
+trap {
+    $msg = $_.Exception.Message
+    Say "FAILED: $msg" 'Red'
+    Write-Heartbeat 'ERROR' $msg '{}'
+    break
+}
 
 # ---- 0. site centres (Supabase -> CSV) --------------------------------------
 # build_dwell.py and the crosswalk both need these, and they live in Supabase,
@@ -245,5 +321,9 @@ union all select 'mt_gps_dwell', count(*), max(arrived_at)::date from mt_gps_dwe
 union all select 'mt_shift_site', count(*), null from mt_shift_site
 union all select 'mt_connecteam_job_site', count(*), null from mt_connecteam_job_site;
 '@ | Tee-Object -FilePath $logFile -Append
+
+$stats = '{{"punch_rows":{0},"dwell_rows":{1},"crosswalk":{2}}}' -f `
+         $punchRows, $dwellRows, $(if ($xwApply) { 'true' } else { 'false' })
+Write-Heartbeat 'OK' $null $stats
 
 Say "refresh complete." 'Green'
