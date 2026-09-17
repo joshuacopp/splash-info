@@ -113,7 +113,27 @@ function Resolve-SupabaseUrl {
     $raw = $env:SUPABASE_DB_URL
     if (-not $raw) { throw "SUPABASE_DB_URL is not set. See the header of this script." }
 
-    $candidates = @($raw)
+    $candidates = @()
+
+    # Supabase's dashboard offers the pooler on 6543 (TRANSACTION mode) and
+    # 5432 (SESSION mode) on the same host, and shows 6543 first. Both were
+    # measured to run an explicit BEGIN/COMMIT correctly, so 6543 is not
+    # broken -- but this pipeline feeds psql whole FILES containing several
+    # transactions, and session mode is the one that holds a single backend
+    # for the life of that connection. Prefer it, fall back to whatever was
+    # given. Nobody should have to know this to set the variable.
+    if ($raw -match '^(postgres(?:ql)?://[^@]+@[^:/]*pooler\.supabase\.com):6543/(.+)$') {
+        $candidates += "$($Matches[1]):5432/$($Matches[2])"
+    }
+
+    $candidates += $raw
+
+    # A "Direct connection" string: db.<ref>.supabase.co is IPv6-only, so on an
+    # IPv4 network it fails with "could not translate host name" -- which reads
+    # like a typo rather than a network-family mismatch. Rewrite to the pooler.
+    # The region prefix cannot be derived from the direct URI (this project is
+    # aws-1-us-east-2), and guessing one and failing would be indistinguishable
+    # from a bad password, so both are tried.
     if ($raw -match '^postgres(?:ql)?://([^:]+):([^@]+)@db\.([a-z0-9]+)\.supabase\.co(?::\d+)?/(.+)$') {
         $pw = $Matches[2]; $ref = $Matches[3]; $db = $Matches[4]
         foreach ($p in @('aws-1-us-east-2', 'aws-0-us-east-2')) {

@@ -8,6 +8,14 @@
         .\register_schedule.ps1 -WeeklyAt 05:00
         .\register_schedule.ps1 -Unregister
 
+    RUN IT ELEVATED IF THE TASKS ALREADY EXIST
+      Creating a task works as a normal user; UPDATING or deleting one does
+      not. Task Scheduler reports that refusal as a NON-TERMINATING error --
+      it slips past $ErrorActionPreference = 'Stop' -- and leaves the previous
+      definition in place while the script carries on. The read-back in
+      Register-One compares trigger TYPES and throws when that happens, so a
+      refused update can no longer be mistaken for a successful one.
+
     TWO TASKS, NOT ONE
       Daily  -- punches and dwell only (-SkipCrosswalk). This is what keeps the
                 dashboard honest, and it is the cheap half.
@@ -32,8 +40,10 @@
     WHAT HAPPENS WHEN THE MACHINE IS NOT THERE
       This runs on a desk, so it will miss runs. Three local mechanisms cover
       the recoverable cases -- StartWhenAvailable for a trigger that fired
-      while the machine was off, an at-startup trigger for power loss and
-      patch reboots, and a midday slot for a morning run that failed -- and
+      while the machine was off, an at-LOGON trigger for power loss and patch
+      reboots (not at-startup: this task needs an interactive session, so at
+      boot there is nothing for it to run in), and a midday slot for a
+      morning run that failed -- and
       every one of them is safe to fire because the work is a full-window
       idempotent upsert with a staleness guard in front of it.
 
@@ -103,7 +113,36 @@ function Register-One($name, $trigger, $argSuffix) {
         -ExecutionTimeLimit (New-TimeSpan -Hours 2)
     Register-ScheduledTask -TaskName $name -Action $action -Trigger $trigger `
         -Principal $principal -Settings $settings -Force | Out-Null
-    Write-Host "Registered '$name'." -ForegroundColor Green
+
+    # READ IT BACK, AND COMPARE WHAT IS THERE TO WHAT WAS ASKED FOR.
+    #
+    # Register-ScheduledTask emits "Access is denied" as a NON-TERMINATING CIM
+    # error that slips straight past $ErrorActionPreference = 'Stop'. Updating
+    # or deleting an existing task needs elevation even though creating one did
+    # not, so an un-elevated re-run silently leaves the OLD definition in place
+    # and carries on.
+    #
+    # Two earlier versions of this check were not enough, and both are worth
+    # recording because the second looked thorough:
+    #   - printing "Registered" unconditionally: reported success over a failure.
+    #   - counting triggers: the stale definition had the same NUMBER of
+    #     triggers as the new one, so the count matched and the script still
+    #     lied. A boot trigger sat there for an hour claiming to be a logon
+    #     trigger.
+    # Comparing the trigger TYPES is what actually catches a refused update.
+    $check = Get-ScheduledTask -TaskName $name -ErrorAction SilentlyContinue
+    if (-not $check) {
+        throw "registration of '$name' did not take. Re-run in an ELEVATED PowerShell."
+    }
+    $want = @($trigger | ForEach-Object { $_.CimClass.CimClassName } | Sort-Object)
+    $got  = @($check.Triggers | ForEach-Object { $_.CimClass.CimClassName } | Sort-Object)
+    if (($want -join ',') -ne ($got -join ',')) {
+        throw ("'$name' still has the PREVIOUS definition -- the update was refused.`n" +
+               "  wanted: $($want -join ', ')`n" +
+               "  found:  $($got -join ', ')`n" +
+               "  Updating an existing task needs elevation. Re-run in an ELEVATED PowerShell.")
+    }
+    Write-Host ("Registered '{0}': {1}" -f $name, ($got -join ', ')) -ForegroundColor Green
 }
 
 # ---- 06:00 UTC, honestly ------------------------------------------------------
@@ -119,8 +158,13 @@ $utcSlots = @('01:00', '02:00')
 # ---- catch-up -----------------------------------------------------------------
 # The whole point of the -IfStale guard. Between them these cover the ways a
 # machine in an office misses its slot:
-#   AtStartup + 10 min   power loss, a patch reboot, or an overnight shutdown.
-#                        Ten minutes so the network and any VPN are up first.
+#   AtLogOn + 5 min      power loss, a patch reboot, or an overnight shutdown.
+#                        NOT AtStartup: the task runs as an interactive logon
+#                        (below), so at boot there is no session for it to run
+#                        in and the trigger fires into nothing. Logon is the
+#                        first moment this job CAN run, which makes it the only
+#                        honest place to put the recovery trigger. Five minutes
+#                        so the network and any VPN are up first.
 #   StartWhenAvailable   (in Register-One) Task Scheduler's own catch-up for a
 #                        trigger that fired while the machine was off.
 #   Midday sweep         the case neither of those covers: machine awake and
@@ -130,9 +174,9 @@ $utcSlots = @('01:00', '02:00')
 $dailyTriggers = @()
 foreach ($s in $utcSlots) { $dailyTriggers += New-ScheduledTaskTrigger -Daily -At $s }
 $dailyTriggers += New-ScheduledTaskTrigger -Daily -At '13:00'
-$boot = New-ScheduledTaskTrigger -AtStartup
-$boot.Delay = 'PT10M'
-$dailyTriggers += $boot
+$logon = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
+$logon.Delay = 'PT5M'
+$dailyTriggers += $logon
 
 # -IfStale 20, not 24: a run that slips slightly must not be treated as fresh
 # by the next morning's trigger and skipped into a two-day gap.
@@ -143,7 +187,7 @@ $nowOffset = [TimeZoneInfo]::Local.GetUtcOffset([DateTime]::Now).TotalHours
 Write-Host ""
 Write-Host ("Daily  01:00 + 02:00 local  -> 06:00 UTC across DST (currently UTC{0:+#;-#;+0})" -f $nowOffset) -ForegroundColor Cyan
 Write-Host  "       13:00 local          -> midday catch-up if the morning failed" -ForegroundColor Cyan
-Write-Host  "       at startup +10 min   -> catch-up after power loss or reboot" -ForegroundColor Cyan
+Write-Host  "       at logon +5 min      -> catch-up after power loss or reboot" -ForegroundColor Cyan
 Write-Host  "       all four pass -IfStale 20, so only the first one each day does work" -ForegroundColor DarkGray
 Write-Host ("Weekly Sun {0} - full run including the job -> site crosswalk" -f $WeeklyAt) -ForegroundColor Cyan
 Write-Host ""
