@@ -120,6 +120,12 @@ export default async function MaintenancePage() {
     ...new Set([...hoursBySite.keys(), ...woBySite.keys()])
   ].sort((a, b) => siteLabel(a).localeCompare(siteLabel(b)));
 
+  const noHourSites = allSiteNumbers.filter((sn) => !hoursBySite.has(sn));
+  const gapSites = noHourSites.filter((sn) =>
+    (woBySite.get(sn) ?? []).some((w) => w.implies_site_visit)
+  ).length;
+  const explainedSites = noHourSites.length - gapSites;
+
   const weeks = [...new Set(mechanics.map((m) => m.week_starting))].sort().reverse();
   const latestWeek = weeks[0];
   const latestMechanics: MechanicRow[] = mechanics
@@ -230,6 +236,10 @@ export default async function MaintenancePage() {
           const s = hoursBySite.get(sn);
           const wos = woBySite.get(sn) ?? [];
           const noHours = !s;
+          // Only a MECHANIC closing a ticket implies a vehicle should have
+          // been here. IT, CMMS admins, regional managers and the site's own
+          // login do not, so those sites are explained rather than flagged.
+          const mechanicGap = noHours && wos.some((w) => w.implies_site_visit);
           return (
             <details key={sn} className="group border-b border-gray-light/60 last:border-0">
               <summary className="flex cursor-pointer list-none flex-wrap items-baseline px-4 py-2.5 text-sm hover:bg-gray-50">
@@ -239,12 +249,19 @@ export default async function MaintenancePage() {
                   </span>
                   {siteLabel(sn)}
                   <span className="ml-2 text-xs font-normal text-splash-navy/45">#{sn}</span>
-                  {noHours && wos.length > 0 ? (
+                  {noHours && mechanicGap ? (
                     <span
                       className="ml-2 rounded bg-amber-200 px-1.5 py-0.5 text-[0.625rem] font-bold uppercase tracking-wide text-amber-900"
-                      title="Work orders were closed here, but no crew vehicle was recorded on site. Usually a dead transponder, someone outside the tracked crew, or the site closing its own ticket."
+                      title="A mechanic closed a ticket here but no crew vehicle was recorded on site. Usually a dead transponder."
                     >
                       no visit recorded
+                    </span>
+                  ) : noHours && wos.length > 0 ? (
+                    <span
+                      className="ml-2 rounded bg-gray-light px-1.5 py-0.5 text-[0.625rem] font-bold uppercase tracking-wide text-splash-navy/60"
+                      title="Closed by IT, a CMMS admin, a regional manager, or the site's own login — none of which expense to the site or imply a mechanic drove here."
+                    >
+                      no site visit expected
                     </span>
                   ) : null}
                 </span>
@@ -264,12 +281,17 @@ export default async function MaintenancePage() {
                   </p>
                 ) : (
                   <>
-                    {noHours ? (
+                    {mechanicGap ? (
                       <p className="mb-2 text-xs leading-relaxed text-splash-navy/70">
-                        Work happened here, but no crew vehicle was recorded on site.
-                        That is a gap in the tracking, not evidence the work was not
-                        done &mdash; a dead transponder, somebody outside the tracked
-                        crew, or the site closing its own ticket all look like this.
+                        A mechanic closed work here but no crew vehicle was recorded on
+                        site. That is a gap in the tracking, not evidence the work was
+                        not done &mdash; a dead transponder looks exactly like this.
+                      </p>
+                    ) : noHours ? (
+                      <p className="mb-2 text-xs leading-relaxed text-splash-navy/60">
+                        No mechanic visit is expected here. These were closed by IT, a
+                        CMMS administrator, a regional manager, or the site&rsquo;s own
+                        login &mdash; none of which expense time to the site.
                       </p>
                     ) : null}
                     <ul className="space-y-1.5">
@@ -297,6 +319,26 @@ export default async function MaintenancePage() {
                             title="Who marked it Done in MaintainX — not necessarily the only person who worked it."
                           >
                             {w.completed_by}
+                            {w.closer_role !== "MECHANIC" ? (
+                              <span
+                                className="ml-1 text-[0.625rem] uppercase tracking-wide text-splash-navy/45"
+                                title={
+                                  w.expense_to === "MANAGEMENT"
+                                    ? "IT — time and travel are overhead, never expensed to the site."
+                                    : "Not a field mechanic; no site visit implied."
+                                }
+                              >
+                                {w.closer_role === "SITE_ACCOUNT"
+                                  ? "site"
+                                  : w.closer_role === "CMMS_ADMIN"
+                                    ? "admin"
+                                    : w.closer_role === "REGIONAL_MANAGER"
+                                      ? "RM"
+                                      : w.closer_role === "IT"
+                                        ? "IT · overhead"
+                                        : "unclassified"}
+                              </span>
+                            ) : null}
                           </span>
                         ) : null}
                         <span className="tabular-nums text-xs text-splash-navy/55">
@@ -327,9 +369,10 @@ export default async function MaintenancePage() {
       </div>
       <p className="mt-2 text-xs text-splash-navy/60">
         All {allSiteNumbers.length} sites with activity this month, alphabetically.{" "}
-        {hoursBySite.size} have recorded hours;{" "}
-        {allSiteNumbers.length - hoursBySite.size} had work orders closed with no crew
-        vehicle seen on site.
+        {hoursBySite.size} have recorded hours. Of the rest,{" "}
+        {gapSites} had a mechanic close work with no vehicle recorded on site (a
+        tracking gap, usually a dead transponder) and {explainedSites} were closed by
+        IT, admin, a regional manager or the site itself, where no visit is expected.
       </p>
 
       {/* Transponder health. Above the mechanic table on purpose: a silent

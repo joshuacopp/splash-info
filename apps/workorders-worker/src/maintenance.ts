@@ -126,6 +126,9 @@ export interface SiteWorkOrderRow {
   total_cost_cents: number | null;
   completer_id: number | null;
   completed_by: string | null;
+  closer_role: string;
+  expense_to: string;
+  implies_site_visit: boolean;
 }
 
 export async function handleMaintenanceSummary(

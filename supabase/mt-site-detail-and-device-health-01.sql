@@ -147,3 +147,43 @@ select d.device_id, d.display_name, d.connecteam_user_id,
 from mt_device_person d
 left join punch p on p.connecteam_user_id = d.connecteam_user_id
 left join gps   g on g.device_id = d.device_id;
+
+-- ===========================================================================
+-- mt_closer_role -- ORG KNOWLEDGE THAT EXISTS NOWHERE IN THE DATA
+-- ===========================================================================
+-- Added 2026-09-17 after the operator read the first version of the site table.
+--
+-- That version flagged 13 sites as "work happened here, no visit recorded" and
+-- invited somebody to go hunting for a tracking fault. Most were nothing of the
+-- kind. The operator supplied what no query could:
+--
+--   Tyler Pianka, Alex Pezzino, Gustavo   IT. They DO drive to sites, but their
+--                                         time and travel are overhead and are
+--                                         NEVER expensed to a site.
+--   Megan Burke, Amanda Regina            Admin on the CMMS, not in the field.
+--                                         They close tickets from a desk.
+--   Steve Gainer                          Regional manager, not maintenance.
+--   "<name> Wash" logins                  Shared per-location accounts; the site
+--                                         closing its own ticket.
+--
+-- So implies_site_visit and expense_to are SEPARATE COLUMNS and must not be
+-- collapsed into one. IT is the case that proves it: a site visit genuinely
+-- happens, and the cost still belongs to Management. A single "is this site
+-- work?" flag would have to be wrong about one or the other.
+--
+-- Effect on the 16 September sites with work orders and no recorded hours:
+-- 10 are a real tracking gap (a MECHANIC closed the ticket, and the usual
+-- cause is a dead transponder -- see mt_device_health), and 6 are fully
+-- explained by role and are now labelled "no site visit expected" instead of
+-- being presented as a problem.
+--
+-- UNCLASSIFIED is deliberate and must stay visible rather than defaulting to
+-- something convenient. It means nobody has said what that person does, and
+-- guessing would put hours in the wrong cost centre. Several closers are
+-- currently unclassified on purpose (Brett Sullivan, Jacob Petrelle, Nathan
+-- May, Roger Williams, Steve Benfante, and the operator's own account) because
+-- nobody has said, not because they were overlooked.
+--
+-- The SITE_ACCOUNT heuristic is narrow on purpose: the name ends in "wash" AND
+-- every ticket it has ever closed is at one site. A real person surnamed Wash
+-- would fail the second condition.
