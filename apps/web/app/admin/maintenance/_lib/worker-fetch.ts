@@ -15,7 +15,7 @@ const PATH = "/workorders/api/maintenance/summary";
 
 export interface CostCentreRow {
   month: string;
-  kind: "SITE" | "MANAGEMENT" | "UNATTRIBUTED";
+  kind: "SITE" | "CAPX" | "MANAGEMENT" | "UNATTRIBUTED" | "WAREHOUSE" | "PTO";
   site_number: number | null;
   cost_centre: string;
   onsite_h: number;
@@ -25,10 +25,15 @@ export interface CostCentreRow {
 export interface SiteRow {
   month: string;
   site_number: number;
+  /** OPERATING maintenance only since 2026-09-17; capital is capx_*. */
   onsite_h: number;
   inbound_travel_h: number;
   total_h: number;
   pct_drive_time: number | null;
+  capx_onsite_h: number;
+  capx_travel_h: number;
+  capx_total_h: number;
+  overhead_h: number;
 }
 export interface MechanicRow {
   connecteam_user_id: number;
@@ -88,6 +93,34 @@ export interface WorkloadRow {
   median_days_to_close: number | null;
   mean_days_to_close: number | null;
 }
+export interface MechanicDayRow {
+  work_date: string;
+  connecteam_user_id: number;
+  display_name: string;
+  job_title: string | null;
+  work_kind: "SITE" | "CAPX" | "OVERHEAD" | "PTO";
+  claimed_site: number | null;
+  claimed_site_name: string | null;
+  /**
+   * CODE    = the job's own Connecteam cost code, independent of GPS.
+   * DERIVED = mt_connecteam_job_site, itself derived FROM GPS -- so asking
+   *           whether the truck was at the claimed site is partly asking GPS
+   *           to confirm itself. Render the distinction; a DERIVED row is
+   *           descriptive, not evidence.
+   */
+  site_source: "CODE" | "DERIVED" | "UNKNOWN" | null;
+  derived_confidence: string | null;
+  punch_h: number;
+  at_claimed_site_h: number;
+  at_other_site_h: number;
+  stopped_offsite_h: number;
+  moving_or_no_gps_h: number;
+  other_sites: string | null;
+  wo_closed_at_claimed_site: number;
+  wo_closed_elsewhere: number;
+  wo_titles: string | null;
+  evidence_flag: string;
+}
 export interface MaintenanceSummary {
   generated_at: string;
   cost_centres: CostCentreRow[];
@@ -99,6 +132,7 @@ export interface MaintenanceSummary {
   work_orders: SiteWorkOrderRow[];
   devices: DeviceHealthRow[];
   workload: WorkloadRow[];
+  mechanic_days: MechanicDayRow[];
 }
 
 export type SummaryResult =

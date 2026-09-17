@@ -69,7 +69,7 @@ async function pgSelect<T>(
 
 export interface CostCentreRow {
   month: string;
-  kind: "SITE" | "MANAGEMENT" | "UNATTRIBUTED";
+  kind: "SITE" | "CAPX" | "MANAGEMENT" | "UNATTRIBUTED" | "WAREHOUSE" | "PTO";
   site_number: number | null;
   cost_centre: string;
   onsite_h: number;
@@ -79,10 +79,15 @@ export interface CostCentreRow {
 export interface SiteRow {
   month: string;
   site_number: number;
+  /** OPERATING maintenance only since 2026-09-17 -- capital is the capx_* fields. */
   onsite_h: number;
   inbound_travel_h: number;
   total_h: number;
   pct_drive_time: number | null;
+  capx_onsite_h: number;
+  capx_travel_h: number;
+  capx_total_h: number;
+  overhead_h: number;
 }
 export interface MechanicRow {
   connecteam_user_id: number;
@@ -125,6 +130,34 @@ export interface WorkloadRow {
   median_days_to_close: number | null;
   mean_days_to_close: number | null;
 }
+export interface MechanicDayRow {
+  work_date: string;
+  connecteam_user_id: number;
+  display_name: string;
+  job_title: string | null;
+  work_kind: "SITE" | "CAPX" | "OVERHEAD" | "PTO";
+  claimed_site: number | null;
+  claimed_site_name: string | null;
+  /**
+   * CODE    = the Connecteam job's own cost code. Independent of GPS.
+   * DERIVED = mt_connecteam_job_site, which is itself derived FROM GPS, so
+   *           "was the truck at the claimed site" is partly circular here.
+   * Surface this in the UI; never let a DERIVED row read as independent
+   * evidence of compliance.
+   */
+  site_source: "CODE" | "DERIVED" | "UNKNOWN" | null;
+  derived_confidence: string | null;
+  punch_h: number;
+  at_claimed_site_h: number;
+  at_other_site_h: number;
+  stopped_offsite_h: number;
+  moving_or_no_gps_h: number;
+  other_sites: string | null;
+  wo_closed_at_claimed_site: number;
+  wo_closed_elsewhere: number;
+  wo_titles: string | null;
+  evidence_flag: string;
+}
 export interface SiteWorkOrderRow {
   month: string;
   site_number: number;
@@ -157,7 +190,7 @@ export async function handleMaintenanceSummary(
   // Independent reads, issued together. They share no ordering and the page
   // needs all of them before it can render anything, so sequential would just
   // add up the latencies.
-  const [costs, sites, mechanics, tiers, crew, siteNames, workOrders, devices, workload] =
+  const [costs, sites, mechanics, tiers, crew, siteNames, workOrders, devices, workload, mechanicDays] =
     await Promise.all([
     pgSelect<CostCentreRow>(
       env,
@@ -193,11 +226,21 @@ export async function handleMaintenanceSummary(
         "&order=completed_at.desc"
     ),
     pgSelect<DeviceHealthRow>(env, "mt_device_health?select=*&order=device_status,device_id"),
-    pgSelect<WorkloadRow>(env, "mt_mechanic_workload?select=*&order=closed_30d.desc")
+    pgSelect<WorkloadRow>(env, "mt_mechanic_workload?select=*&order=closed_30d.desc"),
+    // Scoped to the same window as the work orders. The drill-down is a
+    // "what happened lately" surface; the full history is ~900 rows that
+    // would be shipped and thrown away on every load.
+    pgSelect<MechanicDayRow>(
+      env,
+      "mt_mechanic_day?select=*&work_date=gte." +
+        firstOfPreviousMonth(new Date()) +
+        "&order=work_date.desc,display_name.asc"
+    )
   ]);
 
   const firstError = [
-    costs, sites, mechanics, tiers, crew, siteNames, workOrders, devices, workload
+    costs, sites, mechanics, tiers, crew, siteNames, workOrders, devices, workload,
+    mechanicDays
   ].find((r) => !r.ok);
   if (firstError && !firstError.ok) {
     console.error("[maintenance.summary] read failed:", firstError.error);
@@ -205,7 +248,8 @@ export async function handleMaintenanceSummary(
   }
   if (
     !costs.ok || !sites.ok || !mechanics.ok || !tiers.ok || !crew.ok ||
-    !siteNames.ok || !workOrders.ok || !devices.ok || !workload.ok
+    !siteNames.ok || !workOrders.ok || !devices.ok || !workload.ok ||
+    !mechanicDays.ok
   ) {
     return jsonError(502, "maintenance read failed");
   }
@@ -244,7 +288,8 @@ export async function handleMaintenanceSummary(
     site_names: siteNameMap,
     work_orders: workOrders.rows,
     devices: devices.rows,
-    workload: workload.rows
+    workload: workload.rows,
+    mechanic_days: mechanicDays.rows
   });
 }
 

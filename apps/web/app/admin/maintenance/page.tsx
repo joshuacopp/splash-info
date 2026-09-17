@@ -21,6 +21,8 @@ export const dynamic = "force-dynamic";
 
 const KIND_STYLE: Record<string, string> = {
   SITE: "bg-emerald-100 text-emerald-800",
+  CAPX: "bg-violet-100 text-violet-800",
+  PTO: "bg-slate-100 text-slate-700",
   WAREHOUSE: "bg-blue-100 text-blue-800",
   MANAGEMENT: "bg-amber-100 text-amber-800",
   UNATTRIBUTED: "bg-gray-light text-splash-navy/70"
@@ -28,6 +30,8 @@ const KIND_STYLE: Record<string, string> = {
 
 const KIND_LABEL: Record<string, string> = {
   SITE: "Sites",
+  CAPX: "Capital projects",
+  PTO: "Paid leave",
   WAREHOUSE: "Warehouse",
   MANAGEMENT: "Management",
   UNATTRIBUTED: "Unattributed"
@@ -83,7 +87,7 @@ export default async function MaintenancePage() {
     );
   }
   const {
-    cost_centres, sites, mechanics, tiers, crew_names, site_names, work_orders,
+    cost_centres, sites, mechanics, tiers, crew_names, site_names, work_orders, mechanic_days,
     devices, workload
   } = result.data;
 
@@ -99,8 +103,14 @@ export default async function MaintenancePage() {
   const months = [...new Set(cost_centres.map((c) => c.month))].sort().reverse();
   const latest = months[0];
   const latestCosts = cost_centres.filter((c) => c.month === latest);
-  const totalH = latestCosts.reduce((a, c) => a + Number(c.hours), 0);
-  const byKind = (["SITE", "WAREHOUSE", "MANAGEMENT", "UNATTRIBUTED"] as const).map((k) => {
+  // PTO is ADDITIVE, not a carve-out: leave never entered the GPS-scored
+  // allocation (admin punches carry no GPS). Including it in the
+  // denominator would quietly shrink every other share, so the percentages
+  // below are of SCORED time and the PTO card says so instead.
+  const totalH = latestCosts
+    .filter((c) => c.kind !== "PTO")
+    .reduce((a, c) => a + Number(c.hours), 0);
+  const byKind = (["SITE", "CAPX", "MANAGEMENT", "UNATTRIBUTED", "WAREHOUSE", "PTO"] as const).map((k) => {
     const rows = latestCosts.filter((c) => c.kind === k);
     return { kind: k, hours: rows.reduce((a, c) => a + Number(c.hours), 0), count: rows.length };
   });
@@ -200,7 +210,11 @@ export default async function MaintenancePage() {
             </span>
             <p className="mt-3 text-3xl font-bold text-splash-navy">{h(k.hours)}<span className="ml-1 text-base font-semibold text-splash-navy/60">h</span></p>
             <p className="mt-1 text-sm text-splash-navy/70">
-              {totalH ? `${((100 * k.hours) / totalH).toFixed(1)}% of paid time` : "—"}
+              {k.kind === "PTO"
+                ? "outside the GPS-scored total"
+                : totalH
+                  ? `${((100 * k.hours) / totalH).toFixed(1)}% of scored time`
+                  : "—"}
               {k.kind === "SITE" ? ` · ${k.count} sites` : ""}
             </p>
             {k.kind === "UNATTRIBUTED" ? (
@@ -208,6 +222,21 @@ export default async function MaintenancePage() {
                 Stopped somewhere unnamed, plus time the tracker reported nothing for.
                 Not a geofence problem &mdash; only 3% of it is within 150&nbsp;m of a
                 site fence. Mostly one-off stops and time at home.
+              </p>
+            ) : null}
+            {k.kind === "CAPX" ? (
+              <p className="mt-2 text-xs leading-relaxed text-splash-navy/60">
+                Capital projects, carved out of Sites. Every site has a
+                &ldquo;CapX&rdquo; twin job; until now both were charged to the site
+                identically, so a site&rsquo;s maintenance cost included its capital
+                work.
+              </p>
+            ) : null}
+            {k.kind === "PTO" ? (
+              <p className="mt-2 text-xs leading-relaxed text-splash-navy/60">
+                Paid leave. Added to the total rather than carved out of it &mdash;
+                leave is booked as an admin punch, which never carries GPS and has
+                always been excluded from the scored denominator.
               </p>
             ) : null}
             {k.kind === "WAREHOUSE" ? (
@@ -571,6 +600,121 @@ export default async function MaintenancePage() {
         Open column sums to more than the real backlog.
       </p>
 
+
+      {/* Per-mechanic day drill-down. Claim, presence and output side by side,
+          deliberately not collapsed into a score -- see the caveat below. */}
+      <h2 className="mb-1 mt-8 text-lg font-bold text-splash-navy">Mechanic day detail</h2>
+      <p className="mb-3 text-sm text-splash-navy/70">
+        One row per mechanic, day and job: what the punch claimed, where the truck
+        actually was, and what got closed. Newest first.
+      </p>
+      <div className="mb-3 rounded-splash-lg border-[1.5px] border-amber-300 bg-amber-50 p-4">
+        <p className="text-sm leading-relaxed text-splash-navy/80">
+          <strong>These three columns disagree for honest reasons.</strong> A mechanic
+          can be on site all day with nothing to close &mdash; diagnosis, waiting on a
+          part, covering for someone &mdash; and can close a work order from the road.
+          Read a row as a question worth asking, never as a finding.
+        </p>
+        <p className="mt-2 text-sm leading-relaxed text-splash-navy/80">
+          <strong>Site from GPS is not independent evidence.</strong> Rows marked{" "}
+          <span className="font-semibold">derived</span> got their claimed site from the
+          behavioural crosswalk, which is itself built from GPS &mdash; so asking whether
+          the truck was there is partly asking GPS to confirm itself, and it will tend to
+          agree. Rows marked <span className="font-semibold">code</span> took the site
+          from the Connecteam job&rsquo;s own cost code and are a real comparison.
+        </p>
+        <p className="mt-2 text-sm leading-relaxed text-splash-navy/80">
+          <strong>No GPS is not absence.</strong> Two transponders are dead, so those
+          mechanics show no-GPS days throughout. That is a broken device, not a missing
+          mechanic.
+        </p>
+      </div>
+      <div className="overflow-x-auto rounded-splash-lg border-[1.5px] border-gray-light bg-white shadow-splash-card">
+        <table className="w-full min-w-[60rem] text-sm">
+          <thead className="bg-gray-light/60 text-left text-splash-navy">
+            <tr>
+              <th className="px-4 py-2.5 font-semibold">Date</th>
+              <th className="px-4 py-2.5 font-semibold">Mechanic</th>
+              <th className="px-4 py-2.5 font-semibold">Punched into</th>
+              <th className="px-4 py-2.5 text-right font-semibold">Punched</th>
+              <th className="px-4 py-2.5 text-right font-semibold">At that site</th>
+              <th className="px-4 py-2.5 text-right font-semibold">Elsewhere</th>
+              <th className="px-4 py-2.5 text-right font-semibold">Moving / no GPS</th>
+              <th className="px-4 py-2.5 text-right font-semibold">WOs closed</th>
+              <th className="px-4 py-2.5 font-semibold">Shape of day</th>
+            </tr>
+          </thead>
+          <tbody>
+            {mechanic_days.slice(0, 250).map((d, i) => (
+              <tr
+                key={`${d.work_date}-${d.connecteam_user_id}-${d.job_title}-${i}`}
+                className="border-t border-gray-light/70 align-top"
+              >
+                <td className="whitespace-nowrap px-4 py-2.5 tabular-nums text-splash-navy/80">{d.work_date}</td>
+                <td className="whitespace-nowrap px-4 py-2.5 font-medium text-splash-navy">{d.display_name}</td>
+                <td className="px-4 py-2.5 text-splash-navy/80">
+                  {d.claimed_site_name ?? d.job_title ?? "—"}
+                  {d.work_kind === "CAPX" ? (
+                    <span className="ml-1.5 rounded bg-violet-100 px-1.5 py-0.5 text-[0.625rem] font-bold uppercase text-violet-800">
+                      CapX
+                    </span>
+                  ) : null}
+                  {d.work_kind === "OVERHEAD" ? (
+                    <span className="ml-1.5 rounded bg-amber-100 px-1.5 py-0.5 text-[0.625rem] font-bold uppercase text-amber-800">
+                      Overhead
+                    </span>
+                  ) : null}
+                  {d.site_source ? (
+                    <span
+                      className={`ml-1.5 rounded px-1.5 py-0.5 text-[0.625rem] font-bold uppercase ${
+                        d.site_source === "CODE"
+                          ? "bg-emerald-100 text-emerald-800"
+                          : "bg-gray-light text-splash-navy/60"
+                      }`}
+                      title={
+                        d.site_source === "CODE"
+                          ? "Site came from the Connecteam job code — independent of GPS"
+                          : "Site was inferred from GPS — this comparison is partly circular"
+                      }
+                    >
+                      {d.site_source === "CODE" ? "code" : "derived"}
+                    </span>
+                  ) : null}
+                  {d.job_title && d.job_title !== d.claimed_site_name ? (
+                    <span className="block text-xs text-splash-navy/50">{d.job_title}</span>
+                  ) : null}
+                </td>
+                <td className="px-4 py-2.5 text-right tabular-nums font-semibold text-splash-navy">{h(d.punch_h)}</td>
+                <td className="px-4 py-2.5 text-right tabular-nums text-splash-navy/80">{h(d.at_claimed_site_h)}</td>
+                <td className="px-4 py-2.5 text-right tabular-nums text-splash-navy/70">
+                  {h(Number(d.at_other_site_h) + Number(d.stopped_offsite_h))}
+                  {d.other_sites ? (
+                    <span className="block text-xs font-normal text-splash-navy/50">{d.other_sites}</span>
+                  ) : null}
+                </td>
+                <td className="px-4 py-2.5 text-right tabular-nums text-splash-navy/60">{h(d.moving_or_no_gps_h)}</td>
+                <td className="px-4 py-2.5 text-right tabular-nums text-splash-navy/80">
+                  <span title={d.wo_titles ?? undefined}>{d.wo_closed_at_claimed_site}</span>
+                  {d.wo_closed_elsewhere ? (
+                    <span className="block text-xs font-normal text-splash-navy/50">
+                      +{d.wo_closed_elsewhere} elsewhere
+                    </span>
+                  ) : null}
+                </td>
+                <td className="px-4 py-2.5 text-xs text-splash-navy/70">
+                  {d.evidence_flag.replaceAll("_", " ").toLowerCase()}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <p className="mt-2 text-xs leading-relaxed text-splash-navy/60">
+        Newest 250 rows of the current and previous month. &ldquo;Elsewhere&rdquo; combines
+        time stopped at another site with time stopped somewhere with no fence.
+        &ldquo;Moving / no GPS&rdquo; is the remainder &mdash; driving, or nothing reported.
+        Hover a WO count for the titles.
+      </p>
       {/* Evidence tiers */}
       <h2 className="mb-1 mt-8 text-lg font-bold text-splash-navy">Evidence coverage</h2>
       <p className="mb-3 text-sm text-splash-navy/70">
