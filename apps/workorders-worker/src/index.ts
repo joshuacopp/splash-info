@@ -68,6 +68,7 @@ import { runMxAttachmentMirror } from "./mx-attachments.js";
 import { runMxDailyDigest } from "./mx-daily-digest.js";
 import { runMxIngestHealth } from "./mx-health.js";
 import { fetchPmOnTime, type PmOnTimeResult } from "./mx-pm-ontime.js";
+import { handleMaintenanceSummary } from "./maintenance.js";
 import { handlePartsRequest } from "./parts.js";
 import { runMaintainXUserTeamSync, type SyncResult } from "./sync.js";
 
@@ -423,6 +424,16 @@ export default {
         const result = await runMxIngest(env);
         console.log("workorders-worker manual mx ingest complete:", JSON.stringify(result));
         return json(result);
+      }
+
+      // Maintenance tracker dashboard read. ADMIN TIER, deliberately not the
+      // email-on-locations gate the routes above use: this reports where named
+      // mechanics were across every site at once, so a per-location gate would
+      // hand a site manager a colleague's week. See ./maintenance.ts.
+      if (path === "workorders/api/maintenance/summary" && request.method === "GET") {
+        const auth = await authenticate(request, env);
+        if (auth.status !== "authenticated") return jsonError(401, "unauthorized");
+        return handleMaintenanceSummary(env, auth.session);
       }
 
       if (path === "workorders/api/request" && request.method === "POST") {

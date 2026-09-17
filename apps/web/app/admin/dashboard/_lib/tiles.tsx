@@ -463,6 +463,22 @@ export const TILES: ReadonlyArray<Tile> = [
     visibleTo: allStaff
   },
   {
+    id: "maintenance-tracker",
+    group: "operations",
+    subgroup: "mechanical",
+    eyebrow: "Maintenance",
+    title: "Maintenance Tracker",
+    description:
+      "Where paid maintenance hours go, by site and by cost centre.",
+    href: "/admin/maintenance",
+    icon: barChartIcon,
+    // Admin tier. The page reports where named mechanics were across every
+    // site at once, so the email-on-locations gate the Work Orders tile uses
+    // would be the wrong shape here -- it would hand a site manager a
+    // colleague's week.
+    visibleTo: isAdminTier
+  },
+  {
     id: "parts",
     group: "operations",
     subgroup: "mechanical",
