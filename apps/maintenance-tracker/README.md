@@ -13,7 +13,9 @@ the compute belongs in Redshift and the joining belongs in Supabase.
 does the whole chain and is what the scheduled tasks call:
 
 ```powershell
-setx SUPABASE_DB_URL "<Supabase SESSION POOLER connection string>"   # once, then reopen the shell
+setx SUPABASE_DB_URL "<Project Settings -> Database -> Connection string>"  # once, then reopen the shell
+#   Either the Direct or the Session pooler string works -- refresh.ps1 converts
+#   the direct one, whose host is IPv6-only and unreachable from an IPv4 network.
 .\register_schedule.ps1        # daily 06:30 punches+dwell, weekly Sun 05:30 full
 .\refresh.ps1                  # or run it now
 .\refresh.ps1 -DryRun          # export + build, write nothing

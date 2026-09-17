@@ -32,16 +32,19 @@
       - psql on PATH, plus the `splashdb` pg_service entry (same one
         apps/damage-worker/daily/export_car_counts.ps1 uses).
       - python on PATH.
-      - SUPABASE_DB_URL set as a USER environment variable, holding the
-        SESSION POOLER connection string. Not the "Direct connection" one:
-        db.<ref>.supabase.co resolves over IPv6 only and fails on an IPv4
-        network with "could not translate host name", which reads like a typo
-        rather than a network-family mismatch. Set it once with:
+      - SUPABASE_DB_URL set as a USER environment variable. EITHER string the
+        Supabase dashboard gives you works -- paste whichever it shows:
 
-            setx SUPABASE_DB_URL "postgresql://postgres.<ref>:<pw>@aws-1-us-east-2.pooler.supabase.com:5432/postgres"
+            setx SUPABASE_DB_URL "<Project Settings -> Database -> Connection string>"
 
-        then open a new shell. It is read from the environment and never
-        echoed, so it stays out of logs and out of the repo.
+        then open a new shell. If you paste the "Direct connection" one,
+        Resolve-SupabaseUrl converts it: that host is IPv6-only and fails on an
+        IPv4 network with "could not translate host name", which reads like a
+        typo rather than a network-family mismatch, so the script probes it and
+        falls back to the session pooler rather than making anyone remember.
+
+        It is read from the environment and never echoed -- only the host shape
+        is logged, with the credentials masked.
 
     SAFETY
       Every write is an idempotent upsert over the whole window, so this is
@@ -85,11 +88,50 @@ function Invoke-Redshift($sqlPath, $outCsv) {
     if ($LASTEXITCODE -ne 0) { throw "Redshift export failed ($sqlPath)" }
 }
 
-function Invoke-Supabase($sqlPath) {
-    if (-not $env:SUPABASE_DB_URL) {
-        throw "SUPABASE_DB_URL is not set. See the header of this script."
+# Accepts EITHER connection string the Supabase dashboard offers, because the
+# one it shows first ("Direct connection") is the one that does not work here:
+# db.<ref>.supabase.co resolves over IPv6 only, so on an IPv4 network psql dies
+# with "could not translate host name ... to address" -- a message that reads
+# like a typo or a dead project rather than a network-family mismatch. Rather
+# than require the operator to know that, this probes the direct host first and
+# falls back to the session-pooler spelling of the same credentials.
+#
+# The pooler prefix is NOT always aws-0; this project is aws-1-us-east-2. Both
+# are tried because the prefix cannot be derived from the direct URI, and
+# guessing one and failing would look identical to a bad password.
+#
+# Resolved once per run and reused. Never logged: the password is in it.
+$script:ResolvedDbUrl = $null
+
+function Resolve-SupabaseUrl {
+    if ($script:ResolvedDbUrl) { return $script:ResolvedDbUrl }
+    $raw = $env:SUPABASE_DB_URL
+    if (-not $raw) { throw "SUPABASE_DB_URL is not set. See the header of this script." }
+
+    $candidates = @($raw)
+    if ($raw -match '^postgres(?:ql)?://([^:]+):([^@]+)@db\.([a-z0-9]+)\.supabase\.co(?::\d+)?/(.+)$') {
+        $pw = $Matches[2]; $ref = $Matches[3]; $db = $Matches[4]
+        foreach ($p in @('aws-1-us-east-2', 'aws-0-us-east-2')) {
+            $candidates += "postgresql://postgres.$ref`:$pw@$p.pooler.supabase.com:5432/$db"
+        }
     }
-    & psql $env:SUPABASE_DB_URL -v ON_ERROR_STOP=1 -P pager=off --no-psqlrc -f $sqlPath | Out-Null
+
+    foreach ($c in $candidates) {
+        & psql $c -t -A -P pager=off --no-psqlrc -c 'select 1' *> $null
+        if ($LASTEXITCODE -eq 0) {
+            $shape = ($c -replace '://[^@]+@', '://<credentials>@')
+            Say "Supabase reachable at $shape"
+            $script:ResolvedDbUrl = $c
+            return $c
+        }
+    }
+    throw ("Could not reach Supabase on any of $($candidates.Count) candidate host(s). " +
+           "If you pasted the 'Direct connection' string, that host is IPv6-only; " +
+           "copy the 'Session pooler' string from Project Settings -> Database instead.")
+}
+
+function Invoke-Supabase($sqlPath) {
+    & psql (Resolve-SupabaseUrl) -v ON_ERROR_STOP=1 -P pager=off --no-psqlrc -f $sqlPath | Out-Null
     if ($LASTEXITCODE -ne 0) { throw "Supabase apply failed ($sqlPath)" }
 }
 
@@ -103,8 +145,7 @@ if ($DryRun) { Say "DRY RUN - nothing will be written to Supabase" 'Yellow' }
 # so they are dumped rather than hardcoded. A coordinate correction then flows
 # through on the next run instead of silently diverging.
 $sitesCsv = Join-Path $work 'sites.csv'
-if (-not $env:SUPABASE_DB_URL) { throw "SUPABASE_DB_URL is not set. See the header of this script." }
-& psql $env:SUPABASE_DB_URL --csv -P pager=off --no-psqlrc -v ON_ERROR_STOP=1 -o $sitesCsv -c @'
+& psql (Resolve-SupabaseUrl) --csv -P pager=off --no-psqlrc -v ON_ERROR_STOP=1 -o $sitesCsv -c @'
 select site_number, latitude, longitude, coalesce(geofence_radius_m,150) geofence_radius_m
 from public.locations
 where latitude is not null and longitude is not null
@@ -198,7 +239,7 @@ Invoke-Supabase $shiftSiteSql
 # Reads back what actually landed. A refresh that reports success without
 # looking is how a silently-empty load gets believed.
 Say "verifying ..."
-& psql $env:SUPABASE_DB_URL -P pager=off --no-psqlrc -c @'
+& psql (Resolve-SupabaseUrl) -P pager=off --no-psqlrc -c @'
 select 'mt_punch' t, count(*) rows, max(start_utc)::date newest from mt_punch
 union all select 'mt_gps_dwell', count(*), max(arrived_at)::date from mt_gps_dwell
 union all select 'mt_shift_site', count(*), null from mt_shift_site
