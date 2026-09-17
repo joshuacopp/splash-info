@@ -218,3 +218,49 @@ left join gps   g on g.device_id = d.device_id;
 -- column is right per person and wrong as a total. Do not sum it to get the
 -- backlog; 323 reactive work orders are open and 43 of them have no assignee
 -- at all, which no per-person column can show.
+
+
+-- ===========================================================================
+-- 2026-09-17, LATER: the rest of the roster, and a correction
+-- ===========================================================================
+-- Operator supplied the remaining closers:
+--   Brett Sullivan   head of maintenance
+--   Jacob Petrelle   IT
+--   Roger Williams   IT
+--   Nathan May       regional manager
+--   Steve Benfante   regional manager
+--
+-- CORRECTION TO implies_site_visit. It was set TRUE for IT on the reasoning
+-- that IT genuinely drives to sites. That conflated two different questions
+-- and produced a permanent false alarm, because the column drives the
+-- dashboard's "no visit recorded" warning and NONE of these people carry a
+-- Geotab vehicle. Their visits can never produce GPS evidence, so flagging
+-- those sites as a tracking gap points at a fault nobody can fix, every month,
+-- for ever.
+--
+-- The column now means "do we EXPECT a GPS record of this visit", which is
+-- true only for tracked mechanics. That IT travels, and that its cost is
+-- overhead, is carried by expense_to and the note. This is the second time
+-- these two ideas have had to be pulled apart; they look like one field and
+-- are not.
+--
+-- Brett Sullivan's expense_to is MANAGEMENT as an ASSUMPTION, marked as such
+-- in his note: the operator gave his role but not his cost treatment, and
+-- every other non-field role here avoids billing to sites. It is currently
+-- inert -- he has no tracked vehicle, so no hours flow through it -- but it
+-- should be confirmed before it ever matters.
+--
+-- The SITE_ACCOUNT heuristic was relaxed from "exactly 1 site" to "at most 3".
+-- Six shared logins were left unclassified by the stricter rule because a site
+-- account occasionally closes a ticket for a neighbouring wash when covering.
+-- A real multi-site person has 5-25 sites, so the two populations are far
+-- apart and 3 sits comfortably between them.
+--
+-- Effect on the September sites with work orders and no recorded hours:
+-- 17 total, 10 a real tracking gap (a tracked mechanic closed the ticket --
+-- mostly the two dead transponders), 7 fully explained by role.
+--
+-- STILL UNCLASSIFIED, deliberately: the operator's own MaintainX account
+-- (Josh Copp, 2 work orders). Nobody has said how it should be treated and it
+-- is too small to matter, but it stays visible rather than being quietly
+-- filed somewhere convenient.
