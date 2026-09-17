@@ -48,6 +48,29 @@ export interface TierRow {
   rows: number;
   logged_hours: number;
 }
+export interface SiteWorkOrderRow {
+  month: string;
+  site_number: number;
+  id: number;
+  sequential_id: number | null;
+  title: string | null;
+  priority: string | null;
+  status: string | null;
+  completed_at: string;
+  labor_h: number | null;
+  total_cost_cents: number | null;
+}
+export interface DeviceHealthRow {
+  device_id: string;
+  display_name: string;
+  connecteam_user_id: number;
+  last_gps: string | null;
+  last_punch: string | null;
+  days_since_gps: number | null;
+  gps_days_21d: number;
+  punch_days_21d: number;
+  device_status: "OK" | "NOT_WORKING" | "TRANSPONDER_SILENT" | "TRANSPONDER_PATCHY";
+}
 export interface MaintenanceSummary {
   generated_at: string;
   cost_centres: CostCentreRow[];
@@ -55,6 +78,9 @@ export interface MaintenanceSummary {
   mechanics: MechanicRow[];
   tiers: TierRow[];
   crew_names: Record<string, string>;
+  site_names: Record<string, string>;
+  work_orders: SiteWorkOrderRow[];
+  devices: DeviceHealthRow[];
 }
 
 export type SummaryResult =

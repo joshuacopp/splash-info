@@ -102,6 +102,29 @@ export interface TierRow {
   rows: number;
   logged_hours: number;
 }
+export interface DeviceHealthRow {
+  device_id: string;
+  display_name: string;
+  connecteam_user_id: number;
+  last_gps: string | null;
+  last_punch: string | null;
+  days_since_gps: number | null;
+  gps_days_21d: number;
+  punch_days_21d: number;
+  device_status: "OK" | "NOT_WORKING" | "TRANSPONDER_SILENT" | "TRANSPONDER_PATCHY";
+}
+export interface SiteWorkOrderRow {
+  month: string;
+  site_number: number;
+  id: number;
+  sequential_id: number | null;
+  title: string | null;
+  priority: string | null;
+  status: string | null;
+  completed_at: string;
+  labor_h: number | null;
+  total_cost_cents: number | null;
+}
 
 export async function handleMaintenanceSummary(
   env: MaintenanceEnv,
@@ -114,9 +137,11 @@ export async function handleMaintenanceSummary(
     return jsonError(503, "service key unbound");
   }
 
-  // Four independent reads. Promise.all rather than sequential: they share no
-  // ordering and the page needs all four before it can render anything.
-  const [costs, sites, mechanics, tiers, crew] = await Promise.all([
+  // Independent reads, issued together. They share no ordering and the page
+  // needs all of them before it can render anything, so sequential would just
+  // add up the latencies.
+  const [costs, sites, mechanics, tiers, crew, siteNames, workOrders, devices] =
+    await Promise.all([
     pgSelect<CostCentreRow>(
       env,
       "mt_cost_centre_month?select=*&order=month.desc,hours.desc"
@@ -136,15 +161,34 @@ export async function handleMaintenanceSummary(
     pgSelect<{ connecteam_user_id: number; display_name: string; is_mechanic: boolean }>(
       env,
       "mt_device_person?select=connecteam_user_id,display_name,is_mechanic"
-    )
+    ),
+    pgSelect<{ site_number: number; site_name: string }>(
+      env,
+      "mt_site_name?select=site_number,site_name"
+    ),
+    // Scoped to the current and previous month rather than everything: the
+    // page only ever renders one month, and the full history is ~1,100 rows of
+    // titles that would be shipped and thrown away on every load.
+    pgSelect<SiteWorkOrderRow>(
+      env,
+      "mt_site_work_orders?select=*&completed_at=gte." +
+        firstOfPreviousMonth(new Date()) +
+        "&order=completed_at.desc"
+    ),
+    pgSelect<DeviceHealthRow>(env, "mt_device_health?select=*&order=device_status,device_id")
   ]);
 
-  const firstError = [costs, sites, mechanics, tiers, crew].find((r) => !r.ok);
+  const firstError = [
+    costs, sites, mechanics, tiers, crew, siteNames, workOrders, devices
+  ].find((r) => !r.ok);
   if (firstError && !firstError.ok) {
     console.error("[maintenance.summary] read failed:", firstError.error);
     return jsonError(502, "maintenance read failed");
   }
-  if (!costs.ok || !sites.ok || !mechanics.ok || !tiers.ok || !crew.ok) {
+  if (
+    !costs.ok || !sites.ok || !mechanics.ok || !tiers.ok || !crew.ok ||
+    !siteNames.ok || !workOrders.ok || !devices.ok
+  ) {
     return jsonError(502, "maintenance read failed");
   }
 
@@ -169,12 +213,24 @@ export async function handleMaintenanceSummary(
   const names: Record<string, string> = {};
   for (const c of crew.rows) names[String(c.connecteam_user_id)] = c.display_name;
 
+  const siteNameMap: Record<string, string> = {};
+  for (const r of siteNames.rows) siteNameMap[String(r.site_number)] = r.site_name;
+
   return json({
     generated_at: new Date().toISOString(),
     cost_centres: costs.rows,
     sites: sites.rows,
     mechanics: mechanics.rows,
     tiers: tierRows,
-    crew_names: names
+    crew_names: names,
+    site_names: siteNameMap,
+    work_orders: workOrders.rows,
+    devices: devices.rows
   });
+}
+
+/** First day of last month, YYYY-MM-DD, for the work-order window. */
+function firstOfPreviousMonth(now: Date): string {
+  const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 1, 1));
+  return d.toISOString().slice(0, 10);
 }

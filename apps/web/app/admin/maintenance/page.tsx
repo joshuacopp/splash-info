@@ -74,7 +74,17 @@ export default async function MaintenancePage() {
       </section>
     );
   }
-  const { cost_centres, sites, mechanics, tiers, crew_names } = result.data;
+  const { cost_centres, sites, mechanics, tiers, crew_names, site_names, work_orders, devices } =
+    result.data;
+
+  const badDevices = devices.filter((d) => d.device_status !== "OK");
+  const silentIds = new Set(
+    devices
+      .filter((d) => d.device_status === "TRANSPONDER_SILENT")
+      .map((d) => d.connecteam_user_id)
+  );
+
+  const siteLabel = (n: number) => site_names[String(n)] ?? `Site ${n}`;
 
   const months = [...new Set(cost_centres.map((c) => c.month))].sort().reverse();
   const latest = months[0];
@@ -86,6 +96,16 @@ export default async function MaintenancePage() {
   });
 
   const latestSites = sites.filter((s) => s.month === latest).slice(0, 20);
+
+  // Work orders for the rendered month, bucketed by site so each <details>
+  // can read its own list without rescanning the array.
+  const woBySite = new Map<number, typeof work_orders>();
+  for (const w of work_orders) {
+    if (w.month !== latest) continue;
+    const list = woBySite.get(w.site_number);
+    if (list) list.push(w);
+    else woBySite.set(w.site_number, [w]);
+  }
   const weeks = [...new Set(mechanics.map((m) => m.week_starting))].sort().reverse();
   const latestWeek = weeks[0];
   const latestMechanics: MechanicRow[] = mechanics
@@ -176,39 +196,147 @@ export default async function MaintenancePage() {
       </h2>
       <p className="mb-3 text-sm text-splash-navy/70">
         Hours are charged to the site the vehicle actually reached, so a leg ending at a
-        different site than the punch claimed is charged where it arrived.
+        different site than the punch claimed is charged where it arrived. Expand a row
+        for the reactive work orders closed there this month.
       </p>
-      <div className="overflow-x-auto rounded-splash-lg border-[1.5px] border-gray-light bg-white shadow-splash-card">
-        <table className="w-full min-w-[560px] text-sm">
-          <thead className="border-b border-gray-light bg-gray-50 text-left">
-            <tr className="text-[0.75rem] uppercase tracking-wide text-splash-navy/60">
-              <th className="px-4 py-2.5 font-semibold">Site</th>
-              <th className="px-4 py-2.5 text-right font-semibold">On-site h</th>
-              <th className="px-4 py-2.5 text-right font-semibold">Travel in h</th>
-              <th className="px-4 py-2.5 text-right font-semibold">Total h</th>
-              <th className="px-4 py-2.5 text-right font-semibold">Drive time</th>
-            </tr>
-          </thead>
-          <tbody>
-            {latestSites.map((s) => (
-              <tr key={s.site_number} className="border-b border-gray-light/60 last:border-0">
-                <td className="px-4 py-2.5 font-semibold text-splash-navy">Site {s.site_number}</td>
-                <td className="px-4 py-2.5 text-right tabular-nums text-splash-navy/80">{h(s.onsite_h)}</td>
-                <td className="px-4 py-2.5 text-right tabular-nums text-splash-navy/80">{h(s.inbound_travel_h)}</td>
-                <td className="px-4 py-2.5 text-right font-semibold tabular-nums text-splash-navy">{h(s.total_h)}</td>
-                <td className="px-4 py-2.5 text-right tabular-nums text-splash-navy/80">{pct(s.pct_drive_time)}</td>
-              </tr>
-            ))}
-            {latestSites.length === 0 ? (
-              <tr><td colSpan={5} className="px-4 py-6 text-center text-splash-navy/60">No site hours this month.</td></tr>
-            ) : null}
-          </tbody>
-        </table>
+      {/* One <details> per site rather than a table: expanding a row to show
+          its work orders needs no client island, no state, and keeps the whole
+          page server-rendered. A <tbody> toggle would have required one. */}
+      <div className="overflow-hidden rounded-splash-lg border-[1.5px] border-gray-light bg-white shadow-splash-card">
+        <div className="hidden border-b border-gray-light bg-gray-50 px-4 py-2.5 text-[0.75rem] uppercase tracking-wide text-splash-navy/60 sm:flex">
+          <span className="flex-1 font-semibold">Site</span>
+          <span className="w-20 text-right font-semibold">On-site</span>
+          <span className="w-20 text-right font-semibold">Travel in</span>
+          <span className="w-16 text-right font-semibold">Total</span>
+          <span className="w-16 text-right font-semibold">Drive</span>
+          <span className="w-20 text-right font-semibold">Work orders</span>
+        </div>
+
+        {latestSites.map((s) => {
+          const wos = woBySite.get(s.site_number) ?? [];
+          return (
+            <details key={s.site_number} className="group border-b border-gray-light/60 last:border-0">
+              <summary className="flex cursor-pointer list-none flex-wrap items-baseline px-4 py-2.5 text-sm hover:bg-gray-50">
+                <span className="flex-1 font-semibold text-splash-navy">
+                  <span className="mr-1.5 inline-block text-splash-navy/40 transition-transform group-open:rotate-90">
+                    &rsaquo;
+                  </span>
+                  {siteLabel(s.site_number)}
+                  <span className="ml-2 text-xs font-normal text-splash-navy/45">#{s.site_number}</span>
+                </span>
+                <span className="w-20 text-right tabular-nums text-splash-navy/80">{h(s.onsite_h)}</span>
+                <span className="w-20 text-right tabular-nums text-splash-navy/80">{h(s.inbound_travel_h)}</span>
+                <span className="w-16 text-right font-semibold tabular-nums text-splash-navy">{h(s.total_h)}</span>
+                <span className="w-16 text-right tabular-nums text-splash-navy/80">{pct(s.pct_drive_time)}</span>
+                <span className="w-20 text-right tabular-nums text-splash-navy/60">{wos.length}</span>
+              </summary>
+
+              <div className="border-t border-gray-light/60 bg-gray-50/60 px-4 py-3">
+                {wos.length === 0 ? (
+                  <p className="text-xs leading-relaxed text-splash-navy/60">
+                    No reactive work orders completed here this month. Hours above are
+                    still real &mdash; a mechanic can be on site for preventative work,
+                    or for a job closed in a different month.
+                  </p>
+                ) : (
+                  <ul className="space-y-1.5">
+                    {wos.map((w) => (
+                      <li key={w.id} className="flex flex-wrap items-baseline gap-x-2 text-[0.8125rem]">
+                        <a
+                          href={`https://app.getmaintainx.com/workorders/${w.id}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="font-mono text-xs text-sudsy-blue hover:underline"
+                        >
+                          #{w.sequential_id ?? w.id}
+                        </a>
+                        <span className="min-w-0 flex-1 truncate text-splash-navy/85" title={w.title ?? ""}>
+                          {w.title ?? "(untitled)"}
+                        </span>
+                        {w.priority && w.priority !== "NONE" ? (
+                          <span className="rounded bg-gray-light px-1.5 py-0.5 text-[0.625rem] font-semibold uppercase tracking-wide text-splash-navy/70">
+                            {w.priority}
+                          </span>
+                        ) : null}
+                        <span className="tabular-nums text-xs text-splash-navy/55">
+                          {new Date(w.completed_at).toLocaleDateString("en-US", {
+                            month: "short",
+                            day: "numeric",
+                            timeZone: "America/New_York"
+                          })}
+                        </span>
+                        {w.labor_h ? (
+                          <span className="tabular-nums text-xs text-splash-navy/55">{w.labor_h} h</span>
+                        ) : null}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            </details>
+          );
+        })}
+
+        {latestSites.length === 0 ? (
+          <p className="px-4 py-6 text-center text-sm text-splash-navy/60">
+            No site hours this month.
+          </p>
+        ) : null}
       </div>
       {sites.filter((s) => s.month === latest).length > 20 ? (
         <p className="mt-2 text-xs text-splash-navy/60">
           Showing the 20 largest of {sites.filter((s) => s.month === latest).length} sites.
         </p>
+      ) : null}
+
+      {/* Transponder health. Above the mechanic table on purpose: a silent
+          device is indistinguishable from an idle person in every column
+          below it, so this has to be read first or not at all. */}
+      {badDevices.length > 0 ? (
+        <div className="mt-8 rounded-splash-lg border-[1.5px] border-red-300 bg-red-50 p-5">
+          <p className="mb-1 text-sm font-bold text-splash-navy">
+            {badDevices.filter((d) => d.device_status !== "NOT_WORKING").length > 0
+              ? "Some transponders are not reporting"
+              : "Crew not currently punching"}
+          </p>
+          <p className="mb-3 text-[0.8125rem] leading-relaxed text-splash-navy/80">
+            A dead transponder looks exactly like an idle mechanic everywhere else on
+            this page &mdash; near-zero on-site hours, a large unaccounted figure. For
+            anyone listed here, treat the rows below as <strong>missing</strong>, not
+            as low.
+          </p>
+          <ul className="space-y-1 text-[0.8125rem]">
+            {badDevices.map((d) => (
+              <li key={d.device_id} className="flex flex-wrap items-baseline gap-x-2">
+                <span className="font-semibold text-splash-navy">{d.display_name}</span>
+                <span className="font-mono text-xs text-splash-navy/45">{d.device_id}</span>
+                <span
+                  className={`rounded px-1.5 py-0.5 text-[0.625rem] font-bold uppercase tracking-wide ${
+                    d.device_status === "TRANSPONDER_SILENT"
+                      ? "bg-red-200 text-red-900"
+                      : d.device_status === "TRANSPONDER_PATCHY"
+                        ? "bg-amber-200 text-amber-900"
+                        : "bg-gray-light text-splash-navy/70"
+                  }`}
+                >
+                  {d.device_status === "TRANSPONDER_SILENT"
+                    ? "no GPS"
+                    : d.device_status === "TRANSPONDER_PATCHY"
+                      ? "patchy GPS"
+                      : "not punching"}
+                </span>
+                <span className="text-splash-navy/70">
+                  {d.device_status === "NOT_WORKING"
+                    ? `no punches in 21 days (last ${d.last_punch?.slice(0, 10) ?? "—"})`
+                    : `worked ${d.punch_days_21d} of the last 21 days, GPS on ${d.gps_days_21d}` +
+                      (d.days_since_gps !== null
+                        ? ` — last fix ${d.days_since_gps} days ago`
+                        : "")}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
       ) : null}
 
       {/* Mechanics */}
@@ -237,6 +365,14 @@ export default async function MaintenancePage() {
               <tr key={m.connecteam_user_id} className="border-b border-gray-light/60 last:border-0">
                 <td className="px-4 py-2.5 font-semibold text-splash-navy">
                   {crew_names[String(m.connecteam_user_id)] ?? `User ${m.connecteam_user_id}`}
+                  {silentIds.has(m.connecteam_user_id) ? (
+                    <span
+                      className="ml-2 rounded bg-red-200 px-1.5 py-0.5 text-[0.625rem] font-bold uppercase tracking-wide text-red-900"
+                      title="Transponder not reporting — the GPS columns understate this row, they are not a measure of activity."
+                    >
+                      no GPS
+                    </span>
+                  ) : null}
                 </td>
                 <td className="px-4 py-2.5 text-right tabular-nums text-splash-navy/80">{h(m.paid_h)}</td>
                 <td className="px-4 py-2.5 text-right tabular-nums text-splash-navy/80">{h(m.onsite_h)}</td>
