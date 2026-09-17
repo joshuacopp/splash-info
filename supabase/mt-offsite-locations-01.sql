@@ -63,19 +63,19 @@ create table if not exists public.mt_offsite_location (
   latitude     double precision not null,
   longitude    double precision not null,
   radius_m     integer not null default 150,
-  cost_centre  text not null check (cost_centre in ('MANAGEMENT','SITE_SUPPORT','OTHER')),
+  cost_centre  text not null check (cost_centre in ('MANAGEMENT','WAREHOUSE','OTHER')),
   note         text,
   created_at   timestamptz not null default now()
 );
 alter table public.mt_offsite_location enable row level security;
 
 insert into mt_offsite_location (name, latitude, longitude, radius_m, cost_centre, note)
-select 'NY Warehouse', 42.974, -77.231, 200, 'SITE_SUPPORT',
+select 'NY Warehouse', 42.974, -77.231, 200, 'WAREHOUSE',
        'Operator-identified 2026-09-17. Shared: 7 mechanics, 47 visits, 8-20 min each -- a parts-pickup pattern, not a work location.'
 where not exists (select 1 from mt_offsite_location where name = 'NY Warehouse');
 
 insert into mt_offsite_location (name, latitude, longitude, radius_m, cost_centre, note)
-select 'CT Warehouse', 41.201, -73.198, 200, 'SITE_SUPPORT',
+select 'CT Warehouse', 41.201, -73.198, 200, 'WAREHOUSE',
        'Operator-identified 2026-09-17. Reverse geocoding reads as residential; the operator confirms it is the Connecticut warehouse. 4 mechanics, 218 visits, 20-47 min stays.'
 where not exists (select 1 from mt_offsite_location where name = 'CT Warehouse');
 
@@ -108,3 +108,22 @@ group by o.id, o.name, o.cost_centre;
 -- and will never take it to zero, because a share of "stopped somewhere" is
 -- just a working day. Two warehouses were worth 14% of it, which is a good
 -- return for two rows; the next ones will be worth far less.
+
+-- ===========================================================================
+-- WAREHOUSE IS ITS OWN COST CENTRE, CARVED OUT OF UNATTRIBUTED
+-- ===========================================================================
+-- The bucket was first called SITE_SUPPORT, which was jargon invented here.
+-- The operator renamed it to what these places actually are. Add a NEW value
+-- rather than stretching one of these when a genuinely different kind of
+-- location turns up -- a parts supplier is not a warehouse.
+--
+-- mt_cost_centre_month now reports Warehouse as its own row. The hours are
+-- SUBTRACTED from Unattributed rather than added on top: those minutes were
+-- already counted there, so adding without subtracting would double them and
+-- break the invariant that every cost centre sums to exactly paid hours.
+-- Verified after the change: 4,595 h total, unchanged.
+--
+--   Sites         2,236 h   48.7%
+--   Unattributed  1,269 h   27.6%   (was 1,392 before the carve-out)
+--   Management      967 h   21.1%
+--   Warehouse       123 h    2.7%

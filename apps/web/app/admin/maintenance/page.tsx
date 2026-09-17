@@ -21,8 +21,16 @@ export const dynamic = "force-dynamic";
 
 const KIND_STYLE: Record<string, string> = {
   SITE: "bg-emerald-100 text-emerald-800",
+  WAREHOUSE: "bg-blue-100 text-blue-800",
   MANAGEMENT: "bg-amber-100 text-amber-800",
   UNATTRIBUTED: "bg-gray-light text-splash-navy/70"
+};
+
+const KIND_LABEL: Record<string, string> = {
+  SITE: "Sites",
+  WAREHOUSE: "Warehouse",
+  MANAGEMENT: "Management",
+  UNATTRIBUTED: "Unattributed"
 };
 
 const TIER_STYLE: Record<string, string> = {
@@ -92,7 +100,7 @@ export default async function MaintenancePage() {
   const latest = months[0];
   const latestCosts = cost_centres.filter((c) => c.month === latest);
   const totalH = latestCosts.reduce((a, c) => a + Number(c.hours), 0);
-  const byKind = (["SITE", "MANAGEMENT", "UNATTRIBUTED"] as const).map((k) => {
+  const byKind = (["SITE", "WAREHOUSE", "MANAGEMENT", "UNATTRIBUTED"] as const).map((k) => {
     const rows = latestCosts.filter((c) => c.kind === k);
     return { kind: k, hours: rows.reduce((a, c) => a + Number(c.hours), 0), count: rows.length };
   });
@@ -179,7 +187,7 @@ export default async function MaintenancePage() {
         Every paid hour lands in exactly one cost centre. The drive home is charged to
         Management, not to the last site worked.
       </p>
-      <div className="mb-3 grid gap-3 sm:grid-cols-3">
+      <div className="mb-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
         {byKind.map((k) => (
           <div
             key={k.kind}
@@ -188,7 +196,7 @@ export default async function MaintenancePage() {
             <span
               className={`inline-block rounded-full px-2.5 py-0.5 text-[0.6875rem] font-bold uppercase tracking-wide ${KIND_STYLE[k.kind]}`}
             >
-              {k.kind === "SITE" ? "Sites" : k.kind === "MANAGEMENT" ? "Management" : "Unattributed"}
+              {KIND_LABEL[k.kind] ?? k.kind}
             </span>
             <p className="mt-3 text-3xl font-bold text-splash-navy">{h(k.hours)}<span className="ml-1 text-base font-semibold text-splash-navy/60">h</span></p>
             <p className="mt-1 text-sm text-splash-navy/70">
@@ -197,8 +205,15 @@ export default async function MaintenancePage() {
             </p>
             {k.kind === "UNATTRIBUTED" ? (
               <p className="mt-2 text-xs leading-relaxed text-splash-navy/60">
-                Stopped somewhere with no geofence, plus time the tracker reported
-                nothing for. The largest thing this system cannot yet explain.
+                Stopped somewhere unnamed, plus time the tracker reported nothing for.
+                Not a geofence problem &mdash; only 3% of it is within 150&nbsp;m of a
+                site fence. Mostly one-off stops and time at home.
+              </p>
+            ) : null}
+            {k.kind === "WAREHOUSE" ? (
+              <p className="mt-2 text-xs leading-relaxed text-splash-navy/60">
+                Time at the CT and NY warehouses, carved out of Unattributed rather
+                than added to the total.
               </p>
             ) : null}
             {k.kind === "MANAGEMENT" ? (
