@@ -31,15 +31,25 @@ CREW = [
 
 
 def grade(shifts: int, modal_pct: int) -> str:
+    """
+    Confidence for mt_connecteam_job_site, which spells these out in full.
+
+    NOTE THE TWO SPELLINGS, because getting them the wrong way round is a
+    CHECK-constraint failure at apply time and nothing earlier:
+      mt_connecteam_job_site.confidence  CONFIDENT / LIKELY / WEAK / ...
+      mt_shift_site.confidence           C / L / W / F / I  (char(1))
+    The refresh maps the first onto the second in SQL; this function only ever
+    produces the long form.
+    """
     if shifts >= 5 and modal_pct >= 80:
-        return "C"          # CONFIDENT
+        return "CONFIDENT"
     if shifts >= 3 and modal_pct >= 80:
-        return "L"          # LIKELY
+        return "LIKELY"
     if shifts >= 5 and modal_pct >= 60:
-        return "W"          # WEAK
+        return "WEAK"
     if shifts < 3:
-        return "F"          # TOO_FEW_SHIFTS
-    return "I"              # INCONSISTENT
+        return "TOO_FEW_SHIFTS"
+    return "INCONSISTENT"
 
 
 def emit_query(sites_csv: str) -> None:
@@ -119,7 +129,7 @@ def emit_apply(result_csv: str) -> None:
   shifts_observed = excluded.shifts_observed, modal_pct = excluded.modal_pct,
   distinct_sites = excluded.distinct_sites, derived_at = now();""")
     print("commit;")
-    conf = sum(1 for r in rows if grade(int(r["shifts_with_a_site"]), int(r["modal_pct"])) in ("C", "L"))
+    conf = sum(1 for r in rows if grade(int(r["shifts_with_a_site"]), int(r["modal_pct"])) in ("CONFIDENT", "LIKELY"))
     print(f"{len(rows)} jobs, {conf} at CONFIDENT/LIKELY", file=sys.stderr)
 
 

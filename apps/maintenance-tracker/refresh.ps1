@@ -88,6 +88,69 @@ function Say($msg, $colour = 'Cyan') {
     Add-Content -Path $logFile -Value $line -Encoding utf8
 }
 
+<#
+    WRITING FILES THAT psql CAN ACTUALLY READ
+
+    PowerShell 5.1's `>` redirection writes UTF-16 LE, and its
+    `Set-Content -Encoding utf8` writes UTF-8 WITH a BOM. psql chokes on both:
+    a UTF-16 file fails at line 1 with `syntax error at or near "yb"` (the BOM
+    bytes rendered as text), and a UTF-8 BOM turns the first statement into
+    nonsense the same way.
+
+    This bit on the first live run -- the generated crosswalk query was UTF-16
+    and Redshift rejected it. Every generated .sql therefore goes through here,
+    which writes UTF-8 with NO BOM explicitly. Do not "simplify" any of these
+    call sites back to `>` or `Set-Content -Encoding utf8`; both look correct
+    and neither is.
+#>
+$Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+
+function Write-Sql($path, $text) {
+    [System.IO.File]::WriteAllText($path, $text, $Utf8NoBom)
+}
+
+<#
+    Runs a generator and captures its stdout to a file psql can read.
+
+    THE STDERR TRAP. In PowerShell 5.1, assigning a native command's output to
+    a variable turns anything it writes to STDERR into an ErrorRecord, and with
+    $ErrorActionPreference = 'Stop' that is TERMINATING -- even when the process
+    exits 0. The build scripts deliberately report their stats on stderr
+    ("read 3332, dropped 7 for spread >300m, wrote 3325..."), so a completely
+    successful build was killed by its own progress message the moment output
+    started being captured instead of redirected.
+
+    So stderr is merged, split back out by object type, logged rather than
+    thrown, and SUCCESS IS DECIDED BY THE EXIT CODE ALONE -- which is the only
+    thing that actually means failure. The stats lines are worth keeping: they
+    are how anyone notices the spread filter suddenly dropping hundreds of rows.
+
+    Also fails on empty output: an empty .sql file applies cleanly and does
+    nothing at all, which is the worst outcome available here.
+#>
+function Invoke-Generator($py, $argsList, $outPath, $label) {
+    $prev = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $all  = & python $py @argsList 2>&1
+        $code = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $prev
+    }
+
+    $stdout = @(); $stderr = @()
+    foreach ($line in $all) {
+        if ($line -is [System.Management.Automation.ErrorRecord]) { $stderr += $line.ToString() }
+        else { $stdout += $line }
+    }
+    foreach ($e in $stderr) { if ($e.Trim()) { Say "  $e" 'DarkGray' } }
+
+    if ($code -ne 0) { throw "$label failed (exit $code)" }
+    $text = ($stdout -join "`n")
+    if ($text.Trim().Length -eq 0) { throw "$label produced no output" }
+    Write-Sql $outPath $text
+}
+
 function Invoke-Redshift($sqlPath, $outCsv) {
     & psql "service=splashdb" --csv -P pager=off --no-psqlrc -v ON_ERROR_STOP=1 -f $sqlPath -o $outCsv
     if ($LASTEXITCODE -ne 0) { throw "Redshift export failed ($sqlPath)" }
@@ -185,7 +248,7 @@ function Write-Heartbeat($status, $errText, $statsJson) {
     try {
         $f = Join-Path $work 'heartbeat.sql'
         $e = if ($errText) { "'" + ($errText -replace "'", "''") + "'" } else { 'null' }
-        Set-Content -Path $f -Encoding utf8 -Value @"
+        Write-Sql $f @"
 insert into mx_sync_state (key, last_run_at, last_success_at, last_status, last_error, stats)
 values ('maintenance_refresh', now(),
         $(if ($status -eq 'OK') { 'now()' } else { 'null' }),
@@ -260,8 +323,7 @@ Say "punches exported: $punchRows"
 if ($punchRows -lt $MinPunchRows) {
     throw "only $punchRows punch rows (floor $MinPunchRows). Refusing to apply - an export that returns almost nothing must not overwrite a good load."
 }
-& python (Join-Path $scriptDir 'build_punches.py') $punchCsv $sitesCsv > $punchSql
-if ($LASTEXITCODE -ne 0) { throw "build_punches.py failed" }
+Invoke-Generator (Join-Path $scriptDir 'build_punches.py') @($punchCsv, $sitesCsv) $punchSql 'build_punches.py'
 
 # ---- 2. Layer B: Geotab dwell ------------------------------------------------
 $dwellCsv = Join-Path $work 'dwell_raw.csv'
@@ -273,8 +335,7 @@ Say "dwell intervals exported: $dwellRows"
 if ($dwellRows -lt $MinDwellRows) {
     throw "only $dwellRows dwell rows (floor $MinDwellRows). Refusing to apply."
 }
-& python (Join-Path $scriptDir 'build_dwell.py') $dwellCsv $sitesCsv > $dwellSql
-if ($LASTEXITCODE -ne 0) { throw "build_dwell.py failed" }
+Invoke-Generator (Join-Path $scriptDir 'build_dwell.py') @($dwellCsv, $sitesCsv) $dwellSql 'build_dwell.py'
 
 # ---- 3. job -> site crosswalk ------------------------------------------------
 # Skippable because it re-reads every ping in the window and is by far the most
@@ -286,12 +347,10 @@ if (-not $SkipCrosswalk) {
     $xwResult = Join-Path $work 'job_site_result.csv'
     $xwApply  = Join-Path $work 'job_site_apply.sql'
     Say "rebuilding the Connecteam job -> site crosswalk ..."
-    & python (Join-Path $scriptDir 'build_job_site.py') query $sitesCsv > $xwQuery
-    if ($LASTEXITCODE -ne 0) { throw "build_job_site.py query failed" }
+    Invoke-Generator (Join-Path $scriptDir 'build_job_site.py') @('query', $sitesCsv) $xwQuery 'build_job_site.py query'
     Invoke-Redshift $xwQuery $xwResult
     Say ("jobs resolved: {0}" -f (Row-Count $xwResult))
-    & python (Join-Path $scriptDir 'build_job_site.py') apply $xwResult > $xwApply
-    if ($LASTEXITCODE -ne 0) { throw "build_job_site.py apply failed" }
+    Invoke-Generator (Join-Path $scriptDir 'build_job_site.py') @('apply', $xwResult) $xwApply 'build_job_site.py apply'
 } else {
     Say "skipping crosswalk rebuild (-SkipCrosswalk)" 'Yellow'
 }
@@ -312,7 +371,7 @@ if ($xwApply) { Say "applying crosswalk ..." ; Invoke-Supabase $xwApply }
 # enough observations.
 Say "re-deriving mt_shift_site ..."
 $shiftSiteSql = Join-Path $work 'shift_site.sql'
-Set-Content -Path $shiftSiteSql -Encoding utf8 -Value @'
+Write-Sql $shiftSiteSql @'
 -- mt_shift_site cannot be rebuilt from Supabase alone: the shift -> job link
 -- lives only in Redshift raw_json. This refreshes the CONFIDENCE of rows we
 -- already hold, which is what actually changes between runs.
@@ -341,6 +400,26 @@ union all select 'mt_gps_dwell', count(*), max(arrived_at)::date from mt_gps_dwe
 union all select 'mt_shift_site', count(*), null from mt_shift_site
 union all select 'mt_connecteam_job_site', count(*), null from mt_connecteam_job_site;
 '@ | Tee-Object -FilePath $logFile -Append
+
+# OVERLAP ASSERTION. A dwell interval overlapping the previous one for the same
+# device is impossible by construction -- they are disjoint sessions -- so any
+# overlap means stale rows survived a reload and mt_punch_allocation is now
+# counting the same minutes twice. That happened on the first scheduled run
+# (3,325 exported, 3,799 in the table, 476 overlapping) and NOTHING reported it:
+# the rows were individually valid and the load said success. Checked here so
+# the failure can never be silent again.
+$overlaps = (& psql (Resolve-SupabaseUrl) -t -A -P pager=off --no-psqlrc -c @'
+with o as (select device_id, arrived_at,
+                  lag(departed_at) over (partition by device_id order by arrived_at) pe
+           from mt_gps_dwell)
+select count(*) from o where pe is not null and arrived_at < pe;
+'@)
+if ($LASTEXITCODE -eq 0 -and [int]$overlaps -gt 0) {
+    throw ("$overlaps overlapping dwell intervals after load -- on-site hours are " +
+           "being double counted. build_dwell.py must DELETE before inserting; " +
+           "an upsert cannot replace a row whose derived arrived_at moved.")
+}
+Say "dwell overlap check: 0"
 
 $stats = '{{"punch_rows":{0},"dwell_rows":{1},"crosswalk":{2}}}' -f `
          $punchRows, $dwellRows, $(if ($xwApply) { 'true' } else { 'false' })
