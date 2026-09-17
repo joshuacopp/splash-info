@@ -691,7 +691,7 @@ function PmOnTimeSummary({ pmOnTime }: { pmOnTime: PmOnTime }) {
           counts work that simply is not due yet and a reader who does not know
           that will over-read a high number early in the week. */}
       <div className="pt-0.5 text-xs text-gray-500">
-        Matches the MaintainX report, which counts work not yet due as on time.
+        On time counts work not yet due, matching the MaintainX report.
         Completed by their due date so far: {completedOnTime} of {due}.
       </div>
     </div>
@@ -727,9 +727,9 @@ function OnTimePill({ bucket }: { bucket: PmOnTimeBucket }) {
     <span
       className={`ml-1 inline-block rounded-full px-2 text-[11px] font-semibold ${tone}`}
       title={
-        `${bucket.onTime} of ${bucket.due} preventative work orders due this week (Mon-Sun) are not overdue` +
-        ` -- ${bucket.overdue} past due and not done.` +
-        ` Matches the MaintainX On Time vs. Overdue report, which counts work not yet due as on time.` +
+        `${bucket.onTime} of ${bucket.due} preventative work orders due this week (Mon-Sun) are on time` +
+        ` -- completed by their due date, or not due yet.` +
+        ` ${bucket.overdue} are overdue: past due and undone, or completed late.` +
         ` Actually completed by their due date so far: ${bucket.completedOnTime} of ${bucket.due}.`
       }
     >

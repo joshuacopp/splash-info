@@ -1,39 +1,44 @@
 // Preventative on-time percentage for the current Monday-Sunday week.
 //
-// THIS DELIBERATELY MATCHES THE MAINTAINX "On Time vs. Overdue" REPORT,
-// INCLUDING WHERE THAT DEFINITION IS ODD.
+// THE RULE
 //
-//   MaintainX is not measuring "was it done by its due date". It is measuring
-//   "is anything late right now". Work that is not due YET counts as on time,
-//   even when nothing has been done to it.
+//       on time = completed on or before its due day, OR not due yet
+//       overdue = past its due day and undone, OR completed late
 //
-//   VERIFIED against the MaintainX UI for Binghamton, week of 2026-09-14,
-//   which reported 5 on time / 2 overdue / 71.4%. Of the seven repeating work
-//   orders due that week: three were completed on or before their due date,
-//   two were past due and untouched, and TWO WERE OPEN WITH NOTHING DONE but
-//   due Thursday and Sunday -- and MaintainX scored those last two as on time.
-//   The rule that reproduces 5/2 exactly is:
+//   VERIFIED against the MaintainX "On Time vs. Overdue" report for
+//   Binghamton, week of 2026-09-14, which read 5 on time / 2 overdue / 71.4%.
+//   Of those seven: three completed by their due date, two past due and
+//   untouched, and two open with nothing done but due Thursday and Sunday --
+//   which MaintainX scored as ON TIME. That last part is MaintainX's
+//   convention and is kept deliberately, so the two screens agree.
 //
-//       overdue = past its due day AND not done
-//       on time = everything else
+//   Not-yet-due work counting as on time is also why the denominator is the
+//   whole Mon-Sun week rather than the week so far: under this rule future
+//   work belongs in it.
 //
-//   Which is why the whole Mon-Sun week is the denominator here: under this
-//   definition future work belongs in it, because being not-yet-due is the
-//   thing that makes it count as on time.
+// WHAT THIS COSTS
 //
-// WHAT THAT COSTS, AND WHY IT IS STILL THE RIGHT CALL
+//   The figure starts each Monday high and falls as work comes due, so it is a
+//   live gauge rather than a weekly score and is not comparable week to week
+//   until Sunday night. `completedOnTime` is the strict
+//   completed-by-due-date count and is what to read for performance; it is
+//   shown in plain text under the headline, not buried in a tooltip, because a
+//   reader who does not know that not-yet-due work counts as on time will
+//   over-read a high number early in the week.
 //
-//   This figure starts each Monday at or near 100% and can only fall, because
-//   at the start of a week almost nothing is due yet. It is a live "anything
-//   late?" gauge, not a weekly performance score, and it is NOT comparable
-//   week to week until Sunday night.
+// A RULE THAT MATCHED THE SCREENSHOT AND WAS STILL WRONG
 //
-//   A stricter completed-by-due-date rate is genuinely more honest -- the same
-//   Binghamton week reads 50% that way. But operators cross-check this page
-//   against the MaintainX report, and a number that disagrees with the
-//   reference they already use gets treated as broken no matter which one is
-//   more defensible. So the headline matches MaintainX and the strict figure
-//   is carried alongside it, in `completedOnTime`, for the tooltip.
+//   The first version scored late completions as on time, reading MaintainX's
+//   red label "Not Done Overdue" as covering only work still undone. It
+//   reproduced the verified screenshot exactly and was useless in production:
+//   closing a work order late moved it OUT of the red bucket, so finishing
+//   late improved the score. The next morning all six trial sites read exactly
+//   100% while Binghamton had completed 4 of 9 by their due dates.
+//
+//   The screenshot could not tell the two rules apart because that snapshot
+//   contained no late completions -- both produce 5/2 for it. One verified
+//   example is not enough evidence when the cases that discriminate are
+//   absent from it.
 //
 // WHY THIS IS A SEPARATE QUERY
 //
@@ -55,14 +60,14 @@ export interface PmOnTimeEnv {
 export interface PmOnTimeBucket {
   /** Every preventive work order due this Mon-Sun week. */
   due: number;
-  /** MaintainX's sense: not currently overdue. Includes work that is not due
-   *  yet and has had nothing done to it. This is the headline number. */
+  /** Completed by its due day, or not due yet. The headline number. */
   onTime: number;
-  /** Past its due day and not done. `onTime + overdue === due`. */
+  /** Past its due day and undone, or completed late. `onTime + overdue ===
+   *  due`. */
   overdue: number;
-  /** The stricter reading: actually finished on or before its due day. Always
-   *  <= onTime. Carried so the tooltip can tell the truth the headline
-   *  cannot. */
+  /** Actually finished on or before its due day -- excludes the not-yet-due
+   *  work that `onTime` counts, so it is always <= onTime. This is the
+   *  performance figure. */
   completedOnTime: number;
   /** Finished at all, on time or late. */
   completed: number;
@@ -109,20 +114,36 @@ function completedOnTime(row: PmRow): boolean {
 }
 
 /**
- * MaintainX's red bucket: past its due day AND not done.
+ * Not on time: past its due day and undone, OR finished after its due day.
  *
- * Note what is NOT here. A work order finished LATE is not counted overdue,
- * because it is no longer "not done" -- MaintainX labels the red segment "Not
- * Done Overdue" and its counts only add up to the total if late completions
- * sit on the green side. That is strange, and it is what the reference report
- * does; `completedOnTime` is what to read if the strange part matters.
+ * THE SECOND CLAUSE IS THE WHOLE POINT, AND IT WAS WRONG ONCE ALREADY.
+ *
+ *   The first version excluded late completions, on the reading that
+ *   MaintainX's red segment is labelled "Not Done Overdue" and so covers only
+ *   work that is still undone. It reproduced the verified screenshot, and it
+ *   was useless in production: closing a work order LATE moved it out of the
+ *   red bucket, so finishing late IMPROVED the score. MEASURED the next
+ *   morning, all six trial sites read exactly 100% while Binghamton had in
+ *   fact completed 4 of 9 by their due dates. A gauge that reads 100%
+ *   everywhere is not a gauge.
+ *
+ *   The screenshot could not discriminate between the two rules because that
+ *   particular snapshot contained no late completions. Both produce 5 on time
+ *   / 2 overdue / 71.4% for it -- which is why the fixture still passes and
+ *   why it alone was never enough evidence.
+ *
+ * Work that is not due YET is still on time, untouched or not. That part is
+ * MaintainX's convention and it is kept, so the two screens agree.
  */
-function currentlyOverdue(row: PmRow, todayYmd: string): boolean {
-  if (row.status === "DONE") return false;
+function notOnTime(row: PmRow, todayYmd: string): boolean {
   if (!row.due_date) return false;
   const due = new Date(row.due_date);
   if (Number.isNaN(due.getTime())) return false;
-  return easternYmd(due) < todayYmd;
+  const dueYmd = easternYmd(due);
+
+  if (row.status !== "DONE") return dueYmd < todayYmd;
+  // Done, but after the day it was due.
+  return !completedOnTime(row);
 }
 
 /**
@@ -214,7 +235,7 @@ export async function fetchPmOnTime(input: {
   for (const row of rows) {
     if (row.mx_location_id === null) continue;
     const bucket = byLocation[row.mx_location_id] ?? empty();
-    const late = currentlyOverdue(row, todayYmd);
+    const late = notOnTime(row, todayYmd);
     const strict = completedOnTime(row);
     const done = row.status === "DONE";
 

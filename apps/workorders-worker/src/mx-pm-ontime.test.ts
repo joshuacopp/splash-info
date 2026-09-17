@@ -156,18 +156,36 @@ describe("classification", () => {
     expect(res?.overall).toMatchObject({ due: 1, onTime: 1, overdue: 0 });
   });
 
-  it("does not count a late completion as overdue, but keeps it out of completedOnTime", async () => {
-    // MaintainX's red segment is labelled "Not Done Overdue" and its counts
-    // only sum to the total if late completions sit on the green side.
+  it("counts a LATE completion as overdue", async () => {
+    // The case that broke production. Scoring late completions as on time
+    // meant closing a work order late moved it OUT of the red bucket, so
+    // finishing late improved the score -- and every site pinned at 100%.
     stubFetch([row({ due_date: "2026-09-14T18:00:00Z", completed_at: "2026-09-16T14:00:00Z" })]);
     const res = await fetchPmOnTime({ env: ENV, mxLocationIds: [1187635], now: WEDNESDAY });
     expect(res?.overall).toMatchObject({
       due: 1,
-      onTime: 1,
-      overdue: 0,
+      onTime: 0,
+      overdue: 1,
       completedOnTime: 0,
       completed: 1
     });
+  });
+
+  it("cannot be improved by closing something late", async () => {
+    // Stated as an invariant because it is the property that actually failed,
+    // and it is easy to reintroduce while chasing agreement with the report.
+    const overdueUndone = { due_date: "2026-09-14T18:00:00Z", status: "OPEN", completed_at: null };
+
+    stubFetch([row(overdueUndone)]);
+    const before = await fetchPmOnTime({ env: ENV, mxLocationIds: [1187635], now: WEDNESDAY });
+
+    vi.unstubAllGlobals();
+    // Same work order, now closed -- two days after it was due.
+    stubFetch([row({ due_date: "2026-09-14T18:00:00Z", completed_at: "2026-09-16T14:00:00Z" })]);
+    const after = await fetchPmOnTime({ env: ENV, mxLocationIds: [1187635], now: WEDNESDAY });
+
+    expect(after!.overall.onTime).toBe(before!.overall.onTime);
+    expect(after!.overall.overdue).toBe(before!.overall.overdue);
   });
 
   it("reads the due day in Eastern when UTC has already rolled over", async () => {
