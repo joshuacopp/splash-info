@@ -45,12 +45,17 @@
 -- short stays. The NY Warehouse is 7 vehicles averaging 8-20 minutes, which is
 -- a parts-pickup pattern; a home is one vehicle averaging hours.
 --
--- ONE CLUSTER IS UNRESOLVED and is intentionally not seeded here: a
--- residential address ~1.4 km from a site with 109 paid hours across FOUR
--- mechanics (one of them 131 visits averaging 28 minutes). Multi-vehicle says
--- facility, residential says home, and the two readings imply opposite
--- treatments. It stays in Unattributed until somebody who knows says which.
--- Guessing would either hide legitimate work or name somebody's house.
+-- REVERSE GEOCODING IS NOT AUTHORITATIVE ON WHAT A PLACE IS, and the CT
+-- Warehouse is the worked example. Its address reads as residential, so it was
+-- initially set aside as a possible home -- 109 paid hours that would have sat
+-- in Unattributed indefinitely on the strength of a street address. The
+-- operator identified it as the Connecticut warehouse.
+--
+-- The BEHAVIOURAL signal was the correct one all along and the address was the
+-- misleading one: four vehicles, 218 visits, 20-47 minute stays. That is a
+-- facility. A home is one vehicle and long stays. When the two disagree, ask a
+-- person -- and note which way the error runs, because guessing "home" hides
+-- real operating cost while guessing "facility" names somebody's house.
 
 create table if not exists public.mt_offsite_location (
   id           bigserial primary key,
@@ -66,8 +71,13 @@ alter table public.mt_offsite_location enable row level security;
 
 insert into mt_offsite_location (name, latitude, longitude, radius_m, cost_centre, note)
 select 'NY Warehouse', 42.974, -77.231, 200, 'SITE_SUPPORT',
-       'Operator-identified 2026-09-17. Shared: 7 mechanics, 40 visits, 8-20 min each -- a parts-pickup pattern, not a work location.'
+       'Operator-identified 2026-09-17. Shared: 7 mechanics, 47 visits, 8-20 min each -- a parts-pickup pattern, not a work location.'
 where not exists (select 1 from mt_offsite_location where name = 'NY Warehouse');
+
+insert into mt_offsite_location (name, latitude, longitude, radius_m, cost_centre, note)
+select 'CT Warehouse', 41.201, -73.198, 200, 'SITE_SUPPORT',
+       'Operator-identified 2026-09-17. Reverse geocoding reads as residential; the operator confirms it is the Connecticut warehouse. 4 mechanics, 218 visits, 20-47 min stays.'
+where not exists (select 1 from mt_offsite_location where name = 'CT Warehouse');
 
 -- Paid time spent at each named off-site location.
 create or replace view public.mt_offsite_time as
@@ -87,9 +97,14 @@ join paid p on p.device_id = g.device_id
  and g.arrived_at < p.end_utc and g.departed_at > p.start_utc
 group by o.id, o.name, o.cost_centre;
 
--- Measured on seeding: NY Warehouse, 47 visits, 7 vehicles, 14.2 paid hours.
--- Small against 859 h of Unattributed, and that is the honest picture: most of
--- the bucket is one-off stops -- fuel, food, a single call -- not recurring
--- places waiting to be named. Adding locations shrinks it slowly and will
--- never take it to zero, because a share of "stopped somewhere" is just a
--- working day.
+-- Measured on seeding:
+--   CT Warehouse   218 visits, 4 vehicles, 108.6 paid hours
+--   NY Warehouse    47 visits, 7 vehicles,  14.2 paid hours
+--   -------------------------------------------------------
+--                                          122.8 h, 14% of the 859 h bucket
+--
+-- The rest is mostly one-off stops -- fuel, food, a single call -- rather than
+-- recurring places waiting to be named. Adding locations shrinks Unattributed
+-- and will never take it to zero, because a share of "stopped somewhere" is
+-- just a working day. Two warehouses were worth 14% of it, which is a good
+-- return for two rows; the next ones will be worth far less.
