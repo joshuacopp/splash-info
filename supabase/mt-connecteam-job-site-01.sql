@@ -122,3 +122,70 @@ alter table public.mt_connecteam_job_site enable row level security;
 -- the convention as practised. Moving that time to overhead changes what each
 -- site is charged, so it is a decision for the operator, not a correction the
 -- tracker should apply silently.
+
+
+-- ===========================================================================
+-- 2026-09-17, LATER: THE API LIST CAME BACK, AND THE DERIVATION WAS TESTED
+-- ===========================================================================
+-- The operator produced a page of the Connecteam jobs API (200 of ~N jobs,
+-- alphabetical, "3" through "Eric Hartnagle"). It changes two things: the
+-- crosswalk can be checked against ground truth, and parts of it can be
+-- replaced by it.
+--
+-- A JOB CARRIES ITS SITE NUMBER IN `code` -- on SOME jobs. The field this
+-- header says does not exist does exist, unpopulated more often than not:
+-- 17 of ~200 jobs on that page have it. Where present it is authoritative
+-- ("Auburn" code 159). Where absent -- "Binghamton", "Cicero", "Chili",
+-- "Cortland" all have code "" -- the title still names the site, so a
+-- title-to-site match covers far more jobs than `code` alone.
+--
+-- THE TEST. 17 coded jobs; 13 are in this crosswalk. Derived site vs `code`:
+--
+--   tier             jobs  correct
+--   CONFIDENT           4      4     Auburn 159, Batavia II 157,
+--                                    Bedford 19, Derby-089 89
+--   WEAK                2      2     Commack-186, E.Northport-187
+--   TOO_FEW_SHIFTS      6      3     the 3 CapX jobs right; Blackwood-231
+--                                    (->75), Cherry Hill-232 (->233),
+--                                    Derby CapX (->60) wrong
+--   INCONSISTENT        1      0     Brighton-155 CapX (->150)
+--
+-- 9 of 13 overall, and the distribution is the point: EVERY CONFIDENT row is
+-- right, and EVERY error sits in a tier this header already refuses to use for
+-- cost attribution. The grading works. The four wrong answers are all 1-3
+-- shift jobs where the mechanic also called at a neighbour -- Cherry Hill-232
+-- resolved to 233, one site away.
+--
+-- This is a genuine out-of-sample test: `code` played no part in the
+-- derivation and was not known to exist when the tiers were set.
+--
+-- THE BLIND SPOT THE TITLES EXPOSE, WHICH THE TEST COULD NOT
+--   The method takes the modal site of vehicle residence, so it ALWAYS returns
+--   a site. It has no way to answer "this job is not a site at all", and the
+--   list is full of jobs that are not sites -- CRD, 101 Management, CC
+--   Management, Damage Claim, Breaks, Day Off.
+--
+--   Measured: "CC Management" (79 shifts) is mapped to site 122, and
+--   "CC-Management" (14 shifts) to site 221. Both are overhead jobs and
+--   neither is a site.
+--
+--   No cost is wrong today, because both landed in INCONSISTENT and
+--   TOO_FEW_SHIFTS and are excluded -- INCONSISTENT is what a job with no real
+--   site looks like from behaviour, which is the method half-working. But it
+--   is luck, not design: an overhead job whose holder happens to sit at one
+--   depot would grade CONFIDENT and be billed to that site with nothing to
+--   catch it. A title list removes the whole class by naming which jobs are
+--   sites instead of inferring it.
+--
+-- THE LARGEST JOB IN THE DATA IS UNRESOLVED. "CRD" (d26038b7) carries 354
+-- shifts -- more than any other job, and 13% of all 2,731 -- with no `code`,
+-- no GPS, and no crosswalk entry. 45 of the 151 jobs seen on shifts are
+-- likewise unresolved, together 995 shifts (36%). Whatever CRD is, it is the
+-- single biggest thing this tracker cannot currently attribute.
+--
+-- WHAT THE REST OF THE LIST IS WORTH. Pull the remaining pages and the
+-- resolution order becomes: `code` where present (authoritative) -> title
+-- matched to mt_site_name -> job GPS (some jobs carry lat/lon and a
+-- fenceSize) -> this behavioural crosswalk as the fallback for jobs that
+-- have none of the three. That inverts the current arrangement, where
+-- inference is the only source.

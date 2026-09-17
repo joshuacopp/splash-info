@@ -68,7 +68,8 @@ param(
     # run has already happened. Manual runs default to 0 and always do the work.
     [int]$IfStale = 0,
     [int]$MinPunchRows = 2000,
-    [int]$MinDwellRows = 2500
+    [int]$MinDwellRows = 2500,
+    [int]$MinShiftJobRows = 2000
 )
 
 $ErrorActionPreference = 'Stop'
@@ -365,28 +366,72 @@ Say "applying punches ..."     ; Invoke-Supabase $punchSql
 Say "applying dwell ..."       ; Invoke-Supabase $dwellSql
 if ($xwApply) { Say "applying crosswalk ..." ; Invoke-Supabase $xwApply }
 
-# mt_shift_site is derived inside Supabase from the crosswalk, so it is a
-# statement rather than a generated file. Re-derived every run: a shift whose
-# job was previously unresolved becomes attributable the moment its job earns
-# enough observations.
+# mt_shift_site: rebuilt from the shift -> job link and the crosswalk.
+#
+# THIS BLOCK REPLACES A CROSS JOIN THAT DESTROYED THE TABLE. The previous
+# version ran an `update mt_shift_site s ... from mt_connecteam_job_site x`
+# with NO condition relating s to x, because the table had no job_id to relate
+# them by. Every shift matched an arbitrary crosswalk row: all 1,723 collapsed
+# onto one site (125, Cicero) and the run reported OK. Full account in
+# supabase/mt-shift-site-repair-02.sql.
+#
+# Two rules this block exists to keep:
+#   1. NEVER maintain this table with a bare UPDATE against the crosswalk.
+#      The join key is job_id and it must appear in the statement.
+#   2. It is an INSERT ... ON CONFLICT, not an UPDATE, because the old
+#      statement had no insert path -- mt_shift_site could never acquire a
+#      shift it did not already have, so it would have silently frozen at its
+#      first build while punches kept arriving.
+$shiftJobCsv = Join-Path $work 'shift_job.csv'
+Say "exporting shift -> job link from Redshift ..."
+Invoke-Redshift (Join-Path $scriptDir 'queries\30_shift_job.sql') $shiftJobCsv
+$shiftJobRows = Row-Count $shiftJobCsv
+Say "shift -> job pairs exported: $shiftJobRows"
+if ($shiftJobRows -lt $MinShiftJobRows) {
+    throw "only $shiftJobRows shift->job pairs (floor $MinShiftJobRows). Refusing to apply - an export that returns almost nothing must not overwrite a good load."
+}
+
+Say "loading shift -> job link ..."
+$shiftJobDdl = Join-Path $work 'shift_job_ddl.sql'
+Write-Sql $shiftJobDdl @'
+-- client_min_messages: `create table if not exists` raises a NOTICE, and in
+-- PS 5.1 a native command's stderr becomes a TERMINATING ErrorRecord under
+-- $ErrorActionPreference='Stop' even on exit 0 -- the same trap documented
+-- above Invoke-Generator. `| Out-Null` does not suppress it. So the notice
+-- is silenced where it is raised rather than caught where it lands.
+set client_min_messages = warning;
+create table if not exists public.mt_shift_job (
+  shift_id text primary key,
+  job_id   text not null
+);
+alter table public.mt_shift_job enable row level security;
+truncate public.mt_shift_job;
+'@
+Invoke-Supabase $shiftJobDdl
+& psql (Resolve-SupabaseUrl) -v ON_ERROR_STOP=1 -P pager=off --no-psqlrc -c "\copy public.mt_shift_job (shift_id, job_id) from '$shiftJobCsv' with (format csv, header true)" | Out-Null
+if ($LASTEXITCODE -ne 0) { throw "loading mt_shift_job failed" }
+
 Say "re-deriving mt_shift_site ..."
 $shiftSiteSql = Join-Path $work 'shift_site.sql'
 Write-Sql $shiftSiteSql @'
--- mt_shift_site cannot be rebuilt from Supabase alone: the shift -> job link
--- lives only in Redshift raw_json. This refreshes the CONFIDENCE of rows we
--- already hold, which is what actually changes between runs.
-update mt_shift_site s
-   set confidence = case
-         when x.confidence = 'CONFIDENT'      then 'C'
-         when x.confidence = 'LIKELY'         then 'L'
-         when x.confidence = 'WEAK'           then 'W'
-         when x.confidence = 'TOO_FEW_SHIFTS' then 'F'
+-- Keyed on job_id. A statement without that join is the 2026-09-17 bug.
+insert into public.mt_shift_site (shift_id, job_id, site_number, confidence, derived_at)
+select j.shift_id, j.job_id, x.site_number,
+       case x.confidence
+         when 'CONFIDENT'      then 'C'
+         when 'LIKELY'         then 'L'
+         when 'WEAK'           then 'W'
+         when 'TOO_FEW_SHIFTS' then 'F'
          else 'I' end,
-       site_number = x.site_number,
-       derived_at = now()
-  from mt_connecteam_job_site x
- where x.site_number is not null
-   and s.site_number is distinct from x.site_number;
+       now()
+from mt_shift_job j
+join mt_connecteam_job_site x on x.job_id = j.job_id
+join mt_punch p on p.shift_id = j.shift_id
+on conflict (shift_id) do update
+   set job_id      = excluded.job_id,
+       site_number = excluded.site_number,
+       confidence  = excluded.confidence,
+       derived_at  = excluded.derived_at;
 '@
 Invoke-Supabase $shiftSiteSql
 
@@ -420,6 +465,23 @@ if ($LASTEXITCODE -eq 0 -and [int]$overlaps -gt 0) {
            "an upsert cannot replace a row whose derived arrived_at moved.")
 }
 Say "dwell overlap check: 0"
+
+# COLLAPSE ASSERTION. mt_shift_site is the CLAIM half of this tracker -- which
+# site each punch says the mechanic was at -- and on 2026-09-17 a cross join
+# flattened all 1,723 shifts onto one site while the run reported OK. Nothing
+# caught it, and nothing would have: no published figure reads the column, so
+# the dashboard stayed correct on top of a constant. The distinct-site count is
+# the cheapest thing that cannot stay right while the column is wrong.
+$siteSpread = (& psql (Resolve-SupabaseUrl) -t -A -P pager=off --no-psqlrc -c @'
+select count(distinct site_number) from mt_shift_site;
+'@)
+if ($LASTEXITCODE -eq 0 -and [int]$siteSpread -le 1) {
+    throw ("mt_shift_site resolves to $siteSpread distinct site(s) -- the shift " +
+           "-> site mapping has collapsed. The re-derive must join on job_id; " +
+           "an update against mt_connecteam_job_site with no join key is a " +
+           "cross join. See supabase/mt-shift-site-repair-02.sql.")
+}
+Say "mt_shift_site spread: $siteSpread sites"
 
 $stats = '{{"punch_rows":{0},"dwell_rows":{1},"crosswalk":{2}}}' -f `
          $punchRows, $dwellRows, $(if ($xwApply) { 'true' } else { 'false' })
