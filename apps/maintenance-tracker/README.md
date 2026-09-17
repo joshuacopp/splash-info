@@ -7,6 +7,30 @@ Plan: `PLAN.md` (rev 8). Session map: `HANDOFF.md`.
 Export → build → apply, the same shape as `apps/damage-worker/daily`, because
 the compute belongs in Redshift and the joining belongs in Supabase.
 
+## Keeping it current
+
+**Do not run the steps below by hand for a routine refresh.** `refresh.ps1`
+does the whole chain and is what the scheduled tasks call:
+
+```powershell
+setx SUPABASE_DB_URL "<Supabase SESSION POOLER connection string>"   # once, then reopen the shell
+.\register_schedule.ps1        # daily 06:30 punches+dwell, weekly Sun 05:30 full
+.\refresh.ps1                  # or run it now
+.\refresh.ps1 -DryRun          # export + build, write nothing
+```
+
+The MaintainX half of the tracker keeps itself current (webhooks plus three
+crons on workorders-worker). **The Connecteam and Geotab halves do not** --
+they come out of Redshift, which Cloudflare cannot reach, so they run here on
+Task Scheduler exactly as `apps/damage-worker/daily` does for car counts.
+Without that, `/admin/maintenance` goes on rendering September for ever while
+looking exactly as authoritative as it does today.
+
+Every write is an idempotent upsert over the whole window, so a missed run
+needs no backfill -- just run it again.
+
+The manual steps below are for development and one-off investigation.
+
 ```powershell
 # dump site centres once: site_number,latitude,longitude,geofence_radius_m
 #

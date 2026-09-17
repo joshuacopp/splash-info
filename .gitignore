@@ -59,3 +59,9 @@ coverage/
 # rewriting the commit. HANDOFF.md and README.md are tracked and carry no roster.
 apps/maintenance-tracker/PLAN.md
 apps/MAINTENANCE_TRACKER_PLAN.md
+
+# maintenance-tracker refresh working files. Regenerated on every run from
+# Redshift + Supabase; committing them would freeze a snapshot that looks
+# current and is not.
+apps/maintenance-tracker/work/
+apps/maintenance-tracker/logs/
