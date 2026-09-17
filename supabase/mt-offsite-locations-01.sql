@@ -127,3 +127,47 @@ group by o.id, o.name, o.cost_centre;
 --   Unattributed  1,269 h   27.6%   (was 1,392 before the carve-out)
 --   Management      967 h   21.1%
 --   Warehouse       123 h    2.7%
+
+
+-- ===========================================================================
+-- 2026-09-17, LATER STILL: A TRACKED PERSON WHOSE TIME IS NOT A SITE COST
+-- ===========================================================================
+-- Operator: "IT does more work remotely and isn't billed to sites. Declercq is
+-- also IT."
+--
+-- Chris DeClercq sat in mt_device_person as a MECHANIC with a Geotab vehicle
+-- (b5), so the tracker was charging his on-site hours to sites. He is IT.
+-- He is the first case of a TRACKED person whose cost is overhead, and he
+-- breaks an assumption baked in since Phase 3b: that everyone with a device
+-- bills to a site.
+--
+-- Two separate corrections, and the second is much larger than the first:
+--
+--   30 h  were charged to sites and should not have been.
+--  356 h  sat in UNATTRIBUTED because his GPS rarely puts him at a site --
+--         he works remotely. That is not unexplained time; it is overhead,
+--         and filing it as "we do not know" was wrong.
+--
+-- So the rule is now WHOLE-PERSON: if a role's expense_to is MANAGEMENT, every
+-- paid hour of that person is Management no matter where GPS puts them.
+-- mt_site_month excludes them from site charges entirely, and
+-- mt_cost_centre_month adds their full paid time to Management.
+--
+-- Effect, with the invariant still holding at exactly 4,595 paid hours:
+--
+--                  before    after
+--   Sites          2,236     2,206     (-30, wrongly charged)
+--   Management       967     1,353     (+386)
+--   Unattributed   1,269       913     (-356, explained, not unknown)
+--   Warehouse        123       122
+--
+-- Unattributed fell from 27.6% to 19.9% of paid time, and NOT by geofencing
+-- anything. The single largest reduction in "we cannot explain this" came from
+-- being told what someone's job is. That is worth remembering the next time
+-- this bucket looks like a data problem.
+--
+-- implies_site_visit stays TRUE for DeClercq alone among IT, because he is the
+-- only one with a vehicle: when he does drive out, GPS evidence is genuinely
+-- expected. The other IT staff have no device and it stays false. Cost and
+-- trackability are independent, which is the whole reason these are two
+-- columns, and this row is the proof.
