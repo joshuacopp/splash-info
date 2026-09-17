@@ -78,3 +78,47 @@ alter table public.mt_connecteam_job_site enable row level security;
 
 -- Row data is generated; see queries/30_job_site.sql and the insert applied
 -- 2026-09-17 (106 rows). Not reproduced here -- it is derived, not source.
+
+-- ===========================================================================
+-- THE OVERHEAD ("travel home at end of day") JOB -- LOOKED FOR, NOT FOUND IN USE
+-- ===========================================================================
+-- The operator states there is an overhead job for the drive home, punched on
+-- leaving the last site of the day. Three tests were run to find it, and the
+-- answer matters for PLAN.md 8's overhead-travel bucket.
+--
+--   1. Jobs whose vehicle never enters any fence. Only two qualify, at 12 and
+--      7 crew shifts. Far too small to be a company-wide end-of-day habit
+--      (13 mechanics x ~45 working days would be hundreds).
+--
+--   2. Jobs that are the last punch of the day. FIRST ATTEMPT WAS CONFOUNDED
+--      and is recorded so it is not repeated: several jobs score 95-100%
+--      last-of-day, but their avg_punches_that_day is 1 -- on a single-punch
+--      day "last" is also "first" and the test is a tautology. Restricted to
+--      days with 2+ punches the field flattens to a 56% maximum and NO job
+--      stands out as an end-of-day job.
+--
+--   3. So where does the drive home live? Crew shifts, multi-punch days:
+--
+--        earlier punches        565 punches   43% end inside a fence   174 min
+--        LAST punch of the day  284 punches    4% end inside a fence   250 min
+--
+--      The last punch of the day almost never ends at a Splash site, and runs
+--      ~76 minutes longer than the others -- about a commute.
+--
+-- CONCLUSION: the overhead job is a convention that is not being punched. The
+-- drive home is absorbed into the TAIL OF THE LAST SITE PUNCH, so it is
+-- currently billed to that site rather than to overhead.
+--
+-- This does not block PLAN.md 8 -- it is the reason 8 defines the buckets by
+-- where a leg TERMINATES rather than by what the punch claims. Overhead travel
+-- is recoverable from GPS alone: the trailing movement of a punch that ends
+-- outside every fence. It also predicts the bucket will be substantial, since
+-- 96% of last punches qualify, and 8 already says so: "thirteen mechanics each
+-- ending a day somewhere that is not a car wash is thirteen legs a day".
+--
+-- WHAT NOT TO DO WITH THIS. It is a finding about a punching convention, not
+-- about any mechanic. Nobody is over-billing a site on purpose by failing to
+-- switch jobs at the end of the day, and the sites' current charges reflect
+-- the convention as practised. Moving that time to overhead changes what each
+-- site is charged, so it is a decision for the operator, not a correction the
+-- tracker should apply silently.
