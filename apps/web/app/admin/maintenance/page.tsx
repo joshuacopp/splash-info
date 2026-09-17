@@ -95,8 +95,6 @@ export default async function MaintenancePage() {
     return { kind: k, hours: rows.reduce((a, c) => a + Number(c.hours), 0), count: rows.length };
   });
 
-  const latestSites = sites.filter((s) => s.month === latest).slice(0, 20);
-
   // Work orders for the rendered month, bucketed by site so each <details>
   // can read its own list without rescanning the array.
   const woBySite = new Map<number, typeof work_orders>();
@@ -106,6 +104,22 @@ export default async function MaintenancePage() {
     if (list) list.push(w);
     else woBySite.set(w.site_number, [w]);
   }
+
+  // EVERY site, not a top-N. A truncated list is useless for the question this
+  // table actually gets asked ("what happened at MY site"), and the cap also
+  // hid the more interesting row: sites with work orders and NO recorded hours.
+  //
+  // The list is the UNION of sites with GPS hours and sites with reactive work
+  // orders closed this month. Showing only the former under-reports by 13 --
+  // 56 sites have hours, 69 have work orders -- and every one of those 13 is a
+  // site where work demonstrably happened and the tracker cannot see the visit.
+  const hoursBySite = new Map(
+    sites.filter((s) => s.month === latest).map((s) => [s.site_number, s])
+  );
+  const allSiteNumbers = [
+    ...new Set([...hoursBySite.keys(), ...woBySite.keys()])
+  ].sort((a, b) => siteLabel(a).localeCompare(siteLabel(b)));
+
   const weeks = [...new Set(mechanics.map((m) => m.week_starting))].sort().reverse();
   const latestWeek = weeks[0];
   const latestMechanics: MechanicRow[] = mechanics
@@ -197,7 +211,7 @@ export default async function MaintenancePage() {
       <p className="mb-3 text-sm text-splash-navy/70">
         Hours are charged to the site the vehicle actually reached, so a leg ending at a
         different site than the punch claimed is charged where it arrived. Expand a row
-        for the reactive work orders closed there this month.
+        for the reactive work orders closed there this month, and who closed them.
       </p>
       {/* One <details> per site rather than a table: expanding a row to show
           its work orders needs no client island, no state, and keeps the whole
@@ -212,22 +226,32 @@ export default async function MaintenancePage() {
           <span className="w-20 text-right font-semibold">Work orders</span>
         </div>
 
-        {latestSites.map((s) => {
-          const wos = woBySite.get(s.site_number) ?? [];
+        {allSiteNumbers.map((sn) => {
+          const s = hoursBySite.get(sn);
+          const wos = woBySite.get(sn) ?? [];
+          const noHours = !s;
           return (
-            <details key={s.site_number} className="group border-b border-gray-light/60 last:border-0">
+            <details key={sn} className="group border-b border-gray-light/60 last:border-0">
               <summary className="flex cursor-pointer list-none flex-wrap items-baseline px-4 py-2.5 text-sm hover:bg-gray-50">
                 <span className="flex-1 font-semibold text-splash-navy">
                   <span className="mr-1.5 inline-block text-splash-navy/40 transition-transform group-open:rotate-90">
                     &rsaquo;
                   </span>
-                  {siteLabel(s.site_number)}
-                  <span className="ml-2 text-xs font-normal text-splash-navy/45">#{s.site_number}</span>
+                  {siteLabel(sn)}
+                  <span className="ml-2 text-xs font-normal text-splash-navy/45">#{sn}</span>
+                  {noHours && wos.length > 0 ? (
+                    <span
+                      className="ml-2 rounded bg-amber-200 px-1.5 py-0.5 text-[0.625rem] font-bold uppercase tracking-wide text-amber-900"
+                      title="Work orders were closed here, but no crew vehicle was recorded on site. Usually a dead transponder, someone outside the tracked crew, or the site closing its own ticket."
+                    >
+                      no visit recorded
+                    </span>
+                  ) : null}
                 </span>
-                <span className="w-20 text-right tabular-nums text-splash-navy/80">{h(s.onsite_h)}</span>
-                <span className="w-20 text-right tabular-nums text-splash-navy/80">{h(s.inbound_travel_h)}</span>
-                <span className="w-16 text-right font-semibold tabular-nums text-splash-navy">{h(s.total_h)}</span>
-                <span className="w-16 text-right tabular-nums text-splash-navy/80">{pct(s.pct_drive_time)}</span>
+                <span className="w-20 text-right tabular-nums text-splash-navy/80">{s ? h(s.onsite_h) : "—"}</span>
+                <span className="w-20 text-right tabular-nums text-splash-navy/80">{s ? h(s.inbound_travel_h) : "—"}</span>
+                <span className="w-16 text-right font-semibold tabular-nums text-splash-navy">{s ? h(s.total_h) : "—"}</span>
+                <span className="w-16 text-right tabular-nums text-splash-navy/80">{s ? pct(s.pct_drive_time) : "—"}</span>
                 <span className="w-20 text-right tabular-nums text-splash-navy/60">{wos.length}</span>
               </summary>
 
@@ -239,7 +263,16 @@ export default async function MaintenancePage() {
                     or for a job closed in a different month.
                   </p>
                 ) : (
-                  <ul className="space-y-1.5">
+                  <>
+                    {noHours ? (
+                      <p className="mb-2 text-xs leading-relaxed text-splash-navy/70">
+                        Work happened here, but no crew vehicle was recorded on site.
+                        That is a gap in the tracking, not evidence the work was not
+                        done &mdash; a dead transponder, somebody outside the tracked
+                        crew, or the site closing its own ticket all look like this.
+                      </p>
+                    ) : null}
+                    <ul className="space-y-1.5">
                     {wos.map((w) => (
                       <li key={w.id} className="flex flex-wrap items-baseline gap-x-2 text-[0.8125rem]">
                         <a
@@ -278,24 +311,26 @@ export default async function MaintenancePage() {
                         ) : null}
                       </li>
                     ))}
-                  </ul>
+                    </ul>
+                  </>
                 )}
               </div>
             </details>
           );
         })}
 
-        {latestSites.length === 0 ? (
+        {allSiteNumbers.length === 0 ? (
           <p className="px-4 py-6 text-center text-sm text-splash-navy/60">
-            No site hours this month.
+            No site activity this month.
           </p>
         ) : null}
       </div>
-      {sites.filter((s) => s.month === latest).length > 20 ? (
-        <p className="mt-2 text-xs text-splash-navy/60">
-          Showing the 20 largest of {sites.filter((s) => s.month === latest).length} sites.
-        </p>
-      ) : null}
+      <p className="mt-2 text-xs text-splash-navy/60">
+        All {allSiteNumbers.length} sites with activity this month, alphabetically.{" "}
+        {hoursBySite.size} have recorded hours;{" "}
+        {allSiteNumbers.length - hoursBySite.size} had work orders closed with no crew
+        vehicle seen on site.
+      </p>
 
       {/* Transponder health. Above the mechanic table on purpose: a silent
           device is indistinguishable from an idle person in every column
