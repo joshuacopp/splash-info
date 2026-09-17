@@ -76,6 +76,18 @@ export interface DeviceHealthRow {
   punch_days_21d: number;
   device_status: "OK" | "NOT_WORKING" | "TRANSPONDER_SILENT" | "TRANSPONDER_PATCHY";
 }
+export interface WorkloadRow {
+  connecteam_user_id: number;
+  display_name: string;
+  open_assigned: number;
+  open_in_progress: number;
+  open_on_hold: number;
+  open_over_30d: number;
+  closed_7d: number;
+  closed_30d: number;
+  median_days_to_close: number | null;
+  mean_days_to_close: number | null;
+}
 export interface MaintenanceSummary {
   generated_at: string;
   cost_centres: CostCentreRow[];
@@ -86,6 +98,7 @@ export interface MaintenanceSummary {
   site_names: Record<string, string>;
   work_orders: SiteWorkOrderRow[];
   devices: DeviceHealthRow[];
+  workload: WorkloadRow[];
 }
 
 export type SummaryResult =

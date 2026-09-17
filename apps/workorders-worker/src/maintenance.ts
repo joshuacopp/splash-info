@@ -113,6 +113,18 @@ export interface DeviceHealthRow {
   punch_days_21d: number;
   device_status: "OK" | "NOT_WORKING" | "TRANSPONDER_SILENT" | "TRANSPONDER_PATCHY";
 }
+export interface WorkloadRow {
+  connecteam_user_id: number;
+  display_name: string;
+  open_assigned: number;
+  open_in_progress: number;
+  open_on_hold: number;
+  open_over_30d: number;
+  closed_7d: number;
+  closed_30d: number;
+  median_days_to_close: number | null;
+  mean_days_to_close: number | null;
+}
 export interface SiteWorkOrderRow {
   month: string;
   site_number: number;
@@ -145,7 +157,7 @@ export async function handleMaintenanceSummary(
   // Independent reads, issued together. They share no ordering and the page
   // needs all of them before it can render anything, so sequential would just
   // add up the latencies.
-  const [costs, sites, mechanics, tiers, crew, siteNames, workOrders, devices] =
+  const [costs, sites, mechanics, tiers, crew, siteNames, workOrders, devices, workload] =
     await Promise.all([
     pgSelect<CostCentreRow>(
       env,
@@ -180,11 +192,12 @@ export async function handleMaintenanceSummary(
         firstOfPreviousMonth(new Date()) +
         "&order=completed_at.desc"
     ),
-    pgSelect<DeviceHealthRow>(env, "mt_device_health?select=*&order=device_status,device_id")
+    pgSelect<DeviceHealthRow>(env, "mt_device_health?select=*&order=device_status,device_id"),
+    pgSelect<WorkloadRow>(env, "mt_mechanic_workload?select=*&order=closed_30d.desc")
   ]);
 
   const firstError = [
-    costs, sites, mechanics, tiers, crew, siteNames, workOrders, devices
+    costs, sites, mechanics, tiers, crew, siteNames, workOrders, devices, workload
   ].find((r) => !r.ok);
   if (firstError && !firstError.ok) {
     console.error("[maintenance.summary] read failed:", firstError.error);
@@ -192,7 +205,7 @@ export async function handleMaintenanceSummary(
   }
   if (
     !costs.ok || !sites.ok || !mechanics.ok || !tiers.ok || !crew.ok ||
-    !siteNames.ok || !workOrders.ok || !devices.ok
+    !siteNames.ok || !workOrders.ok || !devices.ok || !workload.ok
   ) {
     return jsonError(502, "maintenance read failed");
   }
@@ -230,7 +243,8 @@ export async function handleMaintenanceSummary(
     crew_names: names,
     site_names: siteNameMap,
     work_orders: workOrders.rows,
-    devices: devices.rows
+    devices: devices.rows,
+    workload: workload.rows
   });
 }
 

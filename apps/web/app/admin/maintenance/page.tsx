@@ -74,8 +74,10 @@ export default async function MaintenancePage() {
       </section>
     );
   }
-  const { cost_centres, sites, mechanics, tiers, crew_names, site_names, work_orders, devices } =
-    result.data;
+  const {
+    cost_centres, sites, mechanics, tiers, crew_names, site_names, work_orders,
+    devices, workload
+  } = result.data;
 
   const badDevices = devices.filter((d) => d.device_status !== "OK");
   const silentIds = new Set(
@@ -485,6 +487,74 @@ export default async function MaintenancePage() {
           </tbody>
         </table>
       </div>
+
+      {/* Work-order workload. Separate from the hours table above because the
+          periods differ — hours are one week, these are a live snapshot and a
+          30-day window — and silently mixing them in one table would invite
+          people to read a rate that does not exist. */}
+      <h2 className="mb-1 mt-8 text-lg font-bold text-splash-navy">
+        Reactive work orders by mechanic
+      </h2>
+      <p className="mb-3 text-sm text-splash-navy/70">
+        Open is a live snapshot of what is assigned now; closed and days-to-close cover
+        the last 30 days.
+      </p>
+      <div className="overflow-x-auto rounded-splash-lg border-[1.5px] border-gray-light bg-white shadow-splash-card">
+        <table className="w-full min-w-[720px] text-sm">
+          <thead className="border-b border-gray-light bg-gray-50 text-left">
+            <tr className="text-[0.75rem] uppercase tracking-wide text-splash-navy/60">
+              <th className="px-4 py-2.5 font-semibold">Mechanic</th>
+              <th className="px-4 py-2.5 text-right font-semibold">Open</th>
+              <th className="px-4 py-2.5 text-right font-semibold">In progress</th>
+              <th className="px-4 py-2.5 text-right font-semibold">Open &gt; 30d</th>
+              <th className="px-4 py-2.5 text-right font-semibold">Closed 7d</th>
+              <th className="px-4 py-2.5 text-right font-semibold">Closed 30d</th>
+              <th className="px-4 py-2.5 text-right font-semibold">Median days</th>
+              <th className="px-4 py-2.5 text-right font-semibold">Mean days</th>
+            </tr>
+          </thead>
+          <tbody>
+            {workload.map((w) => (
+              <tr key={w.connecteam_user_id} className="border-b border-gray-light/60 last:border-0">
+                <td className="px-4 py-2.5 font-semibold text-splash-navy">{w.display_name}</td>
+                <td className="px-4 py-2.5 text-right tabular-nums text-splash-navy/80">{w.open_assigned}</td>
+                <td className="px-4 py-2.5 text-right tabular-nums text-splash-navy/60">{w.open_in_progress}</td>
+                <td
+                  className={`px-4 py-2.5 text-right tabular-nums ${
+                    w.open_over_30d >= 5 ? "font-semibold text-amber-700" : "text-splash-navy/60"
+                  }`}
+                  title="Assigned work orders created more than 30 days ago and still not closed."
+                >
+                  {w.open_over_30d}
+                </td>
+                <td className="px-4 py-2.5 text-right tabular-nums text-splash-navy/80">{w.closed_7d}</td>
+                <td className="px-4 py-2.5 text-right font-semibold tabular-nums text-splash-navy">{w.closed_30d}</td>
+                <td
+                  className="px-4 py-2.5 text-right tabular-nums text-splash-navy/80"
+                  title="Typical time from work order created to closed. Median, because the mean is dragged by a few very old tickets."
+                >
+                  {w.median_days_to_close ?? "—"}
+                </td>
+                <td
+                  className="px-4 py-2.5 text-right tabular-nums text-splash-navy/45"
+                  title="Mean. Shown only so a gap between it and the median is visible — that gap IS the stale-ticket backlog."
+                >
+                  {w.mean_days_to_close ?? "—"}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <p className="mt-2 text-xs leading-relaxed text-splash-navy/60">
+        <strong>Days-to-close is ticket age, not work time.</strong> It measures created
+        to closed, so a two-hour job raised in July and closed in September reads as 60
+        days. Median leads because the mean across the crew is 8.7 days against a median
+        of 1.2 &mdash; a thin tail of stale tickets dragging the average to seven times
+        typical. Where a mechanic&rsquo;s mean is far above their median, the backlog is
+        the story, not the pace. A work order with two assignees counts for both, so the
+        Open column sums to more than the real backlog.
+      </p>
 
       {/* Evidence tiers */}
       <h2 className="mb-1 mt-8 text-lg font-bold text-splash-navy">Evidence coverage</h2>

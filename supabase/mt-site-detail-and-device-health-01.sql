@@ -187,3 +187,34 @@ left join gps   g on g.device_id = d.device_id;
 -- The SITE_ACCOUNT heuristic is narrow on purpose: the name ends in "wash" AND
 -- every ticket it has ever closed is at one site. A real person surnamed Wash
 -- would fail the second condition.
+
+-- ===========================================================================
+-- mt_mechanic_workload -- open and closed counts, and time to close
+-- ===========================================================================
+-- Added 2026-09-17 on operator request: mechanic hours next to open and closed
+-- work orders, plus an average time to close.
+--
+-- MEDIAN, NOT MEAN, AND THAT IS NOT A DETAIL. Measured across the crew over 30
+-- days: mean 8.7 days, median 1.2, p90 18.7. The mean is SEVEN TIMES typical
+-- because a thin tail of stale tickets drags it, so "average time to close" as
+-- normally computed describes a job nobody actually does. Both are exposed and
+-- the median leads.
+--
+-- The gap between a person's median and their mean IS the interesting number,
+-- which is why the mean is kept rather than dropped:
+--   Derrick Grauer   median 2.0   mean 26.7   9 tickets open over 30 days
+--   Chris DeClercq   median 1.8   mean 17.5   9 open over 30 days
+--   Ryan Parry       median 0.9   mean  2.3   5 open over 30 days
+-- The first two are not slower at the work; they are carrying old tickets.
+-- open_over_30d says the same thing directly and is the column to act on.
+--
+-- DAYS-TO-CLOSE IS TICKET AGE, NOT WORK TIME. It measures mx_created_at to
+-- completed_at, so a two-hour job raised in July and closed in September reads
+-- as sixty days. It cannot be read as effort, and MaintainX has no field that
+-- can -- labor_seconds is logged on a minority of work orders.
+--
+-- OPEN COUNTS DOUBLE-COUNT ACROSS PEOPLE, deliberately. assignee_ids is an
+-- array and a work order with two assignees is genuinely open for both, so the
+-- column is right per person and wrong as a total. Do not sum it to get the
+-- backlog; 323 reactive work orders are open and 43 of them have no assignee
+-- at all, which no per-person column can show.
