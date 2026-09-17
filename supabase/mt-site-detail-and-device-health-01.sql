@@ -264,3 +264,40 @@ left join gps   g on g.device_id = d.device_id;
 -- (Josh Copp, 2 work orders). Nobody has said how it should be treated and it
 -- is too small to matter, but it stays visible rather than being quietly
 -- filed somewhere convenient.
+
+
+-- ===========================================================================
+-- 2026-09-17, FINAL PASS: regional managers are overhead, and NONE was wrong
+-- ===========================================================================
+-- Operator: "I'm also a regional manager. Regional managers do not get billed
+-- to sites, they are overhead."
+--
+-- Regional managers were sitting on expense_to = 'NONE'. That was a muddle of
+-- mine: I had been using NONE to mean "not field labour", when it should mean
+-- "not a person with billable hours at all". A salaried manager HAS hours --
+-- they are simply not a site's hours. All regional managers are now
+-- MANAGEMENT, and NONE is reserved for shared per-location logins only.
+--
+-- CMMS admins were moved to MANAGEMENT on the same reasoning and MARKED AS AN
+-- ASSUMPTION in their notes: the operator has now stated the rule for IT and
+-- for regional managers but not for them, and every non-field role stated so
+-- far is overhead. Leaving real employees on a value that means "not a person"
+-- is worse than a marked assumption. Same for the head of maintenance.
+--
+-- All of these are INERT today -- none of them has a tracked vehicle, so no
+-- hours flow through expense_to. It is still worth being right: the day one of
+-- them is given a vehicle, mt_cost_centre_month routes their entire paid time
+-- on this column alone, exactly as it now does for DeClercq.
+--
+-- THE SITE_ACCOUNT HEURISTIC WAS MEASURING THE WRONG THING AND IS FIXED.
+-- It required a name ending in "wash" AND at most 3 distinct sites, the site
+-- count being a guard against a real person surnamed Wash. That guard does not
+-- discriminate: over all time these shared logins touch 7-10 sites, because a
+-- site covers for a neighbour now and then -- Geneva 2 Wash spans 10, more
+-- than several real mechanics. It silently excluded four genuine site accounts
+-- on the strength of their cover work, and would have kept excluding more.
+--
+-- The guard is now the check that actually separates the two populations: a
+-- shared login never owns a tracked vehicle. Verified zero SITE_ACCOUNT rows
+-- have one. 78 site accounts, and every closer in the window is classified --
+-- nothing is left UNCLASSIFIED.
