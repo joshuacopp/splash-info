@@ -59,6 +59,8 @@ export interface SiteWorkOrderRow {
   completed_at: string;
   labor_h: number | null;
   total_cost_cents: number | null;
+  completer_id: number | null;
+  completed_by: string | null;
 }
 export interface DeviceHealthRow {
   device_id: string;

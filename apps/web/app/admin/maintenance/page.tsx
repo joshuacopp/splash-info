@@ -258,6 +258,14 @@ export default async function MaintenancePage() {
                             {w.priority}
                           </span>
                         ) : null}
+                        {w.completed_by ? (
+                          <span
+                            className="text-xs text-splash-navy/70"
+                            title="Who marked it Done in MaintainX — not necessarily the only person who worked it."
+                          >
+                            {w.completed_by}
+                          </span>
+                        ) : null}
                         <span className="tabular-nums text-xs text-splash-navy/55">
                           {new Date(w.completed_at).toLocaleDateString("en-US", {
                             month: "short",

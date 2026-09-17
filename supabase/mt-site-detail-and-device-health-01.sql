@@ -65,6 +65,17 @@
 --
 -- total_cost_cents is CENTS (see the MaintainX money glossary entry), and
 -- labor_seconds carries no labour COST -- MaintainX exposes duration, not rate.
+--
+-- completer_id is populated on 100% of recent reactive work orders and all 56
+-- distinct completers resolve against maintainx_users. The integration bot
+-- (520201), which accounts for 100 of the first 741 status changes in the
+-- event log, closes NONE of them -- so unlike the IN_PROGRESS intervals this
+-- column needs no bot exclusion. Re-check that if it ever starts closing work.
+--
+-- Worth noting from the first look: the two mechanics whose transponders are
+-- dead, b8 and b9, are also the two who closed the MOST reactive work orders
+-- since August (94 and 78). The GPS silence is a hardware fault, not a
+-- activity signal, and this column is the nearest independent evidence of it.
 
 create or replace view public.mt_site_name as
 select l.site_number,
@@ -83,9 +94,22 @@ select date_trunc('month', w.completed_at)::date     as month,
        coalesce(w.site_number, l.site_number)        as site_number,
        w.id, w.sequential_id, w.title, w.priority, w.status, w.completed_at,
        round((w.labor_seconds / 3600.0)::numeric, 1) as labor_h,
-       w.total_cost_cents
+       w.total_cost_cents,
+       w.completer_id,
+       -- MaintainX's own spelling, not mt_device_person's. This column answers
+       -- "who pressed Done in MaintainX", so MaintainX's name is the honest
+       -- label even where the two differ (Chuck vs Charles, Cinfue vs
+       -- Cifuentes). Falls back to the raw id rather than blank: an unresolved
+       -- completer means a stale maintainx_users cache, which is worth seeing.
+       --
+       -- IT IS THE CLOSER, NOT NECESSARILY THE WORKER. One person can close a
+       -- job somebody else did, and a supervisor closing out a backlog looks
+       -- identical here to a mechanic finishing their own work. Do not read
+       -- this column as a productivity count.
+       coalesce(u.full_name, 'user ' || w.completer_id::text) as completed_by
 from mx_work_order w
 left join public.locations l on l.maintainx_id = w.mx_location_id
+left join maintainx_users u on u.id = w.completer_id
 where w.type = 'REACTIVE'
   and w.deleted_at is null
   and w.completed_at is not null
