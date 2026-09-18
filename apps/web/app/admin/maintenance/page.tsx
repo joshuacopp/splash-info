@@ -55,9 +55,29 @@ const TIER_LABEL: Record<string, string> = {
   WO_NO_FIELD_EVIDENCE: "No field evidence"
 };
 
+/**
+ * Hours, to one decimal below ten and whole above it.
+ *
+ * Whole-hour rounding everywhere was actively misleading at the small end,
+ * which is where most single rows live: a 0.51 h management punch rendered as
+ * "1 h", nearly double, and 1.73 h and 2.06 h both rendered as "2 h" — three
+ * different facts collapsed into two indistinguishable labels. A tenth of an
+ * hour is six minutes, which is finer than punch data deserves to be read at,
+ * so it is the floor rather than a default.
+ *
+ * Above ten hours the decimal stops earning its place: nobody reads 44.9 h
+ * differently from 45 h, and the extra digit only adds noise to the totals
+ * that are meant to be scanned.
+ */
 function h(n: number | null | undefined): string {
   if (n === null || n === undefined) return "—";
-  return Number(n).toLocaleString(undefined, { maximumFractionDigits: 0 });
+  const v = Number(n);
+  if (!Number.isFinite(v)) return "—";
+  const digits = Math.abs(v) < 10 && v !== Math.trunc(v) ? 1 : 0;
+  return v.toLocaleString(undefined, {
+    minimumFractionDigits: digits,
+    maximumFractionDigits: digits
+  });
 }
 function pct(n: number | null | undefined): string {
   return n === null || n === undefined ? "—" : `${Number(n).toFixed(0)}%`;
@@ -853,16 +873,35 @@ GPS to corroborate.
                       </span>
                     ) : null}
                     <span className="tabular-nums font-semibold text-splash-navy">{h(d.punch_h)} h</span>
-                    <span className="text-splash-navy/60">
-                      {Number(d.at_claimed_site_h) > 0
-                        ? `${h(d.at_claimed_site_h)} h on site`
-                        : "not seen on site"}
-                    </span>
-                    <span className="text-splash-navy/60">
-                      {d.wo_closed_at_claimed_site
-                        ? `${d.wo_closed_at_claimed_site} closed here`
-                        : "nothing closed here"}
-                    </span>
+                    {/* A row with no claimed site has no site to be seen at and
+                        nothing there to close. Saying "not seen on site" about
+                        an hour punched to CC Management reads as a mechanic who
+                        went nowhere and did nothing, when the truth is that the
+                        question does not apply -- the two are opposite findings
+                        rendered identically. Absence of evidence is only worth
+                        printing where evidence was possible. */}
+                    {d.claimed_site_name ? (
+                      <>
+                        <span className="text-splash-navy/60">
+                          {Number(d.at_claimed_site_h) > 0
+                            ? `${h(d.at_claimed_site_h)} h on site`
+                            : "not seen on site"}
+                        </span>
+                        <span className="text-splash-navy/60">
+                          {d.wo_closed_at_claimed_site
+                            ? `${d.wo_closed_at_claimed_site} closed here`
+                            : "nothing closed here"}
+                        </span>
+                      </>
+                    ) : (
+                      <span className="text-splash-navy/45">
+                        {d.work_kind === "OVERHEAD"
+                          ? "no site — overhead"
+                          : d.work_kind === "PTO"
+                            ? "no site — PTO"
+                            : "no site claimed"}
+                      </span>
+                    )}
                   </summary>
                   <div className="mx-2.5 mb-2 grid gap-x-6 gap-y-1.5 rounded-splash bg-gray-light/30 px-3 py-2.5 text-xs sm:grid-cols-2">
                     <Fact label="Punched" value={`${h(d.punch_h)} h`} />
@@ -876,18 +915,31 @@ GPS to corroborate.
                             : ""
                       }`}
                     />
-                    <Fact label="At the claimed site" value={`${h(d.at_claimed_site_h)} h`} />
+                    {/* Same rule as the summary line: only report against a
+                        claimed site when there is one. "At the claimed site:
+                        0 h" on an overhead punch is not a measurement. */}
+                    {d.claimed_site_name ? (
+                      <Fact label="At the claimed site" value={`${h(d.at_claimed_site_h)} h`} />
+                    ) : (
+                      <Fact label="At the claimed site" value="no site claimed" />
+                    )}
                     <Fact
-                      label="At another site"
+                      label={d.claimed_site_name ? "At another site" : "Seen at a site"}
                       value={`${h(d.at_other_site_h)} h${d.other_sites ? ` — ${d.other_sites}` : ""}`}
                     />
                     <Fact label="Stopped off site" value={`${h(d.stopped_offsite_h)} h`} />
                     <Fact label="Moving or no GPS" value={`${h(d.moving_or_no_gps_h)} h`} />
                     <Fact
                       label="Work orders closed"
-                      value={`${d.wo_closed_at_claimed_site} here${
-                        d.wo_closed_elsewhere ? `, ${d.wo_closed_elsewhere} elsewhere` : ""
-                      }`}
+                      value={
+                        d.claimed_site_name
+                          ? `${d.wo_closed_at_claimed_site} here${
+                              d.wo_closed_elsewhere ? `, ${d.wo_closed_elsewhere} elsewhere` : ""
+                            }`
+                          : d.wo_closed_elsewhere
+                            ? `${d.wo_closed_elsewhere} elsewhere`
+                            : "none"
+                      }
                     />
                     <Fact label="Shape of day" value={d.evidence_flag.replaceAll("_", " ").toLowerCase()} />
                     {d.wo_titles ? (
