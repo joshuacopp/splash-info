@@ -19,7 +19,7 @@ export const MAINTENANCE_TABS = [
   { id: "overview", label: "Overview" },
   { id: "sites", label: "Sites" },
   { id: "mechanics", label: "Mechanics" },
-  { id: "days", label: "Day detail" },
+  { id: "review", label: "Location review" },
   { id: "evidence", label: "Evidence" }
 ] as const;
 

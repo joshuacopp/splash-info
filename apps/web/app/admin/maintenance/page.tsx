@@ -159,11 +159,53 @@ export default async function MaintenancePage({
     ...new Set([...hoursBySite.keys(), ...woBySite.keys()])
   ].sort((a, b) => siteLabel(a).localeCompare(siteLabel(b)));
 
-  const noHourSites = allSiteNumbers.filter((sn) => !hoursBySite.has(sn));
-  const gapSites = noHourSites.filter((sn) =>
-    (woBySite.get(sn) ?? []).some((w) => w.implies_site_visit)
-  ).length;
-  const explainedSites = noHourSites.length - gapSites;
+  const billedFor = (sn: number) => {
+    const s = hoursBySite.get(sn);
+    return s ? Number(s.punched_h) + Number(s.punched_capx_h) : 0;
+  };
+  const seenFor = (sn: number) => {
+    const s = hoursBySite.get(sn);
+    return s ? Number(s.total_h) + Number(s.capx_total_h) : 0;
+  };
+
+  // Matched on maintainx_user_id, never on name: mt_device_person says
+  // "Charles Zimmer" where MaintainX says "Chuck Zimmer", so a name join would
+  // drop precisely the person whose transponder is dead.
+  const silentMxIds = new Set(
+    devices
+      .filter((d) => d.device_status !== "OK" && d.maintainx_user_id !== null)
+      .map((d) => d.maintainx_user_id as number)
+  );
+
+  // Charged vs actual, per site. Lives on the review tab, not the site
+  // breakdown: the operator reads Sites to see what a site is charged, and
+  // mixing "can GPS corroborate it" into that column set made a dead
+  // transponder look like an absent mechanic.
+  const siteReview = allSiteNumbers
+    .map((sn) => {
+      const billed = billedFor(sn);
+      const seen = seenFor(sn);
+      const wos = woBySite.get(sn) ?? [];
+      return {
+        sn,
+        billed,
+        seen,
+        pct: billed > 0 ? (100 * seen) / billed : null,
+        // Only a MECHANIC closing a ticket implies a vehicle should have been
+        // here. IT, CMMS admins, RMs and the site login do not.
+        expectsVisit: wos.some((w) => w.implies_site_visit),
+        silentCloser: wos.some(
+          (w) => w.completer_id !== null && silentMxIds.has(w.completer_id)
+        )
+      };
+    })
+    .filter((r) => r.billed > 0 || r.seen > 0)
+    .sort((a, b) => b.billed - a.billed);
+  const unseen = siteReview.filter((r) => r.billed > 0 && r.seen === 0);
+
+  const billedAll = siteReview.reduce((a, r) => a + r.billed, 0);
+  const seenAll = siteReview.reduce((a, r) => a + r.seen, 0);
+  const overallPct = billedAll > 0 ? (100 * seenAll) / billedAll : null;
 
   const weeks = [...new Set(mechanics.map((m) => m.week_starting))].sort().reverse();
   const latestWeek = weeks[0];
@@ -315,9 +357,9 @@ export default async function MaintenancePage({
         By site &mdash; {latest ? monthLabel(latest) : ""}
       </h2>
       <p className="mb-3 text-sm text-splash-navy/70">
-        Hours are charged to the site the vehicle actually reached, so a leg ending at a
-        different site than the punch claimed is charged where it arrived. Expand a row
-        for the reactive work orders closed there this month, and who closed them.
+        What each site is charged: the hours mechanics punched into its jobs in
+        Connecteam, split into routine maintenance and capital work. Expand a row for
+        the reactive work orders closed there this month, and who closed them.
       </p>
       {/* One <details> per site rather than a table: expanding a row to show
           its work orders needs no client island, no state, and keeps the whole
@@ -325,21 +367,15 @@ export default async function MaintenancePage({
       <div className="overflow-hidden rounded-splash-lg border-[1.5px] border-gray-light bg-white shadow-splash-card">
         <div className="hidden border-b border-gray-light bg-gray-50 px-4 py-2.5 text-[0.75rem] uppercase tracking-wide text-splash-navy/60 sm:flex">
           <span className="flex-1 font-semibold">Site</span>
-          <span className="w-20 text-right font-semibold">On-site</span>
-          <span className="w-20 text-right font-semibold">Travel in</span>
-          <span className="w-16 text-right font-semibold">Total</span>
-          <span className="w-16 text-right font-semibold">Drive</span>
-          <span className="w-20 text-right font-semibold">Work orders</span>
+          <span className="w-24 text-right font-semibold">Billed</span>
+          <span className="w-24 text-right font-semibold">Capital</span>
+          <span className="w-24 text-right font-semibold">Work orders</span>
         </div>
 
         {allSiteNumbers.map((sn) => {
           const s = hoursBySite.get(sn);
           const wos = woBySite.get(sn) ?? [];
-          const noHours = !s;
-          // Only a MECHANIC closing a ticket implies a vehicle should have
-          // been here. IT, CMMS admins, regional managers and the site's own
-          // login do not, so those sites are explained rather than flagged.
-          const mechanicGap = noHours && wos.some((w) => w.implies_site_visit);
+
           return (
             <details key={sn} className="group border-b border-gray-light/60 last:border-0">
               <summary className="flex cursor-pointer list-none flex-col gap-1 px-4 py-2.5 text-sm hover:bg-gray-50 sm:flex-row sm:flex-nowrap sm:items-baseline sm:gap-0">
@@ -349,28 +385,20 @@ export default async function MaintenancePage({
                   </span>
                   {siteLabel(sn)}
                   <span className="ml-2 text-xs font-normal text-splash-navy/45">#{sn}</span>
-                  {noHours && mechanicGap ? (
-                    <span
-                      className="ml-2 rounded bg-amber-200 px-1.5 py-0.5 text-[0.625rem] font-bold uppercase tracking-wide text-amber-900 whitespace-nowrap"
-                      title="A mechanic closed a ticket here but no crew vehicle was recorded on site. Usually a dead transponder."
-                    >
-                      no visit recorded
-                    </span>
-                  ) : noHours && wos.length > 0 ? (
-                    <span
-                      className="ml-2 rounded bg-gray-light px-1.5 py-0.5 text-[0.625rem] font-bold uppercase tracking-wide text-splash-navy/60 whitespace-nowrap"
-                      title="Closed by IT, a CMMS admin, a regional manager, or the site's own login — none of which expense to the site or imply a mechanic drove here."
-                    >
-                      no site visit expected
-                    </span>
-                  ) : null}
                 </span>
                 <span className="flex flex-wrap items-baseline gap-x-4 gap-y-0.5 pl-5 sm:contents">
-                  <Figure label="On-site" width="sm:w-20" value={s ? h(s.onsite_h) : "—"} />
-                  <Figure label="Travel in" width="sm:w-20" value={s ? h(s.inbound_travel_h) : "—"} />
-                  <Figure label="Total" width="sm:w-16" strong value={s ? h(s.total_h) : "—"} />
-                  <Figure label="Drive" width="sm:w-16" value={s ? pct(s.pct_drive_time) : "—"} />
-                  <Figure label="Work orders" width="sm:w-20" muted value={wos.length} />
+                  <Figure
+                    label="Billed"
+                    width="sm:w-24"
+                    strong
+                    value={s && Number(s.punched_h) > 0 ? `${h(s.punched_h)} h` : "—"}
+                  />
+                  <Figure
+                    label="Capital"
+                    width="sm:w-24"
+                    value={s && Number(s.punched_capx_h) > 0 ? `${h(s.punched_capx_h)} h` : "—"}
+                  />
+                  <Figure label="Work orders" width="sm:w-24" muted value={wos.length} />
                 </span>
               </summary>
 
@@ -383,19 +411,6 @@ export default async function MaintenancePage({
                   </p>
                 ) : (
                   <>
-                    {mechanicGap ? (
-                      <p className="mb-2 text-xs leading-relaxed text-splash-navy/70">
-                        A mechanic closed work here but no crew vehicle was recorded on
-                        site. That is a gap in the tracking, not evidence the work was
-                        not done &mdash; a dead transponder looks exactly like this.
-                      </p>
-                    ) : noHours ? (
-                      <p className="mb-2 text-xs leading-relaxed text-splash-navy/60">
-                        No mechanic visit is expected here. These were closed by IT, a
-                        CMMS administrator, a regional manager, or the site&rsquo;s own
-                        login &mdash; none of which expense time to the site.
-                      </p>
-                    ) : null}
                     <ul className="space-y-1.5">
                     {wos.map((w) => (
                       <li key={w.id} className="flex flex-wrap items-baseline gap-x-2 text-[0.8125rem]">
@@ -469,12 +484,11 @@ export default async function MaintenancePage({
           </p>
         ) : null}
       </div>
-      <p className="mt-2 text-xs text-splash-navy/60">
-        All {allSiteNumbers.length} sites with activity this month, alphabetically.{" "}
-        {hoursBySite.size} have recorded hours. Of the rest,{" "}
-        {gapSites} had a mechanic close work with no vehicle recorded on site (a
-        tracking gap, usually a dead transponder) and {explainedSites} were closed by
-        IT, admin, a regional manager or the site itself, where no visit is expected.
+      <p className="mt-2 text-xs leading-relaxed text-splash-navy/60">
+        All {allSiteNumbers.length} sites with activity this month, alphabetically.
+        Billed and capital hours are what mechanics punched into this site&rsquo;s jobs
+        in Connecteam. Whether GPS can corroborate them is a separate question, and
+        lives on the Location review tab.
       </p>
 
       </>
@@ -665,8 +679,92 @@ export default async function MaintenancePage({
       </>
       ) : null}
 
-      {tab === "days" ? (
+      {tab === "review" ? (
       <>
+      <h2 className="mb-1 mt-8 text-lg font-bold text-splash-navy">
+        Charged vs actual &mdash; by site
+      </h2>
+      <p className="mb-3 text-sm text-splash-navy/70">
+        What each site was billed against what GPS can place there. This is the
+        comparison the tracker exists for, kept off the Sites tab so a charged figure
+        is never confused with a corroborated one.
+      </p>
+      <div className="mb-3 rounded-splash-lg border-[1.5px] border-amber-300 bg-amber-50 p-4">
+        <p className="text-sm leading-relaxed text-splash-navy/80">
+          <strong>Corroborated is expected to be well under 100%.</strong> A billed
+          hour legitimately contains travel, an unfenced stop, or time at a site whose
+          fence is wrong. Across all sites it currently runs at{" "}
+          {overallPct === null ? "—" : `${overallPct.toFixed(0)}%`}. Read a row against
+          its neighbours, not against 100.
+        </p>
+        <p className="mt-2 text-sm leading-relaxed text-splash-navy/80">
+          <strong>Zero is usually a dead transponder, not an absent mechanic.</strong>{" "}
+          Rows marked <span className="font-semibold">transponder down</span> had their
+          work closed by someone whose device is silent or patchy, so no GPS could have
+          been recorded whatever they did.
+        </p>
+      </div>
+      <div className="overflow-hidden rounded-splash-lg border-[1.5px] border-gray-light bg-white shadow-splash-card">
+        <div className="hidden border-b border-gray-light bg-gray-50 px-4 py-2.5 text-[0.75rem] uppercase tracking-wide text-splash-navy/60 sm:flex">
+          <span className="flex-1 font-semibold">Site</span>
+          <span className="w-24 text-right font-semibold">Billed</span>
+          <span className="w-24 text-right font-semibold">Placed by GPS</span>
+          <span className="w-28 text-right font-semibold">Corroborated</span>
+        </div>
+        {siteReview.map((r) => (
+          <div
+            key={r.sn}
+            className="flex flex-col gap-1 border-b border-gray-light/60 px-4 py-2.5 text-sm last:border-0 sm:flex-row sm:flex-nowrap sm:items-baseline sm:gap-0"
+          >
+            <span className="min-w-0 flex-1 font-semibold text-splash-navy">
+              {siteLabel(r.sn)}
+              <span className="ml-2 text-xs font-normal text-splash-navy/45">#{r.sn}</span>
+              {r.billed > 0 && r.seen === 0 ? (
+                r.silentCloser ? (
+                  <span
+                    className="ml-2 whitespace-nowrap rounded bg-amber-200 px-1.5 py-0.5 text-[0.625rem] font-bold uppercase tracking-wide text-amber-900"
+                    title="Work here was closed by a mechanic whose transponder is silent or patchy. No GPS could have been recorded."
+                  >
+                    transponder down
+                  </span>
+                ) : r.expectsVisit ? (
+                  <span
+                    className="ml-2 whitespace-nowrap rounded bg-amber-200 px-1.5 py-0.5 text-[0.625rem] font-bold uppercase tracking-wide text-amber-900"
+                    title="Billed hours and a mechanic-closed ticket, but no vehicle placed here. Worth a look."
+                  >
+                    billed, not placed
+                  </span>
+                ) : (
+                  <span
+                    className="ml-2 whitespace-nowrap rounded bg-gray-light px-1.5 py-0.5 text-[0.625rem] font-bold uppercase tracking-wide text-splash-navy/60"
+                    title="No mechanic-closed work here, so no vehicle is expected."
+                  >
+                    no visit expected
+                  </span>
+                )
+              ) : null}
+            </span>
+            <Figure label="Billed" width="sm:w-24" strong value={`${h(r.billed)} h`} />
+            <Figure label="Placed by GPS" width="sm:w-24" value={`${h(r.seen)} h`} />
+            <Figure
+              label="Corroborated"
+              width="sm:w-28"
+              muted
+              value={r.pct === null ? "—" : `${r.pct.toFixed(0)}%`}
+            />
+          </div>
+        ))}
+        {siteReview.length === 0 ? (
+          <p className="px-4 py-6 text-center text-sm text-splash-navy/60">
+            No site activity this month.
+          </p>
+        ) : null}
+      </div>
+      <p className="mt-2 mb-2 text-xs leading-relaxed text-splash-navy/60">
+        {unseen.length} of {siteReview.length} sites were billed hours with nothing
+        placed by GPS. Sorted by billed hours, largest first.
+      </p>
+
       {/* Per-mechanic day drill-down. Claim, presence and output side by side,
           deliberately not collapsed into a score -- see the caveat below. */}
       <h2 className="mb-1 mt-8 text-lg font-bold text-splash-navy">Mechanic day detail</h2>

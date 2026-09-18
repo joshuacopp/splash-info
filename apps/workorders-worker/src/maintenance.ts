@@ -88,6 +88,9 @@ export interface SiteRow {
   capx_travel_h: number;
   capx_total_h: number;
   overhead_h: number;
+  /** BILLED hours: what the punch claimed for this site. */
+  punched_h: number;
+  punched_capx_h: number;
 }
 export interface MechanicRow {
   connecteam_user_id: number;
@@ -117,6 +120,9 @@ export interface DeviceHealthRow {
   gps_days_21d: number;
   punch_days_21d: number;
   device_status: "OK" | "NOT_WORKING" | "TRANSPONDER_SILENT" | "TRANSPONDER_PATCHY";
+  /** Joined on id, never on name: the two systems disagree
+   *  ("Charles Zimmer" here, "Chuck Zimmer" in MaintainX). */
+  maintainx_user_id: number | null;
 }
 export interface WorkloadRow {
   connecteam_user_id: number;
