@@ -342,8 +342,8 @@ export default async function MaintenancePage({
           const mechanicGap = noHours && wos.some((w) => w.implies_site_visit);
           return (
             <details key={sn} className="group border-b border-gray-light/60 last:border-0">
-              <summary className="flex cursor-pointer list-none flex-wrap items-baseline px-4 py-2.5 text-sm hover:bg-gray-50">
-                <span className="flex-1 font-semibold text-splash-navy">
+              <summary className="flex cursor-pointer list-none flex-col gap-1 px-4 py-2.5 text-sm hover:bg-gray-50 sm:flex-row sm:flex-nowrap sm:items-baseline sm:gap-0">
+                <span className="min-w-0 flex-1 font-semibold text-splash-navy">
                   <span className="mr-1.5 inline-block text-splash-navy/40 transition-transform group-open:rotate-90">
                     &rsaquo;
                   </span>
@@ -351,25 +351,27 @@ export default async function MaintenancePage({
                   <span className="ml-2 text-xs font-normal text-splash-navy/45">#{sn}</span>
                   {noHours && mechanicGap ? (
                     <span
-                      className="ml-2 rounded bg-amber-200 px-1.5 py-0.5 text-[0.625rem] font-bold uppercase tracking-wide text-amber-900"
+                      className="ml-2 rounded bg-amber-200 px-1.5 py-0.5 text-[0.625rem] font-bold uppercase tracking-wide text-amber-900 whitespace-nowrap"
                       title="A mechanic closed a ticket here but no crew vehicle was recorded on site. Usually a dead transponder."
                     >
                       no visit recorded
                     </span>
                   ) : noHours && wos.length > 0 ? (
                     <span
-                      className="ml-2 rounded bg-gray-light px-1.5 py-0.5 text-[0.625rem] font-bold uppercase tracking-wide text-splash-navy/60"
+                      className="ml-2 rounded bg-gray-light px-1.5 py-0.5 text-[0.625rem] font-bold uppercase tracking-wide text-splash-navy/60 whitespace-nowrap"
                       title="Closed by IT, a CMMS admin, a regional manager, or the site's own login — none of which expense to the site or imply a mechanic drove here."
                     >
                       no site visit expected
                     </span>
                   ) : null}
                 </span>
-                <span className="w-20 text-right tabular-nums text-splash-navy/80">{s ? h(s.onsite_h) : "—"}</span>
-                <span className="w-20 text-right tabular-nums text-splash-navy/80">{s ? h(s.inbound_travel_h) : "—"}</span>
-                <span className="w-16 text-right font-semibold tabular-nums text-splash-navy">{s ? h(s.total_h) : "—"}</span>
-                <span className="w-16 text-right tabular-nums text-splash-navy/80">{s ? pct(s.pct_drive_time) : "—"}</span>
-                <span className="w-20 text-right tabular-nums text-splash-navy/60">{wos.length}</span>
+                <span className="flex flex-wrap items-baseline gap-x-4 gap-y-0.5 pl-5 sm:contents">
+                  <Figure label="On-site" width="sm:w-20" value={s ? h(s.onsite_h) : "—"} />
+                  <Figure label="Travel in" width="sm:w-20" value={s ? h(s.inbound_travel_h) : "—"} />
+                  <Figure label="Total" width="sm:w-16" strong value={s ? h(s.total_h) : "—"} />
+                  <Figure label="Drive" width="sm:w-16" value={s ? pct(s.pct_drive_time) : "—"} />
+                  <Figure label="Work orders" width="sm:w-20" muted value={wos.length} />
+                </span>
               </summary>
 
               <div className="border-t border-gray-light/60 bg-gray-50/60 px-4 py-3">
@@ -845,5 +847,47 @@ function Fact({ label, value }: { label: string; value: string }) {
       <span className="font-semibold text-splash-navy/80">{label}: </span>
       {value}
     </p>
+  );
+}
+
+/**
+ * One figure in a site row.
+ *
+ * Two layouts from one set of markup. Below `sm` the row stacks and each
+ * figure carries its own label, because the column header is hidden there and
+ * a bare wrapped number is unreadable -- which is exactly what portrait looked
+ * like before. From `sm` up the wrapper is display:contents, so these become
+ * direct flex children of the summary again and the fixed widths still line up
+ * with the header row.
+ *
+ * `width` is an sm-prefixed class on purpose: at mobile width the figures
+ * are auto-width labelled pairs, not columns. Keep the values in step with
+ * the header spans above if either changes.
+ */
+function Figure({
+  label,
+  value,
+  width,
+  strong,
+  muted
+}: {
+  label: string;
+  value: string | number;
+  width: string;
+  strong?: boolean;
+  muted?: boolean;
+}) {
+  const tone = strong
+    ? "font-semibold text-splash-navy"
+    : muted
+      ? "text-splash-navy/60"
+      : "text-splash-navy/80";
+  return (
+    <span className={`w-auto tabular-nums ${tone} sm:shrink-0 sm:text-right ${width}`}>
+      <span className="mr-1 text-[0.6875rem] font-semibold uppercase tracking-wide text-splash-navy/45 sm:hidden">
+        {label}
+      </span>
+      {value}
+    </span>
   );
 }
