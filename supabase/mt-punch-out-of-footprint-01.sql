@@ -1,3 +1,8 @@
+-- UNITS: distances in these comments are MILES and FEET, which is what the
+-- operator reads. Stored values stay metric (locations.geofence_radius_m, and
+-- the metre arithmetic in the equirectangular distance formula) and are given
+-- in parentheses where a comment quotes one, so the prose still ties to the
+-- code. The raw data has no units at all -- Geotab supplies degrees.
 -- mt-punch-out-of-footprint-01.sql
 --
 -- Records the Connecteam punches whose phone coordinates sit far outside the
@@ -12,9 +17,10 @@
 --   visible in one place where it can be argued with.
 --
 -- THE THRESHOLD IS A ROUND NUMBER, NOT A DISCOVERY
---   50 km. The distance distribution has no natural cliff -- 473 punches are
---   within 300 m of a site, 1,003 within 5 km, 585 within 50 km, and then it
---   thins to 94. 50 km is simply "further than a mechanic plausibly drives
+--   31 miles (stored as 50,000 m -- in_distance_m is metres). The distance
+--   distribution has no natural cliff -- 473 punches are
+--   within 1,000 ft of a site, 1,003 within 3 miles, 585 within 31 miles, and
+--   then it thins to 94. 31 miles is simply "further than a mechanic plausibly drives
 --   between a Splash site and the next one". Move it if that is wrong.
 --
 -- WHAT THIS IS NOT EVIDENCE OF
@@ -40,11 +46,13 @@ select p.shift_id,
        greatest(coalesce(p.in_distance_m, 0),
                 coalesce(p.out_distance_m, 0)) as furthest_m
   from public.mt_punch p
+ -- 50,000 m = 31 miles. The threshold stays in metres because the column is
+ -- metres; converting it here would change which punches are flagged.
  where p.in_distance_m  > 50000
     or p.out_distance_m > 50000;
 
 comment on view public.mt_punch_out_of_footprint is
-'Punches whose phone coordinates are more than 50 km from the nearest Splash
+'Punches whose phone coordinates are more than 31 miles from the nearest Splash
 site, recorded as they exist. NOT a fraud signal -- see the header of
 supabase/mt-punch-out-of-footprint-01.sql before drawing any conclusion.
 Rows with no coordinates at all (544 of 2,699, almost all source_type=admin)
@@ -62,8 +70,8 @@ can never appear here: absence of a location is not distance from one.';
 --   users 13333061 and 9611831  BOTH MECHANICS  10 shifts  2026-08-23..08-27
 --     THE CLEAREST THING IN THIS VIEW, and it only reads correctly if you
 --     include the clock-out side. On 2026-08-23 both clocked IN near a
---     Splash site -- 4 km and 27 km -- and clocked OUT at ~41.6 N, -93.8 W
---     (Des Moines, Iowa area), 1,256 km away, after 668 and 728 minutes. That
+--     Splash site -- 2.5 and 17 miles -- and clocked OUT at ~41.6 N, -93.8 W
+--     (Des Moines, Iowa area), 780 miles away, after 668 and 728 minutes. That
 --     is a shift whose length IS the drive. They then worked 2026-08-24..08-27
 --     from the same Iowa coordinates, 591-840 minutes a day, and these 10
 --     shifts are 10 of the 11 mechanic shifts in this view.
@@ -85,12 +93,12 @@ can never appear here: absence of a location is not distance from one.';
 --     (~42.4 N, -87.9 W, Sep 15). Moves around; each cluster is contiguous.
 --
 --   user 19146811  not a mechanic  1 shift  2026-09-16
---     Honolulu (21.3 N, -157.8 W), 8,537 km, 121 min. A single day, and the
+--     Honolulu (21.3 N, -157.8 W), 5,305 miles, 121 min. A single day, and the
 --     day this was recorded.
 --
 --   remaining singles/pairs: Maine (~44.4,-68.2), Vermont/NH border
 --     (~42.9,-72.9), Adirondacks (~43.8,-73.8), New Jersey (~40.8,-74.5),
---     Rhode Island (~41.6,-71.7 -- 83 km, a mechanic), the Carolinas.
+--     Rhode Island (~41.6,-71.7 -- 52 miles, a mechanic), the Carolinas.
 --     Mostly one day each, mostly summer.
 --
 -- THE TIMEZONE COLUMN IS NOT AN INDEPENDENT CHECK ON THE COORDINATES.
@@ -100,4 +108,4 @@ can never appear here: absence of a location is not distance from one.';
 --   as America/Chicago on 8/24-8/26 and America/New_York on 8/27. Do not treat
 --   a non-Eastern timezone as a signal, and do not treat an Eastern one as
 --   reassurance. 2,680 of 2,699 shifts say America/New_York including every
---   one of the 1,615 km Florida punches.
+--   one of the 1,003 mile Florida punches.

@@ -1,3 +1,8 @@
+-- UNITS: distances in these comments are MILES and FEET, which is what the
+-- operator reads. Stored values stay metric (locations.geofence_radius_m, and
+-- the metre arithmetic in the equirectangular distance formula) and are given
+-- in parentheses where a comment quotes one, so the prose still ties to the
+-- code. The raw data has no units at all -- Geotab supplies degrees.
 -- mt-offsite-locations-01.sql
 --
 -- Named places that are NOT car wash sites but where crew legitimately stop --
@@ -11,12 +16,12 @@
 -- hours were landing in "stopped somewhere with no geofence". Measured
 -- 2026-09-17, distance from the nearest site fence, paid time only:
 --
---   within 150 m past the fence      28 h    3.3%
---   within 1 km past the fence       88 h   10.1%
---   1-5 km away                     375 h   43.7%
---   5-50 km away                    394 h   45.9%
+--   within 500 ft past the fence     28 h    3.3%
+--   within 0.6 miles past the fence  88 h   10.1%
+--   0.6-3 miles away                375 h   43.7%
+--   3-31 miles away                 394 h   45.9%
 --
--- Widening every radius to 150 m recovers 3%. Even an absurd 1 km radius --
+-- Widening every radius to 500 ft recovers 3%. Even an absurd 0.6 mile radius --
 -- which would swallow neighbouring businesses and overlap adjacent sites --
 -- recovers 10%. Roughly NINE TENTHS of that time is spent more than a
 -- kilometre from any Splash site, so it is genuinely elsewhere and not a
@@ -29,7 +34,7 @@
 -- RESIDENTIAL ADDRESSES ARE DELIBERATELY EXCLUDED AND MUST STAY EXCLUDED
 -- ===========================================================================
 -- The largest recurring off-site clusters are mechanics' homes. The biggest is
--- 179 paid hours on a SINGLE vehicle 19 km from any site; the operator
+-- 179 paid hours on a SINGLE vehicle 12 miles from any site; the operator
 -- confirmed it as a home address, and confirmed two others.
 --
 -- They are not in this table and must not be added:

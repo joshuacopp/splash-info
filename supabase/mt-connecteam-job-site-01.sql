@@ -27,7 +27,7 @@
 --
 --   Residence is the SPAN between first and last ping inside the fence, never
 --   the ping COUNT. Geotab goes quiet while parked (Layer B header: 25,491 of
---   25,534 gaps over 5 minutes involve under 100 m of movement), so a 3-hour
+--   25,534 gaps over 5 minutes involve under 330 ft of movement), so a 3-hour
 --   stay can be two pings while a drive-past at 5-second intervals is dozens.
 --   Counting pings ranks the drive-past first. This is the same trap the dwell
 --   sessionisation hit from the other direction.

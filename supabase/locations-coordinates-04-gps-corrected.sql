@@ -1,3 +1,8 @@
+-- UNITS: distances in these comments are MILES and FEET, which is what the
+-- operator reads. Stored values stay metric (locations.geofence_radius_m, and
+-- the metre arithmetic in the equirectangular distance formula) and are given
+-- in parentheses where a comment quotes one, so the prose still ties to the
+-- code. The raw data has no units at all -- Geotab supplies degrees.
 -- locations-coordinates-04-gps-corrected.sql
 --
 -- Corrects five site coordinates that were geocoded to the wrong place, using
@@ -8,16 +13,16 @@
 -- ===========================================================================
 -- On 2026-09-17 the operator asked whether the geofences were too tight, and
 -- the answer given was NO: only 3.3% of unattributed paid time sits within
--- 150 m of a fence and ~90% is over a kilometre from one, so the time was
+-- 500 ft of a fence and ~90% is over half a mile from one, so the time was
 -- called "genuinely elsewhere".
 --
 -- THAT ANALYSIS MEASURED DISTANCE TO FENCES THAT ARE THEMSELVES MISPLACED. A
--- truck standing in the Blackwood wash is 6.6 km from Blackwood's recorded
+-- truck standing in the Blackwood wash is 4.1 miles from Blackwood's recorded
 -- coordinates, so it was scored as "over a kilometre from any site" -- it was
 -- the very thing the question was trying to detect.
 --
 -- What survives: widening the RADIUS would not have helped, and still would
--- not. You cannot close a 6.6 km gap with a bigger circle. The error was in
+-- not. You cannot close a 4.1 mile gap with a bigger circle. The error was in
 -- the fence's LOCATION, which no radius check would ever surface.
 --
 -- THE DETECTOR that generalises, and is worth re-running as sites are added:
@@ -31,11 +36,12 @@
 -- Geocoding the street address is what produced the wrong values in the first
 -- place (see locations-coordinates-03-geocoded.sql). The centroid of where
 -- three or four different trucks actually stop is a direct measurement of the
--- thing the fence is for. Cluster spreads here are 18-126 m, so the sites are
+-- thing the fence is for. Cluster spreads here are 60-415 ft, so the sites are
 -- tight and the centroid is well determined.
 --
--- Radius set to 200 m on four of the five: it covers Middletown's 126 m spread with
--- margin, and a wash lot plus its queue is bigger than the 100 m that three of
+-- Radius set to 656 ft (200 m) on four of the five: it covers Middletown's
+-- 415 ft spread with margin, and a wash lot plus its queue is bigger than the
+-- 328 ft that three of
 -- these carried.
 --
 -- ===========================================================================
@@ -57,7 +63,7 @@
 --
 -- SINGLE-TRUCK CLUSTERS ARE NEVER CANDIDATES, however concentrated the job
 -- claim. A mechanic who always punches one site and parks at home produces a
--- cluster that is 100% that job, 69 km away; proposing it would move a site's
+-- cluster that is 100% that job, 43 miles away; proposing it would move a site's
 -- geofence onto somebody's house. Two or more trucks is the floor, and the
 -- privacy rule in mt-offsite-locations-01.sql applies here too.
 --
@@ -75,21 +81,21 @@
 -- hours were always site time; they were being filed as unexplained.
 
 -- Previous values, for reversal:
---   57  Middletown  41.462128, -74.408341  r=100   (4,731 m from truth)
---   86  Newburgh    41.517857, -74.062170  r=100   (1,200 m)
---  147  Oswego      43.460966, -76.484950  r=250   (  339 m)
---  149  Hamburg     42.789696, -78.811012  r=250   (  623 m)
---  231  Blackwood   39.807706, -75.034880  r=100   (6,604 m)
+--   57  Middletown  41.462128, -74.408341  r=328 ft  (2.9 miles from truth)
+--   86  Newburgh    41.517857, -74.062170  r=328 ft  (0.75 miles)
+--  147  Oswego      43.460966, -76.484950  r=820 ft  (1,110 ft)
+--  149  Hamburg     42.789696, -78.811012  r=820 ft  (2,040 ft)
+--  231  Blackwood   39.807706, -75.034880  r=328 ft  (4.1 miles)
 
 update public.locations set latitude = 41.422231, longitude = -74.427798, geofence_radius_m = 200 where site_number = 57;
 update public.locations set latitude = 41.508030, longitude = -74.068348, geofence_radius_m = 200 where site_number = 86;
 update public.locations set latitude = 43.462233, longitude = -76.481010, geofence_radius_m = 200 where site_number = 147;
--- Hamburg gets 120 m, not 200. The wash is an outparcel INSIDE the McKinley
+-- Hamburg gets 394 ft (120 m), not 656. The wash is an outparcel INSIDE the McKinley
 -- Mall lot, and the centre here is where the trucks park rather than the
--- wash's street address. A 200 m circle there would also enclose Best Buy,
+-- wash's street address. A 656 ft circle there would also enclose Best Buy,
 -- Firestone and Old Navy, so a parts stop at Best Buy would be credited as
 -- on-site time at Hamburg -- the same false positive this file exists to
--- remove, relocated. The cluster spread is 33 m, so 120 m is ample.
+-- remove, relocated. The cluster spread is 108 ft, so 394 ft is ample.
 -- ANY future site in a shared retail lot needs the same treatment: a fence
 -- sized to the wash, not to the parking lot it sits in.
 update public.locations set latitude = 42.784091, longitude = -78.810574, geofence_radius_m = 120 where site_number = 149;

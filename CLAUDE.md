@@ -199,6 +199,16 @@ If any of these are missing, stop and report it instead of guessing.
 - Don't repeatedly ask the operator to redact output that contains
   credentials/PII. Either ask for output in a form that doesn't include
   it, or extract the safe portion programmatically.
+- **Distances shown to the operator are MILES and FEET.** This is a US
+  business and the operator reads imperial. The underlying data has no units
+  (Geotab supplies degrees), so metric was only ever a choice made in code.
+  Stored values stay metric where a column already says so —
+  `locations.geofence_radius_m`, `mt_punch.in_distance_m`, and the metre
+  arithmetic in the equirectangular distance formula — because renaming those
+  buys nothing and converting a stored threshold would change which rows it
+  selects. Quote the metric value in parentheses whenever a comment or a
+  database COMMENT refers to one of them, so the prose still ties to the code.
+  Feet below about a quarter-mile, miles above.
 - Don't make time-of-day assumptions. The operator's calendar is not
   your concern.
 - The operator's name is Josh. Other super_admins on this project: Noah,
