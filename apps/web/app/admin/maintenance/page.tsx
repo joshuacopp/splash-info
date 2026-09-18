@@ -13,6 +13,7 @@
 // accusations out of ambiguity, which is the failure mode the whole design is
 // built to avoid. Do not move them to a tooltip.
 
+import { MaintenanceTabs, resolveTab } from "./_components/MaintenanceTabs";
 import { getMe } from "../../_lib/me";
 import NoAccessCard from "../forms/_components/NoAccessCard";
 import { getMaintenanceSummary, type MechanicRow } from "./_lib/worker-fetch";
@@ -63,7 +64,25 @@ function monthLabel(iso: string): string {
   return d.toLocaleDateString("en-US", { month: "long", year: "numeric", timeZone: "UTC" });
 }
 
-export default async function MaintenancePage() {
+/** Weekday + short date. The day group is the primary scan line, so it has
+ *  to read as a day rather than as an ISO string. */
+function dayLabel(iso: string): string {
+  const d = new Date(`${iso}T00:00:00Z`);
+  return d.toLocaleDateString("en-GB", {
+    weekday: "short",
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+    timeZone: "UTC"
+  });
+}
+
+export default async function MaintenancePage({
+  searchParams
+}: {
+  searchParams: Promise<{ tab?: string | string[] }>;
+}) {
+  const tab = resolveTab((await searchParams)?.tab);
   const session = await getMe().catch(() => null);
   if (!session) return <NoAccessCard reason="signin" returnPath="/admin/maintenance" />;
   const allowed =
@@ -151,6 +170,32 @@ export default async function MaintenancePage() {
   const latestMechanics: MechanicRow[] = mechanics
     .filter((m) => m.week_starting === latestWeek)
     .sort((a, b) => Number(b.paid_h) - Number(a.paid_h));
+  // Day detail, grouped and collapsed. ~690 rows in the window is unreadable
+  // flat -- the operator's words were "borderline unusable because it's just
+  // a giant list".
+  //
+  // Grouped here and not in SQL: mt_mechanic_day is the right grain for every
+  // other consumer (one row per mechanic, day and job) and a second grouped
+  // view would have to be kept in step with it for one page's benefit.
+  const dayMap = new Map<string, typeof mechanic_days>();
+  for (const d of mechanic_days) {
+    const list = dayMap.get(d.work_date);
+    if (list) list.push(d);
+    else dayMap.set(d.work_date, [d]);
+  }
+  const dayGroups = [...dayMap.entries()]
+    .sort((a, b) => (a[0] < b[0] ? 1 : -1))
+    .map(([date, rows]) => ({
+      date,
+      rows,
+      mechanics: new Set(rows.map((r) => r.connecteam_user_id)).size,
+      punch_h: rows.reduce((a, r) => a + Number(r.punch_h), 0),
+      wo: rows.reduce((a, r) => a + Number(r.wo_closed_at_claimed_site), 0),
+      // Per row, not per mechanic: one mechanic can have a job with GPS and
+      // another without on the same day, and both are worth surfacing.
+      noGps: rows.filter((r) => r.evidence_flag === "NO_GPS").length
+    }));
+
   const tierTotal = tiers.reduce((a, t) => a + t.rows, 0);
 
   return (
@@ -166,6 +211,10 @@ export default async function MaintenancePage() {
         </p>
       </div>
 
+      <MaintenanceTabs active={tab} />
+
+      {tab === "overview" ? (
+      <>
       {/* Reading rules. First, not last: every number below is easy to misread. */}
       <div className="mb-7 rounded-splash-lg border-[1.5px] border-amber-300 bg-amber-50 p-5">
         <p className="mb-2 text-sm font-bold text-splash-navy">Before reading these numbers</p>
@@ -256,6 +305,11 @@ export default async function MaintenancePage() {
         ))}
       </div>
 
+      </>
+      ) : null}
+
+      {tab === "sites" ? (
+      <>
       {/* Sites */}
       <h2 className="mb-1 mt-8 text-lg font-bold text-splash-navy">
         By site &mdash; {latest ? monthLabel(latest) : ""}
@@ -421,6 +475,11 @@ export default async function MaintenancePage() {
         IT, admin, a regional manager or the site itself, where no visit is expected.
       </p>
 
+      </>
+      ) : null}
+
+      {tab === "mechanics" ? (
+      <>
       {/* Transponder health. Above the mechanic table on purpose: a silent
           device is indistinguishable from an idle person in every column
           below it, so this has to be read first or not at all. */}
@@ -601,6 +660,11 @@ export default async function MaintenancePage() {
       </p>
 
 
+      </>
+      ) : null}
+
+      {tab === "days" ? (
+      <>
       {/* Per-mechanic day drill-down. Claim, presence and output side by side,
           deliberately not collapsed into a score -- see the caveat below. */}
       <h2 className="mb-1 mt-8 text-lg font-bold text-splash-navy">Mechanic day detail</h2>
@@ -629,92 +693,104 @@ export default async function MaintenancePage() {
           mechanic.
         </p>
       </div>
-      <div className="overflow-x-auto rounded-splash-lg border-[1.5px] border-gray-light bg-white shadow-splash-card">
-        <table className="w-full min-w-[60rem] text-sm">
-          <thead className="bg-gray-light/60 text-left text-splash-navy">
-            <tr>
-              <th className="px-4 py-2.5 font-semibold">Date</th>
-              <th className="px-4 py-2.5 font-semibold">Mechanic</th>
-              <th className="px-4 py-2.5 font-semibold">Punched into</th>
-              <th className="px-4 py-2.5 text-right font-semibold">Punched</th>
-              <th className="px-4 py-2.5 text-right font-semibold">At that site</th>
-              <th className="px-4 py-2.5 text-right font-semibold">Elsewhere</th>
-              <th className="px-4 py-2.5 text-right font-semibold">Moving / no GPS</th>
-              <th className="px-4 py-2.5 text-right font-semibold">WOs closed</th>
-              <th className="px-4 py-2.5 font-semibold">Shape of day</th>
-            </tr>
-          </thead>
-          <tbody>
-            {mechanic_days.slice(0, 250).map((d, i) => (
-              <tr
-                key={`${d.work_date}-${d.connecteam_user_id}-${d.job_title}-${i}`}
-                className="border-t border-gray-light/70 align-top"
-              >
-                <td className="whitespace-nowrap px-4 py-2.5 tabular-nums text-splash-navy/80">{d.work_date}</td>
-                <td className="whitespace-nowrap px-4 py-2.5 font-medium text-splash-navy">{d.display_name}</td>
-                <td className="px-4 py-2.5 text-splash-navy/80">
-                  {d.claimed_site_name ?? d.job_title ?? "—"}
-                  {d.work_kind === "CAPX" ? (
-                    <span className="ml-1.5 rounded bg-violet-100 px-1.5 py-0.5 text-[0.625rem] font-bold uppercase text-violet-800">
-                      CapX
+      <div className="space-y-2">
+        {dayGroups.map((g) => (
+          <details
+            key={g.date}
+            className="overflow-hidden rounded-splash-lg border-[1.5px] border-gray-light bg-white shadow-splash-card"
+          >
+            <summary className="flex cursor-pointer flex-wrap items-baseline gap-x-3 gap-y-1 px-4 py-3 hover:bg-gray-light/30">
+              <span className="font-bold text-splash-navy">{dayLabel(g.date)}</span>
+              <span className="text-sm text-splash-navy/70">
+                {g.mechanics} mechanic{g.mechanics === 1 ? "" : "s"} &middot; {h(g.punch_h)} h
+                {g.wo ? ` · ${g.wo} WO${g.wo === 1 ? "" : "s"} closed` : " · no WOs closed"}
+              </span>
+              {g.noGps ? (
+                <span className="rounded bg-gray-light px-1.5 py-0.5 text-[0.625rem] font-bold uppercase text-splash-navy/60">
+                  {g.noGps} no GPS
+                </span>
+              ) : null}
+            </summary>
+            <div className="border-t border-gray-light/70 px-2 py-2">
+              {g.rows.map((d, i) => (
+                <details key={`${d.connecteam_user_id}-${d.job_title}-${i}`} className="rounded-splash">
+                  <summary className="flex cursor-pointer flex-wrap items-baseline gap-x-2 gap-y-1 rounded-splash px-2.5 py-2 text-sm hover:bg-gray-light/40">
+                    <span className="min-w-[9rem] font-semibold text-splash-navy">{d.display_name}</span>
+                    <span className="text-splash-navy/80">
+                      {d.claimed_site_name ?? d.job_title ?? "—"}
                     </span>
-                  ) : null}
-                  {d.work_kind === "OVERHEAD" ? (
-                    <span className="ml-1.5 rounded bg-amber-100 px-1.5 py-0.5 text-[0.625rem] font-bold uppercase text-amber-800">
-                      Overhead
+                    {d.work_kind === "CAPX" ? (
+                      <span className="rounded bg-violet-100 px-1.5 py-0.5 text-[0.625rem] font-bold uppercase text-violet-800">
+                        CapX
+                      </span>
+                    ) : null}
+                    {d.work_kind === "OVERHEAD" ? (
+                      <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[0.625rem] font-bold uppercase text-amber-800">
+                        Overhead
+                      </span>
+                    ) : null}
+                    <span className="tabular-nums font-semibold text-splash-navy">{h(d.punch_h)} h</span>
+                    <span className="text-splash-navy/60">
+                      {Number(d.at_claimed_site_h) > 0
+                        ? `${h(d.at_claimed_site_h)} h on site`
+                        : "not seen on site"}
                     </span>
-                  ) : null}
-                  {d.site_source ? (
-                    <span
-                      className={`ml-1.5 rounded px-1.5 py-0.5 text-[0.625rem] font-bold uppercase ${
+                    <span className="text-splash-navy/60">
+                      {d.wo_closed_at_claimed_site
+                        ? `${d.wo_closed_at_claimed_site} closed here`
+                        : "nothing closed here"}
+                    </span>
+                  </summary>
+                  <div className="mx-2.5 mb-2 grid gap-x-6 gap-y-1.5 rounded-splash bg-gray-light/30 px-3 py-2.5 text-xs sm:grid-cols-2">
+                    <Fact label="Punched" value={`${h(d.punch_h)} h`} />
+                    <Fact
+                      label="Job claimed"
+                      value={`${d.job_title ?? "—"}${
                         d.site_source === "CODE"
-                          ? "bg-emerald-100 text-emerald-800"
-                          : "bg-gray-light text-splash-navy/60"
+                          ? " (site from job code)"
+                          : d.site_source === "DERIVED"
+                            ? " (site inferred from GPS — not independent)"
+                            : ""
                       }`}
-                      title={
-                        d.site_source === "CODE"
-                          ? "Site came from the Connecteam job code — independent of GPS"
-                          : "Site was inferred from GPS — this comparison is partly circular"
-                      }
-                    >
-                      {d.site_source === "CODE" ? "code" : "derived"}
-                    </span>
-                  ) : null}
-                  {d.job_title && d.job_title !== d.claimed_site_name ? (
-                    <span className="block text-xs text-splash-navy/50">{d.job_title}</span>
-                  ) : null}
-                </td>
-                <td className="px-4 py-2.5 text-right tabular-nums font-semibold text-splash-navy">{h(d.punch_h)}</td>
-                <td className="px-4 py-2.5 text-right tabular-nums text-splash-navy/80">{h(d.at_claimed_site_h)}</td>
-                <td className="px-4 py-2.5 text-right tabular-nums text-splash-navy/70">
-                  {h(Number(d.at_other_site_h) + Number(d.stopped_offsite_h))}
-                  {d.other_sites ? (
-                    <span className="block text-xs font-normal text-splash-navy/50">{d.other_sites}</span>
-                  ) : null}
-                </td>
-                <td className="px-4 py-2.5 text-right tabular-nums text-splash-navy/60">{h(d.moving_or_no_gps_h)}</td>
-                <td className="px-4 py-2.5 text-right tabular-nums text-splash-navy/80">
-                  <span title={d.wo_titles ?? undefined}>{d.wo_closed_at_claimed_site}</span>
-                  {d.wo_closed_elsewhere ? (
-                    <span className="block text-xs font-normal text-splash-navy/50">
-                      +{d.wo_closed_elsewhere} elsewhere
-                    </span>
-                  ) : null}
-                </td>
-                <td className="px-4 py-2.5 text-xs text-splash-navy/70">
-                  {d.evidence_flag.replaceAll("_", " ").toLowerCase()}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+                    />
+                    <Fact label="At the claimed site" value={`${h(d.at_claimed_site_h)} h`} />
+                    <Fact
+                      label="At another site"
+                      value={`${h(d.at_other_site_h)} h${d.other_sites ? ` — ${d.other_sites}` : ""}`}
+                    />
+                    <Fact label="Stopped off site" value={`${h(d.stopped_offsite_h)} h`} />
+                    <Fact label="Moving or no GPS" value={`${h(d.moving_or_no_gps_h)} h`} />
+                    <Fact
+                      label="Work orders closed"
+                      value={`${d.wo_closed_at_claimed_site} here${
+                        d.wo_closed_elsewhere ? `, ${d.wo_closed_elsewhere} elsewhere` : ""
+                      }`}
+                    />
+                    <Fact label="Shape of day" value={d.evidence_flag.replaceAll("_", " ").toLowerCase()} />
+                    {d.wo_titles ? (
+                      <p className="text-splash-navy/70 sm:col-span-2">
+                        <span className="font-semibold text-splash-navy/80">Closed here: </span>
+                        {d.wo_titles}
+                      </p>
+                    ) : null}
+                  </div>
+                </details>
+              ))}
+            </div>
+          </details>
+        ))}
       </div>
-      <p className="mt-2 text-xs leading-relaxed text-splash-navy/60">
-        Newest 250 rows of the current and previous month. &ldquo;Elsewhere&rdquo; combines
-        time stopped at another site with time stopped somewhere with no fence.
-        &ldquo;Moving / no GPS&rdquo; is the remainder &mdash; driving, or nothing reported.
-        Hover a WO count for the titles.
+      <p className="mt-3 text-xs leading-relaxed text-splash-navy/60">
+        Current and previous month, newest first. Expand a day for its mechanics, and a
+        mechanic for the hour breakdown. &ldquo;On site&rdquo; is time the vehicle sat
+        inside that site&rsquo;s fence; the rest is another site, an unfenced stop, or
+        driving.
       </p>
+      </>
+      ) : null}
+
+      {tab === "evidence" ? (
+      <>
       {/* Evidence tiers */}
       <h2 className="mb-1 mt-8 text-lg font-bold text-splash-navy">Evidence coverage</h2>
       <p className="mb-3 text-sm text-splash-navy/70">
@@ -752,9 +828,22 @@ export default async function MaintenancePage() {
         </p>
       </div>
 
+      </>
+      ) : null}
+
       <p className="mt-8 text-xs text-splash-navy/50">
         Computed live from Postgres views. Generated {new Date(result.data.generated_at).toUTCString()}.
       </p>
     </section>
+  );
+}
+
+/** One label/value line inside an expanded mechanic-day panel. */
+function Fact({ label, value }: { label: string; value: string }) {
+  return (
+    <p className="text-splash-navy/70">
+      <span className="font-semibold text-splash-navy/80">{label}: </span>
+      {value}
+    </p>
   );
 }
