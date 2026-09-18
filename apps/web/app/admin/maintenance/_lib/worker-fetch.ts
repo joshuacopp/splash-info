@@ -13,30 +13,34 @@ import { getCloudflareContext } from "@opennextjs/cloudflare";
 const BINDING = "WORKORDERS_WORKER" as const;
 const PATH = "/workorders/api/maintenance/summary";
 
-export interface CostCentreRow {
-  month: string;
-  kind: "SITE" | "CAPX" | "MANAGEMENT" | "UNATTRIBUTED" | "WAREHOUSE" | "PTO";
+/** One (kind, site) bucket of the punch-based cost model, summed over the period. */
+export interface CostRow {
+  kind: "SITE" | "CAPX" | "MANAGEMENT" | "PTO" | "UNASSIGNED";
   site_number: number | null;
-  cost_centre: string;
-  onsite_h: number;
-  travel_h: number;
-  hours: number;
-}
-export interface SiteRow {
-  month: string;
-  site_number: number;
-  /** OPERATING maintenance only since 2026-09-17; capital is capx_*. */
-  onsite_h: number;
-  inbound_travel_h: number;
-  total_h: number;
-  pct_drive_time: number | null;
-  capx_onsite_h: number;
-  capx_travel_h: number;
-  capx_total_h: number;
-  overhead_h: number;
-  /** BILLED hours: what the punch claimed for this site. */
+  /** BILLED -- the cost basis. What mechanics punched. */
   punched_h: number;
-  punched_capx_h: number;
+  /** CORROBORATION -- vehicle inside the CLAIMED fence. Never a charge. */
+  gps_onsite_h: number;
+  punches: number;
+}
+
+export const MAINTENANCE_PERIODS = [
+  { id: "this_week", label: "This week" },
+  { id: "last_week", label: "Last week" },
+  { id: "current_month", label: "Current month" },
+  { id: "past_30", label: "Past 30 days" },
+  { id: "qtd", label: "Quarter to date" },
+  { id: "last_quarter", label: "Last quarter" },
+  { id: "ytd", label: "Year to date" }
+] as const;
+export type MaintenancePeriodId = (typeof MAINTENANCE_PERIODS)[number]["id"];
+
+/** Resolved by the WORKER so every caller shares one definition of a week. */
+export interface ResolvedPeriod {
+  id: MaintenancePeriodId;
+  label: string;
+  from: string;
+  to: string;
 }
 export interface MechanicRow {
   connecteam_user_id: number;
@@ -129,8 +133,8 @@ export interface MechanicDayRow {
 }
 export interface MaintenanceSummary {
   generated_at: string;
-  cost_centres: CostCentreRow[];
-  sites: SiteRow[];
+  period: ResolvedPeriod;
+  cost_rows: CostRow[];
   mechanics: MechanicRow[];
   tiers: TierRow[];
   crew_names: Record<string, string>;
@@ -145,7 +149,10 @@ export type SummaryResult =
   | { ok: true; data: MaintenanceSummary }
   | { ok: false; status: number; error: string };
 
-export async function getMaintenanceSummary(): Promise<SummaryResult> {
+export async function getMaintenanceSummary(
+  period?: string
+): Promise<SummaryResult> {
+  const qs = period ? `?period=${encodeURIComponent(period)}` : "";
   const cookieStore = await cookies();
   const headers = new Headers({ Cookie: cookieStore.toString() });
 
@@ -156,13 +163,13 @@ export async function getMaintenanceSummary(): Promise<SummaryResult> {
     // asserted: the binding is genuinely absent under `next dev`.
     const binding = env?.[BINDING];
     if (binding) {
-      res = await binding.fetch(new Request(`https://internal${PATH}`, { headers }));
+      res = await binding.fetch(new Request(`https://internal${PATH}${qs}`, { headers }));
     } else {
-      res = await urlFetch(headers);
+      res = await urlFetch(headers, qs);
     }
   } catch {
     // next dev, or the binding is unbound in this runtime.
-    res = await urlFetch(headers);
+    res = await urlFetch(headers, qs);
   }
 
   if (!res.ok) {
@@ -178,7 +185,7 @@ export async function getMaintenanceSummary(): Promise<SummaryResult> {
   return { ok: true, data: (await res.json()) as MaintenanceSummary };
 }
 
-async function urlFetch(headers: Headers): Promise<Response> {
+async function urlFetch(headers: Headers, qs = ""): Promise<Response> {
   const base = process.env.NEXT_PUBLIC_WORKORDERS_WORKER_URL ?? "";
-  return fetch(`${base}${PATH}`, { headers, cache: "no-store" });
+  return fetch(`${base}${PATH}${qs}`, { headers, cache: "no-store" });
 }

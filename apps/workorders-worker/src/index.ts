@@ -433,7 +433,11 @@ export default {
       if (path === "workorders/api/maintenance/summary" && request.method === "GET") {
         const auth = await authenticate(request, env);
         if (auth.status !== "authenticated") return jsonError(401, "unauthorized");
-        return handleMaintenanceSummary(env, auth.session);
+        return handleMaintenanceSummary(
+          env,
+          auth.session,
+          url.searchParams.get("period")
+        );
       }
 
       if (path === "workorders/api/request" && request.method === "POST") {

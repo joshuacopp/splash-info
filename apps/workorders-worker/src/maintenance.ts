@@ -67,30 +67,17 @@ async function pgSelect<T>(
   }
 }
 
-export interface CostCentreRow {
-  month: string;
-  kind: "SITE" | "CAPX" | "MANAGEMENT" | "UNATTRIBUTED" | "WAREHOUSE" | "PTO";
+/** One row of mt_cost_day: a (day, kind, site) bucket on the punch basis. */
+export interface CostDayRow {
+  work_date: string;
+  kind: "SITE" | "CAPX" | "MANAGEMENT" | "PTO" | "UNASSIGNED";
   site_number: number | null;
-  cost_centre: string;
-  onsite_h: number;
-  travel_h: number;
-  hours: number;
-}
-export interface SiteRow {
-  month: string;
-  site_number: number;
-  /** OPERATING maintenance only since 2026-09-17 -- capital is the capx_* fields. */
-  onsite_h: number;
-  inbound_travel_h: number;
-  total_h: number;
-  pct_drive_time: number | null;
-  capx_onsite_h: number;
-  capx_travel_h: number;
-  capx_total_h: number;
-  overhead_h: number;
-  /** BILLED hours: what the punch claimed for this site. */
+  /** BILLED. What the punch claimed -- the cost basis since 2026-09-18. */
   punched_h: number;
-  punched_capx_h: number;
+  /** CORROBORATION. Vehicle inside the CLAIMED site's fence during the punch.
+   *  Never the basis for a charge; expected to be well below punched_h. */
+  gps_onsite_h: number;
+  punches: number;
 }
 export interface MechanicRow {
   connecteam_user_id: number;
@@ -182,9 +169,108 @@ export interface SiteWorkOrderRow {
   implies_site_visit: boolean;
 }
 
+/**
+ * Reporting periods.
+ *
+ * Resolved on the WORKER, not the page, so every caller gets the same
+ * boundaries and a bookmarked `?period=` means the same thing tomorrow as
+ * today. `from` is inclusive, `to` is exclusive.
+ *
+ * All arithmetic is on the EASTERN calendar day. Every tracked mechanic is in
+ * that zone and mt_cost_day buckets on their local day; resolving the range in
+ * UTC would put "this week" a few hours out of step with the rows it filters,
+ * which is invisible until a Sunday evening shift lands in the wrong week.
+ */
+export const MAINTENANCE_PERIODS = [
+  "this_week",
+  "last_week",
+  "current_month",
+  "past_30",
+  "qtd",
+  "last_quarter",
+  "ytd"
+] as const;
+export type MaintenancePeriod = (typeof MAINTENANCE_PERIODS)[number];
+
+const PERIOD_LABEL: Record<MaintenancePeriod, string> = {
+  this_week: "This week",
+  last_week: "Last week",
+  current_month: "Current month",
+  past_30: "Past 30 days",
+  qtd: "Quarter to date",
+  last_quarter: "Last quarter",
+  ytd: "Year to date"
+};
+
+/** Today in America/New_York as [y, m, d], independent of the worker's clock. */
+function easternToday(now: Date): [number, number, number] {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/New_York",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit"
+  }).format(now);
+  // Indexed access is checked in this project, so parse explicitly rather
+  // than destructuring a possibly-short array.
+  const bits = parts.split("-");
+  return [Number(bits[0]), Number(bits[1]), Number(bits[2])];
+}
+
+const iso = (d: Date) => d.toISOString().slice(0, 10);
+/** Plain calendar arithmetic on a UTC-midnight Date standing for an ET day. */
+const day = (y: number, m: number, d: number) => new Date(Date.UTC(y, m - 1, d));
+const addDays = (d: Date, n: number) =>
+  new Date(d.getTime() + n * 86_400_000);
+
+export function resolvePeriod(
+  raw: string | null,
+  now: Date = new Date()
+): { id: MaintenancePeriod; label: string; from: string; to: string } {
+  const id = (MAINTENANCE_PERIODS as readonly string[]).includes(raw ?? "")
+    ? (raw as MaintenancePeriod)
+    : "current_month";
+  const [y, m, d] = easternToday(now);
+  const today = day(y, m, d);
+  const tomorrow = addDays(today, 1);
+  // Weeks run Monday-Sunday. getUTCDay() is 0 for Sunday, so Sunday maps to 6.
+  const dow = (today.getUTCDay() + 6) % 7;
+  const monday = addDays(today, -dow);
+  const q = Math.floor((m - 1) / 3);
+
+  let from: Date;
+  let to: Date;
+  switch (id) {
+    case "this_week":     from = monday;                       to = tomorrow; break;
+    case "last_week":     from = addDays(monday, -7);          to = monday;   break;
+    case "current_month": from = day(y, m, 1);                 to = tomorrow; break;
+    // 30 days INCLUDING today, so from is today minus 29.
+    case "past_30":       from = addDays(today, -29);          to = tomorrow; break;
+    case "qtd":           from = day(y, q * 3 + 1, 1);         to = tomorrow; break;
+    case "last_quarter": {
+      const ly = q === 0 ? y - 1 : y;
+      const lq = q === 0 ? 3 : q - 1;
+      from = day(ly, lq * 3 + 1, 1);
+      to = day(y, q * 3 + 1, 1);
+      break;
+    }
+    case "ytd":           from = day(y, 1, 1);                 to = tomorrow; break;
+  }
+  return { id, label: PERIOD_LABEL[id], from: iso(from), to: iso(to) };
+}
+
+/** One (kind, site) bucket of the punch-based cost model, summed over the period. */
+export interface CostRow {
+  kind: "SITE" | "CAPX" | "MANAGEMENT" | "PTO" | "UNASSIGNED";
+  site_number: number | null;
+  punched_h: number;
+  gps_onsite_h: number;
+  punches: number;
+}
+
 export async function handleMaintenanceSummary(
   env: MaintenanceEnv,
-  session: Session
+  session: Session,
+  periodRaw: string | null = null
 ): Promise<Response> {
   if (!isMaintenanceViewer(session)) {
     return jsonError(403, "maintenance tracker requires admin");
@@ -193,16 +279,19 @@ export async function handleMaintenanceSummary(
     return jsonError(503, "service key unbound");
   }
 
+  const period = resolvePeriod(periodRaw);
+  // PostgREST range: work_date >= from AND work_date < to.
+  const range = `&work_date=gte.${period.from}&work_date=lt.${period.to}`;
+
   // Independent reads, issued together. They share no ordering and the page
   // needs all of them before it can render anything, so sequential would just
   // add up the latencies.
-  const [costs, sites, mechanics, tiers, crew, siteNames, workOrders, devices, workload, mechanicDays] =
+  const [costDays, mechanics, tiers, crew, siteNames, workOrders, devices, workload, mechanicDays] =
     await Promise.all([
-    pgSelect<CostCentreRow>(
-      env,
-      "mt_cost_centre_month?select=*&order=month.desc,hours.desc"
-    ),
-    pgSelect<SiteRow>(env, "mt_site_month?select=*&order=month.desc,total_h.desc"),
+    // One day-grained fact, summed on the page into both the cost-centre
+    // cards and the per-site table. Two reads would be two chances for the
+    // headline and the breakdown to disagree.
+    pgSelect<CostDayRow>(env, `mt_cost_day?select=*${range}`),
     pgSelect<MechanicRow>(
       env,
       "mt_mechanic_week?select=*&order=week_starting.desc,paid_h.desc"
@@ -227,9 +316,8 @@ export async function handleMaintenanceSummary(
     // titles that would be shipped and thrown away on every load.
     pgSelect<SiteWorkOrderRow>(
       env,
-      "mt_site_work_orders?select=*&completed_at=gte." +
-        firstOfPreviousMonth(new Date()) +
-        "&order=completed_at.desc"
+      `mt_site_work_orders?select=*&completed_at=gte.${period.from}` +
+        `&completed_at=lt.${period.to}&order=completed_at.desc`
     ),
     pgSelect<DeviceHealthRow>(env, "mt_device_health?select=*&order=device_status,device_id"),
     pgSelect<WorkloadRow>(env, "mt_mechanic_workload?select=*&order=closed_30d.desc"),
@@ -238,14 +326,12 @@ export async function handleMaintenanceSummary(
     // would be shipped and thrown away on every load.
     pgSelect<MechanicDayRow>(
       env,
-      "mt_mechanic_day?select=*&work_date=gte." +
-        firstOfPreviousMonth(new Date()) +
-        "&order=work_date.desc,display_name.asc"
+      `mt_mechanic_day?select=*${range}&order=work_date.desc,display_name.asc`
     )
   ]);
 
   const firstError = [
-    costs, sites, mechanics, tiers, crew, siteNames, workOrders, devices, workload,
+    costDays, mechanics, tiers, crew, siteNames, workOrders, devices, workload,
     mechanicDays
   ].find((r) => !r.ok);
   if (firstError && !firstError.ok) {
@@ -253,7 +339,7 @@ export async function handleMaintenanceSummary(
     return jsonError(502, "maintenance read failed");
   }
   if (
-    !costs.ok || !sites.ok || !mechanics.ok || !tiers.ok || !crew.ok ||
+    !costDays.ok || !mechanics.ok || !tiers.ok || !crew.ok ||
     !siteNames.ok || !workOrders.ok || !devices.ok || !workload.ok ||
     !mechanicDays.ok
   ) {
@@ -284,10 +370,29 @@ export async function handleMaintenanceSummary(
   const siteNameMap: Record<string, string> = {};
   for (const r of siteNames.rows) siteNameMap[String(r.site_number)] = r.site_name;
 
+  // Summed here rather than shipped per-day: the page wants totals, and a
+  // year-to-date range is a few hundred day rows it would only fold anyway.
+  const costMap = new Map<string, CostRow>();
+  for (const r of costDays.rows) {
+    const key = `${r.kind}|${r.site_number ?? ""}`;
+    const cur = costMap.get(key) ?? {
+      kind: r.kind,
+      site_number: r.site_number,
+      punched_h: 0,
+      gps_onsite_h: 0,
+      punches: 0
+    };
+    cur.punched_h += Number(r.punched_h ?? 0);
+    cur.gps_onsite_h += Number(r.gps_onsite_h ?? 0);
+    cur.punches += Number(r.punches ?? 0);
+    costMap.set(key, cur);
+  }
+  const costRows = [...costMap.values()].sort((a, b) => b.punched_h - a.punched_h);
+
   return json({
     generated_at: new Date().toISOString(),
-    cost_centres: costs.rows,
-    sites: sites.rows,
+    period,
+    cost_rows: costRows,
     mechanics: mechanics.rows,
     tiers: tierRows,
     crew_names: names,
@@ -299,8 +404,3 @@ export async function handleMaintenanceSummary(
   });
 }
 
-/** First day of last month, YYYY-MM-DD, for the work-order window. */
-function firstOfPreviousMonth(now: Date): string {
-  const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 1, 1));
-  return d.toISOString().slice(0, 10);
-}

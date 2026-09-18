@@ -32,7 +32,16 @@ export function resolveTab(raw: string | string[] | undefined): MaintenanceTab {
   return hit ? hit.id : "overview";
 }
 
-export function MaintenanceTabs({ active }: { active: MaintenanceTab }) {
+// `period` rides along on every tab link. Without it, flipping a tab would
+// silently reset the range to the default and quietly change every number
+// on the page the operator just navigated away from.
+export function MaintenanceTabs({
+  active,
+  period
+}: {
+  active: MaintenanceTab;
+  period: string;
+}) {
   return (
     <nav aria-label="Maintenance tracker sections" className="mb-6 flex flex-wrap gap-2">
       {MAINTENANCE_TABS.map((t) => {
@@ -40,7 +49,7 @@ export function MaintenanceTabs({ active }: { active: MaintenanceTab }) {
         return (
           <Link
             key={t.id}
-            href={`/admin/maintenance?tab=${t.id}`}
+            href={`/admin/maintenance?tab=${t.id}&period=${period}`}
             aria-current={on ? "page" : undefined}
             className={
               on

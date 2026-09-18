@@ -14,28 +14,31 @@
 // built to avoid. Do not move them to a tooltip.
 
 import { MaintenanceTabs, resolveTab } from "./_components/MaintenanceTabs";
+import { PeriodPicker, resolvePeriodParam } from "./_components/PeriodPicker";
 import { getMe } from "../../_lib/me";
 import NoAccessCard from "../forms/_components/NoAccessCard";
 import { getMaintenanceSummary, type MechanicRow } from "./_lib/worker-fetch";
 
 export const dynamic = "force-dynamic";
 
+// Warehouse and Unattributed were GPS-basis buckets and are gone from the
+// cost model: under the punch basis every hour carries a job, so there is
+// nothing left unattributed, and warehouse time bills to whatever job was
+// punched. Both survive as GPS measures on the Location review surface.
 const KIND_STYLE: Record<string, string> = {
   SITE: "bg-emerald-100 text-emerald-800",
   CAPX: "bg-violet-100 text-violet-800",
-  PTO: "bg-slate-100 text-slate-700",
-  WAREHOUSE: "bg-blue-100 text-blue-800",
   MANAGEMENT: "bg-amber-100 text-amber-800",
-  UNATTRIBUTED: "bg-gray-light text-splash-navy/70"
+  PTO: "bg-slate-100 text-slate-700",
+  UNASSIGNED: "bg-gray-light text-splash-navy/70"
 };
 
 const KIND_LABEL: Record<string, string> = {
   SITE: "Sites",
   CAPX: "Capital projects",
-  PTO: "Paid leave",
-  WAREHOUSE: "Warehouse",
   MANAGEMENT: "Management",
-  UNATTRIBUTED: "Unattributed"
+  PTO: "Paid leave",
+  UNASSIGNED: "Unassigned"
 };
 
 const TIER_STYLE: Record<string, string> = {
@@ -80,9 +83,11 @@ function dayLabel(iso: string): string {
 export default async function MaintenancePage({
   searchParams
 }: {
-  searchParams: Promise<{ tab?: string | string[] }>;
+  searchParams: Promise<{ tab?: string | string[]; period?: string | string[] }>;
 }) {
-  const tab = resolveTab((await searchParams)?.tab);
+  const sp = await searchParams;
+  const tab = resolveTab(sp?.tab);
+  const periodParam = resolvePeriodParam(sp?.period);
   const session = await getMe().catch(() => null);
   if (!session) return <NoAccessCard reason="signin" returnPath="/admin/maintenance" />;
   const allowed =
@@ -91,7 +96,7 @@ export default async function MaintenancePage({
     session.dcRole === "super_admin";
   if (!allowed) return <NoAccessCard reason="forbidden" />;
 
-  const result = await getMaintenanceSummary();
+  const result = await getMaintenanceSummary(periodParam);
   if (!result.ok) {
     return (
       <section className="mx-auto w-full max-w-[1100px] px-5 py-9">
@@ -106,8 +111,8 @@ export default async function MaintenancePage({
     );
   }
   const {
-    cost_centres, sites, mechanics, tiers, crew_names, site_names, work_orders, mechanic_days,
-    devices, workload
+    period, cost_rows, mechanics, tiers, crew_names, site_names, work_orders,
+    mechanic_days, devices, workload
   } = result.data;
 
   const badDevices = devices.filter((d) => d.device_status !== "OK");
@@ -119,53 +124,68 @@ export default async function MaintenancePage({
 
   const siteLabel = (n: number) => site_names[String(n)] ?? `Site ${n}`;
 
-  const months = [...new Set(cost_centres.map((c) => c.month))].sort().reverse();
-  const latest = months[0];
-  const latestCosts = cost_centres.filter((c) => c.month === latest);
-  // PTO is ADDITIVE, not a carve-out: leave never entered the GPS-scored
-  // allocation (admin punches carry no GPS). Including it in the
-  // denominator would quietly shrink every other share, so the percentages
-  // below are of SCORED time and the PTO card says so instead.
-  const totalH = latestCosts
-    .filter((c) => c.kind !== "PTO")
-    .reduce((a, c) => a + Number(c.hours), 0);
-  const byKind = (["SITE", "CAPX", "MANAGEMENT", "UNATTRIBUTED", "WAREHOUSE", "PTO"] as const).map((k) => {
-    const rows = latestCosts.filter((c) => c.kind === k);
-    return { kind: k, hours: rows.reduce((a, c) => a + Number(c.hours), 0), count: rows.length };
-  });
+  // PUNCH BASIS. Every paid hour carries a job and every job a cost centre, so
+  // the buckets are additive with no remainder -- PTO included. Hence no
+  // "scored total" caveat any more: under the GPS basis PTO sat outside the
+  // denominator because leave can never carry GPS; under the punch basis it is
+  // simply another thing the crew was paid for.
+  const totalH = cost_rows.reduce((a, c) => a + Number(c.punched_h), 0);
+  const byKind = (["SITE", "CAPX", "MANAGEMENT", "PTO", "UNASSIGNED"] as const)
+    .map((k) => {
+      const rows = cost_rows.filter((c) => c.kind === k);
+      return {
+        kind: k,
+        hours: rows.reduce((a, c) => a + Number(c.punched_h), 0),
+        gps: rows.reduce((a, c) => a + Number(c.gps_onsite_h), 0),
+        count: new Set(rows.map((c) => c.site_number).filter((n) => n !== null)).size
+      };
+    })
+    .filter((k) => k.hours > 0);
 
-  // Work orders for the rendered month, bucketed by site so each <details>
-  // can read its own list without rescanning the array.
+  // Work orders bucketed by site. The worker already filtered them to the
+  // period, so there is no month test here any more.
   const woBySite = new Map<number, typeof work_orders>();
   for (const w of work_orders) {
-    if (w.month !== latest) continue;
     const list = woBySite.get(w.site_number);
     if (list) list.push(w);
     else woBySite.set(w.site_number, [w]);
   }
 
+  // Per-site billed and corroborated, folded out of the same rows the headline
+  // uses so the two can never disagree.
+  const perSite = new Map<
+    number,
+    { punched: number; capx: number; gps: number; gpsCapx: number }
+  >();
+  for (const c of cost_rows) {
+    if (c.site_number === null) continue;
+    if (c.kind !== "SITE" && c.kind !== "CAPX") continue;
+    const cur =
+      perSite.get(c.site_number) ?? { punched: 0, capx: 0, gps: 0, gpsCapx: 0 };
+    if (c.kind === "SITE") {
+      cur.punched += Number(c.punched_h);
+      cur.gps += Number(c.gps_onsite_h);
+    } else {
+      cur.capx += Number(c.punched_h);
+      cur.gpsCapx += Number(c.gps_onsite_h);
+    }
+    perSite.set(c.site_number, cur);
+  }
+
   // EVERY site, not a top-N. A truncated list is useless for the question this
   // table actually gets asked ("what happened at MY site"), and the cap also
-  // hid the more interesting row: sites with work orders and NO recorded hours.
-  //
-  // The list is the UNION of sites with GPS hours and sites with reactive work
-  // orders closed this month. Showing only the former under-reports by 13 --
-  // 56 sites have hours, 69 have work orders -- and every one of those 13 is a
-  // site where work demonstrably happened and the tracker cannot see the visit.
-  const hoursBySite = new Map(
-    sites.filter((s) => s.month === latest).map((s) => [s.site_number, s])
-  );
+  // hid the more interesting row: sites with work orders and no billed hours.
   const allSiteNumbers = [
-    ...new Set([...hoursBySite.keys(), ...woBySite.keys()])
+    ...new Set([...perSite.keys(), ...woBySite.keys()])
   ].sort((a, b) => siteLabel(a).localeCompare(siteLabel(b)));
 
   const billedFor = (sn: number) => {
-    const s = hoursBySite.get(sn);
-    return s ? Number(s.punched_h) + Number(s.punched_capx_h) : 0;
+    const r = perSite.get(sn);
+    return r ? r.punched + r.capx : 0;
   };
   const seenFor = (sn: number) => {
-    const s = hoursBySite.get(sn);
-    return s ? Number(s.total_h) + Number(s.capx_total_h) : 0;
+    const r = perSite.get(sn);
+    return r ? r.gps + r.gpsCapx : 0;
   };
 
   // Matched on maintainx_user_id, never on name: mt_device_person says
@@ -249,11 +269,17 @@ export default async function MaintenancePage({
         <h1 className="text-2xl font-bold text-splash-navy">Maintenance tracker</h1>
         <p className="mt-1 text-sm text-splash-navy/70">
           Where paid maintenance hours go, from Connecteam punches, Geotab GPS and
-          MaintainX. {latest ? monthLabel(latest) : "No data"}.
+          MaintainX. {period.label} &mdash; {period.from} to {period.to}.
         </p>
       </div>
 
-      <MaintenanceTabs active={tab} />
+      <MaintenanceTabs active={tab} period={period.id} />
+      <PeriodPicker
+        active={period.id}
+        tab={tab}
+        from={period.from}
+        to={period.to}
+      />
 
       {tab === "overview" ? (
       <>
@@ -262,18 +288,25 @@ export default async function MaintenancePage({
         <p className="mb-2 text-sm font-bold text-splash-navy">Before reading these numbers</p>
         <ul className="list-disc space-y-1.5 pl-5 text-[0.875rem] leading-relaxed text-splash-navy/85">
           <li>
-            <strong>On-site hours are a ceiling on productive time, never evidence of
-            it.</strong> GPS tracks a vehicle and Connecteam records a button press.
-            Neither observes work.
+            <strong>These are BILLED hours &mdash; what mechanics punched.</strong>
+            That is what a site is charged, and it is the basis for every figure on
+            this tab. Whether GPS can corroborate a given hour is a separate question,
+            answered on Location review.
           </li>
           <li>
-            <strong>A large Management figure is about territory, not about a
-            person.</strong> It is mostly the drive home, and someone with a long commute
-            posts a big number through no fault of their own. Do not rank people on it.
+            <strong>A punched hour is not an hour of work observed.</strong> Connecteam
+            records a button press; GPS tracks a vehicle. Neither watches anyone work.
           </li>
           <li>
-            <strong>Low on-site time with high &ldquo;no GPS&rdquo; is silence, not
-            idleness.</strong> The two are indistinguishable without looking at both.
+            <strong>The drive home is inside a site punch, not in Management.</strong>
+            Mechanics do not switch to an overhead job on leaving, so the last site of
+            the day carries the commute. Sites are overstated and Management understated
+            by roughly that amount.
+          </li>
+          <li>
+            <strong>Silence is not idleness.</strong> Two transponders are dead, so
+            their sites show billed hours with no GPS at all. That is a broken device,
+            not an absent mechanic.
           </li>
           <li>
             Where a number raises a question, the output is a question for a supervisor
@@ -301,46 +334,36 @@ export default async function MaintenancePage({
             </span>
             <p className="mt-3 text-3xl font-bold text-splash-navy">{h(k.hours)}<span className="ml-1 text-base font-semibold text-splash-navy/60">h</span></p>
             <p className="mt-1 text-sm text-splash-navy/70">
-              {k.kind === "PTO"
-                ? "outside the GPS-scored total"
-                : totalH
-                  ? `${((100 * k.hours) / totalH).toFixed(1)}% of scored time`
-                  : "—"}
-              {k.kind === "SITE" ? ` · ${k.count} sites` : ""}
+              {totalH ? `${((100 * k.hours) / totalH).toFixed(1)}% of paid time` : "—"}
+              {k.kind === "SITE" || k.kind === "CAPX" ? ` · ${k.count} sites` : ""}
             </p>
-            {k.kind === "UNATTRIBUTED" ? (
-              <p className="mt-2 text-xs leading-relaxed text-splash-navy/60">
-                Stopped somewhere unnamed, plus time the tracker reported nothing for.
-                Not a geofence problem &mdash; only 3% of it is within 150&nbsp;m of a
-                site fence. Mostly one-off stops and time at home.
-              </p>
-            ) : null}
             {k.kind === "CAPX" ? (
               <p className="mt-2 text-xs leading-relaxed text-splash-navy/60">
-                Capital projects, carved out of Sites. Every site has a
-                &ldquo;CapX&rdquo; twin job; until now both were charged to the site
-                identically, so a site&rsquo;s maintenance cost included its capital
-                work.
+                Hours punched to a site&rsquo;s &ldquo;CapX&rdquo; twin job. Capital
+work is not ordinarily a charge against a site&rsquo;s operating budget, so it is
+reported separately rather than inside its Sites figure.
               </p>
             ) : null}
             {k.kind === "PTO" ? (
               <p className="mt-2 text-xs leading-relaxed text-splash-navy/60">
-                Paid leave. Added to the total rather than carved out of it &mdash;
-                leave is booked as an admin punch, which never carries GPS and has
-                always been excluded from the scored denominator.
+                Paid leave, punched to a PTO job. A real cost of the crew, so it
+sits in the total like any other &mdash; it simply has no site to charge and no
+GPS to corroborate.
               </p>
             ) : null}
-            {k.kind === "WAREHOUSE" ? (
+            {k.kind === "UNASSIGNED" ? (
               <p className="mt-2 text-xs leading-relaxed text-splash-navy/60">
-                Time at the CT and NY warehouses, carved out of Unattributed rather
-                than added to the total.
+                Punched to a site job whose site could not be resolved. Not lost
+                time &mdash; it is billed, just not yet to a named site. Shrinks as
+                the job catalogue improves.
               </p>
             ) : null}
             {k.kind === "MANAGEMENT" ? (
               <p className="mt-2 text-xs leading-relaxed text-splash-navy/60">
-                Travel ending at no known site. Not currently billed this way &mdash;
-                the overhead job is not being punched, so today it sits on the last
-                site worked.
+                Hours punched to an overhead job, plus every hour of staff whose
+                role is overhead (IT, regional managers, CMMS admins) wherever they
+                punched. Under the punch basis the drive home is NOT here &mdash; it
+                sits inside whichever site punch was open at the time.
               </p>
             ) : null}
           </div>
@@ -354,7 +377,7 @@ export default async function MaintenancePage({
       <>
       {/* Sites */}
       <h2 className="mb-1 mt-8 text-lg font-bold text-splash-navy">
-        By site &mdash; {latest ? monthLabel(latest) : ""}
+        By site &mdash; {period.label}
       </h2>
       <p className="mb-3 text-sm text-splash-navy/70">
         What each site is charged: the hours mechanics punched into its jobs in
@@ -373,7 +396,7 @@ export default async function MaintenancePage({
         </div>
 
         {allSiteNumbers.map((sn) => {
-          const s = hoursBySite.get(sn);
+          const s = perSite.get(sn);
           const wos = woBySite.get(sn) ?? [];
 
           return (
@@ -391,12 +414,12 @@ export default async function MaintenancePage({
                     label="Billed"
                     width="sm:w-24"
                     strong
-                    value={s && Number(s.punched_h) > 0 ? `${h(s.punched_h)} h` : "—"}
+                    value={s && s.punched > 0 ? `${h(s.punched)} h` : "—"}
                   />
                   <Figure
                     label="Capital"
                     width="sm:w-24"
-                    value={s && Number(s.punched_capx_h) > 0 ? `${h(s.punched_capx_h)} h` : "—"}
+                    value={s && s.capx > 0 ? `${h(s.capx)} h` : "—"}
                   />
                   <Figure label="Work orders" width="sm:w-24" muted value={wos.length} />
                 </span>
