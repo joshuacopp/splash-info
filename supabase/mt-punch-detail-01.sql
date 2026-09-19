@@ -1,7 +1,13 @@
--- mt-site-punch-01.sql
+-- mt-punch-detail-01.sql
 --
--- Every punch behind a site's billed hours, one row each, so a site total can
--- be taken apart.
+-- Every mechanic punch, one row each, so any total can be taken apart.
+--
+-- site_number is NULL for overhead and leave punches. The site drill-down
+-- filters those out; the flag panel must NOT, because a forgotten clock-out
+-- on an overhead job inflates Management exactly as one on a site job
+-- inflates that site. Scoped to site jobs only, this view missed a 16-hour
+-- overhead punch in the current month -- which is why it is not called
+-- mt_site_punch any more.
 --
 -- ===========================================================================
 -- WHY
@@ -40,7 +46,7 @@
 -- an administrative error, and the fix is a corrected timesheet, not an
 -- accusation.
 
-create or replace view public.mt_site_punch as
+create or replace view public.mt_punch_detail as
 with base as (
   select k.shift_id,
          s.site_number,
@@ -53,11 +59,10 @@ with base as (
          k.work_kind,
          p.source_type
   from mt_punch_kind k
-  join mt_job_site s on s.job_id = k.job_id
+  left join mt_job_site s on s.job_id = k.job_id
   join mt_connecteam_job c on c.job_id = k.job_id
   join mt_device_person d on d.device_id = k.device_id
   join mt_punch p on p.shift_id = k.shift_id
-  where s.site_number is not null
 ),
 gps as (
   select b.shift_id,

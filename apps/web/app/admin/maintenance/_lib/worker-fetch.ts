@@ -104,9 +104,10 @@ export interface WorkloadRow {
   mean_days_to_close: number | null;
 }
 /** One punch behind a site's billed hours. Flags are "look at this". */
-export interface SitePunchRow {
+export interface PunchDetailRow {
   shift_id: string;
-  site_number: number;
+  /** NULL for overhead and leave punches. */
+  site_number: number | null;
   work_date: string;
   display_name: string;
   job_title: string | null;
@@ -163,7 +164,7 @@ export interface MaintenanceSummary {
   devices: DeviceHealthRow[];
   workload: WorkloadRow[];
   mechanic_days: MechanicDayRow[];
-  site_punches: SitePunchRow[];
+  punch_detail: PunchDetailRow[];
 }
 
 export type SummaryResult =

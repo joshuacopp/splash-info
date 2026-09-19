@@ -126,9 +126,10 @@ export interface WorkloadRow {
 /** One punch behind a site's billed hours. The level a site total is taken
  *  apart at -- a site figure can never explain itself, the answer is always
  *  a punch. Flags mean "look at this", never "this is wrong". */
-export interface SitePunchRow {
+export interface PunchDetailRow {
   shift_id: string;
-  site_number: number;
+  /** NULL for overhead and leave punches -- they bill to no site. */
+  site_number: number | null;
   work_date: string;
   display_name: string;
   job_title: string | null;
@@ -308,7 +309,7 @@ export async function handleMaintenanceSummary(
   // Independent reads, issued together. They share no ordering and the page
   // needs all of them before it can render anything, so sequential would just
   // add up the latencies.
-  const [costDays, mechanics, tiers, crew, siteNames, workOrders, devices, workload, mechanicDays, sitePunches] =
+  const [costDays, mechanics, tiers, crew, siteNames, workOrders, devices, workload, mechanicDays, punchDetail] =
     await Promise.all([
     // One day-grained fact, summed on the page into both the cost-centre
     // cards and the per-site table. Two reads would be two chances for the
@@ -351,15 +352,15 @@ export async function handleMaintenanceSummary(
       env,
       `mt_mechanic_day?select=*${range}&order=work_date.desc,display_name.asc`
     ),
-    pgSelect<SitePunchRow>(
+    pgSelect<PunchDetailRow>(
       env,
-      `mt_site_punch?select=*${range}&order=punch_h.desc`
+      `mt_punch_detail?select=*${range}&order=punch_h.desc`
     )
   ]);
 
   const firstError = [
     costDays, mechanics, tiers, crew, siteNames, workOrders, devices, workload,
-    mechanicDays, sitePunches
+    mechanicDays, punchDetail
   ].find((r) => !r.ok);
   if (firstError && !firstError.ok) {
     console.error("[maintenance.summary] read failed:", firstError.error);
@@ -368,7 +369,7 @@ export async function handleMaintenanceSummary(
   if (
     !costDays.ok || !mechanics.ok || !tiers.ok || !crew.ok ||
     !siteNames.ok || !workOrders.ok || !devices.ok || !workload.ok ||
-    !mechanicDays.ok || !sitePunches.ok
+    !mechanicDays.ok || !punchDetail.ok
   ) {
     return jsonError(502, "maintenance read failed");
   }
@@ -435,7 +436,7 @@ export async function handleMaintenanceSummary(
     devices: devices.rows,
     workload: workload.rows,
     mechanic_days: mechanicDays.rows,
-    site_punches: sitePunches.rows
+    punch_detail: punchDetail.rows
   });
 }
 

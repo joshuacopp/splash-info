@@ -13,6 +13,7 @@
 // accusations out of ambiguity, which is the failure mode the whole design is
 // built to avoid. Do not move them to a tooltip.
 
+import Link from "next/link";
 import { MaintenanceTabs, resolveTab } from "./_components/MaintenanceTabs";
 import { PeriodPicker, resolvePeriodParam } from "./_components/PeriodPicker";
 import { getMe } from "../../_lib/me";
@@ -132,7 +133,7 @@ export default async function MaintenancePage({
   }
   const {
     period, cost_rows, mechanics, tiers, crew_names, site_names, site_rms, work_orders,
-    mechanic_days, site_punches, devices, workload
+    mechanic_days, punch_detail, devices, workload
   } = result.data;
 
   const badDevices = devices.filter((d) => d.device_status !== "OK");
@@ -279,8 +280,21 @@ export default async function MaintenancePage({
   // Punches bucketed by site, so a review row can explain its own total. A
   // site figure can never answer "is this legitimate" -- the answer is always
   // a punch, and at Oswego it was one 18 h punch out of 52.
-  const punchBySite = new Map<number, typeof site_punches>();
-  for (const sp of site_punches) {
+  // Flag sets for the Overview quick reference. Computed from punch_detail,
+  // which covers EVERY punch including overhead and leave -- a forgotten
+  // clock-out on an overhead job inflates Management just as one on a site
+  // job inflates that site.
+  //
+  // 10 h is the operator's bar and it is a wide net: most 10-14 h punches are
+  // real long days. 14 h is where it stops being plausible, so the card leads
+  // with the 10 h count and calls out the 14 h subset as the likely errors.
+  const long10 = punch_detail.filter((p2) => Number(p2.punch_h) >= 10);
+  const long14 = punch_detail.filter((p2) => Number(p2.punch_h) >= 14);
+  const overnight = punch_detail.filter((p2) => p2.overnight_end);
+
+  const punchBySite = new Map<number, typeof punch_detail>();
+  for (const sp of punch_detail) {
+    if (sp.site_number === null) continue; // overhead/leave bills to no site
     const list = punchBySite.get(sp.site_number);
     if (list) list.push(sp);
     else punchBySite.set(sp.site_number, [sp]);
@@ -375,6 +389,56 @@ export default async function MaintenancePage({
             to ask &mdash; not a finding.
           </li>
         </ul>
+      </div>
+
+      {/* Quick reference. Counts only, each pointing at the tab that explains
+          it -- this is a "where do I look today" panel, not an analysis. */}
+      <h2 className="mb-1 mt-8 text-lg font-bold text-splash-navy">Worth a look</h2>
+      <p className="mb-3 text-sm text-splash-navy/70">
+        Things in {period.label.toLowerCase()} that usually mean a timesheet or a
+        device needs attention. None of these is a finding on its own.
+      </p>
+      <div className="grid gap-3 sm:grid-cols-2">
+        <FlagCard
+          n={long10.length}
+          unit={`${h(long10.reduce((a, p2) => a + Number(p2.punch_h), 0))} h`}
+          label="Punches over 10 hours"
+          tone={long14.length > 0 ? "amber" : "quiet"}
+          href={`/admin/maintenance?tab=review&period=${period.id}`}
+          note={
+            long14.length > 0
+              ? `${long14.length} of them run 14 h or more — that length is usually a forgotten clock-out rather than a long day. The rest are plausible shifts.`
+              : "All under 14 h, which is long but plausible. Nothing here looks like a missed clock-out."
+          }
+        />
+        <FlagCard
+          n={overnight.length}
+          unit={`${h(overnight.reduce((a, p2) => a + Number(p2.punch_h), 0))} h`}
+          label="Punches ending 1am–6am"
+          tone={overnight.length > 0 ? "amber" : "quiet"}
+          href={`/admin/maintenance?tab=review&period=${period.id}`}
+          note="A genuine overnight starts in the evening. Finishing in the small hours after a daytime start is the shape of a clock-out someone forgot."
+        />
+        <FlagCard
+          n={badDevices.length}
+          unit={`of ${devices.length} vehicles`}
+          label="Transponders not reporting"
+          tone={badDevices.length > 0 ? "amber" : "quiet"}
+          href={`/admin/maintenance?tab=mechanics&period=${period.id}`}
+          note={
+            badDevices.length > 0
+              ? `${badDevices.map((d) => d.display_name).join(", ")}. Their sites will show billed hours with no GPS — that is the device, not the mechanic.`
+              : "Every crew vehicle is reporting."
+          }
+        />
+        <FlagCard
+          n={unseen.length}
+          unit={`of ${siteReview.length} sites`}
+          label="Billed with no GPS at all"
+          tone={unseen.length > 0 ? "amber" : "quiet"}
+          href={`/admin/maintenance?tab=review&period=${period.id}`}
+          note="Hours charged to a site the vehicle was never placed at. Most are the dead transponders above; the rest are worth opening."
+        />
       </div>
 
       {/* Cost centre allocation — the headline. */}
@@ -1198,5 +1262,39 @@ function Figure({
       </span>
       {value}
     </span>
+  );
+}
+
+/** One count on the Overview quick reference. Deliberately a number, a label
+ *  and a sentence of context -- a bare count invites the wrong conclusion. */
+function FlagCard({
+  n,
+  unit,
+  label,
+  note,
+  tone,
+  href
+}: {
+  n: number;
+  unit: string;
+  label: string;
+  note: string;
+  tone: "amber" | "quiet";
+  href: string;
+}) {
+  const ring =
+    tone === "amber" ? "border-amber-300 bg-amber-50" : "border-gray-light bg-white";
+  return (
+    <Link
+      href={href}
+      className={`block rounded-splash-lg border-[1.5px] ${ring} p-4 shadow-splash-card transition hover:shadow-splash-btn`}
+    >
+      <p className="flex items-baseline gap-2">
+        <span className="text-2xl font-bold text-splash-navy">{n}</span>
+        <span className="text-xs text-splash-navy/55">{unit}</span>
+      </p>
+      <p className="mt-0.5 text-sm font-semibold text-splash-navy">{label}</p>
+      <p className="mt-1.5 text-xs leading-relaxed text-splash-navy/65">{note}</p>
+    </Link>
   );
 }
