@@ -132,7 +132,7 @@ export default async function MaintenancePage({
   }
   const {
     period, cost_rows, mechanics, tiers, crew_names, site_names, site_rms, work_orders,
-    mechanic_days, devices, workload
+    mechanic_days, site_punches, devices, workload
   } = result.data;
 
   const badDevices = devices.filter((d) => d.device_status !== "OK");
@@ -274,6 +274,16 @@ export default async function MaintenancePage({
           a.items.reduce((x, r) => x + billedFor(r.sn), 0)
         );
       });
+  }
+
+  // Punches bucketed by site, so a review row can explain its own total. A
+  // site figure can never answer "is this legitimate" -- the answer is always
+  // a punch, and at Oswego it was one 18 h punch out of 52.
+  const punchBySite = new Map<number, typeof site_punches>();
+  for (const sp of site_punches) {
+    const list = punchBySite.get(sp.site_number);
+    if (list) list.push(sp);
+    else punchBySite.set(sp.site_number, [sp]);
   }
 
   const reviewByRm = groupByRm(siteReview);
@@ -825,10 +835,8 @@ GPS to corroborate.
               </summary>
               <div>
               {g.items.map((r) => (
-                <div
-                  key={r.sn}
-                  className="flex flex-col gap-1 border-b border-gray-light/60 px-4 py-2.5 text-sm last:border-0 sm:flex-row sm:flex-nowrap sm:items-baseline sm:gap-0"
-                >
+                <details key={r.sn} className="border-b border-gray-light/60 last:border-0">
+                  <summary className="flex cursor-pointer list-none flex-col gap-1 px-4 py-2.5 text-sm hover:bg-gray-light/30 sm:flex-row sm:flex-nowrap sm:items-baseline sm:gap-0">
                   <span className="min-w-0 flex-1 font-semibold text-splash-navy">
                     {siteLabel(r.sn)}
                     <span className="ml-2 text-xs font-normal text-splash-navy/45">#{r.sn}</span>
@@ -865,7 +873,60 @@ GPS to corroborate.
                     muted
                     value={r.pct === null ? "—" : `${r.pct.toFixed(0)}%`}
                   />
-                </div>
+                  </summary>
+                  <div className="border-t border-gray-light/50 bg-gray-50/60 px-4 py-2.5">
+                    {(punchBySite.get(r.sn) ?? []).length === 0 ? (
+                      <p className="text-xs leading-relaxed text-splash-navy/60">
+                        No punches to this site in the period. Any work orders here were closed
+                        without a site punch against them.
+                      </p>
+                    ) : (
+                      <ul className="space-y-1">
+                        {(punchBySite.get(r.sn) ?? []).map((sp) => (
+                          <li key={sp.shift_id} className="flex flex-wrap items-baseline gap-x-2.5 gap-y-0.5 text-[0.8125rem]">
+                            <span className="min-w-[8.5rem] font-medium text-splash-navy">{sp.display_name}</span>
+                            <span className="tabular-nums text-splash-navy/60">{sp.work_date}</span>
+                            <span className="tabular-nums text-splash-navy/60">{sp.start_et}&ndash;{sp.end_et}</span>
+                            <span className="tabular-nums font-semibold text-splash-navy">{sp.punch_h} h</span>
+                            <span className="tabular-nums text-splash-navy/60">
+                              {sp.gps_onsite_h > 0 ? `${sp.gps_onsite_h} h on site` : "no GPS"}
+                            </span>
+                            {sp.work_kind === "CAPX" ? (
+                              <span className="rounded bg-violet-100 px-1.5 py-0.5 text-[0.625rem] font-bold uppercase text-violet-800">CapX</span>
+                            ) : null}
+                            {sp.long_punch ? (
+                              <span
+                                className="whitespace-nowrap rounded bg-amber-200 px-1.5 py-0.5 text-[0.625rem] font-bold uppercase text-amber-900"
+                                title="14 hours or more. Usually a forgotten clock-out rather than a long day."
+                              >
+                                long punch
+                              </span>
+                            ) : null}
+                            {sp.overnight_end && !sp.long_punch ? (
+                              <span
+                                className="whitespace-nowrap rounded bg-amber-100 px-1.5 py-0.5 text-[0.625rem] font-bold uppercase text-amber-800"
+                                title="Ends between 1am and 6am. A real overnight starts in the evening."
+                              >
+                                ends overnight
+                              </span>
+                            ) : null}
+                            {sp.no_gps && sp.device_status && sp.device_status !== "OK" ? (
+                              <span
+                                className="whitespace-nowrap rounded bg-gray-light px-1.5 py-0.5 text-[0.625rem] font-bold uppercase text-splash-navy/60"
+                                title="This mechanic&rsquo;s transponder is not reporting, so no GPS could exist for this punch."
+                              >
+                                transponder down
+                              </span>
+                            ) : null}
+                            {sp.source_type === "admin" ? (
+                              <span className="whitespace-nowrap rounded bg-slate-100 px-1.5 py-0.5 text-[0.625rem] font-bold uppercase text-slate-700">manual entry</span>
+                            ) : null}
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                </details>
               ))}
               </div>
             </details>

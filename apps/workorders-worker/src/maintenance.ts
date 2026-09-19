@@ -123,6 +123,28 @@ export interface WorkloadRow {
   median_days_to_close: number | null;
   mean_days_to_close: number | null;
 }
+/** One punch behind a site's billed hours. The level a site total is taken
+ *  apart at -- a site figure can never explain itself, the answer is always
+ *  a punch. Flags mean "look at this", never "this is wrong". */
+export interface SitePunchRow {
+  shift_id: string;
+  site_number: number;
+  work_date: string;
+  display_name: string;
+  job_title: string | null;
+  work_kind: "SITE" | "CAPX" | "OVERHEAD" | "PTO";
+  source_type: string | null;
+  start_et: string;
+  end_et: string;
+  punch_h: number;
+  gps_onsite_h: number;
+  /** 14 h+. Catches forgotten clock-outs; 12-14 h is left alone on purpose. */
+  long_punch: boolean;
+  /** Ends 01:00-05:59 local -- the shape of a forgotten clock-out. */
+  overnight_end: boolean;
+  no_gps: boolean;
+  device_status: string | null;
+}
 export interface MechanicDayRow {
   work_date: string;
   connecteam_user_id: number;
@@ -286,7 +308,7 @@ export async function handleMaintenanceSummary(
   // Independent reads, issued together. They share no ordering and the page
   // needs all of them before it can render anything, so sequential would just
   // add up the latencies.
-  const [costDays, mechanics, tiers, crew, siteNames, workOrders, devices, workload, mechanicDays] =
+  const [costDays, mechanics, tiers, crew, siteNames, workOrders, devices, workload, mechanicDays, sitePunches] =
     await Promise.all([
     // One day-grained fact, summed on the page into both the cost-centre
     // cards and the per-site table. Two reads would be two chances for the
@@ -328,12 +350,16 @@ export async function handleMaintenanceSummary(
     pgSelect<MechanicDayRow>(
       env,
       `mt_mechanic_day?select=*${range}&order=work_date.desc,display_name.asc`
+    ),
+    pgSelect<SitePunchRow>(
+      env,
+      `mt_site_punch?select=*${range}&order=punch_h.desc`
     )
   ]);
 
   const firstError = [
     costDays, mechanics, tiers, crew, siteNames, workOrders, devices, workload,
-    mechanicDays
+    mechanicDays, sitePunches
   ].find((r) => !r.ok);
   if (firstError && !firstError.ok) {
     console.error("[maintenance.summary] read failed:", firstError.error);
@@ -342,7 +368,7 @@ export async function handleMaintenanceSummary(
   if (
     !costDays.ok || !mechanics.ok || !tiers.ok || !crew.ok ||
     !siteNames.ok || !workOrders.ok || !devices.ok || !workload.ok ||
-    !mechanicDays.ok
+    !mechanicDays.ok || !sitePunches.ok
   ) {
     return jsonError(502, "maintenance read failed");
   }
@@ -408,7 +434,8 @@ export async function handleMaintenanceSummary(
     work_orders: workOrders.rows,
     devices: devices.rows,
     workload: workload.rows,
-    mechanic_days: mechanicDays.rows
+    mechanic_days: mechanicDays.rows,
+    site_punches: sitePunches.rows
   });
 }
 

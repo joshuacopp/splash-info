@@ -103,6 +103,24 @@ export interface WorkloadRow {
   median_days_to_close: number | null;
   mean_days_to_close: number | null;
 }
+/** One punch behind a site's billed hours. Flags are "look at this". */
+export interface SitePunchRow {
+  shift_id: string;
+  site_number: number;
+  work_date: string;
+  display_name: string;
+  job_title: string | null;
+  work_kind: "SITE" | "CAPX" | "OVERHEAD" | "PTO";
+  source_type: string | null;
+  start_et: string;
+  end_et: string;
+  punch_h: number;
+  gps_onsite_h: number;
+  long_punch: boolean;
+  overnight_end: boolean;
+  no_gps: boolean;
+  device_status: string | null;
+}
 export interface MechanicDayRow {
   work_date: string;
   connecteam_user_id: number;
@@ -145,6 +163,7 @@ export interface MaintenanceSummary {
   devices: DeviceHealthRow[];
   workload: WorkloadRow[];
   mechanic_days: MechanicDayRow[];
+  site_punches: SitePunchRow[];
 }
 
 export type SummaryResult =
