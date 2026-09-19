@@ -21,6 +21,7 @@ import type { Metadata } from "next";
 import type { ReactNode } from "react";
 import { ASSETS } from "@splash/storage-r2/assets";
 import { Header, type HeaderUser } from "./_components/Header";
+import { Breadcrumb } from "./_components/Breadcrumb";
 import { SessionKeepalive } from "./_components/SessionKeepalive";
 import { getMe, roleLabelFor } from "./_lib/me";
 import "./globals.css";
@@ -47,6 +48,9 @@ export default async function RootLayout({ children }: { children: ReactNode }) 
             refocus so an open tab never hits the 1-hour token wall. */}
         {user ? <SessionKeepalive /> : null}
         <Header user={user} mfaEnrollment={session?.mfaEnrollment} />
+        {/* Renders itself only on pages the dashboard knows about; see
+            _components/Breadcrumb.tsx. */}
+        <Breadcrumb />
         <main>{children}</main>
       </body>
     </html>

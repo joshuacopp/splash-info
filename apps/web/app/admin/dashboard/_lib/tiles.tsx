@@ -20,15 +20,17 @@
 import type { ReactNode } from "react";
 import type { Session } from "@splash/types/session";
 
-export type TileGroup = "submissions" | "operations" | "admin";
-
-/** Optional third level below a group. A subgroup collects tiles that belong
- *  together into one card on the group page, which drills through to its own
- *  page — the same shape as a group, one level down. */
-export type TileSubgroup = "daily-tools" | "mechanical" | "other-tools";
+// Hierarchy, labels and destinations now live in nav.ts so the breadcrumb --
+// which is client-side and cannot import this file's icons -- reads the same
+// data the dashboard renders. Re-exported here so existing importers of
+// TileGroup / GROUPS / SUBGROUPS keep working unchanged.
+export type { TileGroup, TileSubgroup, Subgroup, NavEntry, NavId } from "./nav";
+export { GROUPS, SUBGROUPS, NAV } from "./nav";
 
 export interface Tile {
-  id: string;
+  /** Must name a NAV entry -- that is what guarantees the breadcrumb can
+   *  resolve this page. A tile id not in NAV is a compile error. */
+  id: NavId;
   group: TileGroup;
   /** Nests this tile one level deeper. Omitted tiles render directly on the
    *  group page as before. */
@@ -47,47 +49,12 @@ export interface Tile {
   visibleTo: (session: Session | null) => boolean;
 }
 
-export const GROUPS: { id: TileGroup; label: string }[] = [
-  { id: "submissions", label: "Submissions" },
-  { id: "operations", label: "Operations" },
-  { id: "admin", label: "Admin" }
-];
-
-export interface Subgroup {
-  id: TileSubgroup;
-  /** The group whose page this subgroup's card appears on. */
-  group: TileGroup;
-  label: string;
-  /** Body copy on the subgroup card, and the strapline on its own page. */
-  description: string;
-}
-
-/** Subgroups render before the group's ungrouped tiles, so a section's
- *  categories read first and its loose tools follow. */
-export const SUBGROUPS: Subgroup[] = [
-  {
-    id: "daily-tools",
-    group: "operations",
-    label: "Daily Tools",
-    description:
-      "Damage claims, shift schedule, greeter scorecard, and the expense log."
-  },
-  {
-    id: "mechanical",
-    group: "operations",
-    label: "Mechanical",
-    description:
-      "Equipment manuals, the parts directory, work orders, and training videos."
-  },
-  {
-    // Deliberately last: a catch-all reads as the place to look when the first
-    // two did not have it.
-    id: "other-tools",
-    group: "operations",
-    label: "Other Tools",
-    description: "Approvals, chemical inventory, and promotions."
-  }
-];
+import type {
+  TileGroup,
+  TileSubgroup,
+  NavId
+} from "./nav";
+import { NAV } from "./nav";
 
 function isAdminTier(session: Session | null): boolean {
   if (!session) return false;
@@ -660,3 +627,24 @@ export const TILES: ReadonlyArray<Tile> = [
     visibleTo: isAdminTier
   }
 ];
+
+// ---------------------------------------------------------------------------
+// Drift guard.
+//
+// The breadcrumb resolves a pathname against NAV; the dashboard renders TILES.
+// If a tile exists that NAV does not know about, that page gets NO breadcrumb
+// and nobody finds out -- the page still loads, it just silently loses its way
+// back. This makes that a compile error instead.
+//
+// `id: NavId` on the Tile interface already forces every tile id to exist in
+// NAV. This is the other direction: every NAV entry must have a tile.
+// ---------------------------------------------------------------------------
+const TILE_IDS = new Set<string>(TILES.map((t) => t.id));
+const MISSING_TILES = NAV.filter((n) => !TILE_IDS.has(n.id)).map((n) => n.id);
+if (MISSING_TILES.length > 0) {
+  // Loud rather than silent: a NAV entry with no tile means the breadcrumb
+  // advertises a destination the dashboard never offers.
+  console.error(
+    `[dashboard] NAV entries with no matching tile: ${MISSING_TILES.join(", ")}`
+  );
+}
