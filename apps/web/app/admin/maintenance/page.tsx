@@ -131,7 +131,7 @@ export default async function MaintenancePage({
     );
   }
   const {
-    period, cost_rows, mechanics, tiers, crew_names, site_names, work_orders,
+    period, cost_rows, mechanics, tiers, crew_names, site_names, site_rms, work_orders,
     mechanic_days, devices, workload
   } = result.data;
 
@@ -246,6 +246,38 @@ export default async function MaintenancePage({
   const billedAll = siteReview.reduce((a, r) => a + r.billed, 0);
   const seenAll = siteReview.reduce((a, r) => a + r.seen, 0);
   const overallPct = billedAll > 0 ? (100 * seenAll) / billedAll : null;
+
+  // Group site lists by Regional Manager. 57 flat rows is a scroll nobody
+  // reads; nine RMs with 3-10 sites each is a list you can find yourself in.
+  //
+  // Grouped on regional_manager, NOT area_manager -- the latter is the
+  // Regional Director despite the column name (CLAUDE.md label-vs-data), and
+  // would give four large buckets instead of nine useful ones.
+  const rmOf = (sn: number) => site_rms[String(sn)] ?? "Unassigned";
+
+  function groupByRm<T extends { sn: number }>(rows: T[]) {
+    const m = new Map<string, T[]>();
+    for (const r of rows) {
+      const k = rmOf(r.sn);
+      const list = m.get(k);
+      if (list) list.push(r);
+      else m.set(k, [r]);
+    }
+    return [...m.entries()]
+      .map(([rm, items]) => ({ rm, items }))
+      // Unassigned last however big it is; otherwise most billed hours first.
+      .sort((a, b) => {
+        if (a.rm === "Unassigned") return 1;
+        if (b.rm === "Unassigned") return -1;
+        return (
+          b.items.reduce((x, r) => x + billedFor(r.sn), 0) -
+          a.items.reduce((x, r) => x + billedFor(r.sn), 0)
+        );
+      });
+  }
+
+  const reviewByRm = groupByRm(siteReview);
+  const sitesByRm = groupByRm(allSiteNumbers.map((sn) => ({ sn })));
 
   const weeks = [...new Set(mechanics.map((m) => m.week_starting))].sort().reverse();
   const latestWeek = weeks[0];
@@ -415,111 +447,129 @@ GPS to corroborate.
           <span className="w-24 text-right font-semibold">Work orders</span>
         </div>
 
-        {allSiteNumbers.map((sn) => {
-          const s = perSite.get(sn);
-          const wos = woBySite.get(sn) ?? [];
-
+                {sitesByRm.map((g) => {
+          const gBilled = g.items.reduce((a, r) => a + billedFor(r.sn), 0);
+          const gWos = g.items.reduce((a, r) => a + (woBySite.get(r.sn)?.length ?? 0), 0);
           return (
-            <details key={sn} className="group border-b border-gray-light/60 last:border-0">
-              <summary className="flex cursor-pointer list-none flex-col gap-1 px-4 py-2.5 text-sm hover:bg-gray-50 sm:flex-row sm:flex-nowrap sm:items-baseline sm:gap-0">
-                <span className="min-w-0 flex-1 font-semibold text-splash-navy">
-                  <span className="mr-1.5 inline-block text-splash-navy/40 transition-transform group-open:rotate-90">
-                    &rsaquo;
-                  </span>
-                  {siteLabel(sn)}
-                  <span className="ml-2 text-xs font-normal text-splash-navy/45">#{sn}</span>
-                </span>
-                <span className="flex flex-wrap items-baseline gap-x-4 gap-y-0.5 pl-5 sm:contents">
-                  <Figure
-                    label="Billed"
-                    width="sm:w-24"
-                    strong
-                    value={s && s.punched > 0 ? `${h(s.punched)} h` : "—"}
-                  />
-                  <Figure
-                    label="Capital"
-                    width="sm:w-24"
-                    value={s && s.capx > 0 ? `${h(s.capx)} h` : "—"}
-                  />
-                  <Figure label="Work orders" width="sm:w-24" muted value={wos.length} />
+            <details key={g.rm} className="border-b border-gray-light last:border-0">
+              <summary className="flex cursor-pointer flex-wrap items-baseline gap-x-3 gap-y-1 bg-gray-50/70 px-4 py-2.5 hover:bg-gray-light/40">
+                <span className="font-bold text-splash-navy">{g.rm}</span>
+                <span className="text-sm text-splash-navy/70">
+                  {g.items.length} site{g.items.length === 1 ? "" : "s"} &middot;{" "}
+                  {h(gBilled)} h billed &middot; {gWos} work order{gWos === 1 ? "" : "s"}
                 </span>
               </summary>
+              <div className="border-t border-gray-light/60">
+              {g.items.map(({ sn }) => {
+                const s = perSite.get(sn);
+                const wos = woBySite.get(sn) ?? [];
 
-              <div className="border-t border-gray-light/60 bg-gray-50/60 px-4 py-3">
-                {wos.length === 0 ? (
-                  <p className="text-xs leading-relaxed text-splash-navy/60">
-                    No reactive work orders completed here this month. Hours above are
-                    still real &mdash; a mechanic can be on site for preventative work,
-                    or for a job closed in a different month.
-                  </p>
-                ) : (
-                  <>
-                    <ul className="space-y-1.5">
-                    {wos.map((w) => (
-                      <li key={w.id} className="flex flex-wrap items-baseline gap-x-2 text-[0.8125rem]">
-                        <a
-                          href={`https://app.getmaintainx.com/workorders/${w.id}`}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="font-mono text-xs text-sudsy-blue hover:underline"
-                        >
-                          #{w.sequential_id ?? w.id}
-                        </a>
-                        <span className="min-w-0 flex-1 truncate text-splash-navy/85" title={w.title ?? ""}>
-                          {w.title ?? "(untitled)"}
+                return (
+                  <details key={sn} className="group border-b border-gray-light/60 last:border-0">
+                    <summary className="flex cursor-pointer list-none flex-col gap-1 px-4 py-2.5 text-sm hover:bg-gray-50 sm:flex-row sm:flex-nowrap sm:items-baseline sm:gap-0">
+                      <span className="min-w-0 flex-1 font-semibold text-splash-navy">
+                        <span className="mr-1.5 inline-block text-splash-navy/40 transition-transform group-open:rotate-90">
+                          &rsaquo;
                         </span>
-                        {w.priority && w.priority !== "NONE" ? (
-                          <span className="rounded bg-gray-light px-1.5 py-0.5 text-[0.625rem] font-semibold uppercase tracking-wide text-splash-navy/70">
-                            {w.priority}
-                          </span>
-                        ) : null}
-                        {w.completed_by ? (
-                          <span
-                            className="text-xs text-splash-navy/70"
-                            title="Who marked it Done in MaintainX — not necessarily the only person who worked it."
-                          >
-                            {w.completed_by}
-                            {w.closer_role !== "MECHANIC" ? (
-                              <span
-                                className="ml-1 text-[0.625rem] uppercase tracking-wide text-splash-navy/45"
-                                title={
-                                  w.expense_to === "MANAGEMENT"
-                                    ? "IT — time and travel are overhead, never expensed to the site."
-                                    : "Not a field mechanic; no site visit implied."
-                                }
+                        {siteLabel(sn)}
+                        <span className="ml-2 text-xs font-normal text-splash-navy/45">#{sn}</span>
+                      </span>
+                      <span className="flex flex-wrap items-baseline gap-x-4 gap-y-0.5 pl-5 sm:contents">
+                        <Figure
+                          label="Billed"
+                          width="sm:w-24"
+                          strong
+                          value={s && s.punched > 0 ? `${h(s.punched)} h` : "—"}
+                        />
+                        <Figure
+                          label="Capital"
+                          width="sm:w-24"
+                          value={s && s.capx > 0 ? `${h(s.capx)} h` : "—"}
+                        />
+                        <Figure label="Work orders" width="sm:w-24" muted value={wos.length} />
+                      </span>
+                    </summary>
+
+                    <div className="border-t border-gray-light/60 bg-gray-50/60 px-4 py-3">
+                      {wos.length === 0 ? (
+                        <p className="text-xs leading-relaxed text-splash-navy/60">
+                          No reactive work orders completed here this month. Hours above are
+                          still real &mdash; a mechanic can be on site for preventative work,
+                          or for a job closed in a different month.
+                        </p>
+                      ) : (
+                        <>
+                          <ul className="space-y-1.5">
+                          {wos.map((w) => (
+                            <li key={w.id} className="flex flex-wrap items-baseline gap-x-2 text-[0.8125rem]">
+                              <a
+                                href={`https://app.getmaintainx.com/workorders/${w.id}`}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="font-mono text-xs text-sudsy-blue hover:underline"
                               >
-                                {w.closer_role === "SITE_ACCOUNT"
-                                  ? "site"
-                                  : w.closer_role === "CMMS_ADMIN"
-                                    ? "admin"
-                                    : w.closer_role === "REGIONAL_MANAGER"
-                                      ? "RM"
-                                      : w.closer_role === "IT"
-                                        ? "IT · overhead"
-                                        : "unclassified"}
+                                #{w.sequential_id ?? w.id}
+                              </a>
+                              <span className="min-w-0 flex-1 truncate text-splash-navy/85" title={w.title ?? ""}>
+                                {w.title ?? "(untitled)"}
                               </span>
-                            ) : null}
-                          </span>
-                        ) : null}
-                        <span className="tabular-nums text-xs text-splash-navy/55">
-                          {new Date(w.completed_at).toLocaleDateString("en-US", {
-                            month: "short",
-                            day: "numeric",
-                            timeZone: "America/New_York"
-                          })}
-                        </span>
-                        {w.labor_h ? (
-                          <span className="tabular-nums text-xs text-splash-navy/55">{w.labor_h} h</span>
-                        ) : null}
-                      </li>
-                    ))}
-                    </ul>
-                  </>
-                )}
+                              {w.priority && w.priority !== "NONE" ? (
+                                <span className="rounded bg-gray-light px-1.5 py-0.5 text-[0.625rem] font-semibold uppercase tracking-wide text-splash-navy/70">
+                                  {w.priority}
+                                </span>
+                              ) : null}
+                              {w.completed_by ? (
+                                <span
+                                  className="text-xs text-splash-navy/70"
+                                  title="Who marked it Done in MaintainX — not necessarily the only person who worked it."
+                                >
+                                  {w.completed_by}
+                                  {w.closer_role !== "MECHANIC" ? (
+                                    <span
+                                      className="ml-1 text-[0.625rem] uppercase tracking-wide text-splash-navy/45"
+                                      title={
+                                        w.expense_to === "MANAGEMENT"
+                                          ? "IT — time and travel are overhead, never expensed to the site."
+                                          : "Not a field mechanic; no site visit implied."
+                                      }
+                                    >
+                                      {w.closer_role === "SITE_ACCOUNT"
+                                        ? "site"
+                                        : w.closer_role === "CMMS_ADMIN"
+                                          ? "admin"
+                                          : w.closer_role === "REGIONAL_MANAGER"
+                                            ? "RM"
+                                            : w.closer_role === "IT"
+                                              ? "IT · overhead"
+                                              : "unclassified"}
+                                    </span>
+                                  ) : null}
+                                </span>
+                              ) : null}
+                              <span className="tabular-nums text-xs text-splash-navy/55">
+                                {new Date(w.completed_at).toLocaleDateString("en-US", {
+                                  month: "short",
+                                  day: "numeric",
+                                  timeZone: "America/New_York"
+                                })}
+                              </span>
+                              {w.labor_h ? (
+                                <span className="tabular-nums text-xs text-splash-navy/55">{w.labor_h} h</span>
+                              ) : null}
+                            </li>
+                          ))}
+                          </ul>
+                        </>
+                      )}
+                    </div>
+                  </details>
+                );
+              })}
               </div>
             </details>
           );
         })}
+
 
         {allSiteNumbers.length === 0 ? (
           <p className="px-4 py-6 text-center text-sm text-splash-navy/60">
@@ -754,49 +804,74 @@ GPS to corroborate.
           <span className="w-24 text-right font-semibold">Placed by GPS</span>
           <span className="w-28 text-right font-semibold">Corroborated</span>
         </div>
-        {siteReview.map((r) => (
-          <div
-            key={r.sn}
-            className="flex flex-col gap-1 border-b border-gray-light/60 px-4 py-2.5 text-sm last:border-0 sm:flex-row sm:flex-nowrap sm:items-baseline sm:gap-0"
-          >
-            <span className="min-w-0 flex-1 font-semibold text-splash-navy">
-              {siteLabel(r.sn)}
-              <span className="ml-2 text-xs font-normal text-splash-navy/45">#{r.sn}</span>
-              {r.billed > 0 && r.seen === 0 ? (
-                r.silentCloser ? (
-                  <span
-                    className="ml-2 whitespace-nowrap rounded bg-amber-200 px-1.5 py-0.5 text-[0.625rem] font-bold uppercase tracking-wide text-amber-900"
-                    title="Work here was closed by a mechanic whose transponder is silent or patchy. No GPS could have been recorded."
-                  >
-                    transponder down
+                {reviewByRm.map((g) => {
+          const gBilled = g.items.reduce((a, r) => a + r.billed, 0);
+          const gSeen = g.items.reduce((a, r) => a + r.seen, 0);
+          const gUnseen = g.items.filter((r) => r.billed > 0 && r.seen === 0).length;
+          return (
+            <details key={g.rm} className="border-b border-gray-light/60 last:border-0">
+              <summary className="flex cursor-pointer flex-wrap items-baseline gap-x-3 gap-y-1 bg-gray-50/70 px-4 py-2.5 hover:bg-gray-light/40">
+                <span className="font-bold text-splash-navy">{g.rm}</span>
+                <span className="text-sm text-splash-navy/70">
+                  {g.items.length} site{g.items.length === 1 ? "" : "s"} &middot;{" "}
+                  {h(gBilled)} h billed &middot;{" "}
+                  {gBilled > 0 ? `${((100 * gSeen) / gBilled).toFixed(0)}% corroborated` : "—"}
+                </span>
+                {gUnseen ? (
+                  <span className="whitespace-nowrap rounded bg-amber-200 px-1.5 py-0.5 text-[0.625rem] font-bold uppercase tracking-wide text-amber-900">
+                    {gUnseen} with no GPS
                   </span>
-                ) : r.expectsVisit ? (
-                  <span
-                    className="ml-2 whitespace-nowrap rounded bg-amber-200 px-1.5 py-0.5 text-[0.625rem] font-bold uppercase tracking-wide text-amber-900"
-                    title="Billed hours and a mechanic-closed ticket, but no vehicle placed here. Worth a look."
-                  >
-                    billed, not placed
+                ) : null}
+              </summary>
+              <div>
+              {g.items.map((r) => (
+                <div
+                  key={r.sn}
+                  className="flex flex-col gap-1 border-b border-gray-light/60 px-4 py-2.5 text-sm last:border-0 sm:flex-row sm:flex-nowrap sm:items-baseline sm:gap-0"
+                >
+                  <span className="min-w-0 flex-1 font-semibold text-splash-navy">
+                    {siteLabel(r.sn)}
+                    <span className="ml-2 text-xs font-normal text-splash-navy/45">#{r.sn}</span>
+                    {r.billed > 0 && r.seen === 0 ? (
+                      r.silentCloser ? (
+                        <span
+                          className="ml-2 whitespace-nowrap rounded bg-amber-200 px-1.5 py-0.5 text-[0.625rem] font-bold uppercase tracking-wide text-amber-900"
+                          title="Work here was closed by a mechanic whose transponder is silent or patchy. No GPS could have been recorded."
+                        >
+                          transponder down
+                        </span>
+                      ) : r.expectsVisit ? (
+                        <span
+                          className="ml-2 whitespace-nowrap rounded bg-amber-200 px-1.5 py-0.5 text-[0.625rem] font-bold uppercase tracking-wide text-amber-900"
+                          title="Billed hours and a mechanic-closed ticket, but no vehicle placed here. Worth a look."
+                        >
+                          billed, not placed
+                        </span>
+                      ) : (
+                        <span
+                          className="ml-2 whitespace-nowrap rounded bg-gray-light px-1.5 py-0.5 text-[0.625rem] font-bold uppercase tracking-wide text-splash-navy/60"
+                          title="No mechanic-closed work here, so no vehicle is expected."
+                        >
+                          no visit expected
+                        </span>
+                      )
+                    ) : null}
                   </span>
-                ) : (
-                  <span
-                    className="ml-2 whitespace-nowrap rounded bg-gray-light px-1.5 py-0.5 text-[0.625rem] font-bold uppercase tracking-wide text-splash-navy/60"
-                    title="No mechanic-closed work here, so no vehicle is expected."
-                  >
-                    no visit expected
-                  </span>
-                )
-              ) : null}
-            </span>
-            <Figure label="Billed" width="sm:w-24" strong value={`${h(r.billed)} h`} />
-            <Figure label="Placed by GPS" width="sm:w-24" value={`${h(r.seen)} h`} />
-            <Figure
-              label="Corroborated"
-              width="sm:w-28"
-              muted
-              value={r.pct === null ? "—" : `${r.pct.toFixed(0)}%`}
-            />
-          </div>
-        ))}
+                  <Figure label="Billed" width="sm:w-24" strong value={`${h(r.billed)} h`} />
+                  <Figure label="Placed by GPS" width="sm:w-24" value={`${h(r.seen)} h`} />
+                  <Figure
+                    label="Corroborated"
+                    width="sm:w-28"
+                    muted
+                    value={r.pct === null ? "—" : `${r.pct.toFixed(0)}%`}
+                  />
+                </div>
+              ))}
+              </div>
+            </details>
+          );
+        })}
+
         {siteReview.length === 0 ? (
           <p className="px-4 py-6 text-center text-sm text-splash-navy/60">
             No site activity this month.

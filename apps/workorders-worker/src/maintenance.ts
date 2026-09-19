@@ -307,10 +307,11 @@ export async function handleMaintenanceSummary(
       env,
       "mt_device_person?select=connecteam_user_id,display_name,is_mechanic"
     ),
-    pgSelect<{ site_number: number; site_name: string }>(
-      env,
-      "mt_site_name?select=site_number,site_name"
-    ),
+    pgSelect<{
+      site_number: number;
+      site_name: string;
+      regional_manager: string | null;
+    }>(env, "mt_site_name?select=site_number,site_name,regional_manager"),
     // Scoped to the current and previous month rather than everything: the
     // page only ever renders one month, and the full history is ~1,100 rows of
     // titles that would be shipped and thrown away on every load.
@@ -368,7 +369,13 @@ export async function handleMaintenanceSummary(
   for (const c of crew.rows) names[String(c.connecteam_user_id)] = c.display_name;
 
   const siteNameMap: Record<string, string> = {};
-  for (const r of siteNames.rows) siteNameMap[String(r.site_number)] = r.site_name;
+  // Regional MANAGER, not area_manager -- that column is the Regional
+  // Director despite its name. See CLAUDE.md label-vs-data.
+  const siteRmMap: Record<string, string> = {};
+  for (const r of siteNames.rows) {
+    siteNameMap[String(r.site_number)] = r.site_name;
+    if (r.regional_manager) siteRmMap[String(r.site_number)] = r.regional_manager;
+  }
 
   // Summed here rather than shipped per-day: the page wants totals, and a
   // year-to-date range is a few hundred day rows it would only fold anyway.
@@ -397,6 +404,7 @@ export async function handleMaintenanceSummary(
     tiers: tierRows,
     crew_names: names,
     site_names: siteNameMap,
+    site_rms: siteRmMap,
     work_orders: workOrders.rows,
     devices: devices.rows,
     workload: workload.rows,

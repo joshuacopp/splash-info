@@ -139,6 +139,8 @@ export interface MaintenanceSummary {
   tiers: TierRow[];
   crew_names: Record<string, string>;
   site_names: Record<string, string>;
+  /** site_number -> Regional Manager. Empty when unassigned. */
+  site_rms: Record<string, string>;
   work_orders: SiteWorkOrderRow[];
   devices: DeviceHealthRow[];
   workload: WorkloadRow[];
