@@ -92,6 +92,21 @@ export async function runDailyApprovalDigest(env: Env): Promise<DigestResult> {
   );
   pgUrl.searchParams.set("workflow_stage", "not.is.null");
   pgUrl.searchParams.set("current_approver_emails", "neq.{}");
+  // Drop submissions on ARCHIVED forms. An archived form takes no new
+  // submissions, so anything still in flight on one is almost always
+  // abandoned -- and unlike real work it never ages out, so it would appear in
+  // the same inbox every morning forever, getting older. A digest whose first
+  // line is stale is a digest people stop opening.
+  //
+  // Filters the PARENT rows only because the embed above is `forms!inner`; on
+  // a left embed PostgREST would null the embedded object and keep the row.
+  // Alias-prefixed embedded filters are the established pattern here -- see
+  // listForms' `submissions.location_code` in db/admin-forms.ts.
+  //
+  // neq.archived rather than eq.published so a form in any other state keeps
+  // nagging its approvers: the intent is "stop chasing retired forms", not
+  // "only chase published ones".
+  pgUrl.searchParams.set("form.status", "neq.archived");
   pgUrl.searchParams.set("order", "submitted_at.asc");
   pgUrl.searchParams.set("limit", String(DIGEST_LIMIT_ROWS));
 
