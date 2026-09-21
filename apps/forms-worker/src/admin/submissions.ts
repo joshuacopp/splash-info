@@ -109,6 +109,34 @@ function locationScopeFor(scope: SubmissionScope): string[] | undefined {
 }
 
 /**
+ * Per-form resolution of a scoped caller. Every endpoint below already has the
+ * formId, which is the ONLY point at which "does this caller's grant cover
+ * this form" can be answered -- the gate itself cannot know.
+ *
+ *   { allow: true,  locationScope: undefined }  org-wide on this form (tagged)
+ *   { allow: true,  locationScope: [...] }      their sites' rows only
+ *   { allow: false }                            neither grant reaches it
+ *
+ * The tag is checked FIRST and wins, because it is the broader of the two and
+ * checking the other first would hand a tagged caller a location-filtered view
+ * of a form they are supposed to see whole -- a silent under-fetch, which is
+ * the failure mode this codebase keeps getting bitten by.
+ */
+function formScopeFor(
+  scope: SubmissionScope,
+  formId: string
+): { allow: true; locationScope: string[] | undefined } | { allow: false } {
+  if (scope === "all") return { allow: true, locationScope: undefined };
+  if (scope.forms.includes(formId)) {
+    return { allow: true, locationScope: undefined };
+  }
+  if (scope.locations.length > 0) {
+    return { allow: true, locationScope: scope.locations };
+  }
+  return { allow: false };
+}
+
+/**
  * For a scoped (location-admin) caller, a form that carries no
  * `scope_location_field_key` isn't location-scoped at all — its submissions
  * have NULL location_code and belong to super_admin / dc-admin only. Return a
@@ -121,6 +149,11 @@ async function denyUnscopedFormForScopedCaller(
   scope: SubmissionScope
 ): Promise<Response | null> {
   if (scope === "all") return null;
+  // A tagged caller is entitled to this form ORG-WIDE, so the
+  // location-scoped-ness of the form is irrelevant to them. Checking it anyway
+  // would 403 exactly the people the tag exists to admit, on any form that
+  // doesn't happen to stamp a location.
+  if (scope.forms.includes(formId)) return null;
   const key = await getFormScopeFieldKey(env, formId);
   if (!key) return jsonError(403, "form_not_location_scoped");
   return null;
@@ -143,7 +176,9 @@ export async function handleListSubmissions(
   if (!FORM_ID_RE.test(formId)) return jsonError(400, "bad_id");
   const denied = await denyUnscopedFormForScopedCaller(env, formId, gate.scope);
   if (denied) return denied;
-  const locationScope = locationScopeFor(gate.scope);
+  const fs = formScopeFor(gate.scope, formId);
+  if (!fs.allow) return jsonError(403, "forbidden");
+  const locationScope = fs.locationScope;
 
   const url = new URL(req.url);
   const range = resolveDateRange(url);
@@ -385,7 +420,11 @@ export async function handlePatchSubmission(
   if (!FORM_ID_RE.test(formId) || !SUB_ID_RE.test(subId)) {
     return jsonError(400, "bad_id");
   }
-  const locationScope = locationScopeFor(gate.scope);
+  // Same per-form resolution as the reads. A tagged caller may edit status /
+  // notes on their form org-wide; a location admin stays scoped to their sites.
+  const fs = formScopeFor(gate.scope, formId);
+  if (!fs.allow) return jsonError(403, "forbidden");
+  const locationScope = fs.locationScope;
 
   let body: { splash_notes?: unknown; status?: unknown };
   try {
@@ -458,7 +497,9 @@ export async function handleSubmissionsCsv(
   if (!FORM_ID_RE.test(formId)) return jsonError(400, "bad_id");
   const denied = await denyUnscopedFormForScopedCaller(env, formId, gate.scope);
   if (denied) return denied;
-  const locationScope = locationScopeFor(gate.scope);
+  const fs = formScopeFor(gate.scope, formId);
+  if (!fs.allow) return jsonError(403, "forbidden");
+  const locationScope = fs.locationScope;
 
   const url = new URL(req.url);
   const range = resolveDateRange(url);
@@ -637,7 +678,9 @@ export async function handleSubmissionsReport(
   if (!FORM_ID_RE.test(formId)) return jsonError(400, "bad_id");
   const denied = await denyUnscopedFormForScopedCaller(env, formId, gate.scope);
   if (denied) return denied;
-  const locationScope = locationScopeFor(gate.scope);
+  const fs = formScopeFor(gate.scope, formId);
+  if (!fs.allow) return jsonError(403, "forbidden");
+  const locationScope = fs.locationScope;
 
   const url = new URL(req.url);
   const range = resolveDateRange(url);

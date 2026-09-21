@@ -46,7 +46,8 @@ import {
   setFormStatus,
   getFormScopingContext,
   setFormScopeFieldKey,
-  type ListFormsFilter
+  type ListFormsFilter,
+  type FormListItem
 } from "../db/admin-forms.js";
 import type { Env } from "../index.js";
 
@@ -94,12 +95,37 @@ export async function handleListForms(env: Env, req: Request): Promise<Response>
     }
     if (audience !== "all") filter.audience = audience;
   }
-  if (gate.scope !== "all") {
-    filter.submissionLocationScope = gate.scope.locations;
-  }
+  // Three shapes, because the two grants answer different questions and a
+  // caller may hold both. Tagged forms come back with UNSCOPED counts (the tag
+  // is org-wide); location-scoped forms keep per-site counts. Running one
+  // query with both filters would AND them and return neither set correctly.
+  const taggedForms = gate.scope === "all" ? [] : gate.scope.forms;
+  const scopedLocations = gate.scope === "all" ? [] : gate.scope.locations;
 
   try {
-    const items = await listForms(env, filter);
+    let items: FormListItem[];
+    if (gate.scope === "all") {
+      items = await listForms(env, filter);
+    } else if (taggedForms.length > 0 && scopedLocations.length === 0) {
+      items = await listForms(env, { ...filter, formIdScope: taggedForms });
+    } else if (taggedForms.length === 0) {
+      items = await listForms(env, {
+        ...filter,
+        submissionLocationScope: scopedLocations
+      });
+    } else {
+      // Both grants. Merge, tagged entry winning on collision -- its count is
+      // the true org-wide number, where the location-scoped row would under-
+      // report the same form.
+      const [tagged, scoped] = await Promise.all([
+        listForms(env, { ...filter, formIdScope: taggedForms }),
+        listForms(env, { ...filter, submissionLocationScope: scopedLocations })
+      ]);
+      const byId = new Map<string, FormListItem>();
+      for (const f of scoped) byId.set(f.id, f);
+      for (const f of tagged) byId.set(f.id, f);
+      items = [...byId.values()];
+    }
     return new Response(JSON.stringify({ items }), {
       status: 200,
       headers: {

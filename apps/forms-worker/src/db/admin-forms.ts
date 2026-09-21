@@ -100,6 +100,12 @@ export interface ListFormsFilter {
   // sees per-site counts (not org-wide totals). Undefined = unscoped totals
   // (super_admin / dc-admin). Only affects the count, not which forms return.
   submissionLocationScope?: string[];
+  // Restrict to these form ids, with UNSCOPED submission counts. Set for a
+  // caller holding a form access tag: the tag means org-wide on those forms,
+  // so filtering their counts by location would report zero for every one.
+  // Mutually exclusive with submissionLocationScope -- the handler decides
+  // which applies, and runs both and merges when a caller holds both grants.
+  formIdScope?: string[];
 }
 
 /**
@@ -127,7 +133,13 @@ export async function listForms(
   // location_code. PostgREST filters an embedded resource via `<alias>.<col>`;
   // the parent form still returns (with count 0 when nothing matches). Guarded
   // against an empty array with a sentinel that matches no real code.
-  if (filter?.submissionLocationScope) {
+  if (filter?.formIdScope) {
+    const ids =
+      filter.formIdScope.length > 0
+        ? filter.formIdScope
+        : ["00000000-0000-0000-0000-000000000000"];
+    url.searchParams.set("id", `in.(${ids.join(",")})`);
+  } else if (filter?.submissionLocationScope) {
     const codes =
       filter.submissionLocationScope.length > 0
         ? filter.submissionLocationScope
