@@ -147,6 +147,17 @@ export default {
       if (!isOriginAllowed(request)) return jsonError(403, "bad origin");
       return handleRefresh(request, env);
     }
+
+    // ── Cold-load session resume ────────────────────────────────────────────
+    // Sibling of /api/refresh for the case the keepalive cannot cover: no tab
+    // was open, so nothing pinged /api/refresh, and the 1-hour access cookie
+    // aged out while the 7-day refresh cookie is still good. apps/web's
+    // middleware redirects the BROWSER here (a top-level navigation, hence
+    // GET) rather than to /login. See handleSessionResume for why there's no
+    // isOriginAllowed gate.
+    if (pathname === "/api/session-resume" && method === "GET") {
+      return handleSessionResume(request, env);
+    }
     if (pathname === "/api/me" && method === "GET") {
       // Read-only — no isOriginAllowed gate. Browsers don't send Origin on
       // same-origin GETs (spec), so gating broke the common case in 11a.
@@ -586,6 +597,85 @@ async function handleRefresh(request: Request, env: Env): Promise<Response> {
   return new Response(JSON.stringify({ ok: true }), { status: 200, headers });
 }
 
+/**
+ * GET /api/session-resume?next=<path> — cold-load session resume.
+ *
+ * THE GAP THIS CLOSES. sb-access-token carries a 1-hour Max-Age;
+ * sb-refresh-token carries 7 days; apps/web's middleware gates on the
+ * PRESENCE of the access cookie. SessionKeepalive only runs while a page is
+ * mounted, so with every tab closed nothing calls POST /api/refresh — an hour
+ * later the browser drops the access cookie and the next navigation bounces to
+ * /login, re-prompting for password AND MFA while a perfectly valid refresh
+ * token sits unused in the cookie jar. Operators experienced this as "I have
+ * to do MFA every morning"; the 7-day sliding session only ever accrued for
+ * people who left a tab open.
+ *
+ * WHAT THIS IS NOT. It does not weaken MFA and does not lengthen any token
+ * lifetime. GoTrue preserves AAL across a refresh, so this resumes a session
+ * that ALREADY completed MFA on this device at its existing assurance level —
+ * it cannot elevate an aal1 session, and it cannot manufacture a session for
+ * someone who never logged in, because middleware only routes a request here
+ * when a refresh cookie is present and the refresh token is the credential.
+ *
+ * GET, not POST, because middleware redirects the browser here and a redirect
+ * is a GET. No isOriginAllowed gate for the same reason /api/me has none:
+ * browsers omit Origin on same-origin GET navigations, so the check would
+ * reject the only case that matters. The CSRF exposure is bounded to rotating
+ * the caller's own refresh token, which leaves them logged in either way.
+ *
+ * REDIRECT-LOOP SAFETY, two independent guards, because a loop here would
+ * hit every operator at once and take out every gated page:
+ *   1. Every failure path clears BOTH auth cookies before bouncing to /login.
+ *      Middleware only sends a request here when a refresh cookie exists, so
+ *      removing it guarantees the next pass falls through to a plain login.
+ *   2. A 10-second `sb-resume-tried` breadcrumb, which middleware treats as
+ *      "already attempted, don't try again". This is the belt to guard 1's
+ *      braces: if the browser rejects our Set-Cookie headers outright, guard 1
+ *      never lands and the two sides would ping-pong forever. Deliberately set
+ *      WITHOUT `Secure` — the scenario it exists for is precisely one where
+ *      Secure cookies are being dropped (plain-http origin). It carries no
+ *      secret, just the literal "1", and self-heals in 10 seconds.
+ */
+async function handleSessionResume(request: Request, env: Env): Promise<Response> {
+  const url = new URL(request.url);
+  const safeNext = sanitizeRedirect(url.searchParams.get("next") ?? "");
+
+  const headers = new Headers();
+  headers.set("Cache-Control", "no-store");
+  // Guard 2 — set on BOTH outcomes, before we know which one we're taking.
+  headers.append(
+    "Set-Cookie",
+    `${RESUME_TRIED_COOKIE}=1; Path=/; HttpOnly; SameSite=Lax; Max-Age=${RESUME_TRIED_MAX_AGE}`
+  );
+
+  const bounceToLogin = (): Response => {
+    // Guard 1 — clear both auth cookies so middleware cannot route the next
+    // request back here.
+    for (const c of buildLogoutCookies()) headers.append("Set-Cookie", c);
+    headers.set("Location", `/login?return=${encodeURIComponent(safeNext)}`);
+    return new Response("", { status: 302, headers });
+  };
+
+  const refreshToken = getCookie(request, REFRESH_TOKEN_COOKIE);
+  if (!refreshToken) {
+    return bounceToLogin();
+  }
+
+  let refreshed;
+  try {
+    refreshed = await refreshSession(env, refreshToken);
+  } catch {
+    // Expired / revoked / already rotated away — session is genuinely over.
+    return bounceToLogin();
+  }
+
+  for (const c of buildAuthCookies(refreshed.access_token, refreshed.refresh_token)) {
+    headers.append("Set-Cookie", c);
+  }
+  headers.set("Location", safeNext);
+  return new Response("", { status: 302, headers });
+}
+
 async function handleMe(request: Request, env: Env): Promise<Response> {
   const auth = await authenticate(request, env);
   if (auth.status !== "authenticated") {
@@ -631,6 +721,16 @@ async function handleMe(request: Request, env: Env): Promise<Response> {
  * /sysadmin is deliberately absent: it's an API prefix, not a page surface.
  * The sysadmin UI lives at /admin/sysadmin and is covered by /admin.
  */
+/**
+ * Loop-breaker breadcrumb for /api/session-resume. Name is duplicated in
+ * apps/web/middleware.ts (Edge runtime can't import workspace packages — the
+ * same reason ACCESS_TOKEN_COOKIE is inlined there). Keep the two in sync.
+ */
+const RESUME_TRIED_COOKIE = "sb-resume-tried";
+/** Seconds. Long enough to cover one redirect round-trip, short enough that a
+ *  stuck breadcrumb self-heals before a user notices. */
+const RESUME_TRIED_MAX_AGE = 10;
+
 const REDIRECT_ALLOWED_PREFIXES = [
   "/admin",
   "/manage",
