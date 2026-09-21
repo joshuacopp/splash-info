@@ -96,9 +96,23 @@ export async function addCommentAction(
 // Brief 120 — workflow transition server action
 // =============================================================================
 
+/**
+ * `returnTo` is bound BEFORE `toStageId` so the curried shape WorkflowSection
+ * consumes -- `(toStageId, prev, formData)` -- is unchanged.
+ *
+ * It exists because acting on a ticket is usually the moment you are DONE with
+ * it: the transition hands the work to somebody else, and the page you are
+ * looking at is now a stale record of a queue you have left. Someone working
+ * the approvals queue had to hit Back after every decision.
+ *
+ * Navigation is a returned path rather than redirect() because redirect() from
+ * a server action costs ~20s under OpenNext on Cloudflare -- see the header of
+ * ActionForm.tsx, which pushes this client-side instead.
+ */
 export async function transitionAction(
   formId: string,
   subId: string,
+  returnTo: string | null,
   toStageId: string,
   _prev: ActionResult | null,
   formData: FormData
@@ -124,7 +138,15 @@ export async function transitionAction(
     const res = await transitionSubmissionAdmin(formId, subId, body);
     if ("ok" in res && res.ok === true) {
       revalidatePath(`/admin/forms/${formId}/submissions/${subId}`);
-      return { ok: true, message: `Stage advanced to "${res.to}".` };
+      // The queue MUST be revalidated too, or bouncing back lands on a cached
+      // page still listing the ticket that was just actioned -- which reads as
+      // "the transition did not work" and invites a second attempt.
+      if (returnTo) revalidatePath(returnTo);
+      return {
+        ok: true,
+        message: `Stage advanced to "${res.to}".`,
+        ...(returnTo ? { redirectTo: returnTo } : {})
+      };
     }
     let msg = res.error;
     if (res.error === "not_approver" && res.allowed_emails) {

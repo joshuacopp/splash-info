@@ -117,7 +117,17 @@ export default async function SubmissionDetailPage({
   }
 
   const save = updateSubmissionAction.bind(null, id, subId);
-  const transition = transitionAction.bind(null, id, subId);
+  // Bounce back to the queue after acting, but ONLY for someone who arrived
+  // from it. A form admin who opened this from the submissions table is
+  // reviewing a specific ticket, not working a queue -- throwing them at
+  // /admin/approvals would land them somewhere they were not, and which may be
+  // empty for them. `?from=approvals` is already how the queue links here.
+  const transition = transitionAction.bind(
+    null,
+    id,
+    subId,
+    fromApprovals ? "/admin/approvals" : null
+  );
   const workflow = submission.version.schema.workflow;
   const isAdminTier =
     session.role === "super_admin" ||
