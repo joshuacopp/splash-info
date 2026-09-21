@@ -1023,46 +1023,68 @@ export async function handleTransition(
     return jsonError(500, "dest_stage_unknown");
   }
 
-  // Authority gate: caller must either be admin-tier (escape hatch) OR
-  // hold an email on the CURRENT stage's approver list. Brief 123 — a
-  // terminal stage (no approver_source) is unreachable in normal flow
-  // (no transitions defined out of it), but defensively if such a
-  // submission exists, only admin-tier can act.
+  // Authority gate: admin-tier (escape hatch) OR on the CURRENT stage's
+  // approver list.
+  //
+  // THE STAMPED COLUMN IS PREFERRED OVER RE-RESOLVING, and that is the whole
+  // point of the re-resolve endpoint below.
+  //
+  // `current_approver_emails` is what the QUEUE reads to decide whose ticket
+  // this is. Re-resolving here from the submission's PINNED version schema
+  // meant the two could disagree -- and they disagree in exactly the case that
+  // matters operationally: a queue backs up, a third person is added to the
+  // stage's approver list, a new version is published. Existing tickets stay
+  // pinned to the old version, so that person could be shown a ticket by the
+  // queue and then refused by this gate. Seeing work you cannot touch is worse
+  // than not seeing it.
+  //
+  // Version pinning is right for FORM FIELDS -- a submission must render
+  // against the schema it was filled on. It is wrong for ROUTING, because who
+  // is on shift is not a property of the form.
+  //
+  // Falls back to re-resolving when the column is empty, which covers rows
+  // stamped before this existed and the Brief 131 "approver resolution failed"
+  // case, where re-resolving may now succeed.
   if (!isAdminTier) {
-    if (!currentStage.approver_source) {
-      return new Response(
-        JSON.stringify({
-          error: "not_approver",
-          allowed_emails: []
-        }),
-        {
-          status: 403,
-          headers: { "Content-Type": "application/json" }
-        }
-      );
-    }
-    let allowed: string[];
-    try {
-      allowed = await resolveApproverEmails(env, currentStage.approver_source, {
-        schema,
-        payload: submission.payload
-      });
-    } catch (err) {
-      console.error("[forms.admin] transition: approver resolve failed", err);
-      return jsonError(500, "approver_resolve_failed");
-    }
     const callerEmail = session.email.trim().toLowerCase();
-    if (!allowed.includes(callerEmail)) {
-      return new Response(
-        JSON.stringify({
-          error: "not_approver",
-          allowed_emails: allowed
-        }),
-        {
-          status: 403,
-          headers: { "Content-Type": "application/json" }
-        }
-      );
+    const stamped = (submission.current_approver_emails ?? [])
+      .map((e) => (typeof e === "string" ? e.trim().toLowerCase() : ""))
+      .filter((e) => e !== "");
+
+    if (stamped.length > 0) {
+      if (!stamped.includes(callerEmail)) {
+        return new Response(
+          JSON.stringify({ error: "not_approver", allowed_emails: stamped }),
+          { status: 403, headers: { "Content-Type": "application/json" } }
+        );
+      }
+      // Authorised by the stamp; skip the resolve entirely.
+    } else {
+      // Brief 123 — a terminal stage (no approver_source) is unreachable in
+      // normal flow, but defensively only admin-tier may act on one.
+      if (!currentStage.approver_source) {
+        return new Response(
+          JSON.stringify({ error: "not_approver", allowed_emails: [] }),
+          { status: 403, headers: { "Content-Type": "application/json" } }
+        );
+      }
+      let allowed: string[];
+      try {
+        allowed = await resolveApproverEmails(
+          env,
+          currentStage.approver_source,
+          { schema, payload: submission.payload }
+        );
+      } catch (err) {
+        console.error("[forms.admin] transition: approver resolve failed", err);
+        return jsonError(500, "approver_resolve_failed");
+      }
+      if (!allowed.includes(callerEmail)) {
+        return new Response(
+          JSON.stringify({ error: "not_approver", allowed_emails: allowed }),
+          { status: 403, headers: { "Content-Type": "application/json" } }
+        );
+      }
     }
   }
 
