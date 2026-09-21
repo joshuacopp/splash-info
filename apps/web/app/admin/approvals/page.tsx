@@ -84,7 +84,7 @@ export default async function PendingApprovalsPage({ searchParams }: PageProps) 
   // Group by form. Forms with more items float to the top; ties break
   // alphabetically. Within a form, items are submitted_at desc (already
   // sorted server-side).
-  // Brief 175 — bucket first, then by form within each bucket.
+  // Brief 174 follow-up — bucket first, then by form within each bucket.
   //
   // Before this the endpoint only returned rows where you were the CURRENT
   // approver, so a ticket you handed to somebody else disappeared and there
@@ -162,7 +162,7 @@ export default async function PendingApprovalsPage({ searchParams }: PageProps) 
                 : "bg-splash-navy text-white"
             }`}
           >
-            {/* needsAction, not totalCount: since Brief 175 the response also
+            {/* needsAction, not totalCount: since the Brief 174 follow-up the response also
                 carries what you are waiting on and what is finished, and a
                 "Mine" tab counting those would overstate your workload. */}
             Mine ({wantsAll ? "—" : needsAction.length})

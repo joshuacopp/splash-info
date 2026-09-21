@@ -65,7 +65,7 @@ export interface PendingApprovalItem {
    */
   queue_fields: { key: string; label: string; value: string }[];
   /**
-   * Brief 175 — which of the three lists this row belongs in.
+   * Brief 174 follow-up — which of the three lists this row belongs in.
    *
    * Before this the endpoint returned ONLY rows where the caller was the
    * current approver, so a ticket you handed to somebody else vanished
@@ -88,7 +88,7 @@ interface PendingApprovalDbRow {
   submitted_at: string;
   current_approver_emails: string[] | null;
   payload: Record<string, unknown>;
-  /** Brief 175 — read to decide whether the caller has already acted. */
+  /** Brief 174 follow-up — read to decide whether the caller has already acted. */
   workflow_history: unknown;
   // Denormalized location scoping column (stamped at submit). Authoritative
   // for the row's Site value — preferred over the payload heuristic below.

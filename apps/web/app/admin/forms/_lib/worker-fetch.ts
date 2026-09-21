@@ -442,22 +442,29 @@ export interface SubmissionComment {
   created_at: string;
 }
 
-/** Oldest first. Returns [] rather than throwing when the caller may not read
- *  the thread -- the page renders the rest of the submission either way, and a
- *  missing thread is not a reason to fail the whole detail view. */
+/**
+ * Oldest first, and `ok` says whether the caller may PARTICIPATE.
+ *
+ * Never throws: the page renders the rest of the submission either way, and a
+ * missing thread is not a reason to fail the whole detail view. But `ok: false`
+ * is distinct from `ok: true` with an empty array -- "you may not join this
+ * discussion" and "nobody has said anything yet" look identical otherwise, and
+ * the caller needs to know which so it can decide whether to offer a post box
+ * that would be refused.
+ */
 export async function listSubmissionComments(
   formId: string,
   subId: string
-): Promise<SubmissionComment[]> {
+): Promise<{ ok: boolean; comments: SubmissionComment[] }> {
   const resp = await callForms(
     `/forms/admin/api/forms/${encodeURIComponent(formId)}/submissions/${encodeURIComponent(subId)}/comments`
   );
-  if (!resp.ok) return [];
+  if (!resp.ok) return { ok: false, comments: [] };
   const data = await readJson<{ comments: SubmissionComment[] }>(
     resp,
     "listSubmissionComments"
   );
-  return Array.isArray(data.comments) ? data.comments : [];
+  return { ok: true, comments: Array.isArray(data.comments) ? data.comments : [] };
 }
 
 export async function createSubmissionComment(
@@ -616,7 +623,7 @@ export interface PendingApprovalItem {
    *  capped at 5. Optional: absent on any response from a worker predating
    *  this, and empty for every form that flags nothing. */
   queue_fields?: { key: string; label: string; value: string }[];
-  /** Brief 175 — which list this row belongs in. Optional: a worker predating
+  /** Brief 174 follow-up — which list this row belongs in. Optional: a worker predating
    *  this omits it, and the page falls back to treating everything as
    *  needs_action, i.e. the previous single-list behaviour. */
   bucket?: "needs_action" | "waiting_on_others" | "completed";

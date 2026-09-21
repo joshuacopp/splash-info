@@ -78,3 +78,21 @@ commit;
 --   from pg_constraint
 --  where conrelid = 'public.form_submission_comments'::regclass
 --    and contype = 'f';
+
+-- ---------------------------------------------------------------------------
+-- Brief 174 follow-up, APPLIED with the above: GIN index on
+-- form_submissions.workflow_history.
+--
+-- The approvals queue asks "which submissions has this person acted on?" via
+-- jsonb containment (workflow_history @> '[{"actor_email":"..."}]'). Without
+-- an index that is a sequential scan of every submission on every queue load.
+-- Added while the table is small enough for the build to be instant, rather
+-- than diagnosed later as a slow queue.
+--
+-- jsonb_path_ops rather than the default opclass: it indexes containment only,
+-- which is the single operator this query uses, and is smaller than the
+-- default which also supports key-exists operators we never issue.
+-- ---------------------------------------------------------------------------
+-- create index if not exists form_submissions_workflow_history_gin
+--   on public.form_submissions
+--   using gin (workflow_history jsonb_path_ops);

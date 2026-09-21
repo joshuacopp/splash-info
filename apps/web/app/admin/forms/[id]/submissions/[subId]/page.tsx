@@ -94,7 +94,9 @@ export default async function SubmissionDetailPage({
   // applies its own authority rule, and a caller who may read the submission
   // but not join the discussion gets [] rather than an error. Losing the
   // thread must never cost the whole detail page.
-  const comments = submission ? await listSubmissionComments(id, subId) : [];
+  const thread = submission
+    ? await listSubmissionComments(id, subId)
+    : { ok: false as const, comments: [] };
 
   if (fetchError || !submission) {
     return (
@@ -152,6 +154,16 @@ export default async function SubmissionDetailPage({
         <StatusPill status={submission.status} />
       </div>
 
+      {/* ADMIN-ONLY, AND NOW HIDDEN RATHER THAN MERELY UNUSABLE.
+          handlePatchSubmission gates on submissionGate -- admin tier or the
+          form_submissions grant scoped to your own locations -- so a queue
+          worker reaching this page via Brief 173's approver path cannot save
+          either field. Showing them a form whose Save button always fails is
+          worse than showing nothing: they fill it in, lose the text, and
+          reasonably conclude the page is broken.
+          CRD's note-taking is served by the Discussion thread below, which
+          they CAN post to. */}
+      {isAdminTier && (
       <section className="mb-6 rounded-md border border-gray-light bg-white p-5">
         <h2 className="mb-2 text-lg font-semibold text-splash-navy">
           Status &amp; Splash Notes
@@ -195,6 +207,7 @@ export default async function SubmissionDetailPage({
           </SubmitButton>
         </ActionForm>
       </section>
+      )}
 
       {workflow && (
         <WorkflowSection
@@ -304,8 +317,8 @@ export default async function SubmissionDetailPage({
       <DiscussionSection
         formId={id}
         subId={subId}
-        comments={comments}
-        canDiscuss
+        comments={thread.comments}
+        canDiscuss={thread.ok}
       />
     </section>
   );
