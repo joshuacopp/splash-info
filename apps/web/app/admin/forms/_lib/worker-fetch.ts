@@ -123,6 +123,10 @@ export interface TransitionResponse {
 
 export interface SubmissionDetailResponse {
   submission: SubmissionDetail;
+  /** Whether this caller may PATCH status / splash_notes. Decided by the
+   *  worker using the same gate the PATCH applies, so the UI cannot drift from
+   *  what is actually permitted. Absent on a worker predating it. */
+  can_edit?: boolean;
 }
 
 export interface VersionListItem {
@@ -422,13 +426,16 @@ export async function listSubmissionsAdmin(
 export async function getSubmissionAdmin(
   formId: string,
   subId: string
-): Promise<SubmissionDetail | null> {
+): Promise<{ submission: SubmissionDetail; canEdit: boolean } | null> {
   const resp = await callForms(
     `/forms/admin/api/forms/${encodeURIComponent(formId)}/submissions/${encodeURIComponent(subId)}`
   );
   if (resp.status === 401 || resp.status === 403 || resp.status === 404) return null;
   const data = await readJson<SubmissionDetailResponse>(resp, "getSubmissionAdmin");
-  return data.submission;
+  // Default false, not true: a worker that has not shipped can_edit yet should
+  // hide an editor rather than offer one whose Save is refused. Under-showing
+  // is recoverable by a redeploy; over-showing loses somebody's typing.
+  return { submission: data.submission, canEdit: data.can_edit === true };
 }
 
 /* ============================================================

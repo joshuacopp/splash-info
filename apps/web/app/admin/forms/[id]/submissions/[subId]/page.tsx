@@ -77,14 +77,21 @@ export default async function SubmissionDetailPage({
   // as before. The previous gate additionally rejected every non-admin BEFORE
   // asking, which is why a queue worker could see a ticket listed and never
   // open it.
-  let submission: Awaited<ReturnType<typeof getSubmissionAdmin>>;
+  let detail: Awaited<ReturnType<typeof getSubmissionAdmin>>;
   let fetchError: string | null = null;
   try {
-    submission = await getSubmissionAdmin(id, subId);
+    detail = await getSubmissionAdmin(id, subId);
   } catch (err) {
-    submission = null;
+    detail = null;
     fetchError = err instanceof Error ? err.message : String(err);
   }
+  const submission = detail?.submission ?? null;
+  // Comes from the worker, which decides it with the SAME gate the PATCH
+  // applies. Do not substitute a role check here -- admin tier is NOT the set
+  // of people who may edit (the form_submissions grant with locations also
+  // qualifies), and re-deriving it hid this card from location admins once
+  // already.
+  const canEdit = detail?.canEdit === true;
 
   if (submission === null && fetchError === null) {
     notFound();
@@ -163,7 +170,7 @@ export default async function SubmissionDetailPage({
           reasonably conclude the page is broken.
           CRD's note-taking is served by the Discussion thread below, which
           they CAN post to. */}
-      {isAdminTier && (
+      {canEdit && (
       <section className="mb-6 rounded-md border border-gray-light bg-white p-5">
         <h2 className="mb-2 text-lg font-semibold text-splash-navy">
           Status &amp; Splash Notes

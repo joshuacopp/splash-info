@@ -255,7 +255,17 @@ export async function handleGetSubmission(
       if (!approved) return adminGateResponse(gate);
     }
 
-    return new Response(JSON.stringify({ submission }), {
+    // CAPABILITY, NOT ROLE. `can_edit` is literally "did this caller pass
+    // submissionGate", which is the SAME gate handlePatchSubmission applies --
+    // so the page can hide a form the caller cannot submit without re-deriving
+    // the rule and drifting from it.
+    //
+    // This was wrong once already: the page gated the Status & Splash Notes
+    // card on admin tier, while the PATCH allows admin tier OR the
+    // form_submissions grant with locations. A location admin could save that
+    // form and had it hidden from them. Anything the UI shows or hides based
+    // on what a caller may DO belongs here, next to the gate that decides it.
+    return new Response(JSON.stringify({ submission, can_edit: gate.ok }), {
       status: 200,
       headers: {
         "Content-Type": "application/json",
