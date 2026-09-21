@@ -1,8 +1,8 @@
 # Brief 173: Form queues — non-admin actors and triage from the queue
 
-**Status:** Ready for Claude Code
+**Status:** Completed (2026-09-21)
 **Started:**
-**Completed:**
+**Completed:** 2026-09-21
 **Blocks:** Neither
 **Dependencies:** Briefs 120 / 121 / 125 / 129 / 131 (workflow, approvals queue, field flags)
 
@@ -163,4 +163,84 @@ pasting a full card number into a JSONB payload that is then exportable to CSV.
 
 ## Outcome
 
-(Filled in by Claude Code.)
+### Two claims in this brief's own Context were wrong
+
+Both were found by checking before editing, and both changed the work.
+
+**`/admin/approvals` was never admin-gated.** The brief says it is. Lines
+61-69 compute `isAdminTier` to gate the Mine/All *toggle*, not the page; the
+only `forbidden` there fires when the worker itself returns null. It needed no
+change. The original reading mistook a role check near the top of a file for a
+gate.
+
+**The worker was NOT already correct.** The brief says "the worker is already
+correct and needs no gate change. Do not loosen `submissionGate`." That held
+for `handleTransition` (authority = approver membership) and was false for
+`handleGetSubmission`, which runs `submissionGate` — so a plain-login approver
+got 403 from the WORKER, not merely from the page. Widening only apps/web
+would have produced a page that loaded and then failed to fetch. The
+instruction not to loosen `submissionGate` was still right and was honoured:
+the gate is untouched, and an approver fallback sits alongside it.
+
+### Files changed
+
+- `apps/forms-worker/src/admin/submissions.ts` — `handleGetSubmission` gains an
+  approver fallback. Only a 403 from `submissionGate` falls through (a 401 stays
+  a 401); the submission is fetched, and if the caller is on the current stage's
+  resolved approver list it is served. New `callerIsApproverOnSubmission` helper
+  mirrors `handleTransition`'s authority check rather than inventing a second
+  rule. Refusal re-uses the ORIGINAL gate response so "exists but not yours" is
+  indistinguishable from "no access to this surface".
+- `apps/web/app/admin/forms/[id]/submissions/[subId]/page.tsx` — admin-tier gate
+  removed. Authority now comes from the worker, per the operator-confirmed
+  decision not to re-derive it in two places.
+- `packages/forms-schema/src/types.ts` — `show_in_queue?: boolean` on `FieldBase`.
+- `packages/forms-schema/src/validators/field-config.ts` — strict AND draft.
+- `apps/web/app/admin/forms/[id]/_field-types/_shared/AdvancedSection.tsx` —
+  checkbox, suppressed on display-only types. All 16 field types inherit it.
+- `apps/forms-worker/src/admin/pending-approvals.ts` — `queue_fields` on each
+  item plus `resolveQueueFields` / `queueCellValue`.
+- `apps/web/app/admin/forms/_lib/worker-fetch.ts` — optional `queue_fields`.
+- `apps/web/app/admin/approvals/page.tsx` — renders the columns.
+
+### Decisions made on the operator's behalf
+
+- **Unauthorised detail loads 404 via `notFound()`, not a forbidden card** —
+  a deviation from this brief's own Definition of Done. `getSubmissionAdmin`
+  collapses 401/403/404 to null, so the page cannot tell them apart, and 404
+  matches the house anti-leak convention (jotform out-of-scope rows, promo
+  materials) where existence is not confirmed. Making it distinguishable would
+  mean leaking that a submission exists.
+- **A flagged-but-blank field keeps its column as an em-dash.** The blank is
+  itself information ("no barcode given"), and dropping it would misalign every
+  column after it.
+- **Values with no one-line form (file, signature objects) render an em-dash**
+  rather than `[object Object]`.
+- **Dropdown/multi values map to their labels** where the field declares
+  options — the stored value is often a slug the operator never sees.
+- **Terminal stages have no approvers**, so the fallback denies them and only
+  admin-tier reads a finished ticket. Correct: an outcome is nobody's work.
+
+### Verified, not assumed
+
+`resolveQueueFields` was extracted, compiled and run against seven shapes:
+the driving form (4 flagged, multi options resolving to "Account inactive,
+Double charge"), a blank flagged field, the 5-cap in schema order with 8
+flagged, flagged heading/image skipped, a signature object, a form flagging
+nothing (empty array — the queue renders as it did), and a missing payload.
+
+`pnpm typecheck` 27/27. `pnpm --filter @splash/web build` clean;
+`/admin/approvals` 198 B / 107 kB, `/admin/forms/[id]/submissions/[subId]`
+5.63 kB / 113 kB.
+
+### Operator prerequisite — do NOT over-grant
+
+CRD actors need a **plain login only**. No `dc_role`, no `form_submissions`
+tool grant, no locations, no admin tier. Authority comes entirely from being on
+a stage's approver list, which scopes them to the tickets routed to them and
+nothing else in the system. Granting admin tier to "make it work" would hand
+them every form's submissions, the email queue and the sysadmin surfaces.
+
+### Still not built (unchanged from Scope)
+
+The claim/lock. Revisit past ~4 actors or the first observed duplicated work.

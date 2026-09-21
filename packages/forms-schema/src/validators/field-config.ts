@@ -25,7 +25,12 @@ const fieldBaseSchema = {
   // completed-form PDF (generated when an email step has `attach_pdf:
   // true`). No structural enforcement beyond type — operators flip the
   // flag freely.
-  exclude_from_pdf: z.boolean().optional()
+  exclude_from_pdf: z.boolean().optional(),
+  // Brief 173 — optional per-field flag that surfaces the value as a column
+  // on the approvals queue. Same posture as exclude_from_pdf: no structural
+  // enforcement beyond type, operators flip it freely, and the read side caps
+  // how many it honours.
+  show_in_queue: z.boolean().optional()
 };
 
 const dropdownOptionSchema = z.object({
@@ -527,7 +532,9 @@ const fieldBaseSchemaDraft = {
   helpText: z.string().optional(),
   // Brief 129 — see fieldBaseSchema for the rationale; draft variant
   // mirrors so save-draft accepts the flag mid-build.
-  exclude_from_pdf: z.boolean().optional()
+  exclude_from_pdf: z.boolean().optional(),
+  // Brief 173 — same, for the queue-column flag.
+  show_in_queue: z.boolean().optional()
 };
 
 const headingFieldSchemaDraft = z.object({

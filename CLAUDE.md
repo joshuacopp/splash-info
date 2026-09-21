@@ -2958,6 +2958,51 @@ URL-based — service bindings don't apply to those.
   handler accepts any approver — RM/GM approvers can hit the worker
   endpoint via curl but can't reach the apps/web page UI today.
   Widening the page gate is a follow-up brief.
+  **CLOSED by Brief 173 (2026-09-21)**, which made the forms workflow
+  usable as a TICKETING system by people who are not admins.
+  **The detail page's admin-tier gate is gone**; authority now comes from
+  the worker, and `handleGetSubmission` gained an approver fallback: when
+  `submissionGate` returns 403 (NOT 401 -- that stays a 401), the
+  submission is fetched and served if the caller is on the CURRENT
+  stage's resolved approver list. `callerIsApproverOnSubmission`
+  deliberately mirrors `handleTransition`'s authority check rather than
+  inventing a second rule -- if those two disagree, someone can open a
+  ticket they cannot action, or the reverse. Refusal re-uses the original
+  gate response so "exists but not yours" is indistinguishable from "no
+  access to this surface"; an unauthorised detail load lands on
+  `notFound()` because `getSubmissionAdmin` collapses 401/403/404 to
+  null, matching the anti-leak posture of jotform out-of-scope rows and
+  promo materials.
+  **DO NOT WIDEN `submissionGate` TO SOLVE THIS CLASS OF PROBLEM.** It
+  offers full-admin-tier (everything) or the `form_submissions` grant
+  scoped to the caller's own locations, with nothing between. Someone
+  working a queue is neither -- they act on tickets routed to them across
+  every site. `current_approver_emails` is ALREADY a per-submission grant
+  and needs no new permission model. That is also why the queue surface
+  is `/admin/approvals` and not the Brief 119 wide submissions table: the
+  wide table would need a per-form permission tier invented from scratch.
+  **A queue worker therefore needs a PLAIN LOGIN and nothing else** -- no
+  `dc_role`, no `form_submissions` tool grant, no locations, no admin
+  tier. Granting admin tier to "make it work" would hand them every
+  form's submissions, the email queue and the sysadmin surfaces.
+  **`show_in_queue`** is a new optional `FieldBase` flag (strict + draft
+  Zod, plus the shared `AdvancedSection.tsx` checkbox that all 16 field
+  types inherit -- the Brief 129 `exclude_from_pdf` pattern). Flagged
+  fields surface as columns on `/admin/approvals` via `queue_fields` on
+  each `PendingApprovalItem`, resolved against the submission's OWN
+  version schema, in schema order, capped at 5; over the cap it drops
+  extras rather than erroring. Display-only types (`heading`, `image`)
+  are not flaggable; dropdown/multi values map to their labels; a
+  flagged-but-blank field KEEPS its column as an em-dash (the blank is
+  itself information, and dropping it would misalign every column after
+  it); values with no one-line form (file / signature objects) render an
+  em-dash rather than `[object Object]`. A form flagging nothing yields
+  `[]` and the queue renders exactly as before.
+  **NOTE for anyone reading `/admin/approvals`:** that page was NEVER
+  admin-gated. The role checks near its top compute `isAdminTier` for the
+  Mine/All *toggle*; its only `forbidden` fires when the worker returns
+  null. Brief 173's own planning misread that as a gate and had to
+  correct itself mid-execution.
   Brief 132 (2026-05-14) closed the seed-path / Quick-Pattern variants
   of the same picker-mis-mapping bug class Brief 131 Phase 2 partially
   fixed. `makeWorkflowSeed` in

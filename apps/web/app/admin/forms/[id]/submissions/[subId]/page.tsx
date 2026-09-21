@@ -60,14 +60,19 @@ export default async function SubmissionDetailPage({
       />
     );
   }
-  const allowed =
-    session.role === "super_admin" ||
-    session.dcRole === "admin" ||
-    session.dcRole === "super_admin";
-  if (!allowed) {
-    return <NoAccessCard reason="forbidden" />;
-  }
-
+  // NO admin-tier gate here (Brief 173).
+  //
+  // Authority is decided by the WORKER, which allows admin tier or anyone on
+  // the resolved approver list for this submission's current stage. Re-deriving
+  // that rule here would be a second implementation of "who may act", and the
+  // two would drift apart the moment resolveApproverEmails changes -- leaving
+  // someone able to open a ticket they cannot action, or the reverse.
+  //
+  // So the page asks and renders the answer: a caller with no right to this
+  // submission gets null back and falls into the forbidden card below, exactly
+  // as before. The previous gate additionally rejected every non-admin BEFORE
+  // asking, which is why a queue worker could see a ticket listed and never
+  // open it.
   let submission: Awaited<ReturnType<typeof getSubmissionAdmin>>;
   let fetchError: string | null = null;
   try {

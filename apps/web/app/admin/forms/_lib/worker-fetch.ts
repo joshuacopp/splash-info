@@ -565,6 +565,11 @@ export interface PendingApprovalItem {
    * as a "No approver resolved" warning pill.
    */
   approver_resolution_status?: "resolved" | "empty";
+  /** Brief 173 — operator-chosen fields that identify a ticket at a glance,
+   *  resolved server-side against the submission's own version schema and
+   *  capped at 5. Optional: absent on any response from a worker predating
+   *  this, and empty for every form that flags nothing. */
+  queue_fields?: { key: string; label: string; value: string }[];
 }
 
 export interface PendingApprovalsResponse {

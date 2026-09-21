@@ -245,6 +245,26 @@ function FormGroup({
                   </span>
                 )}
               </div>
+              {/* Brief 173 — the whole point of the queue: tell tickets apart
+                  without opening them. Renders nothing for forms that flag no
+                  fields, which is every form predating the flag. */}
+              {item.queue_fields && item.queue_fields.length > 0 && (
+                <dl className="mt-1 flex flex-wrap items-baseline gap-x-4 gap-y-0.5">
+                  {item.queue_fields.map((f) => (
+                    <div key={f.key} className="flex min-w-0 items-baseline gap-1">
+                      <dt className="text-[0.6875rem] uppercase tracking-wide text-splash-navy/45">
+                        {f.label}
+                      </dt>
+                      <dd
+                        className="max-w-[16rem] truncate text-xs font-medium text-splash-navy"
+                        title={f.value}
+                      >
+                        {f.value}
+                      </dd>
+                    </div>
+                  ))}
+                </dl>
+              )}
               <p
                 className="mt-0.5 text-xs text-splash-navy/60"
                 title={item.submitted_at}

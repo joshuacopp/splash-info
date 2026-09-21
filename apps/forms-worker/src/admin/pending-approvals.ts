@@ -50,6 +50,20 @@ export interface PendingApprovalItem {
    * empty-approver rows can't match the caller's email anyway.
    */
   approver_resolution_status: "resolved" | "empty";
+  /**
+   * Brief 173 — the fields this form flagged `show_in_queue`, resolved against
+   * THIS submission's own version schema, in schema order, capped at
+   * QUEUE_FIELD_LIMIT.
+   *
+   * Exists so someone working a queue can tell tickets apart without opening
+   * each one. Empty array for forms that flag nothing, which is every form
+   * that existed before this brief — the queue renders exactly as it did.
+   *
+   * Resolved per-submission rather than per-form on purpose: a submission
+   * against v2 must show v2's flagged fields even after v3 changes them, the
+   * same way the detail page renders against the submission's own version.
+   */
+  queue_fields: { key: string; label: string; value: string }[];
 }
 
 interface PendingApprovalDbRow {
@@ -191,7 +205,8 @@ export async function handlePendingApprovals(
           : null) ?? extractLocationCode(schema, r.payload),
       review_path: `/admin/forms/${r.form_id}/submissions/${r.id}`,
       approver_resolution_status:
-        approverEmails.length === 0 && expectsApprover ? "empty" : "resolved"
+        approverEmails.length === 0 && expectsApprover ? "empty" : "resolved",
+      queue_fields: resolveQueueFields(schema, r.payload)
     });
   }
 
@@ -251,4 +266,91 @@ function escapePgrstArrayLiteral(value: string): string {
     return `"${value.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
   }
   return value;
+}
+
+// =============================================================================
+// Brief 173 — queue columns
+// =============================================================================
+
+/**
+ * How many `show_in_queue` fields a form may actually surface.
+ *
+ * A form maker who ticks every box would otherwise make the queue wider than
+ * the screen and harder to scan than the thing it replaced. Over the cap we
+ * take schema order and drop the rest rather than erroring: a too-eager flag
+ * is a cosmetic mistake, and failing a queue load over it would be worse than
+ * the mistake.
+ */
+const QUEUE_FIELD_LIMIT = 5;
+
+/** Display-only types carry no payload value, so they can never be columns. */
+const DISPLAY_ONLY_TYPES = new Set(["heading", "image"]);
+
+/**
+ * Render one payload value as a short string for a queue cell.
+ *
+ * Returns null for anything with no sensible one-line form — file and
+ * signature entries are objects, and a column reading "[object Object]" is
+ * worse than no column. Options are mapped value -> label where the field
+ * declares them, because a dropdown's stored value is frequently a slug the
+ * operator never sees anywhere else.
+ */
+function queueCellValue(field: unknown, raw: unknown): string | null {
+  if (raw === null || raw === undefined) return null;
+
+  const options = (field as { options?: { value: string; label: string }[] }).options;
+  const label = (v: unknown): string => {
+    const s = typeof v === "string" ? v : String(v);
+    const hit = options?.find((o) => o.value === s);
+    return hit ? hit.label : s;
+  };
+
+  if (Array.isArray(raw)) {
+    const parts = raw
+      .filter((v) => v !== null && v !== undefined && typeof v !== "object")
+      .map(label);
+    return parts.length > 0 ? parts.join(", ") : null;
+  }
+  if (typeof raw === "object") return null;
+  if (typeof raw === "boolean") return raw ? "Yes" : "No";
+
+  const s = label(raw).trim();
+  return s === "" ? null : s;
+}
+
+/**
+ * The flagged fields for one submission, read against its OWN version schema.
+ *
+ * Payload values are keyed by `field.key`, never `field.id` — Brief 131
+ * established that empirically in three places, and getting it wrong yields
+ * silently empty columns rather than an error.
+ */
+export function resolveQueueFields(
+  schema: FormSchema,
+  payload: unknown
+): { key: string; label: string; value: string }[] {
+  const fields = Array.isArray(schema?.fields) ? schema.fields : [];
+  const bag = (payload ?? {}) as Record<string, unknown>;
+  const out: { key: string; label: string; value: string }[] = [];
+
+  for (const f of fields) {
+    if (out.length >= QUEUE_FIELD_LIMIT) break;
+    if (!(f as { show_in_queue?: boolean }).show_in_queue) continue;
+    if (DISPLAY_ONLY_TYPES.has((f as { type?: string }).type ?? "")) continue;
+
+    const key = (f as { key?: string }).key;
+    if (typeof key !== "string" || key === "") continue;
+
+    const value = queueCellValue(f, bag[key]);
+    // A flagged field the submitter left blank still earns its column -- the
+    // blank IS the information ("no barcode given"). An unrenderable value
+    // does not, so it collapses to an em-dash rather than being dropped, which
+    // would misalign every column after it.
+    out.push({
+      key,
+      label: (f as { label?: string }).label ?? key,
+      value: value ?? "—"
+    });
+  }
+  return out;
 }

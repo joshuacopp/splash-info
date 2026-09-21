@@ -210,17 +210,50 @@ export async function handleGetSubmission(
 ): Promise<Response> {
   const sk = requireServiceKey(env);
   if (sk) return sk;
-  const gate = await submissionGate(env, req);
-  if (!gate.ok) return adminGateResponse(gate);
 
   if (!FORM_ID_RE.test(formId) || !SUB_ID_RE.test(subId)) {
     return jsonError(400, "bad_id");
   }
-  const locationScope = locationScopeFor(gate.scope);
+
+  const gate = await submissionGate(env, req);
+
+  // APPROVER FALLBACK (Brief 173).
+  //
+  // submissionGate offers two tiers and nothing between them: full admin
+  // (everything) or the form_submissions grant scoped to the caller's own
+  // locations. Someone who works a queue is neither -- they act on tickets
+  // routed to them across every site, and granting them admin tier to read one
+  // ticket would hand them every form's submissions plus the email queue.
+  //
+  // handleTransition already solved this: authority there is membership of the
+  // current stage's resolved approver list. Reading the ticket has to allow
+  // exactly the same people, or the queue shows work nobody can open -- which
+  // was the state before this brief, and it failed at the last click, after
+  // real tickets were already sitting in the queue.
+  //
+  // Only a 403 falls through. A 401 is not authenticated at all and must stay
+  // a 401; widening that would be a different and much worse change.
+  if (!gate.ok && gate.status !== 403) return adminGateResponse(gate);
+
+  // Admin/location callers keep their existing scope. The approver path
+  // deliberately passes NO location scope: it is already narrower than any
+  // location filter -- it authorises exactly one submission -- and scoping it
+  // would break the legitimate approver who holds no locations at all, which
+  // is the normal case for the people this exists for.
+  const locationScope = gate.ok ? locationScopeFor(gate.scope) : undefined;
 
   try {
     const submission = await getSubmission(env, formId, subId, locationScope);
     if (!submission) return jsonError(404, "not_found");
+
+    if (!gate.ok) {
+      const approved = await callerIsApproverOnSubmission(env, req, submission);
+      // Not an approver either -- return the ORIGINAL gate refusal rather than
+      // a new one, so a caller cannot tell "exists but not yours" apart from
+      // "no access to this surface".
+      if (!approved) return adminGateResponse(gate);
+    }
+
     return new Response(JSON.stringify({ submission }), {
       status: 200,
       headers: {
@@ -231,6 +264,51 @@ export async function handleGetSubmission(
   } catch (err) {
     console.error("[forms.admin] get submission failed", err);
     return jsonError(500, "get_failed");
+  }
+}
+
+/**
+ * Is the caller on the resolved approver list for this submission's CURRENT
+ * stage?
+ *
+ * Mirrors the authority check in handleTransition rather than inventing a
+ * second rule: read the submission's OWN version schema, find the current
+ * stage, resolve its approver_source against the payload, compare emails
+ * lowercased. If those two ever disagree, someone can open a ticket they
+ * cannot action, or the reverse -- so they must stay the same shape.
+ *
+ * Returns false, never throws. A resolver failure here is "not authorised",
+ * which is the safe direction: the alternative is a 500 that looks like an
+ * outage on a page that should simply have said no.
+ */
+async function callerIsApproverOnSubmission(
+  env: Env,
+  req: Request,
+  submission: { version: { schema: FormSchema }; workflow_stage: string | null; payload: unknown }
+): Promise<boolean> {
+  try {
+    const auth = await authenticate(req, env);
+    if (auth.status !== "authenticated") return false;
+
+    const schema = submission.version.schema;
+    const workflow = schema.workflow;
+    if (!workflow) return false;
+
+    const currentStageId = submission.workflow_stage ?? workflow.default_stage;
+    const currentStage = workflow.stages.find((s) => s.id === currentStageId);
+    // A terminal stage carries no approver_source, so nobody is an approver on
+    // it. That is correct: once a ticket reaches an outcome it stops being
+    // anyone's work, and only admin-tier should still read it.
+    if (!currentStage?.approver_source) return false;
+
+    const allowed = await resolveApproverEmails(env, currentStage.approver_source, {
+      schema,
+      payload: submission.payload as Record<string, unknown>
+    });
+    return allowed.includes(auth.session.email.trim().toLowerCase());
+  } catch (err) {
+    console.error("[forms.admin] approver fallback check failed", err);
+    return false;
   }
 }
 

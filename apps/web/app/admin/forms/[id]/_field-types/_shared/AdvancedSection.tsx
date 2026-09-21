@@ -24,10 +24,19 @@ interface Props {
   onUpdate: (patch: Partial<Field>) => void;
 }
 
+/** Display-only types carry no payload, so there is nothing to show in a queue
+ *  column. Offering the checkbox on them would be an option that silently does
+ *  nothing. */
+const DISPLAY_ONLY: ReadonlyArray<string> = ["heading", "image"];
+
 export default function AdvancedSection({ field, onUpdate }: Props) {
   const exclude =
     Boolean((field as { exclude_from_pdf?: boolean }).exclude_from_pdf) ||
     false;
+  const inQueue =
+    Boolean((field as { show_in_queue?: boolean }).show_in_queue) || false;
+  const canShowInQueue = !DISPLAY_ONLY.includes(field.type);
+
   return (
     <details className="rounded-splash-sm border border-gray-light bg-gray-50 px-3 py-2 text-sm text-splash-navy">
       <summary className="cursor-pointer font-semibold">Advanced</summary>
@@ -40,6 +49,16 @@ export default function AdvancedSection({ field, onUpdate }: Props) {
           }
           hint="Useful for internal-only fields that shouldn't appear on emailed PDFs."
         />
+        {canShowInQueue ? (
+          <LabeledCheckbox
+            label="Show as a column on the approvals queue"
+            checked={inQueue}
+            onChange={(v) =>
+              onUpdate({ show_in_queue: v || undefined } as Partial<Field>)
+            }
+            hint="Lets someone working the queue tell tickets apart without opening each one. Up to 5 fields per form; pick the ones that identify a ticket, not the ones needed to action it."
+          />
+        ) : null}
       </div>
     </details>
   );

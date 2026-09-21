@@ -32,6 +32,16 @@ export interface FieldBase {
   // Operators can flip this on internal-only fields (e.g. private notes,
   // signature scratchpads) that shouldn't appear on emailed PDFs.
   exclude_from_pdf?: boolean;
+  // Brief 173 — when true, this field's value is surfaced as a COLUMN on the
+  // approvals queue, so an actor can tell tickets apart without opening each
+  // one. Up to QUEUE_FIELD_LIMIT fields per form are honoured, in schema
+  // order; the rest are dropped rather than erroring. Display-only types
+  // (heading, image) carry no payload and are never flaggable.
+  //
+  // The queue answers "which ticket is this"; the ticket answers "what do I
+  // do". Flagging everything collapses the distinction and makes the queue
+  // unreadable, which is what the cap is for.
+  show_in_queue?: boolean;
 }
 
 // -----------------------------------------------------------------------------
