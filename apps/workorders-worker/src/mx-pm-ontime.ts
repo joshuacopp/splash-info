@@ -1,6 +1,27 @@
-// Preventative on-time percentage for the current Monday-Sunday week.
+// Preventative figures for the current Monday-Sunday week.
 //
-// THE RULE
+// THE HEADLINE IS COMPLETION, NOT ON TIME (changed 2026-09-21)
+//
+//       preventative % = completed / due
+//
+//   Operator, relaying the maintenance department: "preventative percentage
+//   isn't actually related to on time at all - it's just percentage of them
+//   due in that week (monday-sunday) that have been completed". Due dates set
+//   the DENOMINATOR -- which work belongs to this week -- and play no part in
+//   the numerator. A work order due Tuesday and closed Friday counts fully.
+//
+//   Everything below about on-time still runs and is still shipped, because
+//   it costs nothing on the same rows and answers a real second question. It
+//   is SECONDARY now and appears only in tooltips. The module, the exported
+//   types and the wire field keep their `OnTime` names deliberately: renaming
+//   them would break across a deploy seam, since this worker and splash-web
+//   ship separately and whichever went first would leave the other reading
+//   undefined. The name is wrong; the seam is worse.
+//
+//   apps/web/app/workorders/_lib/pm-week.ts is where the headline is rendered
+//   and is the other half of this note.
+//
+// THE ON-TIME RULE (secondary)
 //
 //       on time = completed on or before its due day, OR not due yet
 //       overdue = past its due day and undone, OR completed late
@@ -58,9 +79,10 @@ export interface PmOnTimeEnv {
 }
 
 export interface PmOnTimeBucket {
-  /** Every preventive work order due this Mon-Sun week. */
+  /** Every preventive work order due this Mon-Sun week. The denominator. */
   due: number;
-  /** Completed by its due day, or not due yet. The headline number. */
+  /** Completed by its due day, or not due yet. Was the headline until
+   *  2026-09-21; now secondary. See the file header. */
   onTime: number;
   /** Past its due day and undone, or completed late. `onTime + overdue ===
    *  due`. */
@@ -69,7 +91,8 @@ export interface PmOnTimeBucket {
    *  work that `onTime` counts, so it is always <= onTime. This is the
    *  performance figure. */
   completedOnTime: number;
-  /** Finished at all, on time or late. */
+  /** Finished at all, on time or late. `completed / due` IS THE HEADLINE
+   *  preventative percentage the page shows. */
   completed: number;
 }
 

@@ -113,6 +113,21 @@ describe("the MaintainX week, reproduced", () => {
     row({ due_date: "2026-09-21T01:00:00Z", status: "IN_PROGRESS", completed_at: null })
   ];
 
+  it("reports the headline preventative percentage as completed over due", async () => {
+    // WHAT THE PAGE ACTUALLY SHOWS since 2026-09-21. The maintenance
+    // department's preventative percentage is completion, with no reference
+    // to due dates in the numerator: three of these seven are DONE, so this
+    // same verified week reads 42.9% -- NOT the 71.4% on-time figure the
+    // sibling test pins. Both are correct answers to different questions,
+    // and confusing them is the whole reason this test exists.
+    stubFetch(BINGHAMTON_WEEK);
+    const res = await fetchPmOnTime({ env: ENV, mxLocationIds: [1187635], now: WEDNESDAY });
+    expect(res?.overall.due).toBe(7);
+    expect(res?.overall.completed).toBe(3);
+    const pct = Math.round((res!.overall.completed / res!.overall.due) * 1000) / 10;
+    expect(pct).toBe(42.9);
+  });
+
   it("reports 5 on time and 2 overdue out of 7", async () => {
     stubFetch(BINGHAMTON_WEEK);
     const res = await fetchPmOnTime({ env: ENV, mxLocationIds: [1187635], now: WEDNESDAY });

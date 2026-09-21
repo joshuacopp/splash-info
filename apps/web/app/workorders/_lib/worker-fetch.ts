@@ -181,25 +181,34 @@ export interface WorkOrdersListResponse {
   pmOnTime: PmOnTime | null;
 }
 
+// The wire field is still named `pmOnTime` because renaming it would break
+// across a deploy seam -- workorders-worker and splash-web ship separately,
+// and whichever went first would leave the other reading undefined. The
+// HEADLINE METRIC IT CARRIES IS NO LONGER ON-TIME. See PmOnTimeBucket.
 export interface PmOnTimeBucket {
-  /** Every preventive work order due this Mon-Sun week. */
+  /** Every preventive work order due this Mon-Sun week. The denominator. */
   due: number;
-  /** MaintainX's sense: not currently overdue. Counts work that is not due
-   *  yet, even untouched. This is the headline, chosen to agree with the
-   *  MaintainX report operators check against. */
+  /** Finished at all, whenever. `completed / due` IS THE HEADLINE — the
+   *  maintenance department's preventative percentage is simply how much of
+   *  the week's due work has been done, with no reference to due dates.
+   *  Confirmed by the operator 2026-09-21. */
+  completed: number;
+  /** MaintainX's on-time sense: not currently overdue, counting work not due
+   *  yet as on time. Retained as secondary detail only — this was the
+   *  headline until 2026-09-21 and is no longer. */
   onTime: number;
-  /** Past its due day and not done. `onTime + overdue === due`. */
+  /** Past its due day and undone, OR completed late. `onTime + overdue ===
+   *  due`. Note it counts late completions, so it is NOT "still outstanding";
+   *  the outstanding count is `due - completed`. */
   overdue: number;
   /** The stricter reading: actually finished on or before its due day. */
   completedOnTime: number;
-  /** Finished at all, on time or late. */
-  completed: number;
 }
 
 export interface PmOnTime {
   /** Keyed by MaintainX location id, as a string once it crosses JSON. A
    *  location with nothing due this week is ABSENT, not zero — "none was due"
-   *  and "none was done on time" must not render alike. */
+   *  and "none of it was done" must not render alike. */
   byLocation: Record<string, PmOnTimeBucket>;
   overall: PmOnTimeBucket;
   weekStartIso: string;

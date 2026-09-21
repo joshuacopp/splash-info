@@ -41,6 +41,8 @@ import { StatusPill } from "./StatusPill";
 import { RequestStatusPill } from "./RequestStatusPill";
 import { DueDatePill, overdueDays } from "./DueDatePill";
 import { NewRequestForm } from "./NewRequestForm";
+import { SiteKpiPanel, type SiteKpiRow } from "./SiteKpiPanel";
+import { pmPct, pmRemaining, pmTitle, pmTone } from "../_lib/pm-week";
 import type {
   AccessibleLocation,
   WorkOrderAttachment,
@@ -167,6 +169,63 @@ function buildLocationBlocks(props: Props): LocationBlockData[] {
   return blocks;
 }
 
+/**
+ * One KPI row per accessible site, for the strip above the location blocks.
+ *
+ * Built from `accessibleLocations` rather than from `blocks`, so a site with
+ * nothing open still gets a row. That is the point of the strip: "nothing open
+ * at Vestal" is an answer, and a site that silently vanishes from the list
+ * looks the same as a site the operator cannot see. Unmapped locations
+ * (maintainx_id null) are dropped -- they can hold neither work orders nor a
+ * preventative rate.
+ */
+function buildSiteKpiRows(
+  accessibleLocations: AccessibleLocation[],
+  blocks: LocationBlockData[],
+  pmOnTime: PmOnTime | null
+): SiteKpiRow[] {
+  const byId = new Map(blocks.map((b) => [b.maintainx_id, b]));
+  const rows: SiteKpiRow[] = [];
+  const seen = new Set<number>();
+
+  const add = (id: number, fallbackName: string) => {
+    if (seen.has(id)) return;
+    seen.add(id);
+    const block = byId.get(id);
+    const counts = { HIGH: 0, MEDIUM: 0, LOW: 0, NONE: 0 };
+    for (const wo of block?.reactive ?? []) {
+      const key = (wo.priority ?? "NONE").toUpperCase();
+      if (key in counts) counts[key as keyof typeof counts] += 1;
+      else counts.NONE += 1;
+    }
+    rows.push({
+      maintainx_id: id,
+      location_pretty: block?.location_pretty ?? fallbackName,
+      high: counts.HIGH,
+      medium: counts.MEDIUM,
+      low: counts.LOW,
+      none: counts.NONE,
+      total: counts.HIGH + counts.MEDIUM + counts.LOW + counts.NONE,
+      // Absent means nothing was due here this week, which is NOT zero.
+      // SiteKpiPanel renders that as an em dash rather than 0%.
+      pm: pmOnTime?.byLocation[String(id)] ?? null
+    });
+  };
+
+  for (const loc of accessibleLocations) {
+    if (loc.maintainx_id === null) continue;
+    add(
+      loc.maintainx_id,
+      loc.location_name ?? loc.location_address ?? `Site ${loc.maintainx_id}`
+    );
+  }
+  // Defensive: a block whose location is not on the accessible list would
+  // otherwise be counted in the page below but missing from the strip above.
+  for (const block of blocks) add(block.maintainx_id, block.location_pretty);
+
+  return rows;
+}
+
 interface RequestResultBanner {
   /** "ok": green success only (no photo failures). "ok-warn": green
    *  success banner stacked over an amber photo-warn banner (some
@@ -262,6 +321,11 @@ export function WorkOrdersTabsClient(props: Props) {
     [props.reactive, props.preventive, props.requests]
   );
 
+  const kpiRows = useMemo(
+    () => buildSiteKpiRows(props.accessibleLocations, blocks, props.pmOnTime),
+    [props.accessibleLocations, blocks, props.pmOnTime]
+  );
+
   // The New Request form is a full-screen view (not a tab). Reached from
   // the header button or any location's "+ New request".
   if (view === "new") {
@@ -301,6 +365,14 @@ export function WorkOrdersTabsClient(props: Props) {
         </button>
       </div>
 
+      {/* Multi-site operators only. A single-site operator's one location
+          block already carries these counts in its header, so the strip would
+          be a second copy of the page. SiteKpiPanel additionally declines to
+          render below two rows. */}
+      {props.accessibleLocationCount > 1 ? (
+        <SiteKpiPanel rows={kpiRows} pmOnTime={props.pmOnTime} />
+      ) : null}
+
       {props.pmOnTime ? <PmOnTimeSummary pmOnTime={props.pmOnTime} /> : null}
 
       {props.truncated ? <TruncatedNotice /> : null}
@@ -320,7 +392,7 @@ export function WorkOrdersTabsClient(props: Props) {
             expanded={expanded}
             onToggle={toggle}
             onNewRequest={openNewRequest}
-            onTime={props.pmOnTime?.byLocation[String(block.maintainx_id)] ?? null}
+            pmWeek={props.pmOnTime?.byLocation[String(block.maintainx_id)] ?? null}
           />
         ))
       )}
@@ -485,15 +557,15 @@ function LocationBlock({
   expanded,
   onToggle,
   onNewRequest,
-  onTime
+  pmWeek
 }: {
   block: LocationBlockData;
   expanded: Set<string>;
   onToggle: (id: number) => void;
   onNewRequest: (locationId: number | null) => void;
-  /** This location's current-week preventive on-time bucket, or null when
-   *  nothing was due or the worker could not answer. */
-  onTime: PmOnTimeBucket | null;
+  /** This location's current-week preventative bucket, or null when nothing
+   *  was due or the worker could not answer. */
+  pmWeek: PmOnTimeBucket | null;
 }) {
   // Pinned once per mount rather than read at each call site, so every row and
   // badge in this block is measured against the same instant -- a page left
@@ -541,7 +613,7 @@ function LocationBlock({
           badge={
             <>
               {overdueCount > 0 ? <OverduePill count={overdueCount} /> : null}
-              {onTime ? <OnTimePill bucket={onTime} /> : null}
+              {pmWeek ? <PmCompletionPill bucket={pmWeek} /> : null}
             </>
           }
         >
@@ -670,7 +742,8 @@ function countRecentlyOverdue(workOrders: WorkOrderItem[], now: number): number 
  */
 function PmOnTimeSummary({ pmOnTime }: { pmOnTime: PmOnTime }) {
   if (pmOnTime.overall.due === 0) return null;
-  const { onTime, due, overdue, completedOnTime } = pmOnTime.overall;
+  const { completed, due } = pmOnTime.overall;
+  const remaining = pmRemaining(pmOnTime.overall);
   const weekLabel = new Date(pmOnTime.weekStartIso).toLocaleDateString("en-US", {
     timeZone: "America/New_York",
     month: "short",
@@ -680,60 +753,41 @@ function PmOnTimeSummary({ pmOnTime }: { pmOnTime: PmOnTime }) {
   return (
     <div className="mb-4 rounded-splash-md border border-gray-light bg-white px-3 py-2 text-sm">
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-        <span className="font-semibold text-splash-navy">Preventative on time</span>
-        <OnTimePill bucket={pmOnTime.overall} />
+        <span className="font-semibold text-splash-navy">Preventative complete</span>
+        <PmCompletionPill bucket={pmOnTime.overall} />
         <span className="text-xs text-gray-500">
-          {onTime} of {due} due this week (from Mon {weekLabel})
-          {overdue > 0 ? ` · ${overdue} overdue` : ""}
+          {completed} of {due} due this week (from Mon {weekLabel})
+          {remaining > 0 ? ` · ${remaining} still open` : ""}
         </span>
       </div>
-      {/* Said plainly rather than hidden in a tooltip, because the headline
-          counts work that simply is not due yet and a reader who does not know
-          that will over-read a high number early in the week. */}
+      {/* Said plainly rather than left to a tooltip: the denominator is the
+          whole week, so this figure necessarily starts low on Monday and
+          climbs. A reader who does not know that will read Tuesday as a
+          collapse. */}
       <div className="pt-0.5 text-xs text-gray-500">
-        On time counts work not yet due, matching the MaintainX report.
-        Completed by their due date so far: {completedOnTime} of {due}.
+        Measured against the whole Mon-Sun week, so it climbs as the week runs
+        and is only comparable week to week once Sunday closes.
       </div>
     </div>
   );
 }
 
 /**
- * Current-week preventive on-time rate, matching MaintainX's "On Time vs.
- * Overdue" report so the two screens agree.
- *
- * MaintainX counts work that is not due YET as on time, so this figure starts
- * each Monday near 100% and falls as the week runs. The tooltip carries the
- * stricter completed-by-due-date count, which is the one to read if the
- * question is what actually got done.
+ * Current-week preventative completion: how much of the work due Mon-Sun has
+ * been done. The rule, and why it carries no amber/red tier, are in
+ * ../_lib/pm-week.ts.
  *
  * Rendered only when something was due: a site with no PM scheduled this week
- * has no rate, and "0%" would accuse it of failing at nothing.
- *
- * Colour thresholds sit at 90 and 75. Under this definition a healthy week
- * sits high, so amber means something is already late and red means several
- * things are.
+ * has no percentage, and "0%" would accuse it of failing at nothing.
  */
-function OnTimePill({ bucket }: { bucket: PmOnTimeBucket }) {
+function PmCompletionPill({ bucket }: { bucket: PmOnTimeBucket }) {
   if (bucket.due === 0) return null;
-  const pct = Math.round((bucket.onTime / bucket.due) * 1000) / 10;
-  const tone =
-    pct >= 90
-      ? "bg-emerald-100 text-emerald-800"
-      : pct >= 75
-        ? "bg-amber-100 text-amber-800"
-        : "bg-red-100 text-red-800";
   return (
     <span
-      className={`ml-1 inline-block rounded-full px-2 text-[11px] font-semibold ${tone}`}
-      title={
-        `${bucket.onTime} of ${bucket.due} preventative work orders due this week (Mon-Sun) are on time` +
-        ` -- completed by their due date, or not due yet.` +
-        ` ${bucket.overdue} are overdue: past due and undone, or completed late.` +
-        ` Actually completed by their due date so far: ${bucket.completedOnTime} of ${bucket.due}.`
-      }
+      className={`ml-1 inline-block rounded-full px-2 text-[11px] font-semibold tabular-nums ${pmTone(bucket)}`}
+      title={pmTitle(bucket)}
     >
-      {pct}% on time
+      {pmPct(bucket)}% complete
     </span>
   );
 }
