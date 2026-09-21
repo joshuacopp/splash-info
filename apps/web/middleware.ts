@@ -50,6 +50,34 @@ const ACCESS_TOKEN_COOKIE = "sb-access-token";
 const DEFAULT_AUTHED_LANDING = "/admin/dashboard";
 
 /**
+ * Cold-load session resume. sb-access-token has a 1-hour Max-Age while
+ * sb-refresh-token has 7 days, and SessionKeepalive only refreshes while a
+ * page is mounted — so with every tab closed, the access cookie ages out and
+ * the gate below used to bounce the user to /login even though a valid refresh
+ * token was still sitting in the jar. That re-prompted for password AND MFA,
+ * which is what made the "7-day session" only ever real for people who left a
+ * tab open.
+ *
+ * When the access cookie is gone but the refresh cookie is present, redirect
+ * to dashboard-worker's /api/session-resume instead. It trades the refresh
+ * token for a fresh pair and sends the browser on to `next`. GoTrue preserves
+ * AAL, so an MFA'd session resumes still MFA'd — no assurance is lost here.
+ *
+ * Why a browser redirect rather than a fetch from inside middleware: apps/web
+ * and dashboard-worker share a zone, and same-zone Worker→Worker URL fetches
+ * loop through the edge and 522 after ~19s (Brief 17). Service bindings aren't
+ * reachable from Edge middleware either. Bouncing the browser costs one extra
+ * round-trip on a cold load and sidesteps both problems.
+ *
+ * `sb-resume-tried` is the worker's 10-second loop-breaker: if it's present we
+ * already tried and something didn't stick, so fall through to /login rather
+ * than ping-pong. See handleSessionResume in apps/dashboard-worker/src/index.ts.
+ */
+const REFRESH_TOKEN_COOKIE = "sb-refresh-token";
+const RESUME_TRIED_COOKIE = "sb-resume-tried";
+const SESSION_RESUME_PATH = "/api/session-resume";
+
+/**
  * Static legacy → canonical mapping. Each entry is a 308 (permanent +
  * method-preserving) redirect from a legacy URL to its apps/web equivalent.
  */
@@ -155,7 +183,7 @@ export function middleware(request: NextRequest) {
   // doesn't exist as a UX surface today; if it ships later, revisit.
   if (pathname === "/change-password") {
     if (searchParams.get("required") === "true" && !hasCookie) {
-      return redirectToLogin(request);
+      return resumeOrLogin(request);
     }
     return NextResponse.next();
   }
@@ -171,9 +199,39 @@ export function middleware(request: NextRequest) {
 
   // /admin/*, /sysadmin/*, /workorders/*, /schedule/*, /forms (and /forms/*) — always gated.
   if (!hasCookie) {
-    return redirectToLogin(request);
+    return resumeOrLogin(request);
   }
   return NextResponse.next();
+}
+
+/**
+ * The gate's "no access cookie" branch. Prefers resuming a still-valid
+ * refresh-token session over forcing a full re-login (+ MFA). Falls back to
+ * /login when there's no refresh cookie to trade, or when the breadcrumb says
+ * we already tried this a moment ago.
+ *
+ * Deliberately NOT used on /login: someone who navigates there explicitly may
+ * be trying to switch accounts, and silently bouncing them into the previous
+ * session would take that away.
+ */
+function resumeOrLogin(request: NextRequest): NextResponse {
+  const hasRefresh = request.cookies.get(REFRESH_TOKEN_COOKIE)?.value;
+  const alreadyTried = request.cookies.get(RESUME_TRIED_COOKIE)?.value;
+  if (!hasRefresh || alreadyTried) {
+    return redirectToLogin(request);
+  }
+
+  const resumeUrl = request.nextUrl.clone();
+  resumeUrl.pathname = SESSION_RESUME_PATH;
+  // dashboard-worker re-validates this through sanitizeRedirect's allow-list,
+  // so a tampered value can't turn this into an open redirect.
+  resumeUrl.search = `?next=${encodeURIComponent(originalPath(request))}`;
+  return NextResponse.redirect(resumeUrl, 307);
+}
+
+/** Path + query the user was actually trying to reach. */
+function originalPath(request: NextRequest): string {
+  return request.nextUrl.pathname + (request.nextUrl.search ? request.nextUrl.search : "");
 }
 
 function redirectToLogin(request: NextRequest): NextResponse {
@@ -183,10 +241,7 @@ function redirectToLogin(request: NextRequest): NextResponse {
   // started after authenticating. Note: dashboard-worker's sanitizeRedirect
   // re-validates the `redirect` form field, so even a tampered ?return
   // value can't redirect off-allowlist post-login.
-  const fullPath =
-    request.nextUrl.pathname +
-    (request.nextUrl.search ? request.nextUrl.search : "");
-  loginUrl.search = `?return=${encodeURIComponent(fullPath)}`;
+  loginUrl.search = `?return=${encodeURIComponent(originalPath(request))}`;
   return NextResponse.redirect(loginUrl);
 }
 
