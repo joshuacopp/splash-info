@@ -294,6 +294,57 @@ export async function setFormScopeFieldKey(
   }
 }
 
+/** Tag shape, mirroring the DB's forms_access_tag_shape CHECK. Validated here
+ *  too so a bad value is a 400 with a reason rather than a Postgres error the
+ *  operator has to decode. */
+export const ACCESS_TAG_RE = /^[a-z][a-z0-9_]*$/;
+
+/**
+ * Set or clear `forms.access_tag`. Null clears it, which REVOKES org-wide
+ * visibility for everyone holding that tag on this form -- the grants stay,
+ * they simply stop matching. That is the intended way to pull a form back
+ * without hunting down individual grants.
+ */
+export async function setFormAccessTag(
+  env: SupabaseEnv,
+  formId: string,
+  accessTag: string | null
+): Promise<void> {
+  const url = new URL("/rest/v1/forms", env.SUPABASE_URL);
+  url.searchParams.set("id", `eq.${formId}`);
+  const resp = await fetch(url.toString(), {
+    method: "PATCH",
+    headers: {
+      ...headers(env),
+      "Content-Type": "application/json",
+      Prefer: "return=minimal"
+    },
+    body: JSON.stringify({ access_tag: accessTag })
+  });
+  if (!resp.ok) {
+    const errText = await resp.text().catch(() => "");
+    throw new Error(`setFormAccessTag: ${resp.status}: ${errText}`);
+  }
+}
+
+/** Distinct tags currently in use. Backs the sysadmin checkbox list, so a tag
+ *  becomes grantable by the act of tagging a form -- no migration, no code
+ *  change, which is the whole reason this is a column and not a tool grant. */
+export async function listAccessTags(env: SupabaseEnv): Promise<string[]> {
+  const url = new URL("/rest/v1/forms", env.SUPABASE_URL);
+  url.searchParams.set("access_tag", "not.is.null");
+  url.searchParams.set("select", "access_tag");
+  const resp = await fetch(url.toString(), { headers: headers(env) });
+  if (!resp.ok) {
+    const errText = await resp.text().catch(() => "");
+    throw new Error(`listAccessTags: ${resp.status}: ${errText}`);
+  }
+  const rows = (await resp.json()) as { access_tag: string | null }[];
+  const set = new Set<string>();
+  for (const r of rows) if (r.access_tag) set.add(r.access_tag);
+  return [...set].sort();
+}
+
 // =============================================================================
 // createForm
 // =============================================================================
@@ -431,9 +482,15 @@ export interface FormDetailResult {
   draftSchema: FormSchema;
   currentVersionNumber: number | null;
   versions: FormVersionSummary[];
+  /** Sibling of `form` rather than a FormMeta field: access_tag is an access
+   *  control on the forms row, not part of the form's published shape, and
+   *  adding it to the shared FormMeta would push it into every consumer of
+   *  @splash/forms-schema for one admin screen's benefit. */
+  accessTag: string | null;
 }
 
 interface FormDetailRow {
+  access_tag: string | null;
   id: string;
   slug: string;
   title: string;
@@ -486,7 +543,7 @@ export async function getFormDetail(
   formUrl.searchParams.set("id", `eq.${formId}`);
   formUrl.searchParams.set(
     "select",
-    "id,slug,title,description,audience,status,current_version_id,draft_version_id,notify_webhook,success_message,turnstile_required"
+    "id,slug,title,description,audience,status,current_version_id,draft_version_id,notify_webhook,success_message,turnstile_required,access_tag"
   );
   formUrl.searchParams.set("limit", "1");
 
@@ -524,6 +581,7 @@ export async function getFormDetail(
   return {
     form: rowToFormMeta(formRow),
     draftSchema,
+    accessTag: formRow.access_tag ?? null,
     currentVersionNumber: currentRow?.version_number ?? null,
     versions: versionRows.map((v) => ({
       id: v.id,

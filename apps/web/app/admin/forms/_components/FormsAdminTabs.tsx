@@ -17,38 +17,58 @@ import { usePathname } from "next/navigation";
 
 interface Props {
   formId?: string;
+  /**
+   * Whether the caller can reach the BUILDER surfaces. All Forms, Builder and
+   * Versions are admin-tier gated pages; Submissions is not. A caller who
+   * reaches submissions through a form access tag or a location grant would
+   * otherwise be shown four tabs and dead-end on a forbidden card for three of
+   * them -- which is the "why is this button here if I can't use it" complaint
+   * that has already been reported once on this feature.
+   *
+   * Defaults true so every existing admin-tier callsite is unchanged.
+   */
+  canBuild?: boolean;
 }
 
-export default function FormsAdminTabs({ formId }: Props) {
+export default function FormsAdminTabs({ formId, canBuild = true }: Props) {
   const pathname = usePathname() ?? "";
 
-  const tabs: Array<{ href: string; label: string; active: boolean }> = [
-    {
+  const tabs: Array<{ href: string; label: string; active: boolean }> = [];
+
+  if (canBuild) {
+    tabs.push({
       href: "/admin/forms",
       label: "All Forms",
       active: pathname === "/admin/forms"
-    }
-  ];
+    });
+  }
 
   if (formId) {
-    tabs.push(
-      {
+    if (canBuild) {
+      tabs.push({
         href: `/admin/forms/${formId}`,
         label: "Builder",
         active: pathname === `/admin/forms/${formId}`
-      },
+      });
+    }
+    tabs.push(
       {
         href: `/admin/forms/${formId}/submissions`,
         label: "Submissions",
         active: pathname.startsWith(`/admin/forms/${formId}/submissions`)
       },
-      {
+    );
+    if (canBuild) {
+      tabs.push({
         href: `/admin/forms/${formId}/versions`,
         label: "Versions",
         active: pathname.startsWith(`/admin/forms/${formId}/versions`)
-      }
-    );
+      });
+    }
   }
+
+  // A single tab is a label, not navigation.
+  if (tabs.length < 2) return null;
 
   return (
     <nav aria-label="Forms admin sections" className="mb-5 flex gap-2">

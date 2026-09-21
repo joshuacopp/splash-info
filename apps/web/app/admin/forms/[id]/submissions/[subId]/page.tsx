@@ -64,6 +64,16 @@ export default async function SubmissionDetailPage({
       />
     );
   }
+  // Admin tier is NOT a gate on this page (see below) -- it decides which
+  // NAVIGATION to show. All Forms / Builder / Versions are admin-tier pages, so
+  // offering them to a queue worker who reached this via an approver path or a
+  // form access tag would dead-end them on a forbidden card.
+  const isAdminTier =
+    session.role === "super_admin" ||
+    session.dcRole === "admin" ||
+    session.dcRole === "super_admin";
+  const canBuild = isAdminTier;
+
   // NO admin-tier gate here (Brief 173).
   //
   // Authority is decided by the WORKER, which allows admin tier or anyone on
@@ -108,7 +118,7 @@ export default async function SubmissionDetailPage({
   if (fetchError || !submission) {
     return (
       <section className="mx-auto w-full max-w-[820px] px-5 py-9">
-        <FormsAdminTabs formId={id} />
+        <FormsAdminTabs formId={id} canBuild={canBuild} />
         <p className="text-racecar-red">
           Failed to load submission: {fetchError ?? "unknown error"}
         </p>
@@ -129,10 +139,6 @@ export default async function SubmissionDetailPage({
     fromApprovals ? "/admin/approvals" : null
   );
   const workflow = submission.version.schema.workflow;
-  const isAdminTier =
-    session.role === "super_admin" ||
-    session.dcRole === "admin" ||
-    session.dcRole === "super_admin";
 
   return (
     <section className="mx-auto w-full max-w-[820px] px-5 py-9">
@@ -153,7 +159,7 @@ export default async function SubmissionDetailPage({
         </Link>
       </div>
 
-      <FormsAdminTabs formId={id} />
+      <FormsAdminTabs formId={id} canBuild={canBuild} />
 
       <div className="mb-5 flex flex-wrap items-baseline justify-between gap-3">
         <div>

@@ -872,8 +872,32 @@ async function handleSetUserAccess(
   const wantsPricing = supplied("role");
   const wantsDc = supplied("dc_role");
   const wantsPromo = supplied("promo_role");
-  if (!wantsTools && !wantsPricing && !wantsDc && !wantsPromo) {
+  const wantsFormAccess = supplied("form_access_tags");
+  if (!wantsTools && !wantsPricing && !wantsDc && !wantsPromo && !wantsFormAccess) {
     return jsonError(400, "no access domain supplied");
+  }
+
+  /* ---- desired form access tags ---- */
+  let desiredFormTags: string[] = [];
+  if (wantsFormAccess) {
+    if (!Array.isArray(body.form_access_tags)) {
+      return jsonError(400, "form_access_tags must be an array");
+    }
+    if (body.form_access_tags.length > MAX_FORM_ACCESS_TAGS) {
+      return jsonError(400, "too many form_access_tags");
+    }
+    const seen = new Set<string>();
+    for (const raw of body.form_access_tags) {
+      if (typeof raw !== "string" || !FORM_ACCESS_TAG_RE.test(raw)) {
+        return jsonError(400, `Invalid form access tag: ${String(raw)}`);
+      }
+      seen.add(raw);
+    }
+    // NOT validated against the grantable list on purpose: a grant for a tag
+    // no form carries yet is inert and starts working when a form is tagged.
+    // Rejecting it would make ordering matter (grant before tag vs tag before
+    // grant) for no safety benefit -- an unmatched tag grants nothing.
+    desiredFormTags = [...seen].sort();
   }
 
   /* ---- desired tools ---- */
@@ -961,6 +985,19 @@ async function handleSetUserAccess(
     promo_role: stringOrNull(before.promo_role)
   };
 
+  // Read separately rather than from auth_unified: form_access_grants is not
+  // on that view, and widening the view would touch every other consumer of it
+  // for one caller's benefit. Skipped entirely when the domain wasn't supplied.
+  let currentFormTags: string[] = [];
+  if (wantsFormAccess) {
+    try {
+      currentFormTags = await fetchFormAccessTags(env, userId);
+    } catch (err) {
+      console.error("[sysadmin] form access read failed", err);
+      return jsonError(500, "could not read current form access");
+    }
+  }
+
   /* ---- optimistic concurrency ---- */
   if (isRecord(body.expect)) {
     const conflict = findAccessConflict(body.expect, current);
@@ -986,6 +1023,12 @@ async function handleSetUserAccess(
         (t): t is ToolName =>
           VALID_TOOLS.has(t as ToolName) && !desiredTools.includes(t as ToolName)
       )
+    : [];
+  const formTagsAdded = wantsFormAccess
+    ? desiredFormTags.filter((t) => !currentFormTags.includes(t))
+    : [];
+  const formTagsRemoved = wantsFormAccess
+    ? currentFormTags.filter((t) => !desiredFormTags.includes(t))
     : [];
 
   const roleChanged = wantsPricing && desiredRole !== current.role;
@@ -1035,6 +1078,30 @@ async function handleSetUserAccess(
         after: { user_id: userId, tool, granted_by: actor.id }
       });
     }
+  }
+
+  for (const tag of formTagsAdded) {
+    await insertFormAccessGrant(env, userId, tag, actor.id);
+    await logSysadminAudit(sb, {
+      actor,
+      action: "grant_form_access",
+      target_type: "form_access_grants",
+      target_id: `${userId}|${tag}`,
+      before: null,
+      after: { user_id: userId, tag, granted_by: actor.id }
+    });
+  }
+
+  for (const tag of formTagsRemoved) {
+    await deleteFormAccessGrant(env, userId, tag);
+    await logSysadminAudit(sb, {
+      actor,
+      action: "revoke_form_access",
+      target_type: "form_access_grants",
+      target_id: `${userId}|${tag}`,
+      before: { user_id: userId, tag },
+      after: null
+    });
   }
 
   if (desiredRole !== null && (roleChanged || locationsAdded.length > 0)) {
@@ -1922,7 +1989,33 @@ async function handleGetUserPermissions(env: Env, userId: string): Promise<Respo
   // status as the inline check it replaced.
   const row = await fetchAuthUnifiedRow(env, userId);
   if (row === null) return jsonError(404, "user not found");
-  return json(row);
+
+  // Form access rides along rather than getting its own endpoint: the access
+  // editor already fetches this once per selected user, and a second round
+  // trip for two small arrays would just be latency. Both reads are fail-soft
+  // -- losing them must not cost the operator the whole permissions panel,
+  // which is the only view of the other four domains.
+  //
+  // `form_access_tags` is what this user holds; `grantable_form_access_tags`
+  // is what any form currently carries, i.e. what there is to tick. The second
+  // is deliberately sourced from the forms themselves, so tagging a form is
+  // the only step needed to make a new tag appear here.
+  let formAccessTags: string[] = [];
+  let grantableFormAccessTags: string[] = [];
+  try {
+    [formAccessTags, grantableFormAccessTags] = await Promise.all([
+      fetchFormAccessTags(env, userId),
+      fetchGrantableFormAccessTags(env)
+    ]);
+  } catch (err) {
+    console.error("[sysadmin] form access read failed", err);
+  }
+
+  return json({
+    ...row,
+    form_access_tags: formAccessTags,
+    grantable_form_access_tags: grantableFormAccessTags
+  });
 }
 
 /* ============================================================
@@ -3123,6 +3216,112 @@ async function handleUpdateLocation(
  * feedback loop and add noise.
  * ============================================================ */
 
+/* ============================================================
+ * Form access tags (form_access_grants).
+ *
+ * A tag on a form grants ORG-WIDE sight of that form's submissions to whoever
+ * holds the matching grant -- the queue case that location scoping cannot
+ * express. See supabase/form-access-grants-01.sql.
+ *
+ * Written from HERE rather than forms-worker, which owns the table, because
+ * this is a permission change and permission changes belong in
+ * sysadmin_audit_log. That is the same call already made for
+ * damage_claim_user_roles and promo_user_roles, both of which are other
+ * domains' tables written by this worker for the same reason.
+ * ============================================================ */
+
+const FORM_ACCESS_TAG_RE = /^[a-z][a-z0-9_]*$/;
+const MAX_FORM_ACCESS_TAGS = 20;
+
+/** Tags a user currently holds. */
+async function fetchFormAccessTags(
+  env: Env,
+  userId: string
+): Promise<string[]> {
+  const url = new URL("/rest/v1/form_access_grants", env.SUPABASE_URL);
+  url.searchParams.set("user_id", `eq.${userId}`);
+  url.searchParams.set("select", "tag");
+  const resp = await fetch(url.toString(), {
+    headers: {
+      apikey: env.SUPABASE_SERVICE_KEY,
+      Authorization: `Bearer ${env.SUPABASE_SERVICE_KEY}`
+    }
+  });
+  if (!resp.ok) {
+    throw new Error(`fetchFormAccessTags: ${resp.status}`);
+  }
+  const rows = (await resp.json()) as { tag: string }[];
+  return rows.map((r) => r.tag).filter((t) => typeof t === "string").sort();
+}
+
+/** Distinct tags in use on forms — what the operator may grant. Sourced from
+ *  the forms themselves so tagging a form is the ONLY step needed to make a
+ *  new tag grantable: no migration, no code change. */
+async function fetchGrantableFormAccessTags(env: Env): Promise<string[]> {
+  const url = new URL("/rest/v1/forms", env.SUPABASE_URL);
+  url.searchParams.set("access_tag", "not.is.null");
+  url.searchParams.set("select", "access_tag");
+  const resp = await fetch(url.toString(), {
+    headers: {
+      apikey: env.SUPABASE_SERVICE_KEY,
+      Authorization: `Bearer ${env.SUPABASE_SERVICE_KEY}`
+    }
+  });
+  if (!resp.ok) throw new Error(`fetchGrantableFormAccessTags: ${resp.status}`);
+  const rows = (await resp.json()) as { access_tag: string | null }[];
+  const set = new Set<string>();
+  for (const r of rows) if (r.access_tag) set.add(r.access_tag);
+  return [...set].sort();
+}
+
+async function insertFormAccessGrant(
+  env: Env,
+  userId: string,
+  tag: string,
+  grantedBy: string
+): Promise<void> {
+  const url = new URL("/rest/v1/form_access_grants", env.SUPABASE_URL);
+  // on_conflict + ignore-duplicates: re-granting what someone already holds is
+  // a no-op, not a 409. A desired-state submit necessarily re-sends everything.
+  url.searchParams.set("on_conflict", "user_id,tag");
+  const resp = await fetch(url.toString(), {
+    method: "POST",
+    headers: {
+      apikey: env.SUPABASE_SERVICE_KEY,
+      Authorization: `Bearer ${env.SUPABASE_SERVICE_KEY}`,
+      "Content-Type": "application/json",
+      Prefer: "resolution=ignore-duplicates,return=minimal"
+    },
+    body: JSON.stringify({ user_id: userId, tag, granted_by: grantedBy })
+  });
+  if (!resp.ok) {
+    const t = await resp.text().catch(() => "");
+    throw new Error(`insertFormAccessGrant: ${resp.status}: ${t}`);
+  }
+}
+
+async function deleteFormAccessGrant(
+  env: Env,
+  userId: string,
+  tag: string
+): Promise<void> {
+  const url = new URL("/rest/v1/form_access_grants", env.SUPABASE_URL);
+  url.searchParams.set("user_id", `eq.${userId}`);
+  url.searchParams.set("tag", `eq.${tag}`);
+  const resp = await fetch(url.toString(), {
+    method: "DELETE",
+    headers: {
+      apikey: env.SUPABASE_SERVICE_KEY,
+      Authorization: `Bearer ${env.SUPABASE_SERVICE_KEY}`,
+      Prefer: "return=minimal"
+    }
+  });
+  if (!resp.ok) {
+    const t = await resp.text().catch(() => "");
+    throw new Error(`deleteFormAccessGrant: ${resp.status}: ${t}`);
+  }
+}
+
 const ALLOWED_AUDIT_ACTIONS: ReadonlySet<string> = new Set([
   "create_user",
   "set_role_super_admin",
@@ -3132,6 +3331,8 @@ const ALLOWED_AUDIT_ACTIONS: ReadonlySet<string> = new Set([
   "set_promo_role",
   "grant_tool",
   "grant_tool_noop",
+  "grant_form_access",
+  "revoke_form_access",
   "revoke_tool",
   "revoke_tool_noop",
   "reset_password",
@@ -3148,12 +3349,13 @@ const ALLOWED_AUDIT_TARGET_TYPES: ReadonlySet<string> = new Set([
   "auth.users",
   "damage_claim_user_roles",
   "promo_user_roles",
+  "form_access_grants",
   "pricing_simple",
   "locations"
 ]);
 
 const USER_TARGET_TYPES_CSV =
-  "user_permissions,user_tool_access,auth.users,damage_claim_user_roles,promo_user_roles";
+  "user_permissions,user_tool_access,auth.users,damage_claim_user_roles,promo_user_roles,form_access_grants";
 const LOCATION_TARGET_TYPES_CSV = "pricing_simple,locations";
 
 const UUID_RE = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;

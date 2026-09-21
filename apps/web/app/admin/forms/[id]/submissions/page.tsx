@@ -96,6 +96,14 @@ export default async function FormSubmissionsPage({
       />
     );
   }
+  // Admin tier decides NAVIGATION only, not access: All Forms / Builder /
+  // Versions are admin-tier pages, so a location admin or a tagged queue worker
+  // must not be offered tabs that dead-end on a forbidden card.
+  const canBuild =
+    session.role === "super_admin" ||
+    session.dcRole === "admin" ||
+    session.dcRole === "super_admin";
+
   // Authorization is delegated to the worker (submissionGate): a full admin
   // sees all submissions, a location admin sees only their sites' rows for this
   // form, everyone else gets 403 → null from the worker fetches below. We don't
@@ -106,7 +114,7 @@ export default async function FormSubmissionsPage({
   if (!form) {
     return (
       <section className="mx-auto w-full max-w-[1100px] px-5 py-9">
-        <FormsAdminTabs formId={id} />
+        <FormsAdminTabs formId={id} canBuild={canBuild} />
         <p className="text-racecar-red">Form not found.</p>
       </section>
     );
@@ -139,7 +147,7 @@ export default async function FormSubmissionsPage({
         </Link>
       </div>
 
-      <FormsAdminTabs formId={id} />
+      <FormsAdminTabs formId={id} canBuild={canBuild} />
 
       <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
         <div>

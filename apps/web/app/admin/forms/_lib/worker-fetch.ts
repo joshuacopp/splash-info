@@ -177,6 +177,10 @@ export interface FormDetail {
   draftSchema: FormSchema;
   currentVersionNumber: number | null;
   versions: FormVersionSummary[];
+  /** Nullable rather than optional: the worker always sends it. Sibling of
+   *  `form` because it is an access control on the row, not part of the
+   *  published form shape. */
+  accessTag: string | null;
 }
 
 export interface CreateFormArgs {
@@ -548,6 +552,20 @@ export function getSubmissionsReportUrl(
   return `/forms/admin/api/forms/${encodeURIComponent(formId)}/submissions/report.pdf${
     qs.toString() ? `?${qs}` : ""
   }`;
+}
+
+export async function setFormAccessTagAdmin(
+  formId: string,
+  accessTag: string | null
+): Promise<{ ok: true; access_tag: string | null }> {
+  const resp = await callForms(
+    `/forms/admin/api/forms/${encodeURIComponent(formId)}/access-tag`,
+    { method: "PATCH", jsonBody: { access_tag: accessTag } }
+  );
+  return readJson<{ ok: true; access_tag: string | null }>(
+    resp,
+    "setFormAccessTagAdmin"
+  );
 }
 
 export interface ReResolveApproversResult {

@@ -97,6 +97,7 @@ import {
   handleCreateComment
 } from "./admin/submission-comments.js";
 import { handleReResolveApprovers } from "./admin/reresolve-approvers.js";
+import { handleSetAccessTag, handleListAccessTags } from "./admin/forms.js";
 import { handleEmailQueueClaim } from "./email-queue/claim.js";
 import { handleEmailQueueConfirm } from "./email-queue/confirm.js";
 import {
@@ -445,6 +446,22 @@ export default {
         subTransitionMatch[2],
         ctx
       );
+    }
+
+    // GET /forms/admin/api/access-tags
+    if (
+      url.pathname === "/forms/admin/api/access-tags" &&
+      req.method === "GET"
+    ) {
+      return handleListAccessTags(env, req);
+    }
+
+    // PATCH /forms/admin/api/forms/{id}/access-tag
+    const accessTagMatch = url.pathname.match(
+      /^\/forms\/admin\/api\/forms\/([^/]+)\/access-tag$/
+    );
+    if (accessTagMatch && accessTagMatch[1] && req.method === "PATCH") {
+      return handleSetAccessTag(env, req, accessTagMatch[1]);
     }
 
     // POST /forms/admin/api/forms/{id}/re-resolve-approvers

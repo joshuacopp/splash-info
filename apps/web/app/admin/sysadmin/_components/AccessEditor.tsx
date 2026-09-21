@@ -44,6 +44,10 @@ interface AccessState {
   dc_role: string | null;
   dc_locations: string[];
   promo_role: string | null;
+  /** Form access tags (form_access_grants). A tag on a form grants ORG-WIDE
+   *  sight of that form's submissions -- unlike the location-scoped
+   *  form_submissions tool above, which is why they are separate controls. */
+  form_access_tags: string[];
 }
 
 /** Structural copy of the server action's return shape — a "use server"
@@ -86,7 +90,8 @@ function normalize(raw: Record<string, unknown>): AccessState {
     tools: sortTools(parseArr(raw.tools)),
     dc_role: str(raw.dc_role),
     dc_locations: parseArr(raw.dc_locations).slice().sort(),
-    promo_role: str(raw.promo_role)
+    promo_role: str(raw.promo_role),
+    form_access_tags: parseArr(raw.form_access_tags).slice().sort()
   };
 }
 
@@ -113,6 +118,9 @@ export function AccessEditor() {
   // which includes the empty/empty case on a fresh user.
   const [mirrorDc, setMirrorDc] = useState(true);
 
+  // Which tags exist to grant. NOT part of AccessState -- it is a property of
+  // the forms, not of this user, so it must not ride the desired-state body.
+  const [grantableTags, setGrantableTags] = useState<string[]>([]);
   const loadSeqRef = useRef(0);
 
   async function load(userId: string) {
@@ -137,6 +145,7 @@ export function AccessEditor() {
       }
       const raw = (await resp.json()) as Record<string, unknown>;
       if (seq !== loadSeqRef.current) return;
+      setGrantableTags(parseArr(raw.grantable_form_access_tags).slice().sort());
       const next = normalize(raw);
       setBaseline(next);
       setDraft(next);
@@ -199,7 +208,8 @@ export function AccessEditor() {
       draft.promo_role !== baseline.promo_role ||
       !sameSet(draft.tools, baseline.tools) ||
       !sameSet(draft.locations, baseline.locations) ||
-      !sameSet(draft.dc_locations, baseline.dc_locations));
+      !sameSet(draft.dc_locations, baseline.dc_locations) ||
+      !sameSet(draft.form_access_tags, baseline.form_access_tags));
 
   // Mirrors the worker's pre-write validation so the operator gets the
   // message without a round-trip. The worker re-checks either way.
@@ -352,6 +362,70 @@ export function AccessEditor() {
                 </label>
               ))}
             </div>
+            {/* Form access tags. Rendered inside Tools rather than as their own
+                section because to the operator it is the same question -- what
+                can this person open -- and a separate card is what made
+                onboarding seven submits in the first place. */}
+            {grantableTags.length > 0 || draft.form_access_tags.length > 0 ? (
+              <div className="mt-4 border-t border-gray-light pt-3">
+                <p className="mb-1.5 text-xs font-semibold uppercase tracking-wider text-splash-navy/70">
+                  Form access
+                </p>
+                <p className="mb-2 text-[0.6875rem] text-splash-navy/60">
+                  Grants every submission of the tagged forms,{" "}
+                  <strong>org-wide</strong> and including closed ones. Different
+                  from the <code>form_submissions</code> tool above, which is
+                  limited to the user&rsquo;s own locations. A tag appears here
+                  once a form carries it.
+                </p>
+                <div className="grid gap-x-4 gap-y-1.5 sm:grid-cols-2">
+                  {[
+                    ...new Set([...grantableTags, ...draft.form_access_tags])
+                  ]
+                    .sort()
+                    .map((tag) => {
+                      // A held tag no form carries any more: it grants nothing
+                      // today but would resume if a form were tagged with it
+                      // again, so say so rather than hiding it.
+                      const orphaned = !grantableTags.includes(tag);
+                      return (
+                        <label
+                          key={tag}
+                          className="inline-flex items-start gap-2 text-sm text-splash-navy"
+                        >
+                          <input
+                            type="checkbox"
+                            checked={draft.form_access_tags.includes(tag)}
+                            onChange={(e) =>
+                              patch({
+                                form_access_tags: (e.target.checked
+                                  ? [...draft.form_access_tags, tag]
+                                  : draft.form_access_tags.filter(
+                                      (t) => t !== tag
+                                    )
+                                )
+                                  .slice()
+                                  .sort()
+                              })
+                            }
+                            className="mt-0.5"
+                          />
+                          <span>
+                            {tag}
+                            {orphaned ? (
+                              <span className="block text-[0.6875rem] text-splash-navy/60">
+                                No form carries this tag right now — grants
+                                nothing until one does.
+                              </span>
+                            ) : null}
+                          </span>
+                        </label>
+                      );
+                    })}
+                </div>
+              </div>
+            ) : null}
+
             {claimsWithoutDcRole ? (
               <p className="text-xs text-splash-navy/70">
                 Claims is ticked but there&rsquo;s no DC role — they&rsquo;ll
@@ -542,6 +616,17 @@ function ChangeSummary({
   if (draft.dc_role !== baseline.dc_role) {
     lines.push(`DC role: ${label(baseline.dc_role)} → ${label(draft.dc_role)}`);
   }
+  if (!sameSet(draft.form_access_tags, baseline.form_access_tags)) {
+    const added = draft.form_access_tags.filter(
+      (t) => !baseline.form_access_tags.includes(t)
+    );
+    const removed = baseline.form_access_tags.filter(
+      (t) => !draft.form_access_tags.includes(t)
+    );
+    if (added.length > 0) lines.push(`Form access +${added.join(", +")}`);
+    if (removed.length > 0) lines.push(`Form access -${removed.join(", -")}`);
+  }
+
   if (draft.promo_role !== baseline.promo_role) {
     lines.push(
       `Promo role: ${label(baseline.promo_role)} → ${label(draft.promo_role)}`

@@ -73,6 +73,7 @@ export default async function FormBuilderPage({ params, searchParams }: PageProp
         initial={detail}
         lookupSources={lookupSources}
         formId={id}
+        accessTag={detail.accessTag ?? null}
         activeTab={activeTab}
       />
     </section>

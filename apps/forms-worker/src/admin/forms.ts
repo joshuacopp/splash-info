@@ -46,6 +46,9 @@ import {
   setFormStatus,
   getFormScopingContext,
   setFormScopeFieldKey,
+  setFormAccessTag,
+  listAccessTags,
+  ACCESS_TAG_RE,
   type ListFormsFilter,
   type FormListItem
 } from "../db/admin-forms.js";
@@ -450,5 +453,89 @@ export async function handleStatusChange(
   } catch (err) {
     console.error("[forms.admin] status change failed", err);
     return jsonError(500, "status_change_failed");
+  }
+}
+
+// =============================================================================
+// PATCH /forms/admin/api/forms/{id}/access-tag
+// GET   /forms/admin/api/access-tags
+// =============================================================================
+//
+// ADMIN GATE, NOT submissionGate -- deliberately. Tagging a form is what GRANTS
+// org-wide sight of it to everyone holding the tag, so it is a permission
+// action wearing the clothes of a form setting. A location admin who can read
+// submissions must not be able to widen who else can.
+
+export async function handleSetAccessTag(
+  env: Env,
+  req: Request,
+  formId: string
+): Promise<Response> {
+  const sk = requireServiceKey(env);
+  if (sk) return sk;
+  if (!isOriginAllowed(req)) return jsonError(403, "bad_origin");
+  const gate = await adminGate(env, req);
+  if (!gate.ok) return adminGateResponse(gate);
+  if (!FORM_ID_RE.test(formId)) return jsonError(400, "bad_id");
+
+  let body: { access_tag?: unknown };
+  try {
+    body = (await req.json()) as { access_tag?: unknown };
+  } catch {
+    return jsonError(400, "bad_json");
+  }
+
+  const raw = body.access_tag;
+  let tag: string | null;
+  if (raw === null || raw === undefined || raw === "") {
+    // Clearing is how you pull a form back without hunting down grants: the
+    // grants survive, they just stop matching anything.
+    tag = null;
+  } else if (typeof raw === "string" && ACCESS_TAG_RE.test(raw.trim())) {
+    tag = raw.trim();
+  } else {
+    return new Response(
+      JSON.stringify({
+        error: "bad_access_tag",
+        reason: "Lowercase letters, numbers and underscores; must start with a letter."
+      }),
+      { status: 400, headers: { "Content-Type": "application/json" } }
+    );
+  }
+
+  try {
+    await setFormAccessTag(env, formId, tag);
+    console.log(
+      `[forms.admin] access_tag set form=${formId} tag=${tag ?? "(cleared)"} by=${gate.session.email}`
+    );
+    return new Response(JSON.stringify({ ok: true, access_tag: tag }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" }
+    });
+  } catch (err) {
+    console.error("[forms.admin] set access_tag failed", err);
+    return jsonError(500, "access_tag_write_failed");
+  }
+}
+
+/** Tags already in use, for the builder's suggestion list. Any authorized
+ *  submissions caller may read it -- it is a list of words, and offering a
+ *  stale suggestion is worse than showing it. */
+export async function handleListAccessTags(
+  env: Env,
+  req: Request
+): Promise<Response> {
+  const sk = requireServiceKey(env);
+  if (sk) return sk;
+  const gate = await submissionGate(env, req);
+  if (!gate.ok) return adminGateResponse(gate);
+  try {
+    return new Response(JSON.stringify({ tags: await listAccessTags(env) }), {
+      status: 200,
+      headers: { "Content-Type": "application/json", "Cache-Control": "no-store" }
+    });
+  } catch (err) {
+    console.error("[forms.admin] list access tags failed", err);
+    return jsonError(500, "list_failed");
   }
 }

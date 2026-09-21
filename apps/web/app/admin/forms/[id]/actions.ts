@@ -15,6 +15,7 @@ import type { Field, FormSchema, FormWorkflow } from "@splash/forms-schema";
 import {
   publishFormAdmin,
   reResolveApproversAdmin,
+  setFormAccessTagAdmin,
   updateDraftAdmin,
   type PublishResponse,
   type ReResolveApproversResult
@@ -85,6 +86,29 @@ export async function reResolveApproversAction(
 ): Promise<ReResolveResult> {
   try {
     return { ok: true, result: await reResolveApproversAdmin(formId) };
+  } catch (err) {
+    return {
+      ok: false,
+      error: err instanceof Error ? err.message : String(err)
+    };
+  }
+}
+
+export type SetAccessTagResult =
+  | { ok: true; access_tag: string | null }
+  | { ok: false; error: string };
+
+/** Set or clear the form's access tag. Separate from saveDraftAction because
+ *  it writes to the `forms` row, not the draft schema, and takes effect the
+ *  moment it returns rather than on publish -- an access control should not
+ *  wait behind an unrelated publish step. */
+export async function setAccessTagAction(
+  formId: string,
+  accessTag: string | null
+): Promise<SetAccessTagResult> {
+  try {
+    const res = await setFormAccessTagAdmin(formId, accessTag);
+    return { ok: true, access_tag: res.access_tag };
   } catch (err) {
     return {
       ok: false,

@@ -12,13 +12,23 @@
 
 import type { FormMetaState } from "../_builder/reducer";
 
+import AccessTagCard from "./AccessTagCard";
+
 interface Props {
   formMeta: FormMetaState;
   onUpdate: (patch: Partial<FormMetaState>) => void;
+  formId: string;
+  accessTag: string | null;
 }
 
-export default function SettingsTab({ formMeta, onUpdate }: Props) {
+export default function SettingsTab({
+  formMeta,
+  onUpdate,
+  formId,
+  accessTag
+}: Props) {
   return (
+    <div className="space-y-4">
     <section className="space-y-4 rounded-splash-md border border-gray-light bg-white p-5">
       <header className="border-b border-gray-light pb-2">
         <h2 className="text-lg font-bold text-splash-navy">Form settings</h2>
@@ -109,6 +119,9 @@ export default function SettingsTab({ formMeta, onUpdate }: Props) {
           className="mt-1 w-full rounded-splash-sm border border-gray-light bg-white px-3 py-1.5 text-sm font-normal text-splash-navy"
         />
       </label>
-    </section>
+      </section>
+
+      <AccessTagCard formId={formId} initialTag={accessTag} />
+    </div>
   );
 }

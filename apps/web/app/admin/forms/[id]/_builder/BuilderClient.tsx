@@ -52,6 +52,7 @@ interface Props {
   initial: FormDetail;
   lookupSources: readonly LookupSource[];
   formId: string;
+  accessTag: string | null;
   activeTab: BuilderTab;
 }
 
@@ -59,6 +60,7 @@ export default function BuilderClient({
   initial,
   lookupSources,
   formId,
+  accessTag,
   activeTab
 }: Props) {
   const [state, dispatch] = useReducer(
@@ -328,6 +330,8 @@ export default function BuilderClient({
           onUpdate={(patch) =>
             dispatch({ type: "update_form_meta", patch })
           }
+          formId={formId}
+          accessTag={accessTag}
         />
       )}
     </div>

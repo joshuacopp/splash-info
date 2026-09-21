@@ -583,6 +583,7 @@ interface AccessDesiredState {
   dc_role: string | null;
   dc_locations: string[];
   promo_role: string | null;
+  form_access_tags: string[];
 }
 
 interface AccessActionResult {
@@ -611,6 +612,7 @@ export async function setUserAccessAction(
       dc_role: desired.dc_role,
       dc_locations: desired.dc_locations,
       promo_role: desired.promo_role,
+      form_access_tags: desired.form_access_tags,
       expect: {
         role: expect.role,
         locations: expect.locations,
@@ -618,6 +620,12 @@ export async function setUserAccessAction(
         dc_role: expect.dc_role,
         dc_locations: expect.dc_locations,
         promo_role: expect.promo_role
+        // form_access_tags is deliberately ABSENT from `expect`. The worker
+        // treats an absent key as "no conflict check for that domain", and
+        // there is no trigger or side channel that can change form access
+        // behind the operator's back -- unlike user_permissions, which the
+        // pricing_simple email trigger rewrites. Adding it would mean touching
+        // findAccessConflict for a race that cannot happen.
       }
     }
   );
