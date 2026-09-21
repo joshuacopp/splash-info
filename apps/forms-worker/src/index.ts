@@ -124,7 +124,6 @@ export interface Env {
    *  when unbound the cron logs counts but skips the POST (fail-soft,
    *  matches Brief 65 / 101 posture). One PA flow fans out one email per
    *  recipient summarizing all forms with pending items. */
-  FORMS_APPROVAL_DIGEST_WEBHOOK_URL?: string;
   /** Brief 125 — DEPRECATED as of Brief 127. The outcome / assignment
    *  notification webhook fires were removed in Brief 127's migration to
    *  the `outbound_emails` queue table. The secret is documented as

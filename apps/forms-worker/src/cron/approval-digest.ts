@@ -1,25 +1,36 @@
-// Brief 121 — Daily Pending Approvals digest cron.
+// Brief 121 — Daily "waiting on you" digest cron.
 //
-// Once-daily scheduled handler (12:00 UTC = 7 AM EDT — fires before damage
-// worker's 13:00 UTC summary in Brief 65). Queries every form_submissions
-// row with a non-empty `current_approver_emails`, groups by approver
-// email + form, fires one POST per recipient to a single PA flow
-// (`FORMS_APPROVAL_DIGEST_WEBHOOK_URL`) summarizing all forms with pending
-// items for that approver.
+// Once-daily scheduled handler (12:00 UTC). Queries every form_submissions row
+// with a non-empty `current_approver_emails`, groups by approver email + form,
+// and enqueues ONE email per approver summarising everything pending for them.
 //
-// Design rationale:
-//   - One PA flow for the entire forms feature regardless of how many
-//     forms have workflows. Adding a new workflow automatically participates
-//     — zero PA work per form.
-//   - Daily digest, not per-event. v2 candidate flagged in the brief.
-//   - Skip-on-empty: if a distinct approver email's pending count is 0,
-//     no POST. (Should be impossible since we filter at query time, but
-//     defensive against race conditions.)
-//   - Fail-soft per recipient: a single 5xx from PA doesn't halt the rest.
-//   - When `FORMS_APPROVAL_DIGEST_WEBHOOK_URL` is unbound, the cron still
-//     runs and logs digest counts but skips the POST. Lets the operator
-//     verify the data shape before binding the secret.
+// DELIVERY IS THE Brief 127 outbound_emails QUEUE, not a per-feature webhook.
+//
+//   Brief 121 originally POSTed to `FORMS_APPROVAL_DIGEST_WEBHOOK_URL`, which
+//   needed its own Power Automate flow. That secret was never bound, so for its
+//   entire life this cron ran daily, computed the digest, logged "would-fire",
+//   and sent nothing -- a feature that failed by looking like absence.
+//
+//   The queue already drains five workers' mail through one flow that neither
+//   knows nor cares who enqueued, so this needs no new secret and no new flow.
+//   It also inherits /admin/email-queue, so a failed digest is visible and
+//   retryable, which the webhook path never was.
+//
+// SOURCE_ID CARRIES THE RUN DATE, and that is load-bearing.
+//
+//   The queue dedups on (source_worker, source_kind, source_id, recipient) with
+//   ignore-duplicates. A constant source_id would send each person exactly ONE
+//   digest ever, and every subsequent day would no-op in silence -- no error,
+//   no row, nothing to notice. Dating it makes each day a distinct event, and
+//   turns the dedup into a feature: a double cron fire is a real no-op rather
+//   than a duplicate in someone's inbox. Same shape the workorders daily and
+//   greeter weekly digests already use.
+//
+// Skip-on-empty: an approver with zero pending items gets no email.
+// Fail-soft per recipient: one enqueue failure doesn't halt the rest.
 
+import { enqueueOutboundEmail } from "@splash/db-supabase";
+import { renderApprovalDigest } from "./approval-digest-render.js";
 import type { Env } from "../index.js";
 
 const DIGEST_LIMIT_ROWS = 5000;
@@ -41,17 +52,13 @@ interface DigestPerFormEntry {
   oldest_submitted_at: string;
 }
 
-export interface DigestPayload {
-  recipient_email: string;
-  total_pending: number;
-  by_form: DigestPerFormEntry[];
-  dashboard_url: string;
-}
-
 export interface DigestResult {
   recipientsConsidered: number;
   recipientsFired: number;
-  recipientsSkippedNoUrl: number;
+  /** Already queued for this date — a second cron fire in the same day, which
+   *  the dedup index makes harmless. Distinct from `recipientsFired` so the
+   *  log tells you which happened. */
+  recipientsDuplicate: number;
   recipientsFailed: number;
   rowsScanned: number;
   errors: string[];
@@ -62,7 +69,7 @@ export async function runDailyApprovalDigest(env: Env): Promise<DigestResult> {
   const result: DigestResult = {
     recipientsConsidered: 0,
     recipientsFired: 0,
-    recipientsSkippedNoUrl: 0,
+    recipientsDuplicate: 0,
     recipientsFailed: 0,
     rowsScanned: 0,
     errors
@@ -157,7 +164,9 @@ export async function runDailyApprovalDigest(env: Env): Promise<DigestResult> {
 
   result.recipientsConsidered = perRecipient.size;
   const dashboardUrl = computeDashboardUrl(env);
-  const webhookUrl = env.FORMS_APPROVAL_DIGEST_WEBHOOK_URL;
+  // UTC date of THIS run. See the header: this is what makes each day a
+  // distinct event to the queue's dedup index.
+  const runDate = new Date().toISOString().slice(0, 10);
 
   for (const [email, formMap] of perRecipient.entries()) {
     const byForm = Array.from(formMap.values()).sort((a, b) =>
@@ -166,32 +175,31 @@ export async function runDailyApprovalDigest(env: Env): Promise<DigestResult> {
     const totalPending = byForm.reduce((acc, f) => acc + f.count, 0);
     if (totalPending === 0) continue;
 
-    const payload: DigestPayload = {
-      recipient_email: email,
-      total_pending: totalPending,
-      by_form: byForm,
-      dashboard_url: dashboardUrl
-    };
-
-    if (!webhookUrl) {
-      result.recipientsSkippedNoUrl++;
-      console.log(
-        `[forms.approval-digest] would-fire (no webhook bound) recipient=${email} total=${totalPending} forms=${byForm.length}`
-      );
-      continue;
-    }
-
     try {
-      const fired = await fireDigestWebhook(webhookUrl, payload);
-      if (fired) {
-        result.recipientsFired++;
+      const rendered = renderApprovalDigest({
+        byForm,
+        totalPending,
+        dashboardUrl
+      });
+      const res = await enqueueOutboundEmail(env, {
+        source_worker: "forms",
+        source_kind: "forms-approval-digest",
+        source_id: runDate,
+        recipient: email,
+        subject: rendered.subject,
+        body_html: rendered.html,
+        body_text: rendered.plainText,
+        attachments: []
+      });
+      if (res.was_duplicate) {
+        result.recipientsDuplicate++;
       } else {
-        result.recipientsFailed++;
+        result.recipientsFired++;
       }
     } catch (err) {
       result.recipientsFailed++;
-      errors.push(`POST for ${email} threw: ${String(err)}`);
-      console.error("[forms.approval-digest] POST threw", email, err);
+      errors.push(`enqueue for ${email} threw: ${String(err)}`);
+      console.error("[forms.approval-digest] enqueue threw", email, err);
     }
   }
 
@@ -199,7 +207,7 @@ export async function runDailyApprovalDigest(env: Env): Promise<DigestResult> {
     rowsScanned: result.rowsScanned,
     recipientsConsidered: result.recipientsConsidered,
     recipientsFired: result.recipientsFired,
-    recipientsSkippedNoUrl: result.recipientsSkippedNoUrl,
+    recipientsDuplicate: result.recipientsDuplicate,
     recipientsFailed: result.recipientsFailed,
     errorCount: errors.length
   });
@@ -207,38 +215,6 @@ export async function runDailyApprovalDigest(env: Env): Promise<DigestResult> {
     console.warn("[forms.approval-digest] errors", errors);
   }
   return result;
-}
-
-/**
- * Fail-soft fire of one digest POST. Returns true on a 2xx response, false
- * on non-2xx / abort / network error. 15s timeout matches Brief 65 /
- * Brief 101 posture.
- */
-async function fireDigestWebhook(
-  webhookUrl: string,
-  payload: DigestPayload
-): Promise<boolean> {
-  try {
-    const res = await fetch(webhookUrl, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-      signal: AbortSignal.timeout(15_000)
-    });
-    if (!res.ok) {
-      console.error(
-        `[forms.approval-digest] POST non-2xx for ${payload.recipient_email}: status ${res.status}`
-      );
-      return false;
-    }
-    return true;
-  } catch (err) {
-    console.error(
-      `[forms.approval-digest] POST error for ${payload.recipient_email}:`,
-      err
-    );
-    return false;
-  }
 }
 
 /**
