@@ -14,8 +14,10 @@ import type { Field, FormSchema, FormWorkflow } from "@splash/forms-schema";
 
 import {
   publishFormAdmin,
+  reResolveApproversAdmin,
   updateDraftAdmin,
-  type PublishResponse
+  type PublishResponse,
+  type ReResolveApproversResult
 } from "../_lib/worker-fetch";
 
 export type SaveDraftResult =
@@ -59,6 +61,30 @@ export async function publishFormAction(
       published_version_number: res.published_version_number,
       new_draft_id: res.new_draft_id
     };
+  } catch (err) {
+    return {
+      ok: false,
+      error: err instanceof Error ? err.message : String(err)
+    };
+  }
+}
+
+export type ReResolveResult =
+  | { ok: true; result: ReResolveApproversResult }
+  | { ok: false; error: string };
+
+/** Re-stamp `current_approver_emails` on every in-flight submission of this
+ *  form from its CURRENT published version.
+ *
+ *  Deliberately NOT folded into publishFormAction. Publishing is how you
+ *  change the form; moving 200 live tickets onto a different person's desk is
+ *  a separate decision, and one an operator should be able to make without
+ *  republishing (and decline while republishing). */
+export async function reResolveApproversAction(
+  formId: string
+): Promise<ReResolveResult> {
+  try {
+    return { ok: true, result: await reResolveApproversAdmin(formId) };
   } catch (err) {
     return {
       ok: false,

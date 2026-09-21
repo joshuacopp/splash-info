@@ -550,6 +550,30 @@ export function getSubmissionsReportUrl(
   }`;
 }
 
+export interface ReResolveApproversResult {
+  ok: true;
+  scanned: number;
+  updated: number;
+  unchanged: number;
+  skipped_terminal: number;
+  skipped_unknown_stage: number;
+  failed: string[];
+  cap_reached: boolean;
+}
+
+/** Re-point in-flight submissions at the CURRENT version's approver list.
+ *  See apps/forms-worker/src/admin/reresolve-approvers.ts for why this is a
+ *  deliberate action rather than something publish does implicitly. */
+export async function reResolveApproversAdmin(
+  formId: string
+): Promise<ReResolveApproversResult> {
+  const resp = await callForms(
+    `/forms/admin/api/forms/${encodeURIComponent(formId)}/re-resolve-approvers`,
+    { method: "POST" }
+  );
+  return readJson<ReResolveApproversResult>(resp, "reResolveApproversAdmin");
+}
+
 export async function listVersionsAdmin(
   formId: string
 ): Promise<VersionListResponse | null> {

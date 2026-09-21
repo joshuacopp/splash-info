@@ -318,6 +318,7 @@ export default function BuilderClient({
           workflow={state.workflow}
           fields={state.fields}
           dispatch={workflowTabDispatch}
+          formId={formId}
         />
       )}
 

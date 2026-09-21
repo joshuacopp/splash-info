@@ -96,6 +96,7 @@ import {
   handleListComments,
   handleCreateComment
 } from "./admin/submission-comments.js";
+import { handleReResolveApprovers } from "./admin/reresolve-approvers.js";
 import { handleEmailQueueClaim } from "./email-queue/claim.js";
 import { handleEmailQueueConfirm } from "./email-queue/confirm.js";
 import {
@@ -444,6 +445,14 @@ export default {
         subTransitionMatch[2],
         ctx
       );
+    }
+
+    // POST /forms/admin/api/forms/{id}/re-resolve-approvers
+    const reResolveMatch = url.pathname.match(
+      /^\/forms\/admin\/api\/forms\/([^/]+)\/re-resolve-approvers$/
+    );
+    if (reResolveMatch && reResolveMatch[1] && req.method === "POST") {
+      return handleReResolveApprovers(env, req, reResolveMatch[1]);
     }
 
     // Brief 174 — /forms/admin/api/forms/{id}/submissions/{subId}/comments

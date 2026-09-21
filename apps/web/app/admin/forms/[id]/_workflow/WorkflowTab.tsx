@@ -55,6 +55,7 @@ import EmailStepCard from "./EmailStepCard";
 import OutcomesSection from "./OutcomesSection";
 import AddStepPopover from "./AddStepPopover";
 import QuickPatternsPopover from "./QuickPatternsPopover";
+import ReResolveApproversButton from "./ReResolveApproversButton";
 
 // Lazy-load Mermaid so the heavy lib only ships to operators editing
 // workflows. The Brief 123 chunk split is preserved.
@@ -116,9 +117,17 @@ interface Props {
   workflow: FormWorkflow | null;
   fields: Field[];
   dispatch: WorkflowTabDispatch;
+  /** Only needed by the "Apply to open submissions" action, which talks to
+   *  the worker directly rather than through the builder reducer. */
+  formId: string;
 }
 
-export default function WorkflowTab({ workflow, fields, dispatch }: Props) {
+export default function WorkflowTab({
+  workflow,
+  fields,
+  dispatch,
+  formId
+}: Props) {
   if (!workflow) {
     return (
       <section className="rounded-splash-md border border-gray-light bg-white p-6">
@@ -207,21 +216,27 @@ export default function WorkflowTab({ workflow, fields, dispatch }: Props) {
             actions you list; email steps send a message and move on.
           </p>
         </div>
-        <button
-          type="button"
-          onClick={() => {
-            if (
-              window.confirm(
-                "Disable the workflow? Past submissions keep their workflow snapshot; new submissions will skip approval entirely."
-              )
-            ) {
-              dispatch.onDisable();
-            }
-          }}
-          className="rounded-splash-md border border-racecar-red/40 px-3 py-1.5 text-xs font-semibold text-racecar-red hover:bg-racecar-red/10"
-        >
-          Disable workflow
-        </button>
+        <div className="flex flex-col items-end gap-2">
+          {/* Changing who approves only affects submissions that do not exist
+              yet -- approvers are stamped per-row at submit. This re-stamps
+              the ones already in flight. See ReResolveApproversButton. */}
+          <ReResolveApproversButton formId={formId} />
+          <button
+            type="button"
+            onClick={() => {
+              if (
+                window.confirm(
+                  "Disable the workflow? Past submissions keep their workflow snapshot; new submissions will skip approval entirely."
+                )
+              ) {
+                dispatch.onDisable();
+              }
+            }}
+            className="rounded-splash-md border border-racecar-red/40 px-3 py-1.5 text-xs font-semibold text-racecar-red hover:bg-racecar-red/10"
+          >
+            Disable workflow
+          </button>
+        </div>
       </header>
 
       <div className="flex flex-col items-center">
