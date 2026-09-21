@@ -431,6 +431,52 @@ export async function getSubmissionAdmin(
   return data.submission;
 }
 
+/* ============================================================
+ * Brief 174 — submission comment threads
+ * ============================================================ */
+
+export interface SubmissionComment {
+  id: string;
+  author_email: string;
+  body: string;
+  created_at: string;
+}
+
+/** Oldest first. Returns [] rather than throwing when the caller may not read
+ *  the thread -- the page renders the rest of the submission either way, and a
+ *  missing thread is not a reason to fail the whole detail view. */
+export async function listSubmissionComments(
+  formId: string,
+  subId: string
+): Promise<SubmissionComment[]> {
+  const resp = await callForms(
+    `/forms/admin/api/forms/${encodeURIComponent(formId)}/submissions/${encodeURIComponent(subId)}/comments`
+  );
+  if (!resp.ok) return [];
+  const data = await readJson<{ comments: SubmissionComment[] }>(
+    resp,
+    "listSubmissionComments"
+  );
+  return Array.isArray(data.comments) ? data.comments : [];
+}
+
+export async function createSubmissionComment(
+  formId: string,
+  subId: string,
+  body: string
+): Promise<void> {
+  const resp = await callForms(
+    `/forms/admin/api/forms/${encodeURIComponent(formId)}/submissions/${encodeURIComponent(subId)}/comments`,
+    // jsonBody, not a hand-rolled body+headers: callForms owns Content-Type
+    // and the Origin header the worker's isOriginAllowed gate checks.
+    { method: "POST", jsonBody: { body } }
+  );
+  if (!resp.ok) {
+    const detail = await resp.text().catch(() => "");
+    throw new Error(`createSubmissionComment failed: ${resp.status} ${detail.slice(0, 200)}`);
+  }
+}
+
 export async function updateSubmissionAdmin(
   formId: string,
   subId: string,
@@ -570,6 +616,10 @@ export interface PendingApprovalItem {
    *  capped at 5. Optional: absent on any response from a worker predating
    *  this, and empty for every form that flags nothing. */
   queue_fields?: { key: string; label: string; value: string }[];
+  /** Brief 175 — which list this row belongs in. Optional: a worker predating
+   *  this omits it, and the page falls back to treating everything as
+   *  needs_action, i.e. the previous single-list behaviour. */
+  bucket?: "needs_action" | "waiting_on_others" | "completed";
 }
 
 export interface PendingApprovalsResponse {

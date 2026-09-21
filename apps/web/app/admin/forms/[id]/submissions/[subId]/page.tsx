@@ -9,7 +9,11 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 
 import { getMe } from "../../../../../_lib/me";
-import { getSubmissionAdmin } from "../../../_lib/worker-fetch";
+import {
+  getSubmissionAdmin,
+  listSubmissionComments
+} from "../../../_lib/worker-fetch";
+import DiscussionSection from "./_components/DiscussionSection";
 import FormsAdminTabs from "../../../_components/FormsAdminTabs";
 import NoAccessCard from "../../../_components/NoAccessCard";
 import { ActionForm } from "../../../../_components/ActionForm";
@@ -85,6 +89,12 @@ export default async function SubmissionDetailPage({
   if (submission === null && fetchError === null) {
     notFound();
   }
+
+  // Brief 174 — the thread. Fetched separately and fail-soft: the worker
+  // applies its own authority rule, and a caller who may read the submission
+  // but not join the discussion gets [] rather than an error. Losing the
+  // thread must never cost the whole detail page.
+  const comments = submission ? await listSubmissionComments(id, subId) : [];
 
   if (fetchError || !submission) {
     return (
@@ -290,6 +300,13 @@ export default async function SubmissionDetailPage({
           ))}
         </dl>
       </section>
+
+      <DiscussionSection
+        formId={id}
+        subId={subId}
+        comments={comments}
+        canDiscuss
+      />
     </section>
   );
 }

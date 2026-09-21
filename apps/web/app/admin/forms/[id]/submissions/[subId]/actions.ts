@@ -14,7 +14,8 @@
 import { revalidatePath } from "next/cache";
 import {
   updateSubmissionAdmin,
-  transitionSubmissionAdmin
+  transitionSubmissionAdmin,
+  createSubmissionComment
 } from "../../../_lib/worker-fetch";
 import type { SubmissionStatus } from "../../../_lib/worker-fetch";
 import type { ActionResult } from "../../../../_components/ActionForm";
@@ -60,6 +61,33 @@ export async function updateSubmissionAction(
     return { ok: true, message: "Saved." };
   } catch (err) {
     const message = err instanceof Error ? err.message : "Save failed";
+    return { ok: false, error: message };
+  }
+}
+
+// =============================================================================
+// Brief 174 — post a comment
+// =============================================================================
+
+export async function addCommentAction(
+  formId: string,
+  subId: string,
+  _prevState: ActionResult | null,
+  formData: FormData
+): Promise<ActionResult> {
+  if (!formId || !subId) {
+    return { ok: false, error: "Missing form or submission id." };
+  }
+  const raw = formData.get("body");
+  const body = typeof raw === "string" ? raw.trim() : "";
+  if (body === "") return { ok: false, error: "Write something first." };
+
+  try {
+    await createSubmissionComment(formId, subId, body);
+    revalidatePath(`/admin/forms/${formId}/submissions/${subId}`);
+    return { ok: true, message: "Posted." };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Could not post comment";
     return { ok: false, error: message };
   }
 }

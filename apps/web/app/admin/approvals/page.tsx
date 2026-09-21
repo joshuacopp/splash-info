@@ -84,22 +84,44 @@ export default async function PendingApprovalsPage({ searchParams }: PageProps) 
   // Group by form. Forms with more items float to the top; ties break
   // alphabetically. Within a form, items are submitted_at desc (already
   // sorted server-side).
-  const byForm = new Map<string, { title: string; items: PendingApprovalItem[] }>();
-  if (res) {
-    for (const item of res.items) {
-      let bucket = byForm.get(item.form_id);
-      if (!bucket) {
-        bucket = { title: item.form_title, items: [] };
-        byForm.set(item.form_id, bucket);
+  // Brief 175 — bucket first, then by form within each bucket.
+  //
+  // Before this the endpoint only returned rows where you were the CURRENT
+  // approver, so a ticket you handed to somebody else disappeared and there
+  // was no way to see what you were waiting on. Three lists answer three
+  // different questions: what is mine now, what is parked elsewhere, what is
+  // finished.
+  function groupByForm(items: PendingApprovalItem[]) {
+    const byForm = new Map<string, { title: string; items: PendingApprovalItem[] }>();
+    for (const item of items) {
+      let g = byForm.get(item.form_id);
+      if (!g) {
+        g = { title: item.form_title, items: [] };
+        byForm.set(item.form_id, g);
       }
-      bucket.items.push(item);
+      g.items.push(item);
     }
+    return Array.from(byForm.entries())
+      .map(([form_id, g]) => ({ form_id, ...g }))
+      .sort(
+        (a, b) => b.items.length - a.items.length || a.title.localeCompare(b.title)
+      );
   }
-  const groups = Array.from(byForm.entries())
-    .map(([form_id, bucket]) => ({ form_id, ...bucket }))
-    .sort((a, b) =>
-      b.items.length - a.items.length || a.title.localeCompare(b.title)
-    );
+
+  const all = res?.items ?? [];
+  // Rows from a worker predating the bucket field default to needs_action, so
+  // an older worker degrades to the previous single-list behaviour rather than
+  // rendering three empty sections.
+  const needsAction = all.filter((i) => (i.bucket ?? "needs_action") === "needs_action");
+  const waitingOnOthers = all.filter((i) => i.bucket === "waiting_on_others");
+  const completed = all.filter((i) => i.bucket === "completed");
+
+  const groups = groupByForm(needsAction);
+  const waitingGroups = groupByForm(waitingOnOthers);
+  // Completed grows without bound. Show the most recent and send people to the
+  // full submissions table for history rather than paging it here.
+  const COMPLETED_SHOWN = 25;
+  const completedGroups = groupByForm(completed.slice(0, COMPLETED_SHOWN));
 
   const totalCount = res?.total ?? 0;
   const limitHit = res?.limit_hit ?? false;
@@ -140,7 +162,10 @@ export default async function PendingApprovalsPage({ searchParams }: PageProps) 
                 : "bg-splash-navy text-white"
             }`}
           >
-            Mine ({wantsAll ? "—" : totalCount})
+            {/* needsAction, not totalCount: since Brief 175 the response also
+                carries what you are waiting on and what is finished, and a
+                "Mine" tab counting those would overstate your workload. */}
+            Mine ({wantsAll ? "—" : needsAction.length})
           </Link>
           <Link
             href="/admin/approvals?scope=all"
@@ -187,6 +212,59 @@ export default async function PendingApprovalsPage({ searchParams }: PageProps) 
             />
           ))}
         </div>
+      )}
+
+      {waitingGroups.length > 0 && (
+        <details open className="mt-8">
+          <summary className="cursor-pointer text-sm font-bold text-splash-navy">
+            Waiting on someone else{" "}
+            <span className="font-normal text-splash-navy/60">
+              ({waitingOnOthers.length})
+            </span>
+          </summary>
+          <p className="mb-3 mt-1 text-xs text-splash-navy/60">
+            You have worked these; they are parked with someone else right now.
+            Nothing to do unless they are stuck.
+          </p>
+          <div className="space-y-6">
+            {waitingGroups.map((group) => (
+              <FormGroup
+                key={group.form_id}
+                formId={group.form_id}
+                title={group.title}
+                items={group.items}
+              />
+            ))}
+          </div>
+        </details>
+      )}
+
+      {completed.length > 0 && (
+        <details className="mt-8">
+          <summary className="cursor-pointer text-sm font-bold text-splash-navy">
+            Completed{" "}
+            <span className="font-normal text-splash-navy/60">
+              ({completed.length})
+            </span>
+          </summary>
+          <p className="mb-3 mt-1 text-xs text-splash-navy/60">
+            Reached an outcome. Showing the {Math.min(completed.length, COMPLETED_SHOWN)}{" "}
+            most recent
+            {completed.length > COMPLETED_SHOWN
+              ? " — open the form's submissions view for the full history."
+              : "."}
+          </p>
+          <div className="space-y-6">
+            {completedGroups.map((group) => (
+              <FormGroup
+                key={group.form_id}
+                formId={group.form_id}
+                title={group.title}
+                items={group.items}
+              />
+            ))}
+          </div>
+        </details>
       )}
     </section>
   );

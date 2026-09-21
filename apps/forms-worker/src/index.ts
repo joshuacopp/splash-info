@@ -31,6 +31,8 @@
 //   GET    /forms/admin/api/forms/{id}/submissions/{subId}   — Brief 96: detail
 //   PATCH  /forms/admin/api/forms/{id}/submissions/{subId}   — Brief 96: notes/status
 //   POST   /forms/admin/api/forms/{id}/submissions/{subId}/transition — Brief 120: workflow stage flip
+//   GET    /forms/admin/api/forms/{id}/submissions/{subId}/comments — Brief 174: thread
+//   POST   /forms/admin/api/forms/{id}/submissions/{subId}/comments — Brief 174: post
 //   GET    /forms/admin/api/forms/{id}/versions       — Brief 96: version history
 //   POST   /forms/internal/api/email-queue/claim      — Brief 127: PA claims batch
 //   POST   /forms/internal/api/email-queue/confirm    — Brief 127: PA confirms send
@@ -90,6 +92,10 @@ import { handlePendingApprovals } from "./admin/pending-approvals.js";
 import { handleMyRequests } from "./admin/my-requests.js";
 import { handleUserSearch } from "./admin/users-search.js";
 import { handleTransitionSignatureUpload } from "./admin/transition-signatures.js";
+import {
+  handleListComments,
+  handleCreateComment
+} from "./admin/submission-comments.js";
 import { handleEmailQueueClaim } from "./email-queue/claim.js";
 import { handleEmailQueueConfirm } from "./email-queue/confirm.js";
 import {
@@ -438,6 +444,22 @@ export default {
         subTransitionMatch[2],
         ctx
       );
+    }
+
+    // Brief 174 — /forms/admin/api/forms/{id}/submissions/{subId}/comments
+    // Same ordering requirement as /transition above: this must match BEFORE
+    // the bare-{subId} pattern, or "comments" is swallowed as part of the id.
+    const subCommentsMatch = url.pathname.match(
+      /^\/forms\/admin\/api\/forms\/([^/]+)\/submissions\/([^/]+)\/comments$/
+    );
+    if (subCommentsMatch && subCommentsMatch[1] && subCommentsMatch[2]) {
+      if (req.method === "GET") {
+        return handleListComments(env, req, subCommentsMatch[1], subCommentsMatch[2]);
+      }
+      if (req.method === "POST") {
+        return handleCreateComment(env, req, subCommentsMatch[1], subCommentsMatch[2]);
+      }
+      return new Response("Method Not Allowed", { status: 405 });
     }
 
     // /forms/admin/api/forms/{id}/submissions/{subId}

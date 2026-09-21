@@ -217,7 +217,8 @@ export async function handleGetSubmission(
 
   const gate = await submissionGate(env, req);
 
-  // APPROVER FALLBACK (Brief 173).
+  // VIEW FALLBACK (Brief 173, widened after a live failure -- see
+  // callerMayViewSubmission for what went wrong and why).
   //
   // submissionGate offers two tiers and nothing between them: full admin
   // (everything) or the form_submissions grant scoped to the caller's own
@@ -225,8 +226,8 @@ export async function handleGetSubmission(
   // routed to them across every site, and granting them admin tier to read one
   // ticket would hand them every form's submissions plus the email queue.
   //
-  // handleTransition already solved this: authority there is membership of the
-  // current stage's resolved approver list. Reading the ticket has to allow
+  // handleTransition solved the ACTING half: authority there is membership of
+  // the current stage's resolved approver list. Reading the ticket has to allow
   // exactly the same people, or the queue shows work nobody can open -- which
   // was the state before this brief, and it failed at the last click, after
   // real tickets were already sitting in the queue.
@@ -247,7 +248,7 @@ export async function handleGetSubmission(
     if (!submission) return jsonError(404, "not_found");
 
     if (!gate.ok) {
-      const approved = await callerIsApproverOnSubmission(env, req, submission);
+      const approved = await callerMayViewSubmission(env, req, submission);
       // Not an approver either -- return the ORIGINAL gate refusal rather than
       // a new one, so a caller cannot tell "exists but not yours" apart from
       // "no access to this surface".
@@ -268,46 +269,89 @@ export async function handleGetSubmission(
 }
 
 /**
- * Is the caller on the resolved approver list for this submission's CURRENT
- * stage?
+ * May this caller READ this submission, absent admin tier?
  *
- * Mirrors the authority check in handleTransition rather than inventing a
- * second rule: read the submission's OWN version schema, find the current
- * stage, resolve its approver_source against the payload, compare emails
- * lowercased. If those two ever disagree, someone can open a ticket they
- * cannot action, or the reverse -- so they must stay the same shape.
+ * THREE PATHS, and the second one was missing at first with a bad consequence.
  *
- * Returns false, never throws. A resolver failure here is "not authorised",
- * which is the safe direction: the alternative is a 500 that looks like an
- * outage on a page that should simply have said no.
+ *   1. the CURRENT stage's resolved approver -- it is their work right now
+ *   2. anyone appearing as `actor_email` in workflow_history
+ *   3. the submitter
+ *
+ * (2) IS NOT OPTIONAL. Brief 173 shipped with only (1), and the result was
+ * that ACTING ON A TICKET REVOKED YOUR ABILITY TO SEE IT: a transition moves
+ * the ticket to the next stage's approver, the page refreshes on success, the
+ * caller is no longer the current approver, and the detail 404s. The write had
+ * succeeded -- so the UI reported failure on a successful action, and a retry
+ * did nothing because the stage had already moved. Found on the first real
+ * end-to-end test, not by review.
+ *
+ * (3) covers the same class for the person who raised the ticket: Brief 126's
+ * My Requests links submitters straight at this page, and without it they
+ * cannot open their own submission.
+ *
+ * This is deliberately the SAME rule as Brief 174's comment threads. Two
+ * authority rules over one object drift, and the drift is silent.
+ *
+ * Returns false, never throws. A resolver failure is "not authorised", which
+ * is the safe direction -- the alternative is a 500 that reads as an outage on
+ * a page that should simply have said no.
  */
-async function callerIsApproverOnSubmission(
+async function callerMayViewSubmission(
   env: Env,
   req: Request,
-  submission: { version: { schema: FormSchema }; workflow_stage: string | null; payload: unknown }
+  submission: {
+    version: { schema: FormSchema };
+    workflow_stage: string | null;
+    payload: unknown;
+    submitter_email?: string | null;
+    workflow_history?: unknown;
+  }
 ): Promise<boolean> {
   try {
     const auth = await authenticate(req, env);
     if (auth.status !== "authenticated") return false;
+    const callerEmail = auth.session.email.trim().toLowerCase();
 
+    // Submitter. Cheap, and independent of whether a workflow exists at all.
+    if (
+      typeof submission.submitter_email === "string" &&
+      submission.submitter_email.trim().toLowerCase() === callerEmail
+    ) {
+      return true;
+    }
+
+    // Already acted. Also cheap -- the array is on the row we already hold.
+    const history = Array.isArray(submission.workflow_history)
+      ? (submission.workflow_history as { actor_email?: unknown }[])
+      : [];
+    for (const h of history) {
+      if (
+        typeof h?.actor_email === "string" &&
+        h.actor_email.trim().toLowerCase() === callerEmail
+      ) {
+        return true;
+      }
+    }
+
+    // Current approver. Last: the only branch that costs a network call.
     const schema = submission.version.schema;
     const workflow = schema.workflow;
     if (!workflow) return false;
 
     const currentStageId = submission.workflow_stage ?? workflow.default_stage;
     const currentStage = workflow.stages.find((s) => s.id === currentStageId);
-    // A terminal stage carries no approver_source, so nobody is an approver on
-    // it. That is correct: once a ticket reaches an outcome it stops being
-    // anyone's work, and only admin-tier should still read it.
+    // A terminal stage carries no approver_source, so nobody is its approver.
+    // Correct on its own, and harmless now that history covers the people who
+    // drove the ticket there.
     if (!currentStage?.approver_source) return false;
 
     const allowed = await resolveApproverEmails(env, currentStage.approver_source, {
       schema,
       payload: submission.payload as Record<string, unknown>
     });
-    return allowed.includes(auth.session.email.trim().toLowerCase());
+    return allowed.includes(callerEmail);
   } catch (err) {
-    console.error("[forms.admin] approver fallback check failed", err);
+    console.error("[forms.admin] view fallback check failed", err);
     return false;
   }
 }

@@ -3003,6 +3003,74 @@ URL-based — service bindings don't apply to those.
   Mine/All *toggle*; its only `forbidden` fires when the worker returns
   null. Brief 173's own planning misread that as a gate and had to
   correct itself mid-execution.
+  Brief 174 (2026-09-21) added **comment threads on submissions** — new
+  `public.form_submission_comments` table (APPLIED; RLS on with zero
+  policies like everything else here, CASCADE from `form_submissions`,
+  append-only with no edit or delete path so a thread cannot be quietly
+  rewritten after somebody acted on what it said) plus
+  `GET`/`POST /forms/admin/api/forms/{id}/submissions/{subId}/comments`
+  in `apps/forms-worker/src/admin/submission-comments.ts` and a
+  Discussion section under the workflow timeline on the detail page.
+  **WHY IT IS NOT `workflow_history`:** history audits what HAPPENED to a
+  ticket. Before this, the only way to say anything about a submission
+  was a transition note, so information moved only when the ticket moved
+  — asking a question meant bouncing the ticket into somebody else's
+  queue to ask it, and the state machine ended up being driven by the
+  need to talk. Transitions stay the record of state changes; comments
+  carry the conversation and move nothing.
+  **AUTHORITY HAS FOUR PATHS and the last two are the point:** admin
+  tier, OR the current stage's resolved approver, OR the SUBMITTER, OR
+  anyone appearing as `actor_email` in `workflow_history`. Scoping to the
+  current approver alone is the obvious rule and breaks the case the
+  feature exists for — a site that has just handed a ticket back to CRD
+  could not answer CRD's follow-up, because it is no longer its turn.
+  Submitter covers the site before it acts; history covers everyone
+  after. The approver resolve is checked LAST because it is the only
+  branch costing a network call, and a form with no workflow stops before
+  it rather than throwing. Refusal and not-found are the same response,
+  matching the jotform / promo-materials anti-leak posture.
+  **COMMENTS NOTIFY NOBODY at v1**, and the empty state says so in the UI
+  rather than only in the brief — a transition is still the only thing
+  that lands a ticket in a queue, so it remains the "your turn" signal.
+  Adding notification later should ride the Brief 127 `outbound_emails`
+  queue, not a new webhook.
+  **Route ordering matters:** the `/comments` pattern must match BEFORE
+  the bare `{subId}` pattern in `index.ts`, exactly as `/transition`
+  does, or the trailing segment is swallowed as part of the UUID.
+  **Known rough edge:** the page passes `canDiscuss` as a literal `true`.
+  The worker is the real gate (an unauthorised caller gets `[]` and their
+  POST is refused), so it is safe, but a reader who cannot post still
+  sees the post box and finds out on submit. Threading the worker's
+  answer back is a small follow-up.
+  **Brief 173's view rule was too narrow and a live test proved it.** It
+  allowed only the CURRENT stage's approver, so ACTING ON A TICKET REVOKED
+  THE ABILITY TO SEE IT: a transition moves the ticket onward, the page
+  refreshes on success, the caller is no longer the current approver, and
+  the detail 404s — reporting failure on a write that SUCCEEDED, with a
+  retry that does nothing because the stage already moved. Widened to
+  three paths in `callerMayViewSubmission`: current approver, OR anyone in
+  `workflow_history.actor_email`, OR the submitter. The submitter clause
+  also fixes Brief 126's My Requests, which links submitters straight at a
+  page they could not open. This is deliberately the SAME rule as the
+  Brief 174 comment threads — two authority rules over one object drift,
+  and the drift is silent.
+  **`/admin/approvals` returns three buckets** (`bucket` on each item:
+  `needs_action` / `waiting_on_others` / `completed`). Before this the
+  endpoint returned only rows where the caller was the current approver,
+  so a ticket handed to somebody else vanished and there was no way to see
+  what you were waiting on. "Everything I am involved in" is fetched as
+  THREE MERGED QUERIES — indexed `current_approver_emails`, jsonb
+  containment on `workflow_history`, and `submitter_email` equality —
+  rather than one `or=(...)`: the jsonb literal carries commas and quotes
+  that must survive `or()` parsing, and getting that subtly wrong returns
+  FEWER ROWS rather than an error. A failure on any leg fails the whole
+  request; a queue that quietly omits your work is worse than one that
+  says it is broken. `completed` is derived from the stage having no
+  `approver_source`, NOT from `form_submissions.status`, which an admin
+  can set by hand and which says nothing about where the workflow is.
+  **No index exists on `workflow_history`** — that leg is a sequential
+  scan, free at hundreds of rows and the first thing to fix at tens of
+  thousands (GIN on that column).
   Brief 132 (2026-05-14) closed the seed-path / Quick-Pattern variants
   of the same picker-mis-mapping bug class Brief 131 Phase 2 partially
   fixed. `makeWorkflowSeed` in

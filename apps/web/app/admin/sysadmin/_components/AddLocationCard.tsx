@@ -97,19 +97,31 @@ export function AddLocationCard() {
           <label htmlFor="add-loc-site" className={labelCls}>
             Site number
             <span className={helperCls}>
-              Positive integer. Used as locations.site_number.
+              Exactly 3 digits, zero-padded — 69 is &ldquo;069&rdquo;. Lands in
+              locations.site_number and pricing_simple.site.
             </span>
           </label>
+          {/* THREE DIGITS IS A DATABASE CONSTRAINT, not a preference:
+              pricing_simple_site_is_3_digits is CHECK (site::text ~ '^\d{3}$').
+              The old hint said "positive integer" and the placeholder was "34",
+              which cannot succeed -- the locations row inserts, the
+              pricing_simple insert violates the check, and the worker
+              best-effort rolls the locations row back. The failure therefore
+              surfaces as a pricing_simple error on a form that looked like it
+              was about locations. Enforced here too so the browser catches it
+              before the round trip. */}
           <input
             id="add-loc-site"
             name="site"
             type="text"
             required
             inputMode="numeric"
-            pattern="[0-9]+"
+            pattern="[0-9]{3}"
+            maxLength={3}
+            title="Exactly 3 digits, zero-padded (e.g. 069)"
             autoComplete="off"
             className={inputCls}
-            placeholder="34"
+            placeholder="069"
           />
         </div>
 

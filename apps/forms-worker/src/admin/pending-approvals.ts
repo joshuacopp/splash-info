@@ -64,7 +64,20 @@ export interface PendingApprovalItem {
    * same way the detail page renders against the submission's own version.
    */
   queue_fields: { key: string; label: string; value: string }[];
+  /**
+   * Brief 175 — which of the three lists this row belongs in.
+   *
+   * Before this the endpoint returned ONLY rows where the caller was the
+   * current approver, so a ticket you handed to somebody else vanished
+   * completely -- there was no way to see what you were waiting on, and a
+   * ticket parked at a site looked identical to one that never existed.
+   */
+  bucket: QueueBucket;
 }
+
+/** `needs_action` is yours now. `waiting_on_others` is yours but parked with
+ *  somebody else. `completed` has reached a terminal outcome. */
+export type QueueBucket = "needs_action" | "waiting_on_others" | "completed";
 
 interface PendingApprovalDbRow {
   id: string;
@@ -75,6 +88,8 @@ interface PendingApprovalDbRow {
   submitted_at: string;
   current_approver_emails: string[] | null;
   payload: Record<string, unknown>;
+  /** Brief 175 — read to decide whether the caller has already acted. */
+  workflow_history: unknown;
   // Denormalized location scoping column (stamped at submit). Authoritative
   // for the row's Site value — preferred over the payload heuristic below.
   location_code: string | null;
@@ -105,69 +120,115 @@ export async function handlePendingApprovals(
 
   const callerEmail = session.email.trim().toLowerCase();
 
-  // PostgREST query against form_submissions with the GIN-indexed
-  // `current_approver_emails` column. `cs` ({email}) = "contains" — the
-  // GIN index from Brief 120 covers this operator. `not.eq.is.null` on
-  // workflow_stage excludes legacy / no-workflow rows. Embed form title
-  // + version schema for stage label resolution.
-  const pgUrl = new URL("/rest/v1/form_submissions", env.SUPABASE_URL);
-  pgUrl.searchParams.set(
-    "select",
-    [
-      "id",
-      "form_id",
-      "workflow_stage",
-      "submitter_email",
-      "submitter_kind",
-      "submitted_at",
-      "current_approver_emails",
-      "payload",
-      "location_code",
-      "form:forms!inner(id,title)",
-      "version:form_versions!inner(id,schema)"
-    ].join(",")
-  );
-  pgUrl.searchParams.set("workflow_stage", "not.is.null");
-  if (scope === "me") {
-    // PostgREST array-contains: column.cs.{value}
-    pgUrl.searchParams.set(
+  // THREE QUERIES, MERGED -- deliberately not one clever one.
+  //
+  // "Everything I am involved in" spans three unrelated predicates: the
+  // GIN-indexed `current_approver_emails` array, jsonb containment on
+  // `workflow_history`, and a plain equality on `submitter_email`. PostgREST
+  // can express that as a single `or=(...)`, but the jsonb literal carries
+  // commas and quotes that have to survive `or()` parsing, and getting that
+  // subtly wrong returns FEWER rows rather than an error. Three unambiguous
+  // requests merged in memory cannot fail that way, and at this volume the two
+  // extra round trips are free.
+  //
+  // NOTE for when it stops being free: there is no index on workflow_history,
+  // so query 2 is a sequential scan. Irrelevant at hundreds of rows; the first
+  // thing to fix at tens of thousands, with a GIN index on that column.
+  const baseSelect = [
+    "id",
+    "form_id",
+    "workflow_stage",
+    "submitter_email",
+    "submitter_kind",
+    "submitted_at",
+    "current_approver_emails",
+    "payload",
+    "workflow_history",
+    "location_code",
+    "form:forms!inner(id,title)",
+    "version:form_versions!inner(id,schema)"
+  ].join(",");
+
+  function baseUrl(): URL {
+    const u = new URL("/rest/v1/form_submissions", env.SUPABASE_URL);
+    u.searchParams.set("select", baseSelect);
+    // Excludes legacy / no-workflow rows.
+    u.searchParams.set("workflow_stage", "not.is.null");
+    u.searchParams.set("order", "submitted_at.desc");
+    u.searchParams.set("limit", String(PENDING_LIMIT));
+    return u;
+  }
+
+  async function run(u: URL): Promise<PendingApprovalDbRow[] | null> {
+    try {
+      const r = await fetch(u.toString(), {
+        headers: {
+          apikey: env.SUPABASE_SERVICE_KEY,
+          Authorization: `Bearer ${env.SUPABASE_SERVICE_KEY}`
+        }
+      });
+      if (!r.ok) {
+        console.error(
+          "[forms.pending-approvals] supabase returned",
+          r.status,
+          await r.text().catch(() => "")
+        );
+        return null;
+      }
+      return (await r.json().catch(() => [])) as PendingApprovalDbRow[];
+    } catch (err) {
+      console.error("[forms.pending-approvals] fetch threw", err);
+      return null;
+    }
+  }
+
+  const queries: URL[] = [];
+  if (scope === "all") {
+    // Brief 131 — admin oversight sees every pending row, including ones whose
+    // approver resolution failed. Unchanged.
+    queries.push(baseUrl());
+  } else {
+    // 1. Waiting on me right now.
+    const q1 = baseUrl();
+    q1.searchParams.set(
       "current_approver_emails",
       `cs.{${escapePgrstArrayLiteral(callerEmail)}}`
     );
-  }
-  // Brief 131 — All Approvals (scope === "all") drops the
-  // `current_approver_emails != {}` filter so admin oversight can spot
-  // rows whose approver resolution failed (stuck workflow diagnostic).
-  // The per-row `approver_resolution_status` field below tells the
-  // apps/web caller which rows need the "No approver resolved" pill.
-  // Rows are still filtered to `workflow_stage IS NOT NULL` above, so
-  // legacy non-workflow submissions are excluded.
-  pgUrl.searchParams.set("order", "submitted_at.desc");
-  pgUrl.searchParams.set("limit", String(PENDING_LIMIT));
+    queries.push(q1);
 
-  let resp: Response;
-  try {
-    resp = await fetch(pgUrl.toString(), {
-      headers: {
-        apikey: env.SUPABASE_SERVICE_KEY,
-        Authorization: `Bearer ${env.SUPABASE_SERVICE_KEY}`
-      }
-    });
-  } catch (err) {
-    console.error("[forms.pending-approvals] fetch threw", err);
-    return jsonError(500, "list_failed");
-  }
-  if (!resp.ok) {
-    const errText = await resp.text().catch(() => "");
-    console.error(
-      "[forms.pending-approvals] supabase returned",
-      resp.status,
-      errText
+    // 2. I have acted on it at some point. jsonb containment: the history is
+    //    an array of entries, and @> matches on any one of them.
+    const q2 = baseUrl();
+    q2.searchParams.set(
+      "workflow_history",
+      `cs.[{"actor_email":"${callerEmail.replace(/"/g, '\\"')}"}]`
     );
-    return jsonError(500, "list_failed");
+    queries.push(q2);
+
+    // 3. I raised it. Operator-chosen: site staff who submit but never act
+    //    still get a view of what they are waiting on.
+    const q3 = baseUrl();
+    q3.searchParams.set("submitter_email", `eq.${callerEmail}`);
+    queries.push(q3);
   }
 
-  const rows = (await resp.json().catch(() => [])) as PendingApprovalDbRow[];
+  const results = await Promise.all(queries.map(run));
+  // A failure on ANY leg fails the request rather than silently returning a
+  // partial queue. A queue that quietly omits your work is worse than one that
+  // says it is broken.
+  if (results.some((r) => r === null)) return jsonError(500, "list_failed");
+
+  const seen = new Set<string>();
+  const rows: PendingApprovalDbRow[] = [];
+  for (const batch of results) {
+    for (const r of batch ?? []) {
+      if (seen.has(r.id)) continue;
+      seen.add(r.id);
+      rows.push(r);
+    }
+  }
+  rows.sort((a, b) => (a.submitted_at < b.submitted_at ? 1 : -1));
+
   const items: PendingApprovalItem[] = [];
   for (const r of rows) {
     if (!r.workflow_stage || !r.form || !r.version) continue;
@@ -206,7 +267,13 @@ export async function handlePendingApprovals(
       review_path: `/admin/forms/${r.form_id}/submissions/${r.id}`,
       approver_resolution_status:
         approverEmails.length === 0 && expectsApprover ? "empty" : "resolved",
-      queue_fields: resolveQueueFields(schema, r.payload)
+      queue_fields: resolveQueueFields(schema, r.payload),
+      bucket: bucketFor({
+        scope,
+        expectsApprover,
+        approverEmails,
+        callerEmail
+      })
     });
   }
 
@@ -353,4 +420,31 @@ export function resolveQueueFields(
     });
   }
   return out;
+}
+
+/**
+ * Which list a row belongs in.
+ *
+ * "Completed" is derived from the stage having NO approver_source, which is
+ * what a terminal outcome looks like -- rather than from
+ * `form_submissions.status`, which an admin can set by hand and which says
+ * nothing about where the workflow actually is.
+ *
+ * For an admin viewing ?all=1 the caller has no relationship to most rows, so
+ * "waiting on others" would swallow the entire list and say nothing. That view
+ * stays a flat pending feed: terminal rows aside, everything reads as needing
+ * action by somebody.
+ */
+function bucketFor(input: {
+  scope: "me" | "all";
+  expectsApprover: boolean;
+  approverEmails: string[];
+  callerEmail: string;
+}): QueueBucket {
+  if (!input.expectsApprover) return "completed";
+  if (input.scope === "all") return "needs_action";
+  const mine = input.approverEmails.some(
+    (e) => e.trim().toLowerCase() === input.callerEmail
+  );
+  return mine ? "needs_action" : "waiting_on_others";
 }
