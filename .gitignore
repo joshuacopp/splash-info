@@ -65,3 +65,13 @@ apps/MAINTENANCE_TRACKER_PLAN.md
 # current and is not.
 apps/maintenance-tracker/work/
 apps/maintenance-tracker/logs/
+
+# Operator's GM reference columns on public.locations. Applied by hand through
+# the Supabase connector on 2026-09-18, not by any deploy, and the columns hold
+# staff names and personal mobile numbers. Reference only -- they grant no
+# access, drive no routing, and are not read by any app, so the repo has no
+# reason to carry the change and every reason not to invite it into one.
+#
+# This rule was added once before and lost, because it was left uncommitted --
+# an ignore rule that lives only in a working tree protects nothing.
+supabase/locations-gm-columns-01.sql
