@@ -261,7 +261,11 @@ const OWNED_GET_PATHS = new Set([
   "/sysadmin/api/pricing-simple/locations",
   "/sysadmin/api/pricing-simple/regions",
   "/sysadmin/api/locations/search",
-  "/sysadmin/api/audit-log"
+  "/sysadmin/api/audit-log",
+  // Tags any form currently carries -- what there is to grant. Sourced from
+  // the forms themselves, so tagging a form is the only step needed to make a
+  // new tag appear in the console.
+  "/sysadmin/api/form-access-tags"
 ]);
 
 export default {
@@ -346,6 +350,17 @@ export default {
         }
         if (path === "/sysadmin/api/audit-log") {
           return await handleSearchAuditLog(env, url);
+        }
+        if (path === "/sysadmin/api/form-access-tags") {
+          // Fail-soft: an empty list renders as "no tags yet", which is the
+          // honest state before any form is tagged. Failing the whole request
+          // would break the Create user card over an optional field.
+          try {
+            return json({ tags: await fetchGrantableFormAccessTags(env) });
+          } catch (err) {
+            console.error("[sysadmin] form access tag list failed", err);
+            return json({ tags: [] });
+          }
         }
       }
 

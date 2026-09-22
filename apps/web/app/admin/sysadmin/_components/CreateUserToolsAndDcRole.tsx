@@ -24,7 +24,7 @@
 // forwards the whole array to both worker calls (2026-08-17: it was a
 // single location_code, so a GM with six sites got dc_locations for one).
 
-import { useState, type ChangeEvent } from "react";
+import { useEffect, useState, type ChangeEvent } from "react";
 import { FieldLabel, inputClass } from "./OperationCard";
 import { TOOL_HELP } from "./tools";
 
@@ -33,6 +33,29 @@ type DcRoleValue = "" | "gm" | "rm" | "admin" | "super_admin";
 export function CreateUserToolsAndDcRole() {
   const [claimsChecked, setClaimsChecked] = useState(false);
   const [dcRole, setDcRole] = useState<DcRoleValue>("");
+  // Tags any form currently carries. Empty until somebody tags a form, in
+  // which case the whole group hides -- there is nothing to grant, and an
+  // empty fieldset reads as a broken feature rather than an unused one.
+  const [formTags, setFormTags] = useState<string[]>([]);
+
+  useEffect(() => {
+    let live = true;
+    fetch("/sysadmin/api/form-access-tags", {
+      credentials: "include",
+      cache: "no-store"
+    })
+      .then((r) => (r.ok ? r.json() : { tags: [] }))
+      .then((d) => {
+        const tags = (d as { tags?: unknown }).tags;
+        if (live && Array.isArray(tags)) setFormTags(tags as string[]);
+      })
+      .catch(() => {
+        /* optional field -- creating a user must not depend on this */
+      });
+    return () => {
+      live = false;
+    };
+  }, []);
 
   function onClaimsToggle(e: ChangeEvent<HTMLInputElement>) {
     setClaimsChecked(e.target.checked);
@@ -147,6 +170,38 @@ export function CreateUserToolsAndDcRole() {
             </p>
           ) : null}
         </div>
+      ) : null}
+
+      {formTags.length > 0 ? (
+        <fieldset className="mt-3">
+          <FieldLabel
+            htmlFor="create-form-access-0"
+            helper="Optional — org-wide, all locations"
+          >
+            Form access
+          </FieldLabel>
+          <p className="mb-1.5 text-[0.6875rem] text-splash-navy/60">
+            Grants every submission of the tagged forms, including closed ones.
+            Broader than the <code>form_submissions</code> tool above, which is
+            limited to the user&rsquo;s own locations.
+          </p>
+          <div className="flex flex-wrap gap-x-4 gap-y-1.5">
+            {formTags.map((tag, i) => (
+              <label
+                key={tag}
+                className="inline-flex items-center gap-2 text-sm text-splash-navy"
+              >
+                <input
+                  id={`create-form-access-${i}`}
+                  type="checkbox"
+                  name="form_access_tags"
+                  value={tag}
+                />
+                <span className="font-mono">{tag}</span>
+              </label>
+            ))}
+          </div>
+        </fieldset>
       ) : null}
     </>
   );

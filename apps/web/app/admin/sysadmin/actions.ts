@@ -213,6 +213,25 @@ export async function createUserAction(
     }
   }
 
+  // Form access tags, granted after the user exists. Same partial-success
+  // posture as the DC role above: the account is the thing that cannot be
+  // recreated cleanly, so a failed grant reports itself and leaves the user in
+  // place rather than rolling back. Recoverable from Manage access.
+  const formAccessTags = formData.getAll("form_access_tags").map((t) => String(t));
+  if (newUserId && formAccessTags.length > 0) {
+    const faResult = await sysadminPostJson(
+      `/sysadmin/api/users/${encodeURIComponent(newUserId)}/access`,
+      { form_access_tags: formAccessTags }
+    );
+    if (!faResult.ok) {
+      revalidatePath(PAGE_PATH);
+      return {
+        ok: true,
+        message: `User created: ${respEmail} — but form access write failed (${faResult.error}). Grant it via Manage access.`
+      };
+    }
+  }
+
   revalidatePath(PAGE_PATH);
   return { ok: true, message: `User created: ${respEmail}` };
 }
