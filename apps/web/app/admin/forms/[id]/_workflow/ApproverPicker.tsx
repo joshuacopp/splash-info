@@ -232,34 +232,72 @@ export default function ApproverPicker({
   // Renamed from `mode` in Brief 131 because the prop `mode` ("approver" |
   // "recipient") was shadowing this local — `selectMode` is the active
   // <select> value, not the picker's contextual wording.
-  let selectMode: string;
-  if (autoKey) selectMode = autoKey;
+  let derivedMode: string;
+  if (autoKey) derivedMode = autoKey;
   else if (source?.type === "static_emails") {
-    selectMode = source.emails.length > 1 ? MULTIPLE_KEY : SPECIFIC_KEY;
+    derivedMode = source.emails.length > 1 ? MULTIPLE_KEY : SPECIFIC_KEY;
   } else if (!source) {
-    selectMode = UNSET_KEY;
+    derivedMode = UNSET_KEY;
   } else {
     // payload_field that doesn't match a current field — surface as missing
-    selectMode = "__missing__";
+    derivedMode = "__missing__";
   }
+
+  // WHICH OF THE TWO STATIC MODES IS SHOWING IS AN INTENT, NOT A FACT ABOUT
+  // THE DATA, so it cannot be derived from the data.
+  //
+  // It used to be: `emails.length > 1 ? MULTIPLE : SPECIFIC`. Picking
+  // "Multiple people" set emails to [] and re-rendered, 0 > 1 was false, and
+  // the picker snapped straight back to "Specific person". Adding one address
+  // left it at 1, still not > 1, still single. So reaching the multi-entry UI
+  // required already having two addresses, and the only way to add a second
+  // was that UI -- the option was unreachable by construction.
+  //
+  // An explicit pick therefore wins over the derived value. Derivation stays
+  // as the DEFAULT so a saved three-address list still opens in multi mode,
+  // and picking any non-static option clears the override so the data leads
+  // again.
+  const [modeOverride, setModeOverride] = useState<string | null>(null);
+  const selectMode = modeOverride ?? derivedMode;
+
+  // Drop a stale override when the source underneath this picker stops being a
+  // static list. EmailStepCard keys its recipient list by ARRAY INDEX, so
+  // removing a recipient from the middle shifts the rest and React reuses the
+  // component instances -- without this, a "Multiple" intent could survive
+  // onto a recipient that is now a lookup field. The data passed in is still
+  // correct either way; this keeps the control that renders it honest.
+  const sourceType = source?.type ?? null;
+  useEffect(() => {
+    if (sourceType !== "static_emails") setModeOverride(null);
+  }, [sourceType]);
 
   const [, forceRerender] = useState(0);
 
   function pickOption(value: string) {
     if (value === UNSET_KEY) {
+      setModeOverride(null);
       onChange(undefined);
       return;
     }
+    // Switching between the two static modes PRESERVES what was already
+    // picked. Wiping to [] meant choosing one person and then realising you
+    // wanted two cost you the first one.
+    const existing =
+      source?.type === "static_emails" ? source.emails : [];
     if (value === SPECIFIC_KEY) {
-      onChange({ type: "static_emails", emails: [] });
+      setModeOverride(SPECIFIC_KEY);
+      onChange({ type: "static_emails", emails: existing.slice(0, 1) });
       return;
     }
     if (value === MULTIPLE_KEY) {
-      onChange({ type: "static_emails", emails: [] });
+      setModeOverride(MULTIPLE_KEY);
+      onChange({ type: "static_emails", emails: existing });
       return;
     }
     const opt = options.find((o) => o.key === value);
     if (!opt) return;
+    // A field-backed option: the data decides the mode from here on.
+    setModeOverride(null);
     if (opt.kind === "lookup_role") {
       // Brief 131 — the lookup field has already resolved the email at
       // submit time, so its payload value IS the email. Save as
