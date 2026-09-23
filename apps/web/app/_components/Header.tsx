@@ -77,7 +77,10 @@ function formatDeadline(iso: string): string {
 // parser ambiguity in .tsx files where `/<...` looks like a JSX closing
 // tag prefix to lightweight parsers. Real Next.js builds handle either
 // form; the constructor form is unambiguous everywhere.
-const ADMIN_PATH_RE = new RegExp("^/(admin|sysadmin|workorders|forms)(/|$)");
+// Brief 176 adds action-items: a top-level route like /workorders, for the
+// same reason (sites use it, not just form administrators), so it needs the
+// same header chrome.
+const ADMIN_PATH_RE = new RegExp("^/(admin|sysadmin|workorders|action-items|forms)(/|$)");
 
 export interface HeaderUser {
   email: string;

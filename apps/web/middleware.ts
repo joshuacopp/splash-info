@@ -197,7 +197,8 @@ export function middleware(request: NextRequest) {
     return NextResponse.next();
   }
 
-  // /admin/*, /sysadmin/*, /workorders/*, /schedule/*, /forms (and /forms/*) — always gated.
+  // /admin/*, /sysadmin/*, /workorders/*, /action-items/*, /schedule/*,
+  // /forms (and /forms/*) — always gated.
   if (!hasCookie) {
     return resumeOrLogin(request);
   }
@@ -262,6 +263,7 @@ export const config = {
     "/admin/:path*",
     "/sysadmin/:path*",
     "/workorders/:path*",
+    "/action-items/:path*",
     "/schedule/:path*",
     "/forms/:path*",
     "/change-password",

@@ -98,6 +98,11 @@ import {
 } from "./admin/submission-comments.js";
 import { handleReResolveApprovers } from "./admin/reresolve-approvers.js";
 import { handleSetAccessTag, handleListAccessTags } from "./admin/forms.js";
+import {
+  handleListActionItems,
+  handlePatchActionItem,
+  handleVerifyActionItem
+} from "./action-items/handlers.js";
 import { handleEmailQueueClaim } from "./email-queue/claim.js";
 import { handleEmailQueueConfirm } from "./email-queue/confirm.js";
 import {
@@ -445,6 +450,30 @@ export default {
         subTransitionMatch[2],
         ctx
       );
+    }
+
+    // Brief 176 — action items. Under /forms/api/ (not /forms/admin/api/)
+    // because the audience is sites and RMs, not form administrators.
+    //
+    // The /verify pattern MUST match before the bare {id} PATCH, or the
+    // trailing segment is swallowed as part of the UUID -- the same ordering
+    // rule /transition and /comments follow.
+    const aiVerifyMatch = url.pathname.match(
+      /^\/forms\/api\/action-items\/([^/]+)\/verify$/
+    );
+    if (aiVerifyMatch && aiVerifyMatch[1] && req.method === "POST") {
+      return handleVerifyActionItem(env, req, aiVerifyMatch[1]);
+    }
+
+    const aiItemMatch = url.pathname.match(
+      /^\/forms\/api\/action-items\/([^/]+)$/
+    );
+    if (aiItemMatch && aiItemMatch[1] && req.method === "PATCH") {
+      return handlePatchActionItem(env, req, aiItemMatch[1]);
+    }
+
+    if (url.pathname === "/forms/api/action-items" && req.method === "GET") {
+      return handleListActionItems(env, req);
     }
 
     // GET /forms/admin/api/access-tags
