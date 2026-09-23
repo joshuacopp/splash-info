@@ -36,12 +36,34 @@ export interface ResolveLookupArgs {
  *   - null if no row matches OR the matched row's column value is null
  *   - null + log on Supabase error / unknown source table
  */
-export async function resolveLookup(args: ResolveLookupArgs): Promise<string | null> {
-  const { client, source, keyColumn, keyValue } = args;
+/**
+ * `pricing_simple.site` is ZERO-PADDED to three digits -- "019", not "19" --
+ * enforced by the pricing_simple_site_is_3_digits CHECK constraint. Anyone
+ * typing a site number into a form types what is painted on the building,
+ * which for the low-numbered Connecticut sites has no leading zero.
+ *
+ * An unpadded key matches NOTHING and resolves to null, which a form renders
+ * as an empty prefilled field rather than an error. Normalising here fixes it
+ * for every lookup and every form at once, instead of relying on each person
+ * to remember the zero.
+ *
+ * Only all-digit input is padded. Anything else passes through untouched, so a
+ * location_code slug is unaffected.
+ */
+export function normalizeSiteKey(value: string): string {
+  const trimmed = value.trim();
+  return /^\d{1,3}$/.test(trimmed) ? trimmed.padStart(3, "0") : trimmed;
+}
 
-  if (!keyValue || keyValue.trim() === "") return null;
+export async function resolveLookup(args: ResolveLookupArgs): Promise<string | null> {
+  const { client, source, keyColumn } = args;
+
+  if (!args.keyValue || args.keyValue.trim() === "") return null;
 
   const keyColumnName = keyColumn.split(".")[1]; // "location_code" or "site"
+  // Pad only when joining on the site column; a location_code is left alone.
+  const keyValue =
+    keyColumnName === "site" ? normalizeSiteKey(args.keyValue) : args.keyValue;
   if (!keyColumnName) {
     console.error("[forms.lookup] malformed keyColumn", { keyColumn });
     return null;

@@ -8,6 +8,7 @@
 
 import type { FormMeta, FormVersion, FormSchema, LocationOption } from "@splash/forms-schema";
 import { formSchemaSchema } from "@splash/forms-schema";
+import { normalizeSiteKey } from "@splash/db-supabase";
 
 interface SupabaseEnv {
   SUPABASE_URL: string;
@@ -460,7 +461,11 @@ export async function siteToLocationCode(
   env: SupabaseEnv,
   site: string
 ): Promise<string | null> {
-  const trimmed = site.trim();
+  // pricing_simple.site is zero-padded to three digits. Somebody typing a site
+  // number types what is on the building -- "19", not "019" -- and an exact
+  // match on that finds nothing, which surfaces as "unknown site" on a form
+  // they filled in correctly. See normalizeSiteKey.
+  const trimmed = normalizeSiteKey(site);
   if (!trimmed) return null;
   const url = new URL("/rest/v1/pricing_simple", env.SUPABASE_URL);
   url.searchParams.set("select", "location_code");
