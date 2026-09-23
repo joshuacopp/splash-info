@@ -1,0 +1,48 @@
+-- RM Visit Form — authored as a DRAFT, 2026-09-23. APPLIED via the Supabase
+-- connector at the operator's instruction. DO NOT RE-RUN: it has no guard and
+-- a second run creates a duplicate form with the same slug.
+--
+--   form_id          e4bfa6e2-cd4f-4596-8c82-30ea7df2711a
+--   draft_version_id a5707cae-54e1-4705-8be4-4ccaa9b43060
+--   slug             rm-visit        audience internal        66 fields
+--
+-- Ported from JotForm 251016031343036 ("RM Visit Form", 73 fields). Dropped:
+-- the correction block (fields 58-70) — five fixed "Correction Item and Plan N"
+-- + follow-up-date pairs, a manual reminder date and a count-of-items dropdown.
+-- That block IS action_items, capped at five and typed by hand, so porting it
+-- would have shipped the thing this feature replaces. Also dropped the
+-- duplicate second RM Email field.
+--
+-- WHY IT IS A DRAFT AND MUST BE PUBLISHED FROM THE UI
+--
+--   handlePublish does more than copy the schema: it designates the scope
+--   field and stamps forms.scope_location_field_key. Without that column,
+--   submissions land with a null location_code, and every action item belongs
+--   to no site — silently, because nothing errors.
+--
+-- WHY THE SITE FIELD IS KEYED `site_number` BUT TYPED `location`
+--
+--   handlePublish finds the scope field by KEY (SCOPE_FIELD_KEY ===
+--   'site_number'). Any other key and it appends its OWN short-text "Site
+--   number" box, so the form would ask for the site twice. Type `location`
+--   makes the payload value a canonical location_code already, which is what
+--   resolveSubmissionLocationCode wants and what action_items.location_code
+--   is copied from.
+--
+-- A NOTE ON DATA-MODIFYING CTEs, learned the hard way here: the first attempt
+-- did INSERT forms / INSERT form_versions / UPDATE forms in one statement. The
+-- UPDATE matched nothing, because a statement's CTEs see the snapshot from
+-- before it ran — the freshly inserted forms row was invisible to the UPDATE.
+-- Both inserts landed and draft_version_id stayed NULL, which is exactly the
+-- orphan state Brief 94 documents. Fixed with a separate UPDATE.
+--
+-- Verified after apply, against what was actually STORED rather than what was
+-- sent: 66 fields, 49 radios (47 Pass/Fail/NA + 2 Yes/No), 8 headings, 48
+-- action-item eligible, 66 distinct keys, 0 malformed keys, 0 lookups pointing
+-- anywhere but the site field, and the two "Glass Cleanliness" rows (Walk-
+-- Through and Store) carrying distinct keys. The identical structure was
+-- strict-validated against formSchemaSchema locally before insert.
+--
+-- NEXT STEP IS THE OPERATOR'S: open /admin/forms/e4bfa6e2-.../ and Publish.
+
+-- (statement intentionally not repeated — see above, do not re-run)
