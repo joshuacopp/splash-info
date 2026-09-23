@@ -8,6 +8,7 @@ export type FieldType =
   | "short_text"
   | "long_text"
   | "dropdown"
+  | "radio"
   | "multi"
   | "file"
   | "date"
@@ -115,6 +116,25 @@ export interface DropdownField extends FieldBase {
   placeholder?: string;
 }
 
+/**
+ * Single choice from a small option set, rendered as a real radio group rather
+ * than a select.
+ *
+ * Payload shape is IDENTICAL to `dropdown` -- one option `value` -- so every
+ * consumer (payload validator, PDF, report aggregation, wide table, CSV)
+ * treats the two the same. The difference is purely how it is answered: a
+ * radio row is one tap where a select is two taps and a scroll, which stops
+ * mattering at 3 fields and matters enormously at 47.
+ */
+export interface RadioField extends FieldBase {
+  type: "radio";
+  options: DropdownOption[];
+  /** "inline" puts the options on one line (Pass / Fail / NA); "vertical"
+   *  stacks them. Defaults to vertical -- inline only reads well for short
+   *  labels and few options. */
+  layout?: "vertical" | "inline";
+}
+
 export interface MultiField extends FieldBase {
   type: "multi";
   options: DropdownOption[];
@@ -202,6 +222,7 @@ export type Field =
   | LongTextField
   | HiddenField
   | DropdownField
+  | RadioField
   | MultiField
   | DateField
   | TimeField

@@ -102,6 +102,14 @@ const SHELL_CSS = `
   /* Multi-checkbox group */
   .field-multi-option { display: flex; align-items: center; margin-bottom: 6px; }
   .field-multi-option input { margin-right: 8px; }
+  /* Radio groups. Vertical stacks like multi; inline lays the options out in a
+     row and lets them wrap, which is what makes a long Pass/Fail/NA inspection
+     list scannable instead of forty screens of stacked blocks. Touch targets
+     stay at 44px min-height per option -- these are answered on tablets. */
+  .field-radio-option { display: flex; align-items: center; margin-bottom: 6px; min-height: 44px; }
+  .field-radio-option input { margin-right: 8px; }
+  .field-radio-inline .field-radio-options { display: flex; flex-wrap: wrap; gap: 4px 20px; }
+  .field-radio-inline .field-radio-option { margin-bottom: 0; }
   /* Disabled lookup placeholder */
   .field-lookup-disabled { background: #f0f0f0; color: #888; font-style: italic; }
   /* Display-only lookup callout (Brief 93) */

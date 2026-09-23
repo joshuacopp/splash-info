@@ -70,6 +70,10 @@ export function payloadValidatorFor(field: Field): z.ZodTypeAny | null {
       // accept anything. Always optional from the user's perspective.
       return z.string().max(2000).optional().or(z.literal(""));
 
+    // radio shares dropdown's payload shape exactly -- one option value -- so
+    // it shares its validator. Splitting them would be two ways to say the
+    // same thing, and they would drift.
+    case "radio":
     case "dropdown": {
       if (field.options.length === 0) {
         // Defensive — a published dropdown with zero options should never

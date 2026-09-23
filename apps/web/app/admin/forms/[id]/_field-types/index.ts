@@ -22,6 +22,7 @@ import * as shortText from "./short-text";
 import * as longText from "./long-text";
 import * as hidden from "./hidden";
 import * as dropdown from "./dropdown";
+import * as radio from "./radio";
 import * as multi from "./multi";
 import * as dateMod from "./date";
 import * as timeMod from "./time";
@@ -60,6 +61,7 @@ export const FIELD_TYPE_REGISTRY: FieldTypeModule[] = [
   longText,
   hidden,
   dropdown,
+  radio,
   multi,
   dateMod,
   timeMod,

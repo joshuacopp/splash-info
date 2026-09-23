@@ -7,13 +7,7 @@
 // JSONB, or schema evolved) render in a "Other payload entries" appendix
 // at the bottom so nothing silently disappears.
 
-import type {
-  Field,
-  FormSchema,
-  DropdownField,
-  MultiField,
-  LookupField
-} from "@splash/forms-schema";
+import type { DropdownField, Field, FormSchema, LookupField, MultiField, RadioField } from "@splash/forms-schema";
 import type { SubmissionFile } from "../../../../_lib/worker-fetch";
 
 interface Props {
@@ -123,6 +117,7 @@ function FieldValue({
     case "time":
       return value == null || value === "" ? em() : <PlainText value={String(value)} />;
 
+    case "radio":
     case "dropdown":
       return value == null || value === "" ? em() : (
         <DropdownLabel field={field} value={String(value)} />
@@ -167,7 +162,8 @@ function DropdownLabel({
   field,
   value
 }: {
-  field: DropdownField;
+  // Both carry `options`; radio's payload is a dropdown value.
+  field: DropdownField | RadioField;
   value: string;
 }) {
   const opt = field.options.find((o) => o.value === value);

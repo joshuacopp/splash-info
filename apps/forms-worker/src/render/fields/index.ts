@@ -15,6 +15,7 @@ import { renderShortText } from "./short-text.js";
 import { renderLongText } from "./long-text.js";
 import { renderHidden } from "./hidden.js";
 import { renderDropdown } from "./dropdown.js";
+import { renderRadio } from "./radio.js";
 import { renderMulti } from "./multi.js";
 import { renderDate } from "./date.js";
 import { renderTime } from "./time.js";
@@ -34,6 +35,7 @@ export function renderField(field: Field, ctx: RenderBodyArgs): string {
     case "long_text":   return renderLongText(field, ctx);
     case "hidden":      return renderHidden(field, ctx);
     case "dropdown":    return renderDropdown(field, ctx);
+    case "radio":       return renderRadio(field, ctx);
     case "multi":       return renderMulti(field, ctx);
     case "date":        return renderDate(field, ctx);
     case "time":        return renderTime(field, ctx);

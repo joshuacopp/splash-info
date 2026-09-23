@@ -9,6 +9,7 @@
 import type {
   Field,
   DropdownField,
+  RadioField,
   MultiField,
   SignatureField,
   FileField
@@ -35,6 +36,7 @@ export default function AnswerCell({ field, value }: Props) {
     case "long_text":
       return value == null || value === "" ? <Em /> : <LongText value={String(value)} />;
 
+    case "radio":
     case "dropdown":
       return value == null || value === "" ? (
         <Em />
@@ -94,7 +96,14 @@ function LongText({ value }: { value: string }) {
   );
 }
 
-function DropdownLabel({ field, value }: { field: DropdownField; value: string }) {
+// Both carry `options`; radio's payload is a dropdown value.
+function DropdownLabel({
+  field,
+  value
+}: {
+  field: DropdownField | RadioField;
+  value: string;
+}) {
   const opt = field.options.find((o) => o.value === value);
   return <span className="whitespace-nowrap">{opt?.label ?? value}</span>;
 }

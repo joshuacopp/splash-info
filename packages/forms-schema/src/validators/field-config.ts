@@ -112,6 +112,13 @@ export const dropdownFieldSchema = z.object({
   placeholder: z.string().optional()
 });
 
+export const radioFieldSchema = z.object({
+  ...fieldBaseSchema,
+  type: z.literal("radio"),
+  options: z.array(dropdownOptionSchema),
+  layout: z.enum(["vertical", "inline"]).optional()
+});
+
 export const multiFieldSchema = z.object({
   ...fieldBaseSchema,
   type: z.literal("multi"),
@@ -195,6 +202,7 @@ export const fieldSchema = z.discriminatedUnion("type", [
   longTextFieldSchema,
   hiddenFieldSchema,
   dropdownFieldSchema,
+  radioFieldSchema,
   multiFieldSchema,
   dateFieldSchema,
   timeFieldSchema,
@@ -599,6 +607,13 @@ const dropdownFieldSchemaDraft = z.object({
   placeholder: z.string().optional()
 });
 
+const radioFieldSchemaDraft = z.object({
+  ...fieldBaseSchemaDraft,
+  type: z.literal("radio"),
+  options: z.array(dropdownOptionSchema),
+  layout: z.enum(["vertical", "inline"]).optional()
+});
+
 const multiFieldSchemaDraft = z.object({
   ...fieldBaseSchemaDraft,
   type: z.literal("multi"),
@@ -665,6 +680,7 @@ export const fieldSchemaDraft = z.discriminatedUnion("type", [
   longTextFieldSchemaDraft,
   hiddenFieldSchemaDraft,
   dropdownFieldSchemaDraft,
+  radioFieldSchemaDraft,
   multiFieldSchemaDraft,
   dateFieldSchemaDraft,
   timeFieldSchemaDraft,

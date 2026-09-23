@@ -114,7 +114,7 @@ export async function drawPayload(
       );
       continue;
     }
-    if (field.type === "dropdown" || field.type === "multi") {
+    if (field.type === "dropdown" || field.type === "radio" || field.type === "multi") {
       renderChoice(doc, cursor, fonts, field, value);
       continue;
     }
@@ -169,7 +169,7 @@ function renderChoice(
   value: unknown
 ): void {
   const options =
-    field.type === "dropdown" || field.type === "multi"
+    field.type === "dropdown" || field.type === "radio" || field.type === "multi"
       ? field.options
       : [];
   const labelFor = (raw: string) => {

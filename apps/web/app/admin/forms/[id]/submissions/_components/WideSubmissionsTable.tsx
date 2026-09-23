@@ -23,6 +23,10 @@ import { computeSchemaUnion, type AnswerColumn } from "../_lib/schema-union";
 function toSearchText(field: Field, value: unknown): string {
   if (value == null || value === "") return "";
   switch (field.type) {
+    // radio stores a dropdown-shaped payload (one option value), so it maps
+    // value -> label identically. Kept as a fall-through rather than a copy so
+    // the two cannot drift.
+    case "radio":
     case "dropdown": {
       const opt = field.options.find((o) => o.value === String(value));
       return opt?.label ?? String(value);

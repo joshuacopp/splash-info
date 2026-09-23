@@ -548,7 +548,7 @@ export async function handleSubmissionsCsv(
         keyMeta.set(f.key, meta);
       }
       if (f.label) meta.label = f.label;
-      if (f.type === "dropdown" || f.type === "multi") {
+      if (f.type === "dropdown" || f.type === "radio" || f.type === "multi") {
         for (const opt of f.options) meta.options.set(opt.value, opt.label);
       }
     }
@@ -629,6 +629,7 @@ export async function handleSubmissionsCsv(
 function displayText(field: Field, value: unknown): string {
   if (value == null || value === "") return "";
   switch (field.type) {
+    case "radio":
     case "dropdown": {
       const opt = field.options.find((o) => o.value === String(value));
       return opt?.label ?? String(value);
@@ -734,10 +735,22 @@ export async function handleSubmissionsReport(
           tm.label = f.label;
         }
       }
-      if (f.type !== "dropdown" && f.type !== "multi") continue;
+      // radio is charted as a single-choice question, same as dropdown -- which
+      // is what makes a 47-row Pass/Fail/NA audit produce a per-question
+      // breakdown in the report PDF for free.
+      if (f.type !== "dropdown" && f.type !== "radio" && f.type !== "multi") continue;
       let meta = choiceMeta.get(f.key);
       if (!meta) {
-        meta = { label: "", type: f.type, options: new Map(), order: [] };
+        // Normalised, not widened: ChoiceMeta.type selects the AGGREGATION
+        // (single-choice vs multi-select), and radio aggregates exactly like
+        // dropdown. Adding a third arm would be a third copy of the same
+        // counting loop.
+        meta = {
+          label: "",
+          type: f.type === "multi" ? "multi" : "dropdown",
+          options: new Map(),
+          order: []
+        };
         choiceMeta.set(f.key, meta);
       }
       if (f.label) meta.label = f.label;
