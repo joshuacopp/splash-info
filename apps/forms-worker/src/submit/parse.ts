@@ -10,7 +10,11 @@
 // (`heading`, `image`) produce no payload entry, matching Decision 4's
 // payload matrix.
 
-import type { FormSchema } from "@splash/forms-schema";
+import {
+  ACTION_ITEM_PAYLOAD_KEY,
+  actionItemInputName,
+  type FormSchema
+} from "@splash/forms-schema";
 
 export interface ParsedSubmit {
   payload: Record<string, unknown>;
@@ -93,6 +97,23 @@ export function parseSubmitFormData(
     if (value === "" && !field.required) continue; // skip empty optional
     payload[field.key] = value;
   }
+
+  // Brief 176 — collect the "Create action item" ticks into ONE reserved
+  // payload key. A `${key}__ai` entry per field would surface as N junk
+  // columns in the CSV and the wide submissions table; a single array does
+  // not, because both build their columns from the schema's fields.
+  //
+  // Read from the SCHEMA, not from the form data, so a hand-crafted POST
+  // cannot tick a question the form never marked eligible. Display-only types
+  // carry no payload and are skipped above, so they cannot appear here.
+  const ticked: string[] = [];
+  for (const field of schema.fields) {
+    if (!field.action_item_eligible) continue;
+    if (field.type === "heading" || field.type === "image") continue;
+    const raw = formData.get(actionItemInputName(field.key));
+    if (typeof raw === "string" && raw !== "") ticked.push(field.key);
+  }
+  if (ticked.length > 0) payload[ACTION_ITEM_PAYLOAD_KEY] = ticked;
 
   return { payload, pendingSubmissionId, turnstileResponse };
 }

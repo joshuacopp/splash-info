@@ -3,7 +3,8 @@
 // adding a 17th field type is a TypeScript error here until the new case
 // lands.
 
-import type { Field } from "@splash/forms-schema";
+import { actionItemInputName, type Field } from "@splash/forms-schema";
+import { escapeHtml } from "../util.js";
 import type { RenderBodyArgs } from "../index.js";
 
 import { renderHeading } from "./heading.js";
@@ -24,7 +25,34 @@ import { renderSignature } from "./signature.js";
 import { renderLocation } from "./location.js";
 import { renderLookup } from "./lookup.js";
 
+/**
+ * Brief 176 — the "Create action item" checkbox.
+ *
+ * Emitted HERE rather than inside each of the 17 field renderers, for the same
+ * reason AdvancedSection is wired once into the Inspector wrapper: a flag every
+ * field type inherits should be implemented once, or the 18th field type
+ * silently lacks it.
+ *
+ * Display-only types carry no payload and cannot spawn an action item, so they
+ * never get one regardless of the flag.
+ */
+function actionItemCheckbox(field: Field): string {
+  if (!field.action_item_eligible) return "";
+  if (field.type === "heading" || field.type === "image") return "";
+  const name = actionItemInputName(field.key);
+  const id = `${field.id}__ai`;
+  return `
+<label class="field-action-item" for="${escapeHtml(id)}">
+  <input type="checkbox" id="${escapeHtml(id)}" name="${escapeHtml(name)}" value="1" />
+  <span>Create action item</span>
+</label>`;
+}
+
 export function renderField(field: Field, ctx: RenderBodyArgs): string {
+  return renderFieldBody(field, ctx) + actionItemCheckbox(field);
+}
+
+function renderFieldBody(field: Field, ctx: RenderBodyArgs): string {
   switch (field.type) {
     case "heading":     return renderHeading(field, ctx);
     case "image":       return renderImage(field, ctx);

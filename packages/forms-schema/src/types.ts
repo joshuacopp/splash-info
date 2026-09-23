@@ -43,6 +43,31 @@ export interface FieldBase {
   // do". Flagging everything collapses the distinction and makes the queue
   // unreadable, which is what the cap is for.
   show_in_queue?: boolean;
+  // Brief 176 — when true, this question renders a "Create action item"
+  // checkbox at fill time. Ticking it spawns a row in `action_items` for the
+  // site to work off after the visit.
+  //
+  // The flag is builder-time (WHICH questions may spawn one); the checkbox is
+  // fill-time (which ones DID). Without the flag every question gets a
+  // checkbox, including the site lookup, the signature and the headings, and
+  // the checkbox stops meaning anything. Display-only types carry no payload
+  // and are never eligible, same rule as show_in_queue.
+  action_item_eligible?: boolean;
+}
+
+/** Payload key holding the field keys the submitter ticked. ONE reserved key
+ *  rather than a `${key}__ai` entry per field: N extra payload keys would
+ *  surface as N junk columns in the CSV and the wide submissions table.
+ *
+ *  Keeping the ticks IN the payload is deliberate -- it makes `action_items` a
+ *  materialization rather than the source of truth, so a failed or wrong
+ *  creation is always regenerable from the submission. */
+export const ACTION_ITEM_PAYLOAD_KEY = "_action_items";
+
+/** Name of the per-field companion input the renderer emits, mirroring the
+ *  `${key}_r2` convention the file field already uses. */
+export function actionItemInputName(fieldKey: string): string {
+  return `${fieldKey}__ai`;
 }
 
 // -----------------------------------------------------------------------------

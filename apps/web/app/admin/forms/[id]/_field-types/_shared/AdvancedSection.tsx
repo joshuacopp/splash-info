@@ -36,6 +36,12 @@ export default function AdvancedSection({ field, onUpdate }: Props) {
   const inQueue =
     Boolean((field as { show_in_queue?: boolean }).show_in_queue) || false;
   const canShowInQueue = !DISPLAY_ONLY.includes(field.type);
+  const actionItem =
+    Boolean((field as { action_item_eligible?: boolean }).action_item_eligible) ||
+    false;
+  // Same rule as the queue column: display-only types carry no payload, so a
+  // ticked action item on one would have no question and no answer behind it.
+  const canSpawnActionItem = !DISPLAY_ONLY.includes(field.type);
 
   return (
     <details className="rounded-splash-sm border border-gray-light bg-gray-50 px-3 py-2 text-sm text-splash-navy">
@@ -57,6 +63,16 @@ export default function AdvancedSection({ field, onUpdate }: Props) {
               onUpdate({ show_in_queue: v || undefined } as Partial<Field>)
             }
             hint="Lets someone working the queue tell tickets apart without opening each one. Up to 5 fields per form; pick the ones that identify a ticket, not the ones needed to action it."
+          />
+        ) : null}
+        {canSpawnActionItem ? (
+          <LabeledCheckbox
+            label={'Offer a "Create action item" tick on this question'}
+            checked={actionItem}
+            onChange={(v) =>
+              onUpdate({ action_item_eligible: v || undefined } as Partial<Field>)
+            }
+            hint="Adds a checkbox under this question. Whoever fills the form ticks it when the answer needs follow-up, and it becomes a tracked item for the site. Flag the questions that can generate work — not every question."
           />
         ) : null}
       </div>

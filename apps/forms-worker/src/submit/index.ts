@@ -33,6 +33,7 @@ import { payloadValidatorFor, LOOKUP_SOURCES } from "@splash/forms-schema";
 import { resolveLookup, createServiceClient } from "@splash/db-supabase";
 import { resolveApproverEmails } from "../workflow-resolution.js";
 import type { Env } from "../index.js";
+import { createActionItemsForSubmission } from "./action-items.js";
 import {
   getFormBySlug,
   getCurrentVersion,
@@ -515,6 +516,29 @@ export async function handleSubmit(
   // -----------------------------------------------------------------
   if (inserted.wasNew && fileRowsToInsert.length > 0) {
     await insertSubmissionFiles(env, fileRowsToInsert);
+  }
+
+  // -----------------------------------------------------------------
+  // Brief 176 — turn ticked questions into action_items rows.
+  //
+  // Fresh submissions only: an idempotent re-submit already has its rows, and
+  // re-running would duplicate every item.
+  //
+  // FAIL-SOFT. A failure here does NOT reverse the submission — losing a
+  // 73-question site visit is far worse than losing rows that can be rebuilt,
+  // and they can always be rebuilt because the ticks live in the payload.
+  // Awaited rather than waitUntil'd so the outcome is known before the
+  // response is composed; the insert is one round-trip.
+  // -----------------------------------------------------------------
+  if (inserted.wasNew) {
+    await createActionItemsForSubmission(env, {
+      submissionId: inserted.row.id,
+      locationCode,
+      schema: version.schema,
+      payload,
+      submittedAt: new Date(),
+      createdBy: null
+    });
   }
 
   // -----------------------------------------------------------------

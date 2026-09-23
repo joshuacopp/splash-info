@@ -30,7 +30,8 @@ const fieldBaseSchema = {
   // on the approvals queue. Same posture as exclude_from_pdf: no structural
   // enforcement beyond type, operators flip it freely, and the read side caps
   // how many it honours.
-  show_in_queue: z.boolean().optional()
+  show_in_queue: z.boolean().optional(),
+  action_item_eligible: z.boolean().optional()
 };
 
 const dropdownOptionSchema = z.object({
@@ -542,7 +543,8 @@ const fieldBaseSchemaDraft = {
   // mirrors so save-draft accepts the flag mid-build.
   exclude_from_pdf: z.boolean().optional(),
   // Brief 173 — same, for the queue-column flag.
-  show_in_queue: z.boolean().optional()
+  show_in_queue: z.boolean().optional(),
+  action_item_eligible: z.boolean().optional()
 };
 
 const headingFieldSchemaDraft = z.object({

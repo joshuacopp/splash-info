@@ -110,6 +110,13 @@ const SHELL_CSS = `
   .field-radio-option input { margin-right: 8px; }
   .field-radio-inline .field-radio-options { display: flex; flex-wrap: wrap; gap: 4px 20px; }
   .field-radio-inline .field-radio-option { margin-bottom: 0; }
+  /* Action item tick. Deliberately set apart from the answer above it -- it is
+     a different question ("does this need follow-up?") from the one the field
+     asks, and reading as part of the answer would get it ticked by accident. */
+  .field-action-item { display: flex; align-items: center; gap: 8px; margin: -4px 0 14px;
+                       padding: 6px 10px; min-height: 44px;
+                       border-left: 3px solid #d98324; background: #fdf6ec;
+                       font-size: 14px; color: #6b4a16; }
   /* Disabled lookup placeholder */
   .field-lookup-disabled { background: #f0f0f0; color: #888; font-style: italic; }
   /* Display-only lookup callout (Brief 93) */
