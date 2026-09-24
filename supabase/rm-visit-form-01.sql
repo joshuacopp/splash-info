@@ -46,3 +46,37 @@
 -- NEXT STEP IS THE OPERATOR'S: open /admin/forms/e4bfa6e2-.../ and Publish.
 
 -- (statement intentionally not repeated — see above, do not re-run)
+
+-- ---------------------------------------------------------------------------
+-- Safety section. APPLIED 2026-09-24 to the DRAFT (v5) via the connector.
+--
+-- The ported form had three safety-named rows scattered across other sections
+-- ("Following Safety Procedure" under Top Wash Package, "PPE Available / In
+-- Use" under Walk-Through, "Safety of All Areas" under Customer Self Service)
+-- and no Safety heading. That was faithful to the JotForm, but it meant one
+-- Pass/Fail stood in for a whole category, and things like the eyewash, the
+-- SDS binder and the evacuation plan had nowhere to land except free text.
+--
+-- Placed SECOND, right after Initial Observations: early on purpose, because
+-- it is the section least suited to being reached tired. Not conditional --
+-- it applies at every site.
+--
+-- TWO CHECKBOX GROUPS, NOT ROWS OF PASS/FAIL. For the cabinet and the peroxide
+-- gear, what is NOT ticked is the finding. Nine separate Pass/Fail rows would
+-- say the same thing in nine times the taps.
+--
+-- THE PEROXIDE "N/A" IS A GATE, NOT A CHECKBOX. An N/A box sitting alongside
+-- the gear boxes can be ticked together with them, and then the row asserts
+-- nothing. A Yes/No question gating the group is unambiguous, and reuses the
+-- visible_if mechanism the Store and Exit Pad sections already use.
+--
+-- Strict-validated against formSchemaSchema locally BEFORE insert, including
+-- the visible_if reference. The first generator run derived field ids by
+-- truncating the key, which collided -- safety_eye_wash and
+-- safety_evacuation_plan both start "safety_e" -- and would have put two
+-- fields on one DOM id, crossing their <label for=>. Zod does not check id
+-- uniqueness; the generator now hashes the key and asserts uniqueness itself.
+--
+-- Verified after apply: 74 fields, 9 sections in the intended order, 74
+-- distinct ids and 74 distinct keys.
+-- ---------------------------------------------------------------------------
