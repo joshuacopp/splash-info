@@ -16,6 +16,7 @@
 
 import {
   ACTION_ITEM_PAYLOAD_KEY,
+  ACTION_ITEM_NOTES_PAYLOAD_KEY,
   type Field,
   type FormSchema
 } from "@splash/forms-schema";
@@ -117,6 +118,12 @@ export async function createActionItemsForSubmission(
     return { attempted: ticked.length, inserted: 0, error };
   }
 
+  const rawNotes = args.payload[ACTION_ITEM_NOTES_PAYLOAD_KEY];
+  const notes: Record<string, string> =
+    rawNotes && typeof rawNotes === "object" && !Array.isArray(rawNotes)
+      ? (rawNotes as Record<string, string>)
+      : {};
+
   const dueDate = easternDuePlusDays(args.submittedAt, DEFAULT_DUE_DAYS);
   const byKey = new Map(args.schema.fields.map((f) => [f.key, f]));
 
@@ -129,6 +136,11 @@ export async function createActionItemsForSubmission(
       return [];
     }
     const label = (field.label || key).slice(0, DESCRIPTION_MAX);
+    // The note is what the person actually SAW; the question label is only
+    // where they were standing. Prefer the observation, fall back to the label
+    // so an un-noted tick still produces a usable row rather than nothing.
+    const note = typeof notes[key] === "string" ? notes[key].trim() : "";
+    const description = (note || label).slice(0, DESCRIPTION_MAX);
     return [
       {
         submission_id: args.submissionId,
@@ -136,9 +148,7 @@ export async function createActionItemsForSubmission(
         field_key: key,
         question_label: label,
         answer_snapshot: snapshotOf(args.payload[key], field),
-        // Seeded from the question. The RM renames it on the page if the
-        // question label is not the right description of the work.
-        description: label,
+        description,
         priority: "Medium",
         due_date: dueDate,
         status: "open",

@@ -3,7 +3,11 @@
 // adding a 17th field type is a TypeScript error here until the new case
 // lands.
 
-import { actionItemInputName, type Field } from "@splash/forms-schema";
+import {
+  actionItemInputName,
+  actionItemNoteInputName,
+  type Field
+} from "@splash/forms-schema";
 import { escapeHtml } from "../util.js";
 import type { RenderBodyArgs } from "../index.js";
 
@@ -40,12 +44,21 @@ function actionItemCheckbox(field: Field): string {
   if (!field.action_item_eligible) return "";
   if (field.type === "heading" || field.type === "image") return "";
   const name = actionItemInputName(field.key);
+  const noteName = actionItemNoteInputName(field.key);
   const id = `${field.id}__ai`;
+  // The note reveals on tick via a CSS sibling selector, NOT JavaScript. It is
+  // the one control whose absence silently destroys the feature's value, and
+  // this form has already been broken once by a stale cached script. The
+  // checkbox is a direct child rather than nested in the <label> so
+  // `:checked ~ .field-action-item-note` can reach it.
   return `
-<label class="field-action-item" for="${escapeHtml(id)}">
+<div class="field-action-item">
   <input type="checkbox" id="${escapeHtml(id)}" name="${escapeHtml(name)}" value="1" />
-  <span>Create action item</span>
-</label>`;
+  <label for="${escapeHtml(id)}">Create action item</label>
+  <input type="text" class="field-action-item-note"
+         name="${escapeHtml(noteName)}" maxlength="500"
+         placeholder="What needs doing? e.g. fresh mulch at the entrance bed" />
+</div>`;
 }
 
 export function renderField(field: Field, ctx: RenderBodyArgs): string {

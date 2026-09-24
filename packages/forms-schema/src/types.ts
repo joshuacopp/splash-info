@@ -92,6 +92,19 @@ export function actionItemInputName(fieldKey: string): string {
   return `${fieldKey}__ai`;
 }
 
+/** Companion note input. What the tick is ABOUT -- "needs fresh mulch" rather
+ *  than just "Landscaping / Property, Fail". Without it an action item carries
+ *  the question and the answer but not the observation, and the observation is
+ *  the only part that says what to do. */
+export function actionItemNoteInputName(fieldKey: string): string {
+  return `${fieldKey}__ai_note`;
+}
+
+/** Payload key holding `{ field_key: note }` for ticked questions that got a
+ *  note. Separate from ACTION_ITEM_PAYLOAD_KEY so "which were ticked" keeps
+ *  exactly one answer and stays the shape earlier submissions already use. */
+export const ACTION_ITEM_NOTES_PAYLOAD_KEY = "_action_item_notes";
+
 // -----------------------------------------------------------------------------
 // Display-only types (no payload)
 // -----------------------------------------------------------------------------

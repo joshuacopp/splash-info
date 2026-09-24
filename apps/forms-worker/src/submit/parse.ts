@@ -12,7 +12,9 @@
 
 import {
   ACTION_ITEM_PAYLOAD_KEY,
+  ACTION_ITEM_NOTES_PAYLOAD_KEY,
   actionItemInputName,
+  actionItemNoteInputName,
   isFieldVisible,
   type FormSchema
 } from "@splash/forms-schema";
@@ -108,6 +110,7 @@ export function parseSubmitFormData(
   // cannot tick a question the form never marked eligible. Display-only types
   // carry no payload and are skipped above, so they cannot appear here.
   const ticked: string[] = [];
+  const notes: Record<string, string> = {};
   for (const field of schema.fields) {
     if (!field.action_item_eligible) continue;
     if (field.type === "heading" || field.type === "image") continue;
@@ -115,9 +118,18 @@ export function parseSubmitFormData(
     // on it is either stale DOM or a forged POST. Either way it is not work.
     if (!isFieldVisible(field, payload)) continue;
     const raw = formData.get(actionItemInputName(field.key));
-    if (typeof raw === "string" && raw !== "") ticked.push(field.key);
+    if (typeof raw === "string" && raw !== "") {
+      ticked.push(field.key);
+      // Only for ticked fields: the browser submits the note box regardless of
+      // the checkbox, so a note typed and then un-ticked must not survive.
+      const note = formData.get(actionItemNoteInputName(field.key));
+      if (typeof note === "string" && note.trim() !== "") {
+        notes[field.key] = note.trim().slice(0, 500);
+      }
+    }
   }
   if (ticked.length > 0) payload[ACTION_ITEM_PAYLOAD_KEY] = ticked;
+  if (Object.keys(notes).length > 0) payload[ACTION_ITEM_NOTES_PAYLOAD_KEY] = notes;
 
   return { payload, pendingSubmissionId, turnstileResponse };
 }

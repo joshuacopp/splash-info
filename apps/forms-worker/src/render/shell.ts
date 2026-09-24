@@ -120,10 +120,19 @@ const SHELL_CSS = `
   /* Action item tick. Deliberately set apart from the answer above it -- it is
      a different question ("does this need follow-up?") from the one the field
      asks, and reading as part of the answer would get it ticked by accident. */
-  .field-action-item { display: flex; align-items: center; gap: 8px; margin: -4px 0 14px;
-                       padding: 6px 10px; min-height: 44px;
+  .field-action-item { display: flex; align-items: center; flex-wrap: wrap; gap: 8px;
+                       margin: -4px 0 14px; padding: 6px 10px; min-height: 44px;
                        border-left: 3px solid #d98324; background: #fdf6ec;
                        font-size: 14px; color: #6b4a16; }
+  .field-action-item label { cursor: pointer; }
+  /* Revealed by the tick with a sibling selector, deliberately WITHOUT
+     JavaScript: this note is the whole informational value of an action item,
+     and a stale cached script has already broken this form once. */
+  .field-action-item-note { display: none; }
+  .field-action-item input[type="checkbox"]:checked ~ .field-action-item-note {
+    display: block; flex: 1 1 100%; margin-top: 4px; padding: 8px 10px;
+    border: 1px solid #d98324; border-radius: 4px; font-size: 14px;
+    font-family: inherit; color: var(--splash-navy); background: #fff; }
   /* Disabled lookup placeholder */
   .field-lookup-disabled { background: #f0f0f0; color: #888; font-style: italic; }
   /* Display-only lookup callout (Brief 93) */
