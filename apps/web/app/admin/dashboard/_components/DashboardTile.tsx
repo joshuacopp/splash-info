@@ -11,6 +11,23 @@ export function DashboardTile({ tile }: { tile: Tile }) {
   return (
     <Link
       href={tile.href}
+      // PREFETCH OFF, deliberately.
+      //
+      // Every tile points at a `force-dynamic` page that server-renders
+      // against one or more workers. With prefetch on (the default), simply
+      // LANDING on the dashboard fires server work for every tile in the
+      // viewport -- for a grid the visitor is about to click exactly one of.
+      //
+      // Measured on /admin/dashboard: 201 requests and 3.4 MB, with `fleet`
+      // taking 11.55s, a second `fleet` prefetch failing outright at 10s, and
+      // several `submissions` prefetches returning 503. The page the operator
+      // actually wanted was queued behind speculative work for pages they did
+      // not.
+      //
+      // A hub page is the worst possible place to speculate: the fan-out is
+      // widest and the hit rate is lowest (one tile out of a dozen). The cost
+      // of being wrong is a whole SSR round trip through a worker.
+      prefetch={false}
       className="group flex flex-col overflow-hidden rounded-splash-lg border-[3px] border-splash-navy bg-white text-splash-navy shadow-splash-card transition-transform duration-150 hover:-translate-y-1 hover:shadow-splash-card-hover"
     >
       <div className="flex items-center gap-4 bg-gradient-to-br from-splash-blue to-splash-navy px-6 py-5">
