@@ -94,6 +94,7 @@ export const NAV = [
 
   // ---- Operations / Other Tools ----
   { id: "pending-approvals", group: "operations", subgroup: "other-tools", title: "Pending Approvals", href: "/admin/approvals" },
+  { id: "action-items", group: "operations", subgroup: "other-tools", title: "Action Items", href: "/action-items" },
   { id: "inventory", group: "operations", subgroup: "other-tools", title: "Chemical Inventory", href: "/inventory/" },
   { id: "promotions", group: "operations", subgroup: "other-tools", title: "Promotions", href: "/admin/promotions" },
   { id: "promotions-queue", group: "operations", subgroup: "other-tools", title: "IT Promotions Queue", href: "/admin/promotions/queue" },

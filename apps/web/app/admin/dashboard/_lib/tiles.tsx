@@ -159,6 +159,22 @@ function allStaff(session: Session | null): boolean {
 // Icons (inline lucide-derived SVGs, matching the rest of apps/web's tiles).
 // ---------------------------------------------------------------------------
 
+const clipboardCheckIcon = (
+  <svg
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="2"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    aria-hidden="true"
+  >
+    <path d="M9 3h6a1 1 0 0 1 1 1v1H8V4a1 1 0 0 1 1-1z" />
+    <path d="M16 5h1a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h1" />
+    <path d="m9 13 2 2 4-4" />
+  </svg>
+);
+
 const SvgProps = {
   viewBox: "0 0 24 24",
   fill: "none",
@@ -492,6 +508,21 @@ export const TILES: ReadonlyArray<Tile> = [
     description: "Custom form submissions waiting on your review.",
     href: "/admin/approvals",
     icon: checkCircleIcon,
+    visibleTo: allStaff
+  },
+  {
+    id: "action-items",
+    group: "operations",
+    subgroup: "other-tools",
+    eyebrow: "Site visits",
+    title: "Action Items",
+    description: "Follow-up work raised during a site visit, for your sites.",
+    href: "/action-items",
+    // allStaff, not a role check. Access is email-on-locations and lives in
+    // the WORKER (getLocationsByContactEmail + matched_via); a caller who
+    // contacts no location gets an explanatory page rather than an error.
+    // Re-deriving that rule here would be a second implementation of it.
+    icon: clipboardCheckIcon,
     visibleTo: allStaff
   },
   {
