@@ -12,6 +12,8 @@ import { getMe } from "../_lib/me";
 import { listActionItems } from "./_lib/worker-fetch";
 import { STATUS_LABEL, type ActionItem } from "./_lib/types";
 import ActionItemRow from "./_components/ActionItemRow";
+import SiteTabs, { type SiteTab } from "./_components/SiteTabs";
+import SiteOverview, { type SiteSummary } from "./_components/SiteOverview";
 
 export const dynamic = "force-dynamic";
 
@@ -43,10 +45,11 @@ export default async function ActionItemsPage({ searchParams }: PageProps) {
     );
   }
 
-  const resp = await listActionItems({
-    location: locationFilter,
-    status: statusFilter
-  });
+  // Deliberately NOT scoped to ?location=. The tab counts describe sites the
+  // caller is not currently looking at, so narrowing the fetch would report
+  // every other site as clear -- the most misleading possible wrong answer on
+  // a page whose job is telling you where to push.
+  const resp = await listActionItems({ status: statusFilter });
 
   // null is the worker refusing (no contact match anywhere), which is a
   // different thing from an empty list and deserves a different sentence.
@@ -63,11 +66,64 @@ export default async function ActionItemsPage({ searchParams }: PageProps) {
   }
 
   const items = resp.items;
+  const today = new Date().toISOString().slice(0, 10);
+
+  // Every site the caller can reach, not just the ones with items. A site with
+  // nothing open is an answer ("clear"); omitting it reads as missing data.
+  // For an admin, `resp.locations` is empty by design -- scope is "all" and
+  // there is no list to enumerate -- so fall back to what the items show.
+  const siteCodes = [
+    ...new Set([...resp.locations, ...items.map((i) => i.location_code)])
+  ].sort();
+  const multiSite = siteCodes.length > 1;
+
+  // An unknown or inaccessible ?location= resolves to the overview rather than
+  // an empty list: the worker would refuse it anyway, and a blank page does
+  // not explain itself.
+  const activeSite =
+    locationFilter && siteCodes.includes(locationFilter) ? locationFilter : null;
+
+  function summarise(code: string): SiteSummary {
+    const open = items.filter(
+      (i) => i.location_code === code && i.status !== "done"
+    );
+    const due = open
+      .map((i) => i.due_date)
+      .filter((d): d is string => !!d)
+      .sort();
+    return {
+      locationCode: code,
+      open: open.length,
+      overdue: open.filter((i) => i.due_date && i.due_date < today).length,
+      nextDue: due[0] ?? null
+    };
+  }
+  const summaries = siteCodes.map(summarise);
+  // Worst first: most overdue, then most open. Alphabetical would bury the
+  // site that needs pushing behind one that does not.
+  const ranked = [...summaries].sort(
+    (a, b) => b.overdue - a.overdue || b.open - a.open ||
+      a.locationCode.localeCompare(b.locationCode)
+  );
+  // Tabs stay ALPHABETICAL even though the overview cards are ranked. A tab
+  // strip that reshuffles as counts change destroys the muscle memory of
+  // "my site is third from the left"; the overview is a triage view where
+  // order is the whole point, and a tab strip is navigation where it is not.
+  const tabs: SiteTab[] = summaries.map((s) => ({
+    locationCode: s.locationCode,
+    open: s.open,
+    overdue: s.overdue
+  }));
+
+  // Scope everything below to the chosen site once one is picked.
+  const scoped = activeSite
+    ? items.filter((i) => i.location_code === activeSite)
+    : items;
   // Done work is history and shouldn't crowd out what's outstanding, but
   // hiding it entirely makes "did I already do this?" unanswerable — so it
   // collapses behind a toggle rather than disappearing.
-  const outstanding = items.filter((i) => i.status !== "done");
-  const done = items.filter((i) => i.status === "done");
+  const outstanding = scoped.filter((i) => i.status !== "done");
+  const done = scoped.filter((i) => i.status === "done");
   const overdue = outstanding.filter(
     (i) => i.due_date && i.due_date < new Date().toISOString().slice(0, 10)
   );
@@ -80,25 +136,35 @@ export default async function ActionItemsPage({ searchParams }: PageProps) {
   }
   const locations = [...byLocation.keys()].sort();
 
+  const totalOpen = summaries.reduce((n, x) => n + x.open, 0);
+  const totalOverdue = summaries.reduce((n, x) => n + x.overdue, 0);
+  // The landing view for anyone covering more than one site. A single-site
+  // contact goes straight to their list -- an overview of one card is a click
+  // in front of the thing they came for.
+  const showOverview = multiSite && activeSite === null && !showDone;
+
   return (
     <Shell>
       <div className="mb-5 flex flex-wrap items-baseline justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-bold text-splash-navy">Action Items</h1>
+          <h1 className="text-2xl font-bold text-splash-navy">
+            {activeSite ?? "Action Items"}
+          </h1>
           <p className="mt-1 text-sm text-splash-navy/70">
-            {outstanding.length === 0
-              ? "Nothing outstanding."
-              : `${outstanding.length} outstanding${
-                  overdue.length > 0 ? ` · ${overdue.length} overdue` : ""
-                }`}
-            {resp.scope === "scoped" && resp.locations.length > 0
-              ? ` · ${resp.locations.length} site${resp.locations.length === 1 ? "" : "s"}`
-              : ""}
+            {showOverview
+              ? `${totalOpen} open across ${siteCodes.length} sites${
+                  totalOverdue > 0 ? ` · ${totalOverdue} overdue` : ""
+                }`
+              : outstanding.length === 0
+                ? "Nothing outstanding."
+                : `${outstanding.length} outstanding${
+                    overdue.length > 0 ? ` · ${overdue.length} overdue` : ""
+                  }`}
           </p>
         </div>
         {done.length > 0 ? (
           <Link
-            href={showDone ? "/action-items" : "/action-items?done=1"}
+            href={buildHref(activeSite, !showDone)}
             className="text-sm text-splash-blue underline"
           >
             {showDone ? "Hide" : "Show"} {done.length} completed
@@ -112,14 +178,25 @@ export default async function ActionItemsPage({ searchParams }: PageProps) {
         </p>
       ) : null}
 
-      {outstanding.length === 0 && !showDone ? (
+      {multiSite ? (
+        <SiteTabs
+          tabs={tabs}
+          active={activeSite}
+          totalOpen={totalOpen}
+          totalOverdue={totalOverdue}
+        />
+      ) : null}
+
+      {showOverview ? <SiteOverview sites={ranked} /> : null}
+
+      {!showOverview && outstanding.length === 0 && !showDone ? (
         <p className="rounded-splash-md border border-gray-light bg-white p-6 text-sm text-splash-navy/70">
           No outstanding action items. New ones appear here when a Regional
           Manager flags something during a site visit.
         </p>
       ) : null}
 
-      {locations.map((loc) => (
+      {!showOverview && locations.map((loc) => (
         <section key={loc} className="mb-6">
           {/* Grouped by site, and the header shows even for a single site --
               a site contact needs to know which location they're looking at
@@ -135,7 +212,7 @@ export default async function ActionItemsPage({ searchParams }: PageProps) {
         </section>
       ))}
 
-      {showDone && done.length > 0 ? (
+      {!showOverview && showDone && done.length > 0 ? (
         <section className="mb-6">
           <h2 className="mb-2 text-xs font-bold uppercase tracking-[0.15em] text-splash-navy/50">
             {STATUS_LABEL.done} ({done.length})
@@ -149,6 +226,16 @@ export default async function ActionItemsPage({ searchParams }: PageProps) {
       ) : null}
     </Shell>
   );
+}
+
+/** Keeps the chosen site when toggling completed items, so the toggle does not
+ *  quietly throw you back to the overview. */
+function buildHref(site: string | null, withDone: boolean): string {
+  const qs = new URLSearchParams();
+  if (site) qs.set("location", site);
+  if (withDone) qs.set("done", "1");
+  const q = qs.toString();
+  return q ? `/action-items?${q}` : "/action-items";
 }
 
 function Shell({ children }: { children: React.ReactNode }) {
