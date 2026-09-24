@@ -14,7 +14,11 @@
 // the item happens afterwards on the action items page, where there is a
 // keyboard.
 
-import { ACTION_ITEM_PAYLOAD_KEY, type FormSchema } from "@splash/forms-schema";
+import {
+  ACTION_ITEM_PAYLOAD_KEY,
+  type Field,
+  type FormSchema
+} from "@splash/forms-schema";
 import type { Env } from "../index.js";
 
 /** Days from submission to the default due date. Deliberately generous: it is
@@ -62,13 +66,27 @@ export function easternDuePlusDays(at: Date, days: number): string {
 
 /** One line of context for the item, from whatever the question was answered
  *  with. Objects (file / signature refs) have no useful one-line form, so they
- *  contribute nothing rather than "[object Object]". */
-function snapshotOf(value: unknown): string | null {
+ *  contribute nothing rather than "[object Object]".
+ *
+ *  Choice fields store the option VALUE ("fail"); this renders the LABEL
+ *  ("Fail"), because the snapshot is denormalized and permanent -- it is read
+ *  by a site weeks later with no access to the option table, and every other
+ *  surface in the codebase maps value to label before showing it. */
+function snapshotOf(value: unknown, field?: Field): string | null {
+  const labelFor = (v: string): string => {
+    if (
+      field &&
+      (field.type === "radio" || field.type === "dropdown" || field.type === "multi")
+    ) {
+      return field.options.find((o) => o.value === v)?.label ?? v;
+    }
+    return v;
+  };
   if (value == null || value === "") return null;
-  if (typeof value === "string") return value.slice(0, 500);
+  if (typeof value === "string") return labelFor(value).slice(0, 500);
   if (typeof value === "number" || typeof value === "boolean") return String(value);
   if (Array.isArray(value)) {
-    const flat = value.filter((v) => typeof v === "string") as string[];
+    const flat = (value.filter((v) => typeof v === "string") as string[]).map(labelFor);
     return flat.length > 0 ? flat.join(", ").slice(0, 500) : null;
   }
   return null;
@@ -117,7 +135,7 @@ export async function createActionItemsForSubmission(
         location_code: args.locationCode,
         field_key: key,
         question_label: label,
-        answer_snapshot: snapshotOf(args.payload[key]),
+        answer_snapshot: snapshotOf(args.payload[key], field),
         // Seeded from the question. The RM renames it on the page if the
         // question label is not the right description of the work.
         description: label,

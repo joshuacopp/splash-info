@@ -143,6 +143,7 @@ export const dateFieldSchema = z.object({
 export const timeFieldSchema = z.object({
   ...fieldBaseSchema,
   type: z.literal("time"),
+  defaultToNow: z.boolean().optional(),
   minTime: z.string().regex(/^\d{2}:\d{2}$/).optional(),
   maxTime: z.string().regex(/^\d{2}:\d{2}$/).optional()
 });
@@ -635,6 +636,7 @@ const dateFieldSchemaDraft = z.object({
 const timeFieldSchemaDraft = z.object({
   ...fieldBaseSchemaDraft,
   type: z.literal("time"),
+  defaultToNow: z.boolean().optional(),
   minTime: z.string().regex(/^\d{2}:\d{2}$/).optional(),
   maxTime: z.string().regex(/^\d{2}:\d{2}$/).optional()
 });

@@ -182,6 +182,9 @@ export interface TimeField extends FieldBase {
   type: "time";
   minTime?: string;       // HH:MM
   maxTime?: string;       // HH:MM
+  /** Pre-fill with the current EASTERN time. Mirrors DateField.defaultToToday;
+   *  both resolve against the site's wall clock, not the worker's UTC. */
+  defaultToNow?: boolean;
 }
 
 // -----------------------------------------------------------------------------
