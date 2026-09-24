@@ -1,6 +1,6 @@
 # Brief 176: Site visit action items
 
-**Status:** Planned
+**Status:** Phases 0-2 complete (2026-09-24); Phase 3 (reminders) not started
 **Started:**
 **Completed:**
 **Blocks:** Neither
@@ -129,6 +129,18 @@ a dropdown.
    builder's lack of conditional field logic is NOT a blocker. (It remains a
    real gap — see Out of scope.)
 2. Fill-time is TICK ONLY. No priority/due/description typing mid-walkthrough.
+   **SUPERSEDED 2026-09-24, after the first real submissions.** Tick-only threw
+   away the only part that mattered: "Landscaping / Property - Fail" is not a
+   task, and nobody reconstructs "fresh mulch at the entrance bed" at a desk two
+   weeks later. The tick now reveals an optional NOTE box, and the note becomes
+   the item's description; the question label and answer are kept alongside as
+   provenance. An un-noted tick still falls back to the label, so the one-tap
+   path survives for self-evident failures.
+   Priority and due date STAY as page-side edits and defaults (Medium, +14
+   days). Operator's call, and the right one: what was seen has to be captured
+   where it was seen, but how urgent it is and when it is due are triage
+   decisions that want the whole list in front of you, not a tablet in a car
+   park.
 3. RM verification is available only on `done`, and LOCKS the item.
 
 ## Sequence
