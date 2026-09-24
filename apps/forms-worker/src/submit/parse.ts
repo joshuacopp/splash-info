@@ -13,6 +13,7 @@
 import {
   ACTION_ITEM_PAYLOAD_KEY,
   actionItemInputName,
+  isFieldVisible,
   type FormSchema
 } from "@splash/forms-schema";
 
@@ -110,6 +111,9 @@ export function parseSubmitFormData(
   for (const field of schema.fields) {
     if (!field.action_item_eligible) continue;
     if (field.type === "heading" || field.type === "image") continue;
+    // A question that did not apply to this site was never answered, so a tick
+    // on it is either stale DOM or a forged POST. Either way it is not work.
+    if (!isFieldVisible(field, payload)) continue;
     const raw = formData.get(actionItemInputName(field.key));
     if (typeof raw === "string" && raw !== "") ticked.push(field.key);
   }

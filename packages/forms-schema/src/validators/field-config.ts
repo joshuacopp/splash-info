@@ -31,7 +31,13 @@ const fieldBaseSchema = {
   // enforcement beyond type, operators flip it freely, and the read side caps
   // how many it honours.
   show_in_queue: z.boolean().optional(),
-  action_item_eligible: z.boolean().optional()
+  action_item_eligible: z.boolean().optional(),
+  visible_if: z
+    .object({
+      field_key: z.string().min(1),
+      equals: z.array(z.string()).min(1)
+    })
+    .optional()
 };
 
 const dropdownOptionSchema = z.object({
@@ -355,6 +361,31 @@ export const formSchemaSchema = z
     workflow: formWorkflowSchema.optional()
   })
   .superRefine((data, ctx) => {
+    // BEFORE the workflow early-return below: a form can have conditional
+    // fields and no workflow at all, and this check must still run.
+    const visibilityKeys = new Set(data.fields.map((f) => f.key));
+    for (let i = 0; i < data.fields.length; i++) {
+      const f = data.fields[i];
+      const vis = f?.visible_if;
+      if (!f || !vis) continue;
+      if (!visibilityKeys.has(vis.field_key)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["fields", i, "visible_if", "field_key"],
+          message: `visible_if references "${vis.field_key}", which is not a field on this form`
+        });
+      }
+      if (vis.field_key === f.key) {
+        // A field gating itself can never become visible, so nothing would
+        // ever render it -- a silent disappearance rather than an error.
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["fields", i, "visible_if", "field_key"],
+          message: "a field cannot control its own visibility"
+        });
+      }
+    }
+
     if (!data.workflow) return;
     const { default_stage, stages } = data.workflow;
     const stageIds = new Set<string>();
@@ -545,7 +576,13 @@ const fieldBaseSchemaDraft = {
   exclude_from_pdf: z.boolean().optional(),
   // Brief 173 — same, for the queue-column flag.
   show_in_queue: z.boolean().optional(),
-  action_item_eligible: z.boolean().optional()
+  action_item_eligible: z.boolean().optional(),
+  visible_if: z
+    .object({
+      field_key: z.string().min(1),
+      equals: z.array(z.string()).min(1)
+    })
+    .optional()
 };
 
 const headingFieldSchemaDraft = z.object({

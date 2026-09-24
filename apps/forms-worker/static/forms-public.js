@@ -32,6 +32,7 @@
       });
       wireLookups(formEl, slug);
       wireMultiMax(formEl);
+      wireConditionals(formEl);
 
       maybeRenderResumeBanner(formEl, slug);
       wireAutosave(formEl, slug);
@@ -161,6 +162,75 @@
   function currentPendingId(formEl) {
     var el = formEl.querySelector('input[name="pending_submission_id"]');
     return el ? el.value : "";
+  }
+
+  // Brief 176 — conditional fields. A question that does not apply to this
+  // site should not be asked: no Store rows at a site with no store.
+  //
+  // DISABLING MATTERS AS MUCH AS HIDING. A hidden-but-enabled input is still
+  // submitted, so the answer to a question nobody was shown would ride along
+  // in the payload. Disabled inputs are omitted by the browser, which is
+  // exactly the behaviour the server's visibility check then agrees with.
+  function wireConditionals(formEl) {
+    var wraps = formEl.querySelectorAll("[data-visible-if-key]");
+    if (!wraps.length) return;
+
+    // Group by controlling key so each control is wired once however many
+    // fields depend on it -- nine, for the Store and Exit Pad sections.
+    var byKey = {};
+    Array.prototype.forEach.call(wraps, function (wrap) {
+      var key = wrap.getAttribute("data-visible-if-key");
+      if (!key) return;
+      if (!byKey[key]) byKey[key] = [];
+      byKey[key].push(wrap);
+    });
+
+    function controlValue(key) {
+      var els = formEl.querySelectorAll('[name="' + cssAttrEscape(key) + '"]');
+      if (!els.length) return null;
+      for (var i = 0; i < els.length; i++) {
+        var el = els[i];
+        // Radio groups share a name; only the checked one carries the answer.
+        if (el.type === "radio" || el.type === "checkbox") {
+          if (el.checked) return el.value;
+        } else {
+          return el.value;
+        }
+      }
+      return null;
+    }
+
+    function apply(key) {
+      var value = controlValue(key);
+      byKey[key].forEach(function (wrap) {
+        // JSON rather than a delimiter: option values are operator-authored
+        // and any separator character could legitimately appear in one.
+        var allowed = [];
+        try {
+          allowed = JSON.parse(wrap.getAttribute("data-visible-if-equals") || "[]");
+        } catch (e) {
+          allowed = [];
+        }
+        if (!Array.isArray(allowed)) allowed = [];
+        var show = value != null && allowed.indexOf(value) !== -1;
+        wrap.hidden = !show;
+        var inputs = wrap.querySelectorAll("input, select, textarea");
+        Array.prototype.forEach.call(inputs, function (input) {
+          input.disabled = !show;
+        });
+      });
+    }
+
+    Object.keys(byKey).forEach(function (key) {
+      var els = formEl.querySelectorAll('[name="' + cssAttrEscape(key) + '"]');
+      Array.prototype.forEach.call(els, function (el) {
+        el.addEventListener("change", function () { apply(key); });
+        el.addEventListener("input", function () { apply(key); });
+      });
+      // Run once at load so a resumed draft (Brief 122) shows the right
+      // sections immediately rather than after the first keystroke.
+      apply(key);
+    });
   }
 
   function wireMultiMax(formEl) {

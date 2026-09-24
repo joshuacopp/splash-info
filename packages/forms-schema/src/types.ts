@@ -53,6 +53,28 @@ export interface FieldBase {
   // the checkbox stops meaning anything. Display-only types carry no payload
   // and are never eligible, same rule as show_in_queue.
   action_item_eligible?: boolean;
+  /**
+   * Show this field only when another field's value matches. Omitted = always
+   * visible, which is every field that existed before this.
+   *
+   * `field_key` is the controlling field's KEY (the payload key), matching
+   * every other cross-field reference in this schema -- approver
+   * `payload_field`, lookup `keyFieldId` being the one exception. `equals` is
+   * a list so "show for Yes or Maybe" is expressible; a single value is a
+   * one-element list.
+   *
+   * ENFORCED SERVER-SIDE AT SUBMIT, not just in the browser. A hidden required
+   * field must not block the submit, and the condition is re-evaluated from
+   * the submitted payload rather than trusted from the client.
+   */
+  visible_if?: FieldVisibility;
+}
+
+export interface FieldVisibility {
+  /** Key of the controlling field. */
+  field_key: string;
+  /** Show when the controlling field's value is one of these. */
+  equals: string[];
 }
 
 /** Payload key holding the field keys the submitter ticked. ONE reserved key
@@ -479,4 +501,33 @@ export interface LocationOption {
   pretty: string;   // pricing_simple.location_pretty
   address: string;  // pricing_simple.address
   site: string;     // pricing_simple.site (3-digit text)
+}
+
+/**
+ * Is this field visible, given a payload?
+ *
+ * THE SERVER MUST USE THIS, not the client's word for it. The browser hides
+ * and disables conditional inputs so they are not submitted, but a
+ * hand-crafted POST can send anything -- and more importantly a REQUIRED field
+ * that is legitimately hidden must not block the submit. Both questions are
+ * the same question, so they get one answer here.
+ *
+ * Single-level only, deliberately: a field gated on a field that is itself
+ * gated resolves against whatever the controlling field's value actually is,
+ * which for a hidden control is absent, which is not in `equals`, so the
+ * dependent hides too. That is the behaviour you want and it needs no
+ * recursion.
+ */
+export function isFieldVisible(
+  field: Field,
+  payload: Record<string, unknown>
+): boolean {
+  const vis = field.visible_if;
+  if (!vis) return true;
+  const raw = payload[vis.field_key];
+  if (raw == null) return false;
+  if (Array.isArray(raw)) {
+    return raw.some((v) => typeof v === "string" && vis.equals.includes(v));
+  }
+  return typeof raw === "string" && vis.equals.includes(raw);
 }

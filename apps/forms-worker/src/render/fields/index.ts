@@ -49,7 +49,23 @@ function actionItemCheckbox(field: Field): string {
 }
 
 export function renderField(field: Field, ctx: RenderBodyArgs): string {
-  return renderFieldBody(field, ctx) + actionItemCheckbox(field);
+  const inner = renderFieldBody(field, ctx) + actionItemCheckbox(field);
+  const vis = field.visible_if;
+  if (!vis) return inner;
+  // Starts HIDDEN and is revealed by forms-public.js once the controlling
+  // value is known, rather than starting visible and blinking away on load.
+  //
+  // If scripting fails the field stays hidden, its inputs stay disabled and
+  // therefore unsubmitted, and the server skips its `required` check -- so the
+  // form still submits. The failure mode is a missing optional question, not a
+  // form nobody can send. (Uploads, lookups and autosave already need JS.)
+  //
+  // The action-item checkbox is INSIDE the wrapper on purpose: a question that
+  // does not apply must not offer to raise work about itself.
+  return `
+<div class="field-conditional" hidden
+     data-visible-if-key="${escapeHtml(vis.field_key)}"
+     data-visible-if-equals="${escapeHtml(JSON.stringify(vis.equals))}">${inner}</div>`;
 }
 
 function renderFieldBody(field: Field, ctx: RenderBodyArgs): string {

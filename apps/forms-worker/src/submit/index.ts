@@ -29,7 +29,11 @@
 
 import { authenticate } from "@splash/auth";
 import { isOriginAllowed, jsonError } from "@splash/http";
-import { payloadValidatorFor, LOOKUP_SOURCES } from "@splash/forms-schema";
+import {
+  payloadValidatorFor,
+  isFieldVisible,
+  LOOKUP_SOURCES
+} from "@splash/forms-schema";
 import { resolveLookup, createServiceClient } from "@splash/db-supabase";
 import { resolveApproverEmails } from "../workflow-resolution.js";
 import type { Env } from "../index.js";
@@ -331,6 +335,12 @@ export async function handleSubmit(
   // -----------------------------------------------------------------
   const validationErrors: Record<string, string> = {};
   for (const field of version.schema.fields) {
+    // Brief 176 — a conditional field that is not showing was never asked, so
+    // it cannot be required. Evaluated from the SUBMITTED payload rather than
+    // trusted from the client: the browser disables hidden inputs so they are
+    // not sent, but a hand-crafted POST can claim anything, and the honest
+    // answer to "was this asked?" is the same computation either way.
+    if (!isFieldVisible(field, payload)) continue;
     const validator = payloadValidatorFor(field);
     if (!validator) continue;
     const value = payload[field.key];
