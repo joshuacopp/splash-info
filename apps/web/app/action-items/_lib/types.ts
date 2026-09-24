@@ -5,10 +5,12 @@ export type ActionItemPriority = "High" | "Medium" | "Low";
 
 export interface ActionItem {
   id: string;
-  submission_id: string;
+  /** Null on an item added by hand from this page; field_key and
+   *  question_label are null with it. */
+  submission_id: string | null;
   location_code: string;
-  field_key: string;
-  question_label: string;
+  field_key: string | null;
+  question_label: string | null;
   answer_snapshot: string | null;
   description: string;
   priority: ActionItemPriority;
@@ -19,6 +21,9 @@ export interface ActionItem {
   rm_verified_at: string | null;
   rm_verified_by: string | null;
   created_at: string;
+  /** Who added a manual item. Null on form-generated rows, where the
+   *  submission is the provenance. */
+  created_by_email?: string | null;
   /** Per-row, computed by the worker from the SAME functions its writes gate
    *  on. Never re-derive these client-side: a second implementation of "who
    *  may act" drifts from the first, and the drift is silent. */

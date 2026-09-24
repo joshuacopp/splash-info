@@ -103,7 +103,8 @@ import {
   handlePatchActionItem,
   handleVerifyActionItem,
   handleListActionItemNotes,
-  handleCreateActionItemNote
+  handleCreateActionItemNote,
+  handleCreateActionItem
 } from "./action-items/handlers.js";
 import { handleEmailQueueClaim } from "./email-queue/claim.js";
 import { handleEmailQueueConfirm } from "./email-queue/confirm.js";
@@ -488,8 +489,9 @@ export default {
       return handlePatchActionItem(env, req, aiItemMatch[1]);
     }
 
-    if (url.pathname === "/forms/api/action-items" && req.method === "GET") {
-      return handleListActionItems(env, req);
+    if (url.pathname === "/forms/api/action-items") {
+      if (req.method === "GET") return handleListActionItems(env, req);
+      if (req.method === "POST") return handleCreateActionItem(env, req);
     }
 
     // GET /forms/admin/api/access-tags

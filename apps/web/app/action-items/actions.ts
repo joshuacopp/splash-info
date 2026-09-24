@@ -5,7 +5,8 @@ import { revalidatePath } from "next/cache";
 import {
   patchActionItem,
   verifyActionItem,
-  createActionItemNote
+  createActionItemNote,
+  createActionItem
 } from "./_lib/worker-fetch";
 import type { ActionItemPriority, ActionItemStatus } from "./_lib/types";
 
@@ -79,6 +80,12 @@ function humanize(raw: string): string {
   if (raw.includes("not_found")) {
     return "That item no longer exists, or it isn't at one of your sites.";
   }
+  if (raw.includes("description_required")) {
+    return "Describe the work first.";
+  }
+  if (raw.includes("location_required")) {
+    return "Pick a site first.";
+  }
   if (raw.includes("forbidden") || raw.includes("no_accessible_locations")) {
     return "You don't have access to that site.";
   }
@@ -96,6 +103,29 @@ export async function addNoteAction(
     if (!res.ok) return { ok: false, error: humanize(res.error) };
     revalidatePath(PAGE_PATH);
     return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+/** Add an item by hand -- for what the walk-through missed, or for splitting
+ *  one ticked question into the several jobs it turned out to be. */
+export async function createItemAction(
+  locationCode: string,
+  input: { description: string; priority: string; due_date: string | null }
+): Promise<ActionItemResult> {
+  const description = input.description.trim();
+  if (description === "") return { ok: false, error: "Describe the work first." };
+  try {
+    const res = await createActionItem({
+      location_code: locationCode,
+      description,
+      priority: input.priority,
+      due_date: input.due_date
+    });
+    if (!res.ok) return { ok: false, error: humanize(res.error) };
+    revalidatePath(PAGE_PATH);
+    return { ok: true, message: "Added" };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
   }

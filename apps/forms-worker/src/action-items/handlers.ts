@@ -32,10 +32,12 @@ const DESCRIPTION_MAX = 5000;
 
 interface ActionItemRow {
   id: string;
-  submission_id: string;
+  /** Null on an item added by hand. field_key and question_label are null with
+   *  it -- see the action_items_provenance_consistent CHECK. */
+  submission_id: string | null;
   location_code: string;
-  field_key: string;
-  question_label: string;
+  field_key: string | null;
+  question_label: string | null;
   answer_snapshot: string | null;
   description: string;
   priority: string;
@@ -179,6 +181,101 @@ export async function handleListActionItems(
   } catch (err) {
     console.error("[forms.action-items] list threw", err);
     return jsonError(500, "list_failed");
+  }
+}
+
+// =============================================================================
+// POST /forms/api/action-items
+// =============================================================================
+//
+// An item added by hand, for what the walk-through missed or for splitting one
+// ticked question into the several jobs it turned out to be.
+//
+// Carries NO submission provenance, and the DB enforces that it carries none
+// rather than half of it: a submission_id with no field_key would be a row
+// nobody could explain later.
+
+export async function handleCreateActionItem(
+  env: Env,
+  req: Request
+): Promise<Response> {
+  const sk = requireServiceKey(env);
+  if (sk) return sk;
+  if (!isOriginAllowed(req)) return jsonError(403, "bad_origin");
+  const g = await gate(env, req);
+  if (!g.ok) return g.response;
+
+  let body: Record<string, unknown>;
+  try {
+    body = (await req.json()) as Record<string, unknown>;
+  } catch {
+    return jsonError(400, "bad_json");
+  }
+
+  const allowed = ["location_code", "description", "priority", "due_date"];
+  const unknown = Object.keys(body).filter((k) => !allowed.includes(k));
+  if (unknown.length > 0) return jsonError(400, "bad_request");
+
+  const locationCode =
+    typeof body.location_code === "string" ? body.location_code.trim() : "";
+  if (!locationCode) return jsonError(400, "location_required");
+  // THE PERMISSION BOUNDARY. The site is caller-supplied here, unlike every
+  // other write where it is read off an existing row, so it is checked against
+  // the same access the reads use rather than trusted.
+  if (!canEdit(g.access, locationCode)) return jsonError(403, "forbidden");
+
+  const description =
+    typeof body.description === "string" ? body.description.trim() : "";
+  if (!description) return jsonError(400, "description_required");
+
+  const priority =
+    typeof body.priority === "string" &&
+    (PRIORITIES as readonly string[]).includes(body.priority)
+      ? body.priority
+      : "Medium";
+
+  let dueDate: string | null = null;
+  if (typeof body.due_date === "string" && body.due_date !== "") {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(body.due_date)) {
+      return jsonError(400, "bad_due_date");
+    }
+    dueDate = body.due_date;
+  }
+
+  try {
+    const q = new URL("/rest/v1/action_items", env.SUPABASE_URL);
+    const resp = await fetch(q.toString(), {
+      method: "POST",
+      headers: sbHeaders(env, {
+        "Content-Type": "application/json",
+        Prefer: "return=representation"
+      }),
+      body: JSON.stringify({
+        location_code: locationCode,
+        description: description.slice(0, DESCRIPTION_MAX),
+        priority,
+        due_date: dueDate,
+        status: "open",
+        created_by: g.userId,
+        created_by_email: g.email
+      })
+    });
+    if (!resp.ok) {
+      const text = await resp.text().catch(() => "");
+      console.error("[forms.action-items] create failed", resp.status, text.slice(0, 200));
+      return jsonError(500, "create_failed");
+    }
+    const rows = (await resp.json().catch(() => [])) as ActionItemRow[];
+    console.log(
+      `[forms.action-items] manual item created at ${locationCode} by ${g.email}`
+    );
+    return new Response(JSON.stringify({ ok: true, item: rows[0] ?? null }), {
+      status: 201,
+      headers: { "Content-Type": "application/json" }
+    });
+  } catch (err) {
+    console.error("[forms.action-items] create threw", err);
+    return jsonError(500, "create_failed");
   }
 }
 

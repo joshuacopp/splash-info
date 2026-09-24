@@ -39,3 +39,32 @@ create index if not exists action_item_notes_item_idx
   on public.action_item_notes (action_item_id, created_at);
 
 alter table public.action_item_notes enable row level security;
+
+-- ---------------------------------------------------------------------------
+-- Manual action items. APPLIED 2026-09-24 via the connector.
+--
+-- Not everything surfaces during the walk-through: something gets missed, or a
+-- single ticked question turns out to be three jobs once someone looks. Those
+-- have no question behind them, so the columns describing a question stop
+-- applying.
+--
+-- location_code and description STAY required. An item with no site is
+-- unreachable (every read path filters by location) and one with no
+-- description is not a task.
+--
+-- The CHECK is the invariant that matters: a row either came from a submission
+-- and carries its full provenance, or it did not and carries none. A
+-- half-populated row -- submission_id with no field_key -- would be a row
+-- nobody could explain later.
+--
+-- Verified after apply: the three columns nullable, location_code and
+-- description still NOT NULL, constraint present, and all 14 pre-existing rows
+-- satisfying it.
+-- ---------------------------------------------------------------------------
+-- alter table public.action_items alter column submission_id  drop not null;
+-- alter table public.action_items alter column field_key      drop not null;
+-- alter table public.action_items alter column question_label drop not null;
+-- alter table public.action_items add column if not exists created_by_email text null;
+-- alter table public.action_items add constraint action_items_provenance_consistent
+--   check ((submission_id is not null and field_key is not null and question_label is not null)
+--       or (submission_id is null and field_key is null and question_label is null));

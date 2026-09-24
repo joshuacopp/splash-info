@@ -14,6 +14,7 @@ import { STATUS_LABEL, type ActionItem, type ActionItemNote } from "./_lib/types
 import ActionItemRow from "./_components/ActionItemRow";
 import SiteTabs, { type SiteTab } from "./_components/SiteTabs";
 import SiteOverview, { type SiteSummary } from "./_components/SiteOverview";
+import AddItemForm from "./_components/AddItemForm";
 
 export const dynamic = "force-dynamic";
 
@@ -143,6 +144,19 @@ export default async function ActionItemsPage({ searchParams }: PageProps) {
   // in front of the thing they came for.
   const showOverview = multiSite && activeSite === null && !showDone;
 
+  // The site to add against: whichever tab is open, or the only one they have.
+  // On the multi-site overview there is nothing to imply, so no form is shown
+  // rather than a site dropdown that could be set wrong.
+  const addSite =
+    activeSite ?? (siteCodes.length === 1 ? (siteCodes[0] ?? null) : null);
+  // The worker re-checks this; here it just avoids offering a form whose
+  // submit would be refused. `can_edit` is per-row and there may be no rows
+  // yet, so fall back to the same question the worker asks: does this caller
+  // reach that site at all?
+  const canAdd =
+    addSite !== null &&
+    (resp.scope === "all" || resp.locations.includes(addSite));
+
   // Threads only for the rows actually about to render -- never on the
   // overview, where no item rows exist, and never for the whole portfolio.
   // One request per visible item, in parallel, and fail-soft per item so a
@@ -198,6 +212,10 @@ export default async function ActionItemsPage({ searchParams }: PageProps) {
       ) : null}
 
       {showOverview ? <SiteOverview sites={ranked} /> : null}
+
+      {!showOverview && canAdd && addSite ? (
+        <AddItemForm locationCode={addSite} />
+      ) : null}
 
       {!showOverview && outstanding.length === 0 && !showDone ? (
         <p className="rounded-splash-md border border-gray-light bg-white p-6 text-sm text-splash-navy/70">

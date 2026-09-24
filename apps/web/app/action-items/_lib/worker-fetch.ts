@@ -138,3 +138,20 @@ export async function createActionItemNote(
   }
   return (await resp.json()) as { ok: true; note: ActionItemNote };
 }
+
+export async function createActionItem(input: {
+  location_code: string;
+  description: string;
+  priority?: string;
+  due_date?: string | null;
+}): Promise<{ ok: true; item: ActionItem } | { ok: false; error: string }> {
+  const resp = await callForms("/forms/api/action-items", {
+    method: "POST",
+    jsonBody: input
+  });
+  if (!resp.ok) {
+    const text = await resp.text().catch(() => "");
+    return { ok: false, error: `${resp.status}${text ? ` — ${text}` : ""}` };
+  }
+  return (await resp.json()) as { ok: true; item: ActionItem };
+}

@@ -147,14 +147,28 @@ export default function ActionItemRow({
               </p>
               {/* The question this came from, and what was answered. Without it
                   an item is a sentence with no context a month later. */}
+              {/* A manual item has no question behind it, so it says where it
+                  DID come from instead. Rendering an empty provenance line
+                  would read as data that failed to load. */}
               <p className="mt-0.5 text-xs text-splash-navy/60">
-                {item.question_label}
-                {item.answer_snapshot ? (
+                {item.question_label ? (
                   <>
-                    {" · answered "}
-                    <span className="font-semibold">{item.answer_snapshot}</span>
+                    {item.question_label}
+                    {item.answer_snapshot ? (
+                      <>
+                        {" · answered "}
+                        <span className="font-semibold">
+                          {item.answer_snapshot}
+                        </span>
+                      </>
+                    ) : null}
                   </>
-                ) : null}
+                ) : (
+                  <>
+                    Added directly
+                    {item.created_by_email ? ` by ${item.created_by_email}` : ""}
+                  </>
+                )}
               </p>
             </>
           )}
