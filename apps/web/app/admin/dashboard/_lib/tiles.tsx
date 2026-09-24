@@ -159,6 +159,21 @@ function allStaff(session: Session | null): boolean {
 // Icons (inline lucide-derived SVGs, matching the rest of apps/web's tiles).
 // ---------------------------------------------------------------------------
 
+const pencilSquareIcon = (
+  <svg
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="2"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    aria-hidden="true"
+  >
+    <path d="M11 4H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-5" />
+    <path d="M18.5 2.5a2.12 2.12 0 0 1 3 3L12 15l-4 1 1-4Z" />
+  </svg>
+);
+
 const clipboardCheckIcon = (
   <svg
     viewBox="0 0 24 24"
@@ -508,6 +523,24 @@ export const TILES: ReadonlyArray<Tile> = [
     description: "Custom form submissions waiting on your review.",
     href: "/admin/approvals",
     icon: checkCircleIcon,
+    visibleTo: allStaff
+  },
+  {
+    id: "forms-fill",
+    group: "operations",
+    subgroup: "other-tools",
+    eyebrow: "Forms",
+    // NOT "Forms". The Submissions group already has a tile by that name
+    // pointing at the admin submissions VIEWER; two tiles called Forms doing
+    // opposite things is how people end up on the wrong one. This is the
+    // filling-in side, so it says so.
+    title: "Fill Out a Form",
+    description: "Open an internal form to fill in — site visits, requests, reports.",
+    href: "/forms",
+    icon: pencilSquareIcon,
+    // Any credentialed user. The page lists only published internal forms and
+    // the worker re-checks each form's audience at click-through, so there is
+    // nothing here to gate on a role.
     visibleTo: allStaff
   },
   {
