@@ -3,6 +3,10 @@
 // passed in by the caller.
 
 import { ASSETS } from "@splash/storage-r2";
+import {
+  SIGNATURE_PAD_JS_VERSION,
+  FORMS_PUBLIC_JS_VERSION
+} from "../uploads/static.js";
 import type { FormMeta } from "@splash/forms-schema";
 import { escapeHtml } from "./util.js";
 
@@ -23,9 +27,12 @@ export function renderShell({ form, bodyHtml, turnstileSiteKey }: ShellArgs): st
   // wrangler's `[[rules]] type = "Text"` block. `defer` so they run
   // after DOMContentLoaded; signature-pad must load before forms-public
   // (script tag order = execution order under defer).
+  // ?v=<content hash> so a deploy invalidates the 24h cache immediately. The
+  // serve handler matches on pathname, so the query is inert server-side and
+  // purely a cache key. See uploads/static.ts for what went wrong without it.
   const formsClientScripts = `
-  <script src="/forms/api/static/signature-pad.min.js" defer></script>
-  <script src="/forms/api/static/forms-public.js" defer></script>`;
+  <script src="/forms/api/static/signature-pad.min.js?v=${SIGNATURE_PAD_JS_VERSION}" defer></script>
+  <script src="/forms/api/static/forms-public.js?v=${FORMS_PUBLIC_JS_VERSION}" defer></script>`;
   return `<!DOCTYPE html>
 <html lang="en">
 <head>

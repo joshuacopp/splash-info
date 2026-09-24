@@ -27,6 +27,35 @@ interface Asset {
   contentType: string;
 }
 
+/**
+ * Content hash, used as a cache-busting query on the script tags.
+ *
+ * WHY THIS EXISTS. These assets are served with `max-age=86400`, and the URL
+ * never changed, so for up to 24 hours after a deploy a returning visitor ran
+ * YESTERDAY'S JavaScript against TODAY'S HTML. That is not a stale-cosmetics
+ * problem: conditional fields rendered by the new markup were never wired up
+ * by the old script, so they stayed hidden AND required, and the browser
+ * refused to submit the form without being able to say why -- a dead submit
+ * button, no error, no console message a non-developer would find. It cost a
+ * debugging session, and it would have hit every RM in the field the next time
+ * this file changed.
+ *
+ * Hashing the content means the URL changes exactly when the file does: the
+ * long cache is kept for visitors whose copy is still correct, and invalidated
+ * the moment it is not. djb2 rather than SHA -- this is a cache key, not a
+ * security boundary, and it must be computable synchronously at module load.
+ */
+function contentHash(s: string): string {
+  let h = 5381;
+  for (let i = 0; i < s.length; i++) {
+    h = ((h << 5) + h + s.charCodeAt(i)) >>> 0;
+  }
+  return h.toString(36);
+}
+
+export const SIGNATURE_PAD_JS_VERSION = contentHash(signaturePadJs);
+export const FORMS_PUBLIC_JS_VERSION = contentHash(formsPublicJs);
+
 const ASSETS: Record<string, Asset> = {
   "/forms/api/static/signature-pad.min.js": {
     body: signaturePadJs,
