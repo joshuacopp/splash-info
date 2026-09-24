@@ -1,0 +1,101 @@
+-- Area Manager Site Assessment — authored as a DRAFT, 2026-09-24. APPLIED via
+-- the Supabase connector at the operator's instruction. DO NOT RE-RUN: it has
+-- no guard and a second run creates a duplicate form with the same slug.
+--
+--   form_id          53ce96b5-81bc-4058-9426-cfedbd9ae613
+--   draft_version_id 0913cb46-e396-48ad-a585-3cadfc21520c
+--   slug             am-assessment   audience internal   126 fields
+--
+-- The schema was not hand-written. `scripts/gen-am-assessment.ts` builds it,
+-- checks the things Zod does not (duplicate ids, duplicate keys, key shape,
+-- every workflow transition and payload_field reference resolving), then runs
+-- BOTH formSchemaSchema and draftFormSchemaSchema over it. Re-running the
+-- generator reproduces this exact schema — the field ids are a hash of the key,
+-- not random — so a future edit is a diff, not a retype.
+--
+-- Ported from JotForm 250656455549063 ("Area Manager Site Assessment Form").
+--
+-- WHY THE X / SLASH DROPDOWNS BECAME RADIOS
+--
+--   The JotForm's own instruction block defines the marks: "A check Mark in a
+--   box represents OK, An X in a box represents Not OK", with a blank meaning
+--   NA. So the three states are OK / Not OK / N/A, and the punctuation was only
+--   ever a paper-form artifact. 89 <select>s is 178 taps on a phone; 89 inline
+--   radio rows is 89. Same payload shape either way (dropdown and radio both
+--   store one option value), so every consumer — CSV, PDF, wide table — is
+--   unaffected.
+--
+-- WHY THE RATED ROWS ARE NOT REQUIRED
+--
+--   The JotForm leaves all 89 optional and ships an explicit NA option. A
+--   96-required-question form on a phone is a form people abandon two thirds of
+--   the way through, and an abandoned assessment tells you less than a partial
+--   one. The five section scores ARE required — they are the summary the CEO
+--   sign-off actually reads.
+--
+-- WHY THE SIXTH SCORE BOX IS GONE
+--
+--   The JotForm's last box is labelled "Overall Score (Average) **Automatically
+--   Calculated" and is a plain textbox somebody types into. This schema has no
+--   calculated fields, so the honest options were "a box that can disagree with
+--   its own five inputs" or "no box". The five section scores are stored; the
+--   average is arithmetic anyone reading them can do.
+--
+-- WHY EVERY KEY CARRIES ITS SUBSECTION PREFIX
+--
+--   Six labels repeat across subsections — Tunnel, Detail, Fivestar, Oil
+--   Change, Electrical, and Other five times over. Keying on the label alone
+--   would have silently dropped one of each pair from the payload, with no
+--   error anywhere: the later field just overwrites the earlier one's key. The
+--   generator asserts key uniqueness rather than trusting the naming scheme.
+--
+-- ON THE "AM" LABELS
+--
+--   Per the Brief 59 convention this repo calls pricing_simple.am_email the
+--   Regional Director and rm_email the Regional Manager. This form keeps the
+--   JotForm's "AM email" / "RM email" labels, because its audience is the
+--   people who call themselves Area Managers and relabelling mid-port would
+--   make the form disagree with its own title. The COLUMNS are the canonical
+--   ones — am_email and rm_email — so the data lines up with every other
+--   surface regardless of what the label says.
+--
+-- WORKFLOW: submit -> email the signer -> sign off or send back -> email the AM
+--
+--   Six stages: notify_signer (email, attaches the PDF) -> signoff (approval,
+--   static_emails) -> notify_signed_off / notify_returned (email) -> signed_off
+--   / returned (outcomes). Sign off requires a typed name; Send back requires a
+--   note. The email steps are the point: an approval workflow without them only
+--   moves a column, and nobody is told.
+--
+--   The approver is a static_emails list of ONE address, currently
+--   josh.copp@splashcarwashes.com, set so the flow can be exercised end to end
+--   before it is handed to whoever signs these off for real. Changing it is the
+--   Workflow tab, not SQL.
+--
+--   notify_signed_off / notify_returned address the AM via
+--   {type: payload_field, field_key: am_email} — NOT site_role. The am_email
+--   lookup has already resolved to an address by the time the cascade runs, so
+--   its payload value IS the email; routing through site_role would make the
+--   resolver hunt for a location field this form does not have. That is the
+--   exact bug class Brief 131 and Brief 132 closed.
+--
+-- WHY IT IS A DRAFT AND MUST BE PUBLISHED FROM THE UI
+--
+--   handlePublish does more than copy the schema: it designates the scope field
+--   and stamps forms.scope_location_field_key. Without that column, submissions
+--   land with a null location_code and every action item belongs to no site —
+--   silently, because nothing errors. Same reason rm-visit shipped as a draft.
+--   The site field is keyed `site_number` because handlePublish finds the scope
+--   field by that literal key; any other key and it appends its own "Site
+--   number" box and the form asks twice.
+--
+-- Verified after apply against what was STORED, not what was sent: 126 fields,
+-- 94 radios (89 rated + 5 scores), 20 headings (5 sections + 15 subsections),
+-- 3 lookups all pointing at the site field, 90 action-item eligible (89 rated +
+-- Comments), 126 distinct keys, 126 distinct ids, 0 malformed keys, 6 workflow
+-- stages, default_stage notify_signer, draft_version_id set, status draft,
+-- scope_location_field_key still null (publish sets it).
+--
+-- NEXT STEP IS THE OPERATOR'S: open /admin/forms/53ce96b5-.../ and Publish.
+
+-- (statement intentionally not repeated — see above, do not re-run)
