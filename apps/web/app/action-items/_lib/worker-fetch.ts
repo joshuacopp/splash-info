@@ -4,7 +4,11 @@
 import { cookies, headers } from "next/headers";
 import { getCloudflareContext } from "@opennextjs/cloudflare";
 
-import type { ActionItem, ActionItemsResponse } from "./types";
+import type {
+  ActionItem,
+  ActionItemNote,
+  ActionItemsResponse
+} from "./types";
 
 const FORMS_BINDING = "FORMS_WORKER" as const;
 
@@ -103,4 +107,34 @@ export async function verifyActionItem(
     return { ok: false, error: `${resp.status}${text ? ` — ${text}` : ""}` };
   }
   return (await resp.json()) as { ok: true; item: ActionItem };
+}
+
+export async function listActionItemNotes(
+  id: string
+): Promise<ActionItemNote[]> {
+  const resp = await callForms(
+    `/forms/api/action-items/${encodeURIComponent(id)}/notes`
+  );
+  // Fail-soft to an empty thread: losing the notes must not cost the whole
+  // page, and an item with no visible notes still shows its own state.
+  if (!resp.ok) return [];
+  const body = (await resp.json().catch(() => ({ notes: [] }))) as {
+    notes?: ActionItemNote[];
+  };
+  return Array.isArray(body.notes) ? body.notes : [];
+}
+
+export async function createActionItemNote(
+  id: string,
+  body: string
+): Promise<{ ok: true; note: ActionItemNote } | { ok: false; error: string }> {
+  const resp = await callForms(
+    `/forms/api/action-items/${encodeURIComponent(id)}/notes`,
+    { method: "POST", jsonBody: { body } }
+  );
+  if (!resp.ok) {
+    const text = await resp.text().catch(() => "");
+    return { ok: false, error: `${resp.status}${text ? ` — ${text}` : ""}` };
+  }
+  return (await resp.json()) as { ok: true; note: ActionItemNote };
 }

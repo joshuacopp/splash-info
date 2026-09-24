@@ -41,3 +41,15 @@ export const STATUS_LABEL: Record<ActionItemStatus, string> = {
 
 export const STATUS_ORDER: ActionItemStatus[] = ["open", "in_progress", "done"];
 export const PRIORITIES: ActionItemPriority[] = ["High", "Medium", "Low"];
+
+/** Append-only running record on an item: what was done, by whom, when.
+ *  Distinct from `description`, which is the RM's observation at the visit and
+ *  does not change. */
+export interface ActionItemNote {
+  id: string;
+  action_item_id: string;
+  author_email: string;
+  author_user_id: string | null;
+  body: string;
+  created_at: string;
+}

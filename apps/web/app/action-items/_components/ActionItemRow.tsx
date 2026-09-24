@@ -17,6 +17,8 @@ import {
   type ActionItemStatus
 } from "../_lib/types";
 import { setStatusAction, updateItemAction, verifyAction } from "../actions";
+import ItemNotes from "./ItemNotes";
+import type { ActionItemNote } from "../_lib/types";
 
 function formatDate(iso: string | null): string {
   if (!iso) return "—";
@@ -43,7 +45,13 @@ const PRIORITY_CLASS: Record<ActionItemPriority, string> = {
   Low: "bg-gray-light text-splash-navy/70 ring-gray-light"
 };
 
-export default function ActionItemRow({ item }: { item: ActionItem }) {
+export default function ActionItemRow({
+  item,
+  notes = []
+}: {
+  item: ActionItem;
+  notes?: ActionItemNote[];
+}) {
   const router = useRouter();
   const [pending, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
@@ -243,6 +251,12 @@ export default function ActionItemRow({ item }: { item: ActionItem }) {
           {error}
         </p>
       ) : null}
+
+      {/* Allowed on a VERIFIED item, unlike the controls above: verification
+          freezes what the item IS, but recording what happened to it is not a
+          state change. Gated on can_edit, the same capability the worker uses,
+          so a read-only viewer sees the thread without a post box. */}
+      <ItemNotes itemId={item.id} notes={notes} canPost={item.can_edit} />
     </li>
   );
 }

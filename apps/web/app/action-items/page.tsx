@@ -9,8 +9,8 @@
 import Link from "next/link";
 
 import { getMe } from "../_lib/me";
-import { listActionItems } from "./_lib/worker-fetch";
-import { STATUS_LABEL, type ActionItem } from "./_lib/types";
+import { listActionItems, listActionItemNotes } from "./_lib/worker-fetch";
+import { STATUS_LABEL, type ActionItem, type ActionItemNote } from "./_lib/types";
 import ActionItemRow from "./_components/ActionItemRow";
 import SiteTabs, { type SiteTab } from "./_components/SiteTabs";
 import SiteOverview, { type SiteSummary } from "./_components/SiteOverview";
@@ -143,6 +143,16 @@ export default async function ActionItemsPage({ searchParams }: PageProps) {
   // in front of the thing they came for.
   const showOverview = multiSite && activeSite === null && !showDone;
 
+  // Threads only for the rows actually about to render -- never on the
+  // overview, where no item rows exist, and never for the whole portfolio.
+  // One request per visible item, in parallel, and fail-soft per item so a
+  // single bad thread cannot take the worklist down with it.
+  const visible = showOverview ? [] : [...outstanding, ...(showDone ? done : [])];
+  const noteEntries = await Promise.all(
+    visible.map(async (i) => [i.id, await listActionItemNotes(i.id)] as const)
+  );
+  const notesById = new Map<string, ActionItemNote[]>(noteEntries);
+
   return (
     <Shell>
       <div className="mb-5 flex flex-wrap items-baseline justify-between gap-3">
@@ -206,7 +216,11 @@ export default async function ActionItemsPage({ searchParams }: PageProps) {
           </h2>
           <ul className="space-y-2">
             {(byLocation.get(loc) ?? []).map((item) => (
-              <ActionItemRow key={item.id} item={item} />
+              <ActionItemRow
+                key={item.id}
+                item={item}
+                notes={notesById.get(item.id) ?? []}
+              />
             ))}
           </ul>
         </section>
@@ -219,7 +233,11 @@ export default async function ActionItemsPage({ searchParams }: PageProps) {
           </h2>
           <ul className="space-y-2">
             {done.map((item) => (
-              <ActionItemRow key={item.id} item={item} />
+              <ActionItemRow
+                key={item.id}
+                item={item}
+                notes={notesById.get(item.id) ?? []}
+              />
             ))}
           </ul>
         </section>

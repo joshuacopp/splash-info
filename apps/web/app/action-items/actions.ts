@@ -4,7 +4,8 @@ import { revalidatePath } from "next/cache";
 
 import {
   patchActionItem,
-  verifyActionItem
+  verifyActionItem,
+  createActionItemNote
 } from "./_lib/worker-fetch";
 import type { ActionItemPriority, ActionItemStatus } from "./_lib/types";
 
@@ -82,4 +83,20 @@ function humanize(raw: string): string {
     return "You don't have access to that site.";
   }
   return raw;
+}
+
+export async function addNoteAction(
+  id: string,
+  body: string
+): Promise<ActionItemResult> {
+  const trimmed = body.trim();
+  if (trimmed === "") return { ok: false, error: "Write something first." };
+  try {
+    const res = await createActionItemNote(id, trimmed);
+    if (!res.ok) return { ok: false, error: humanize(res.error) };
+    revalidatePath(PAGE_PATH);
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
 }

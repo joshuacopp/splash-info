@@ -101,7 +101,9 @@ import { handleSetAccessTag, handleListAccessTags } from "./admin/forms.js";
 import {
   handleListActionItems,
   handlePatchActionItem,
-  handleVerifyActionItem
+  handleVerifyActionItem,
+  handleListActionItemNotes,
+  handleCreateActionItemNote
 } from "./action-items/handlers.js";
 import { handleEmailQueueClaim } from "./email-queue/claim.js";
 import { handleEmailQueueConfirm } from "./email-queue/confirm.js";
@@ -463,6 +465,20 @@ export default {
     );
     if (aiVerifyMatch && aiVerifyMatch[1] && req.method === "POST") {
       return handleVerifyActionItem(env, req, aiVerifyMatch[1]);
+    }
+
+    // /notes, like /verify, MUST match before the bare {id} pattern below or
+    // the trailing segment is swallowed as part of the UUID.
+    const aiNotesMatch = url.pathname.match(
+      /^\/forms\/api\/action-items\/([^/]+)\/notes$/
+    );
+    if (aiNotesMatch && aiNotesMatch[1]) {
+      if (req.method === "GET") {
+        return handleListActionItemNotes(env, req, aiNotesMatch[1]);
+      }
+      if (req.method === "POST") {
+        return handleCreateActionItemNote(env, req, aiNotesMatch[1]);
+      }
     }
 
     const aiItemMatch = url.pathname.match(

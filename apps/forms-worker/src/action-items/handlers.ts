@@ -374,3 +374,128 @@ export async function handleVerifyActionItem(
     return jsonError(500, "verify_failed");
   }
 }
+
+// =============================================================================
+// GET  /forms/api/action-items/{id}/notes
+// POST /forms/api/action-items/{id}/notes
+// =============================================================================
+//
+// The running record of what was actually done. Append-only -- there is no
+// edit or delete path here on purpose. Authority is the parent item's: anyone
+// who can read the item can read and add notes, because the people doing the
+// work and the people chasing it are the same two parties.
+
+const NOTE_BODY_MAX = 5000;
+/** One item's thread. Generous, and a cap rather than pagination because a
+ *  thread that needs paging is a thread nobody is reading. */
+const NOTE_THREAD_CAP = 200;
+
+interface ActionItemNoteRow {
+  id: string;
+  action_item_id: string;
+  author_email: string;
+  author_user_id: string | null;
+  body: string;
+  created_at: string;
+}
+
+export async function handleListActionItemNotes(
+  env: Env,
+  req: Request,
+  id: string
+): Promise<Response> {
+  const sk = requireServiceKey(env);
+  if (sk) return sk;
+  if (!UUID_RE.test(id)) return jsonError(400, "bad_id");
+  const g = await gate(env, req);
+  if (!g.ok) return g.response;
+
+  const item = await fetchItem(env, id);
+  // Missing and not-yours answer identically, so an id cannot be probed.
+  if (!item || !canRead(g.access, item.location_code)) {
+    return jsonError(404, "not_found");
+  }
+
+  try {
+    const q = new URL("/rest/v1/action_item_notes", env.SUPABASE_URL);
+    q.searchParams.set("action_item_id", `eq.${id}`);
+    q.searchParams.set("select", "*");
+    q.searchParams.set("order", "created_at.asc");
+    q.searchParams.set("limit", String(NOTE_THREAD_CAP));
+    const resp = await fetch(q.toString(), { headers: sbHeaders(env) });
+    if (!resp.ok) {
+      console.error("[forms.action-items] notes list failed", resp.status);
+      return jsonError(500, "list_failed");
+    }
+    const notes = (await resp.json().catch(() => [])) as ActionItemNoteRow[];
+    return new Response(JSON.stringify({ notes }), {
+      status: 200,
+      headers: { "Content-Type": "application/json", "Cache-Control": "no-store" }
+    });
+  } catch (err) {
+    console.error("[forms.action-items] notes list threw", err);
+    return jsonError(500, "list_failed");
+  }
+}
+
+export async function handleCreateActionItemNote(
+  env: Env,
+  req: Request,
+  id: string
+): Promise<Response> {
+  const sk = requireServiceKey(env);
+  if (sk) return sk;
+  if (!isOriginAllowed(req)) return jsonError(403, "bad_origin");
+  if (!UUID_RE.test(id)) return jsonError(400, "bad_id");
+  const g = await gate(env, req);
+  if (!g.ok) return g.response;
+
+  const item = await fetchItem(env, id);
+  if (!item || !canRead(g.access, item.location_code)) {
+    return jsonError(404, "not_found");
+  }
+
+  // NOT blocked on a verified item, unlike edits. Verification freezes what
+  // the item IS; recording what happened to it afterwards is not a state
+  // change, and "RM verified, then the part failed again" is exactly the sort
+  // of thing that must stay sayable.
+
+  let body: { body?: unknown };
+  try {
+    body = (await req.json()) as { body?: unknown };
+  } catch {
+    return jsonError(400, "bad_json");
+  }
+  const raw = typeof body.body === "string" ? body.body.trim() : "";
+  if (raw === "") return jsonError(400, "empty_body");
+
+  try {
+    const q = new URL("/rest/v1/action_item_notes", env.SUPABASE_URL);
+    const resp = await fetch(q.toString(), {
+      method: "POST",
+      headers: sbHeaders(env, {
+        "Content-Type": "application/json",
+        Prefer: "return=representation"
+      }),
+      body: JSON.stringify({
+        action_item_id: id,
+        author_email: g.email,
+        author_user_id: g.userId,
+        body: raw.slice(0, NOTE_BODY_MAX)
+      })
+    });
+    if (!resp.ok) {
+      const text = await resp.text().catch(() => "");
+      console.error("[forms.action-items] note insert failed", resp.status, text.slice(0, 200));
+      return jsonError(500, "create_failed");
+    }
+    const rows = (await resp.json().catch(() => [])) as ActionItemNoteRow[];
+    return new Response(JSON.stringify({ ok: true, note: rows[0] ?? null }), {
+      status: 201,
+      headers: { "Content-Type": "application/json" }
+    });
+  } catch (err) {
+    console.error("[forms.action-items] note insert threw", err);
+    return jsonError(500, "create_failed");
+  }
+}
