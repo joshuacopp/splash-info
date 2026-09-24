@@ -119,10 +119,25 @@ export async function createActionItemsForSubmission(
   }
 
   const rawNotes = args.payload[ACTION_ITEM_NOTES_PAYLOAD_KEY];
-  const notes: Record<string, string> =
+  const notes: Record<string, unknown> =
     rawNotes && typeof rawNotes === "object" && !Array.isArray(rawNotes)
-      ? (rawNotes as Record<string, string>)
+      ? (rawNotes as Record<string, unknown>)
       : {};
+
+  /** Tolerates a bare string as well as a list: the first shipped shape of
+   *  this key was one note per question, and a submission written under it
+   *  must still regenerate correctly. */
+  const noteLinesFor = (key: string): string[] => {
+    const raw = notes[key];
+    if (typeof raw === "string") return raw.trim() ? [raw.trim()] : [];
+    if (Array.isArray(raw)) {
+      return raw
+        .filter((l): l is string => typeof l === "string")
+        .map((l) => l.trim())
+        .filter((l) => l !== "");
+    }
+    return [];
+  };
 
   const dueDate = easternDuePlusDays(args.submittedAt, DEFAULT_DUE_DAYS);
   const byKey = new Map(args.schema.fields.map((f) => [f.key, f]));
@@ -136,25 +151,27 @@ export async function createActionItemsForSubmission(
       return [];
     }
     const label = (field.label || key).slice(0, DESCRIPTION_MAX);
-    // The note is what the person actually SAW; the question label is only
-    // where they were standing. Prefer the observation, fall back to the label
-    // so an un-noted tick still produces a usable row rather than nothing.
-    const note = typeof notes[key] === "string" ? notes[key].trim() : "";
-    const description = (note || label).slice(0, DESCRIPTION_MAX);
-    return [
-      {
-        submission_id: args.submissionId,
-        location_code: args.locationCode,
-        field_key: key,
-        question_label: label,
-        answer_snapshot: snapshotOf(args.payload[key], field),
-        description,
-        priority: "Medium",
-        due_date: dueDate,
-        status: "open",
-        created_by: args.createdBy
-      }
-    ];
+    // The notes are what the person actually SAW; the question label is only
+    // where they were standing. ONE ROW PER LINE, because one question
+    // routinely produces several separate jobs -- mulch and weeds are not the
+    // same task and should not close together. No lines falls back to a single
+    // row described by the label, so an un-noted tick still produces something
+    // usable rather than nothing.
+    const lines = noteLinesFor(key);
+    const descriptions = lines.length > 0 ? lines : [label];
+    const snapshot = snapshotOf(args.payload[key], field);
+    return descriptions.map((d) => ({
+      submission_id: args.submissionId,
+      location_code: args.locationCode,
+      field_key: key,
+      question_label: label,
+      answer_snapshot: snapshot,
+      description: d.slice(0, DESCRIPTION_MAX),
+      priority: "Medium",
+      due_date: dueDate,
+      status: "open",
+      created_by: args.createdBy
+    }));
   });
 
   if (rows.length === 0) return { attempted: ticked.length, inserted: 0, error: null };

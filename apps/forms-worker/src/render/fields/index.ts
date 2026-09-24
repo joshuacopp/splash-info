@@ -55,9 +55,10 @@ function actionItemCheckbox(field: Field): string {
 <div class="field-action-item">
   <input type="checkbox" id="${escapeHtml(id)}" name="${escapeHtml(name)}" value="1" />
   <label for="${escapeHtml(id)}">Create action item</label>
-  <input type="text" class="field-action-item-note"
-         name="${escapeHtml(noteName)}" maxlength="500"
-         placeholder="What needs doing? e.g. fresh mulch at the entrance bed" />
+  <textarea class="field-action-item-note" rows="2" maxlength="2000"
+            name="${escapeHtml(noteName)}"
+            placeholder="Action item title/description"></textarea>
+  <span class="field-action-item-hint">One per line &mdash; each line becomes its own action item.</span>
 </div>`;
 }
 

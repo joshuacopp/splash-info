@@ -100,9 +100,16 @@ export function actionItemNoteInputName(fieldKey: string): string {
   return `${fieldKey}__ai_note`;
 }
 
-/** Payload key holding `{ field_key: note }` for ticked questions that got a
- *  note. Separate from ACTION_ITEM_PAYLOAD_KEY so "which were ticked" keeps
- *  exactly one answer and stays the shape earlier submissions already use. */
+/** Payload key holding `{ field_key: string[] }` -- the note LINES for ticked
+ *  questions, one action item per line.
+ *
+ *  A question routinely produces more than one job: landscaping can fail for
+ *  fresh mulch AND weeds along the fence, which are different work with
+ *  different timing. One line each keeps them separable without repeated DOM
+ *  or a JavaScript "add another" control.
+ *
+ *  Separate from ACTION_ITEM_PAYLOAD_KEY so "which were ticked" keeps exactly
+ *  one answer. */
 export const ACTION_ITEM_NOTES_PAYLOAD_KEY = "_action_item_notes";
 
 // -----------------------------------------------------------------------------

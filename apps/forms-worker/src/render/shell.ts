@@ -128,11 +128,14 @@ const SHELL_CSS = `
   /* Revealed by the tick with a sibling selector, deliberately WITHOUT
      JavaScript: this note is the whole informational value of an action item,
      and a stale cached script has already broken this form once. */
-  .field-action-item-note { display: none; }
+  .field-action-item-note, .field-action-item-hint { display: none; }
   .field-action-item input[type="checkbox"]:checked ~ .field-action-item-note {
     display: block; flex: 1 1 100%; margin-top: 4px; padding: 8px 10px;
     border: 1px solid #d98324; border-radius: 4px; font-size: 14px;
-    font-family: inherit; color: var(--splash-navy); background: #fff; }
+    font-family: inherit; color: var(--splash-navy); background: #fff;
+    resize: vertical; min-height: 44px; }
+  .field-action-item input[type="checkbox"]:checked ~ .field-action-item-hint {
+    display: block; flex: 1 1 100%; font-size: 12px; color: #8a6a2f; }
   /* Disabled lookup placeholder */
   .field-lookup-disabled { background: #f0f0f0; color: #888; font-style: italic; }
   /* Display-only lookup callout (Brief 93) */

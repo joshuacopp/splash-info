@@ -35,6 +35,11 @@ export interface ParsedSubmit {
  * `payloadValidatorFor` (called separately in the submit handler so we can
  * surface field-keyed validation errors).
  */
+/** Ceiling on lines per question. A pasted wall of text is a mistake, not
+ *  twenty jobs, and it would otherwise become twenty rows somebody has to
+ *  close by hand. */
+const MAX_ACTION_ITEM_NOTES = 20;
+
 export function parseSubmitFormData(
   formData: FormData,
   schema: FormSchema
@@ -110,7 +115,7 @@ export function parseSubmitFormData(
   // cannot tick a question the form never marked eligible. Display-only types
   // carry no payload and are skipped above, so they cannot appear here.
   const ticked: string[] = [];
-  const notes: Record<string, string> = {};
+  const notes: Record<string, string[]> = {};
   for (const field of schema.fields) {
     if (!field.action_item_eligible) continue;
     if (field.type === "heading" || field.type === "image") continue;
@@ -124,7 +129,19 @@ export function parseSubmitFormData(
       // the checkbox, so a note typed and then un-ticked must not survive.
       const note = formData.get(actionItemNoteInputName(field.key));
       if (typeof note === "string" && note.trim() !== "") {
-        notes[field.key] = note.trim().slice(0, 500);
+        // One action item per line. Blank lines are how people space their
+        // typing, not extra work, so they are dropped rather than becoming
+        // empty rows the description CHECK constraint would reject anyway.
+        const lines = note
+          // Split on a bare newline rather than a CRLF regex: the trim()
+          // below already removes the carriage return a CRLF textarea
+          // leaves on each line.
+          .split("\n")
+          .map((l) => l.trim())
+          .filter((l) => l !== "")
+          .map((l) => l.slice(0, 500))
+          .slice(0, MAX_ACTION_ITEM_NOTES);
+        if (lines.length > 0) notes[field.key] = lines;
       }
     }
   }
