@@ -216,7 +216,40 @@
         wrap.hidden = !show;
         var inputs = wrap.querySelectorAll("input, select, textarea");
         Array.prototype.forEach.call(inputs, function (input) {
-          input.disabled = !show;
+          if (show) {
+            // Only re-enable what WE disabled. A lookup in prefill_visible
+            // mode renders a deliberately disabled input; blanket-enabling
+            // would make it editable and submit a value the server is about
+            // to re-resolve anyway.
+            if (input.getAttribute("data-cond-off") === "1") {
+              input.disabled = false;
+              input.removeAttribute("data-cond-off");
+            }
+            if (input.getAttribute("data-cond-req") === "1") {
+              input.required = true;
+              input.removeAttribute("data-cond-req");
+            }
+          } else {
+            // REQUIRED COMES OFF TOO, not just disabled.
+            //
+            // A required control that is hidden makes the browser refuse to
+            // submit AND refuse to say why -- it cannot focus the field to
+            // complain, so the button simply does nothing. Dropping `required`
+            // removes that failure mode outright rather than depending on
+            // `disabled` having been applied first.
+            //
+            // Nothing is lost: the SERVER enforces required for every field it
+            // considers visible (submit/index.ts, isFieldVisible), and it
+            // recomputes that from the payload rather than trusting the page.
+            if (input.required) {
+              input.required = false;
+              input.setAttribute("data-cond-req", "1");
+            }
+            if (!input.disabled) {
+              input.disabled = true;
+              input.setAttribute("data-cond-off", "1");
+            }
+          }
         });
       });
     }
