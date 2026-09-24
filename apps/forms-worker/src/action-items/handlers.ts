@@ -123,9 +123,17 @@ export async function handleListActionItems(
 
   const q = new URL("/rest/v1/action_items", env.SUPABASE_URL);
   q.searchParams.set("select", "*");
-  // Open first, then soonest due. An action items page sorted by creation date
-  // buries the thing that is late behind the thing that is finished.
-  q.searchParams.set("order", "status.asc,due_date.asc.nullslast,created_at.asc");
+  // Soonest due first, undated last. A sensible default for any consumer, but
+  // NOT the final worklist order: priority ranks High > Medium > Low, which is
+  // not alphabetical, so PostgREST cannot express the tiebreak and apps/web
+  // sorts on top of this (see compareOpenItems).
+  //
+  // `status` is deliberately NOT in this order. It sorted ASC, and
+  // alphabetically that is done < in_progress < open -- putting COMPLETED work
+  // first, the exact opposite of the comment that used to sit here. It was
+  // invisible only because the page splits done from outstanding before
+  // rendering.
+  q.searchParams.set("order", "due_date.asc.nullslast,created_at.asc");
   q.searchParams.set("limit", String(LIST_LIMIT));
 
   // THE PERMISSION BOUNDARY. Admins skip it; everyone else is confined to the

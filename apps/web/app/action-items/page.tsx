@@ -10,7 +10,13 @@ import Link from "next/link";
 
 import { getMe } from "../_lib/me";
 import { listActionItems, listActionItemNotes } from "./_lib/worker-fetch";
-import { STATUS_LABEL, type ActionItem, type ActionItemNote } from "./_lib/types";
+import {
+  STATUS_LABEL,
+  compareOpenItems,
+  compareDoneItems,
+  type ActionItem,
+  type ActionItemNote
+} from "./_lib/types";
 import ActionItemRow from "./_components/ActionItemRow";
 import SiteTabs, { type SiteTab } from "./_components/SiteTabs";
 import SiteOverview, { type SiteSummary } from "./_components/SiteOverview";
@@ -123,8 +129,15 @@ export default async function ActionItemsPage({ searchParams }: PageProps) {
   // Done work is history and shouldn't crowd out what's outstanding, but
   // hiding it entirely makes "did I already do this?" unanswerable — so it
   // collapses behind a toggle rather than disappearing.
-  const outstanding = scoped.filter((i) => i.status !== "done");
-  const done = scoped.filter((i) => i.status === "done");
+  // Sorted HERE, not in the query: priority is High > Medium > Low, which is
+  // not its alphabetical order, so PostgREST cannot express it. Everything is
+  // already in memory for the per-site counts anyway.
+  const outstanding = scoped
+    .filter((i) => i.status !== "done")
+    .sort(compareOpenItems);
+  const done = scoped
+    .filter((i) => i.status === "done")
+    .sort(compareDoneItems);
   const overdue = outstanding.filter(
     (i) => i.due_date && i.due_date < new Date().toISOString().slice(0, 10)
   );
