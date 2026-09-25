@@ -48,6 +48,7 @@ import {
   type Fonts,
   type R2Like
 } from "./layout-utils.js";
+import { collectRatingRun, drawRatingRun } from "./layout-rating-grid.js";
 
 /**
  * Optional pretty-label resolver for location_code slugs. The generator
@@ -74,13 +75,41 @@ export async function drawPayload(
   const fieldLabelById = new Map<string, string>();
   for (const f of input.schema.fields) fieldLabelById.set(f.id, f.label);
 
-  for (const field of input.schema.fields) {
+  const all = input.schema.fields;
+  // Heading the cursor is currently under, so a rating run can drop a
+  // qualifier that just repeats it. Tracks the DEEPEST heading seen, which is
+  // the one directly above the fields.
+  let heading: string | null = null;
+  let lastLegend: string | null = null;
+
+  for (let i = 0; i < all.length; i++) {
+    const field = all[i]!;
     if (isExcluded(field)) continue;
     if (field.type === "image") continue;
     if (field.type === "heading") {
-      drawFieldHeading(doc, cursor, fonts, field.text || field.label, field.level);
+      heading = field.text || field.label;
+      drawFieldHeading(doc, cursor, fonts, heading, field.level);
       continue;
     }
+
+    // An inspection's rated rows render as a compact marked grid rather than
+    // one stacked row each -- see layout-rating-grid.ts for what qualifies and
+    // why it is detected from the schema instead of keyed to a form.
+    const run = collectRatingRun(all, i);
+    if (run) {
+      lastLegend = drawRatingRun(
+        doc,
+        cursor,
+        fonts,
+        run,
+        input.payload,
+        heading,
+        lastLegend
+      );
+      i += run.fields.length - 1;
+      continue;
+    }
+
     const value = input.payload[field.key];
     if (isEmpty(value) && !field.required) continue;
 
