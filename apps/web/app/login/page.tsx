@@ -14,6 +14,7 @@
 // — the form detects that path in the response and routes to apps/web's
 // /change-password page.
 
+import { cookies, headers } from "next/headers";
 import { getCloudflareContext } from "@opennextjs/cloudflare";
 import { LoginForm } from "./form";
 
@@ -27,6 +28,11 @@ import { LoginForm } from "./form";
 // opt the route out of prerendering under OpenNext.
 export const dynamic = "force-dynamic";
 
+/** Mirrors middleware.ts. Duplicated rather than imported because @splash/auth
+ *  is not safe to pull into this path (Edge-runtime constraint documented in
+ *  CLAUDE.md), and one string is a smaller liability than that import. */
+const ACCESS_TOKEN_COOKIE = "sb-access-token";
+
 interface PageProps {
   searchParams: Promise<{ return?: string }>;
 }
@@ -35,7 +41,74 @@ export default async function LoginPage({ searchParams }: PageProps) {
   const params = await searchParams;
   const returnPath = sanitizeReturn(params.return);
   const turnstileSiteKey = await readTurnstileSiteKey();
-  return <LoginForm returnPath={returnPath} turnstileSiteKey={turnstileSiteKey} />;
+  // A caller arriving here may not be logged out at all -- they may be half way
+  // through an MFA login. /api/login sets aal1 cookies BEFORE the code prompt,
+  // so leaving that prompt keeps a valid session that every gated page refuses,
+  // which sends them back here, where the password step succeeds and sets
+  // another aal1 cookie. That is the loop. Asking first lets us open on the
+  // code step and end it.
+  const needsStepUp = await readNeedsStepUp();
+  return (
+    <LoginForm
+      returnPath={returnPath}
+      turnstileSiteKey={turnstileSiteKey}
+      startInMfaMode={needsStepUp}
+    />
+  );
+}
+
+/**
+ * Ask dashboard-worker whether this request's cookie is a half-finished MFA
+ * login. Service binding first, URL fallback for `next dev` (Brief 17).
+ *
+ * Fail-soft to false: an unanswerable question must land the caller on the
+ * normal password form, which is the pre-existing behaviour. Getting this wrong
+ * in the other direction would show a code prompt to someone who has no
+ * session and no factor, and they would have nothing to type.
+ */
+async function readNeedsStepUp(): Promise<boolean> {
+  const jar = await cookies();
+  // Only ask when there is actually a session cookie to ask about. Testing for
+  // the access token rather than "any cookie at all" keeps a first-time visitor
+  // -- who arrives carrying analytics or Cloudflare cookies -- off this path
+  // entirely, so the normal login render costs no extra round trip.
+  if (!jar.get(ACCESS_TOKEN_COOKIE)) return false;
+  const cookieHeader = jar.toString();
+  try {
+    const { env } = await getCloudflareContext({ async: true });
+    const binding = (env as { DASHBOARD_WORKER?: { fetch: (r: Request) => Promise<Response> } })
+      .DASHBOARD_WORKER;
+    if (binding) {
+      const res = await binding.fetch(
+        new Request("https://internal/api/mfa/status", {
+          headers: { Cookie: cookieHeader }
+        })
+      );
+      return await parseNeedsStepUp(res);
+    }
+  } catch {
+    // Not in the Workers runtime; fall through to the URL path.
+  }
+  try {
+    const base = process.env.NEXT_PUBLIC_DASHBOARD_WORKER_URL;
+    const headerStore = await headers();
+    const host = headerStore.get("host") ?? "localhost:3000";
+    const proto = headerStore.get("x-forwarded-proto") ?? "https";
+    const url = base ? `${base}/api/mfa/status` : `${proto}://${host}/api/mfa/status`;
+    const res = await fetch(url, {
+      headers: { Cookie: cookieHeader },
+      cache: "no-store"
+    });
+    return await parseNeedsStepUp(res);
+  } catch {
+    return false;
+  }
+}
+
+async function parseNeedsStepUp(res: Response): Promise<boolean> {
+  if (!res.ok) return false;
+  const data = (await res.json().catch(() => null)) as { needsStepUp?: boolean } | null;
+  return data?.needsStepUp === true;
 }
 
 /**

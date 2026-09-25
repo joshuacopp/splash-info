@@ -151,6 +151,61 @@ export async function buildSessionForUser(
   return getAuthContext(sb, user.id);
 }
 
+/** What a request's cookie can tell us about MFA, WITHOUT applying the aal2
+ *  gate. See `getMfaSessionStatus`. */
+export interface MfaSessionStatus {
+  /** The token is valid. Says nothing about whether it is elevated. */
+  authenticated: boolean;
+  /** The USER has a verified factor. A property of the user, not the session. */
+  hasVerifiedFactor: boolean;
+  /** The SESSION's assurance level, read off the token. */
+  aal: string | null;
+  /** Valid token + a verified factor + not yet at aal2: a login that stopped
+   *  half way. Indistinguishable from "logged out" to `authenticate()`, which
+   *  is what makes it a dead end rather than an error. */
+  needsStepUp: boolean;
+}
+/**
+ * Answer "is this a half-finished MFA login?" without enforcing aal2.
+ *
+ * WHY THIS EXISTS. `/api/login` sets aal1 cookies BEFORE the code prompt is
+ * shown, so abandoning that prompt -- closing the tab, hitting back, following
+ * a bookmark -- leaves a perfectly valid session that no page will accept.
+ * `authenticate()` collapses that state into "unauthenticated", so the only
+ * thing a caller can do is send the user to /login, where the password step
+ * succeeds and sets another aal1 cookie. The user loops forever, having done
+ * nothing wrong.
+ *
+ * Deliberately a NEW function rather than a third `AuthOutcome` case: that
+ * union is consumed by ten workers whose gates all read
+ * `status !== "authenticated"`, and widening it to fix a UX dead end would put
+ * every one of those gates in scope. This is purely additive and enforces
+ * nothing -- it only reports, so the login page can offer the code step
+ * instead of the password form.
+ */
+export async function getMfaSessionStatus(
+  env: SupabaseEnv,
+  request: Request
+): Promise<MfaSessionStatus> {
+  const none: MfaSessionStatus = {
+    authenticated: false,
+    hasVerifiedFactor: false,
+    aal: null,
+    needsStepUp: false
+  };
+  const token = getAccessToken(request);
+  if (!token) return none;
+  const validated = await getAuthUserWithFactors(env, token);
+  if (!validated) return none;
+  const aal = tokenAal(token);
+  return {
+    authenticated: true,
+    hasVerifiedFactor: validated.hasVerifiedFactor,
+    aal,
+    needsStepUp: validated.hasVerifiedFactor && aal !== "aal2"
+  };
+}
+
 /**
  * Readability sugar — equivalent to `session.mustChangePassword`. Use the
  * one that reads better at the call site.

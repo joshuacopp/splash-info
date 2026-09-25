@@ -72,11 +72,14 @@ function loadTurnstileScript(): Promise<void> {
 export interface LoginFormProps {
   /** Sanitized same-origin path the user came from (defaults to /admin/dashboard). */
   returnPath: string;
+  /** Open on the code step rather than the password form. Set by the page when
+   *  the caller already holds an un-elevated session -- see its comment. */
+  startInMfaMode?: boolean;
   /** Public Turnstile site key. When absent, the widget is skipped (dev). */
   turnstileSiteKey?: string;
 }
 
-export function LoginForm({ returnPath, turnstileSiteKey }: LoginFormProps) {
+export function LoginForm({ returnPath, turnstileSiteKey, startInMfaMode = false }: LoginFormProps) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -85,7 +88,7 @@ export function LoginForm({ returnPath, turnstileSiteKey }: LoginFormProps) {
   // MFA step-up state. When the worker's /api/login returns mfa_required, we
   // switch the form to a 6-digit code entry that posts /api/login/mfa. mfaNext
   // is the server-sanitized redirect target to hand back on success.
-  const [mfaMode, setMfaMode] = useState(false);
+  const [mfaMode, setMfaMode] = useState(startInMfaMode);
   const [mfaNext, setMfaNext] = useState<string>(returnPath);
   const [code, setCode] = useState("");
   const widgetRef = useRef<HTMLDivElement | null>(null);
@@ -274,9 +277,22 @@ export function LoginForm({ returnPath, turnstileSiteKey }: LoginFormProps) {
     return (
       <section className="mx-auto my-16 max-w-md px-6 text-splash-navy">
         <h1 className="mb-2 text-2xl font-bold">Two-Factor Authentication</h1>
-        <p className="mb-6 text-sm text-gray-dark">
-          Enter the 6-digit code from your authenticator app to finish signing in.
-        </p>
+        {/* Different copy when the caller got here mid-flow rather than by
+            typing a password just now: they believe they are already signed in,
+            and "finish signing in" alone reads as a system error. Naming what
+            happened is what stops them navigating away again -- which is the
+            move that created the loop in the first place. */}
+        {startInMfaMode ? (
+          <p className="mb-6 text-sm text-gray-dark">
+            You&rsquo;re signed in, but this session still needs your
+            authenticator code. Enter the 6-digit code to finish &mdash; you
+            won&rsquo;t need to re-enter your password.
+          </p>
+        ) : (
+          <p className="mb-6 text-sm text-gray-dark">
+            Enter the 6-digit code from your authenticator app to finish signing in.
+          </p>
+        )}
         <form onSubmit={onSubmitMfa}>
           <label className="mb-4 block">
             <span className="mb-1 block text-sm font-semibold">Authentication code</span>

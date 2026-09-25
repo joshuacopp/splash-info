@@ -69,6 +69,7 @@ import {
   unenrollFactor,
   userCompleteForcedReset
 } from "@splash/auth";
+import { getMfaSessionStatus } from "@splash/auth";
 import type { SupabaseEnv } from "@splash/db-supabase";
 import { isOriginAllowed, json, jsonError, readForm } from "@splash/http";
 import { verifyTurnstile } from "./turnstile";
@@ -135,6 +136,27 @@ export default {
     if (pathname === "/api/mfa/enroll/verify" && method === "POST") {
       if (!isOriginAllowed(request)) return jsonError(403, "bad origin");
       return handleMfaEnrollVerify(request, env);
+    }
+
+    // GET /api/mfa/status — reports whether this cookie is a half-finished MFA
+    // login. READ-ONLY and enforces nothing.
+    //
+    // Exists because /api/login sets aal1 cookies BEFORE showing the code
+    // prompt, so abandoning that prompt leaves a valid session that every
+    // gated page refuses -- and refuses indistinguishably from "logged out",
+    // so the user is sent to /login, succeeds, and loops. /login calls this to
+    // recognise the state and offer the code step instead of the password
+    // form.
+    //
+    // Unauthenticated is a 200 with authenticated:false, not a 401: "are you
+    // mid-login?" is a question anyone may ask, and a 401 here would be one
+    // more indistinguishable refusal in a flow that already has too many.
+    if (pathname === "/api/mfa/status" && method === "GET") {
+      const status = await getMfaSessionStatus(env, request);
+      return new Response(JSON.stringify(status), {
+        status: 200,
+        headers: { "Content-Type": "application/json", "Cache-Control": "no-store" }
+      });
     }
 
     // ── Sliding-session refresh (Phase 1 keepalive) ─────────────────────────
