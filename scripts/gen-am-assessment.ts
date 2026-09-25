@@ -219,19 +219,29 @@ function slug(s: string): string {
     .replace(/^([0-9])/, "n$1");
 }
 
+/** Which subsection each payload field sits under, kept so the label
+ *  qualification below has something to qualify WITH. */
+const subsectionOf = new Map<string, string>();
+
 let ratedCount = 0;
 for (const s of SECTIONS) {
   heading(`sec_${slug(s.sec)}`, s.sec, "h3");
   for (const sub of s.subs) {
     heading(`${sub.prefix}_head`, sub.sub, "h4");
     for (const row of sub.rows) {
-      rate(`${sub.prefix}_${slug(row)}`, row);
+      const key = `${sub.prefix}_${slug(row)}`;
+      rate(key, row);
+      subsectionOf.set(key, sub.sub);
       ratedCount++;
     }
     if (sub.other) {
-      rate(`${sub.prefix}_other`, "Other");
+      const otherKey = `${sub.prefix}_other`;
+      rate(otherKey, "Other");
+      subsectionOf.set(otherKey, sub.sub);
       ratedCount++;
-      otherText(`${sub.prefix}_other_desc`);
+      const descKey = `${sub.prefix}_other_desc`;
+      otherText(descKey);
+      subsectionOf.set(descKey, sub.sub);
     }
   }
 }
@@ -262,15 +272,65 @@ const SCORE = [
   { label: "2 - Standard", value: "2" },
   { label: "1 - Below Standard", value: "1" }
 ];
+// The labels carry "score" even though the Scores heading is right above them.
+// A CSV column headed "Safety" holding a bare 3, sitting among columns of
+// OK / Not OK, does not read as a 1-3 rating to anyone who was not there.
 heading("sec_scores", "Scores", "h3");
 for (const [key, label] of [
-  ["score_safety", "Safety"],
-  ["score_maintenance", "Maintenance and Equipment"],
-  ["score_capex", "CapEx and Projects"],
-  ["score_operations", "Operational Procedures"],
-  ["score_marketing", "Marketing"]
+  ["score_safety", "Safety score"],
+  ["score_maintenance", "Maintenance and Equipment score"],
+  ["score_capex", "CapEx and Projects score"],
+  ["score_operations", "Operational Procedures score"],
+  ["score_marketing", "Marketing score"]
 ] as const) {
   push({ key, type: "radio", label, options: SCORE, layout: "inline", required: true });
+}
+
+// ---------------------------------------------------------------------------
+// Qualify any label that repeats.
+//
+// A label is NOT just fill-time text. It is the column header in the Brief 119
+// submissions table, the row label in the Brief 129 PDF the signer reads, and
+// the column name in the CSV. Six labels repeat across subsections here -- five
+// "Other"s, three "Fivestar"s, and pairs of Tunnel / Detail / Oil Change /
+// Electrical -- and stripped of their section those columns cannot be told
+// apart. The keys were always distinct, so nothing was ever LOST; it was just
+// unreadable, which is the kind of defect nobody files a bug about.
+//
+// DERIVED, not a hardcoded list of the 21 offenders. Add a row next year that
+// happens to collide and it gets qualified on the next run, instead of silently
+// joining the ambiguous set. Subsection names are unique across this form, so
+// they are sufficient on their own -- no need for the full section path, which
+// would bloat every one of these labels to fix a handful.
+// ---------------------------------------------------------------------------
+const payloadFields = fields.filter(
+  (f) => f.type !== "heading" && f.type !== "image"
+);
+const labelCount = new Map<string, number>();
+for (const f of payloadFields) {
+  labelCount.set(f.label, (labelCount.get(f.label) ?? 0) + 1);
+}
+let qualifiedCount = 0;
+for (const f of payloadFields) {
+  if ((labelCount.get(f.label) ?? 0) < 2) continue;
+  const sub = subsectionOf.get(f.key);
+  if (!sub) {
+    throw new Error(
+      `label "${f.label}" repeats but ${f.key} has no subsection to qualify it with`
+    );
+  }
+  f.label = `${f.label} (${sub})`;
+  qualifiedCount++;
+}
+// Unique labels were the entire point. Assert it rather than trust the loop --
+// two fields sharing a label AND a subsection would survive the pass above and
+// leave exactly the ambiguity this is meant to remove.
+const outLabels = payloadFields.map((f) => f.label);
+const stillAmbiguous = [
+  ...new Set(outLabels.filter((l, i) => outLabels.indexOf(l) !== i))
+];
+if (stillAmbiguous.length) {
+  throw new Error(`labels still ambiguous after qualifying: ${stillAmbiguous.join(", ")}`);
 }
 
 // ---------------------------------------------------------------------------
@@ -382,5 +442,5 @@ console.log(
     ` radios=${fields.filter((f) => f.type === "radio").length}` +
     ` lookups=${fields.filter((f) => f.type === "lookup").length}` +
     ` eligible=${fields.filter((f) => (f as { action_item_eligible?: boolean }).action_item_eligible).length}` +
-    ` stages=${workflow.stages.length}  -> ${out}`
+    ` qualified=${qualifiedCount} stages=${workflow.stages.length}  -> ${out}`
 );

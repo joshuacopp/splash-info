@@ -99,3 +99,52 @@
 -- NEXT STEP IS THE OPERATOR'S: open /admin/forms/53ce96b5-.../ and Publish.
 
 -- (statement intentionally not repeated — see above, do not re-run)
+
+-- ---------------------------------------------------------------------------
+-- Label qualification. APPLIED 2026-09-25 to the DRAFT (v2) via the connector.
+--
+-- v1 shipped 106 payload fields carrying only 92 distinct labels. A label is
+-- not just fill-time text -- it is the column header in the Brief 119
+-- submissions table, the row label in the Brief 129 PDF the signer reads, and
+-- the column name in the CSV. So the viewer had five columns headed "Other",
+-- three headed "Fivestar", and pairs of Tunnel / Detail / Oil Change /
+-- Electrical, with no way to tell which was which short of counting columns.
+--
+-- Nothing was ever LOST -- the keys were distinct from the start -- which is
+-- exactly why this would not have surfaced as a bug. It reads as data that is
+-- merely hard to follow.
+--
+-- 21 repeating labels gained their subsection in parentheses ("Other
+-- (Visibility)", "Electrical (Hazards)"). Subsection names are unique across
+-- this form, so they qualify on their own; the full section path would have
+-- bloated every one of them to disambiguate a handful. The 5 score labels also
+-- gained the word "score" -- not duplicates, but the same defect: a CSV column
+-- headed "Safety" holding a bare 3, among columns of OK / Not OK, does not read
+-- as a 1-3 rating to anyone who was not there.
+--
+-- The generator derives this rather than carrying a list of the 21 offenders,
+-- so a row added later that happens to collide is qualified on the next run
+-- instead of silently joining the ambiguous set, and it asserts label
+-- uniqueness afterwards rather than assuming the pass worked.
+--
+-- WHY THIS WAS A TARGETED UPDATE AND NOT A SCHEMA REWRITE
+--
+--   Regenerating proved the change was labels and nothing else: same 126 keys
+--   in the same order, same 126 ids, zero non-label differences between the two
+--   JSON blobs. So the statement set `label` per key and left the rest of the
+--   JSONB alone, which cannot disturb a field it does not name.
+--
+-- Verified after apply by checksum on BOTH sides, not by reading it back:
+-- md5 of the ordered "key=label" list on the stored draft is
+-- af44530c78b708410f13d9716d4ee929, byte-identical to the locally generated
+-- and Zod-validated schema. md5 of the ordered "key|id|type" list is
+-- 81125eca83abdaf6a9ce507516a7caf5 on BOTH v1 and the draft -- structure
+-- untouched. Distinct payload labels 92 -> 106, equal to the 106 payload
+-- fields, so every column is now unique. Workflow still present.
+--
+-- The one existing submission is pinned to v1 and renders against v1's schema
+-- forever, so it keeps the old labels. That is the versioning working, not a
+-- gap.
+--
+-- NEXT STEP IS THE OPERATOR'S: Publish the draft to make v3 live.
+-- ---------------------------------------------------------------------------
