@@ -80,3 +80,43 @@
 -- Verified after apply: 74 fields, 9 sections in the intended order, 74
 -- distinct ids and 74 distinct keys.
 -- ---------------------------------------------------------------------------
+
+-- ---------------------------------------------------------------------------
+-- Duplicate label. APPLIED 2026-09-25 to the DRAFT (v8) via the connector.
+--
+-- v7 had 69 payload fields carrying 68 distinct labels: walkthrough_glass_
+-- cleanliness and store_glass_cleanliness were both labelled "Glass
+-- Cleanliness". The keys were distinct from the start -- the original port note
+-- above even calls them out -- so no data was ever lost or crossed. What was
+-- wrong is everything downstream that shows a LABEL rather than a key: two
+-- identical columns in the Brief 119 submissions table, two identical rows in
+-- the Brief 129 PDF, two identical CSV headers. Nothing errors, so nothing
+-- reports it; the reader just cannot tell which is the tunnel glass and which
+-- is the store glass.
+--
+-- Qualified with the enclosing section, matching what am-assessment does:
+--   walkthrough_glass_cleanliness -> "Glass Cleanliness (Walk-Through)"
+--   store_glass_cleanliness       -> "Glass Cleanliness (Store)"
+-- rm-visit has only h3 headings, so the section IS the nearest enclosing
+-- heading; on am-assessment, which nests h4s, the qualifier is the subsection.
+-- Same rule either way: qualify with the heading directly above.
+--
+-- The statement was guarded twice rather than trusting the version id: it
+-- matched `is_draft = true` so it could not reach a published version, and it
+-- only rewrote a label still reading exactly "Glass Cleanliness" so it could
+-- not clobber a rename made in the builder in the meantime.
+--
+-- The two other glass fields ("Glass Cleaner Spray Pattern", "Glass") were
+-- already distinct and untouched.
+--
+-- Verified after apply: draft v8 has 69 distinct payload labels across 69
+-- payload fields, and md5 of the ordered "key|id|type" list is
+-- 5d5c4ff1bf883fc6d6dd706a67e60aa7 on BOTH v7 and the draft -- structure
+-- untouched, labels the only difference. v7 still reads 68, confirming the
+-- published version was not reached.
+--
+-- Submissions already filed against v7 render against v7's schema forever, so
+-- they keep the ambiguous pair. That is the versioning working as designed.
+--
+-- NEXT STEP IS THE OPERATOR'S: Publish the draft to make v8 live.
+-- ---------------------------------------------------------------------------
