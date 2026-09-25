@@ -81,8 +81,11 @@ const SHELL_CSS = `
   .forms-form-wrap { background: white; border-radius: 8px; padding: 32px 28px; box-shadow: 0 2px 8px rgba(0,0,0,0.06); }
   .forms-title { margin: 0 0 8px; font-size: 28px; color: var(--splash-navy); }
   .forms-description { margin: 0 0 24px; color: #555; }
-  /* Field wrapper */
-  .field { margin-bottom: 20px; }
+  /* Field wrapper. scroll-margin-top keeps a field clear of the pinned
+     headings when something scrolls it into view -- browser validation on
+     submit, or the error summary's jump-to-field. Without it the field you are
+     being sent to lands underneath the heading bar. */
+  .field { margin-bottom: 20px; scroll-margin-top: 104px; }
   .field-label { display: block; font-weight: 600; margin-bottom: 6px; color: var(--splash-navy); }
   .field-required { color: var(--splash-error); margin-left: 2px; }
   .field-help { font-size: 13px; color: #666; margin-top: 4px; }
@@ -99,6 +102,54 @@ const SHELL_CSS = `
   .field-heading-h2 { font-size: 22px; margin: 20px 0 8px; color: var(--splash-navy); }
   .field-heading-h3 { font-size: 18px; margin: 16px 0 8px; color: var(--splash-navy); }
   .field-heading-h4 { font-size: 16px; margin: 12px 0 6px; color: var(--splash-navy); }
+  /* Pinned section headings.
+     On a 90-question inspection the heading that says WHICH part of the site you
+     are assessing scrolls off after the first few rows, and every answer after
+     that is given without its reference. These pin it to the top of the
+     viewport instead, section heading and sub-heading stacked, so "Marketing /
+     Visibility" is on screen for every row it governs.
+     Selected by POSITION, not by level: renderFieldsGrouped opens a section AT
+     its heading, so a section's first child is always its heading whatever
+     level the form happens to use, and any other heading inside is a
+     sub-heading. That keeps the CSS working for a form built on h2/h3 as well
+     as one built on h3/h4.
+     The heights are load-bearing -- the sub-heading's "top" must equal the
+     section heading's rendered height, or the two overlap. nowrap + ellipsis is
+     what makes that height knowable: a section title that wrapped to two lines
+     on a phone would push itself over the sub-heading below. Section titles are
+     short by nature, so the ellipsis should be a theoretical case.
+     Negative side margins bleed the background across the card's 28px padding;
+     without them answers scroll visibly through the gutters beside the
+     heading. */
+  .forms-section { margin-bottom: 8px; }
+  .forms-section > :first-child {
+    position: sticky; top: 0; z-index: 3;
+    background: #fff;
+    margin: 0 -28px 12px; padding: 12px 28px 8px;
+    border-bottom: 2px solid var(--splash-cyan);
+    line-height: 24px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  /* A section heading carrying visible_if is wrapped in .field-conditional, so
+     the WRAPPER is the first child and takes the pinned styling above. Zeroing
+     the inner heading's own margin keeps the bar the same 46px tall either way
+     -- the sub-heading's "top" below depends on it. (While the condition is
+     unmet the wrapper is "hidden", so that section simply has no pinned
+     heading, which is the right answer for a section that does not apply.) */
+  .forms-section > :first-child > .field-heading-h1,
+  .forms-section > :first-child > .field-heading-h2,
+  .forms-section > :first-child > .field-heading-h3,
+  .forms-section > :first-child > .field-heading-h4 { margin: 0; }
+  .forms-section > .field-heading-h2:not(:first-child),
+  .forms-section > .field-heading-h3:not(:first-child),
+  .forms-section > .field-heading-h4:not(:first-child) {
+    position: sticky; top: 46px; z-index: 2;
+    background: #fff;
+    margin: 18px -28px 10px; padding: 8px 28px 6px;
+    border-bottom: 1px solid #dfe5ee;
+    line-height: 22px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
   /* Image (in-form display) */
   .field-image-wrap { margin: 16px 0; }
   .field-image { display: block; height: auto; }
