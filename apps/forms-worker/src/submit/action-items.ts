@@ -31,6 +31,10 @@ const DEFAULT_DUE_DAYS = 14;
  *  truncates rather than 400-ing the whole batch. */
 const DESCRIPTION_MAX = 5000;
 
+/** Built from a char code so the escape cannot be eaten by tooling on its
+ *  way into this file -- it already was once. */
+const NEWLINE = String.fromCharCode(10);
+
 export interface ActionItemInsertResult {
   attempted: number;
   inserted: number;
@@ -93,6 +97,107 @@ function snapshotOf(value: unknown, field?: Field): string | null {
   return null;
 }
 
+/** One derived action item, before anything that needs a submission row.
+ *  Exported because the PDF's corrective-action table is built from these
+ *  too -- see `deriveActionItemRows`. */
+export interface DerivedActionItem {
+  field_key: string;
+  question_label: string;
+  answer_snapshot: string | null;
+  description: string;
+  priority: string;
+  due_date: string;
+}
+
+/**
+ * Everything the ticks in a payload imply, with nothing that needs the
+ * database. Pure, so it can run before the submission row exists.
+ *
+ * SHARED WITH THE PDF ON PURPOSE. The completed-form PDF prints a corrective
+ * action table, and the natural way to build it would be to read `action_items`
+ * back. That does not work at the only moment the PDF is generated: the email
+ * cascade runs BEFORE the submission insert and long before the action items
+ * are written, so the table would come out empty, silently. Deriving both the
+ * table and the inserted rows from this one function means the paper record and
+ * the worklist cannot disagree -- and a second implementation of "what does a
+ * tick mean" is exactly the kind of drift that goes unnoticed for months.
+ */
+export function deriveActionItemRows(args: {
+  schema: FormSchema;
+  payload: Record<string, unknown>;
+  submittedAt: Date;
+}): DerivedActionItem[] {
+  const raw = args.payload[ACTION_ITEM_PAYLOAD_KEY];
+  const ticked = Array.isArray(raw)
+    ? (raw.filter((k) => typeof k === "string") as string[])
+    : [];
+  if (ticked.length === 0) return [];
+
+  const rawNotes = args.payload[ACTION_ITEM_NOTES_PAYLOAD_KEY];
+  const notes: Record<string, unknown> =
+    rawNotes && typeof rawNotes === "object" && !Array.isArray(rawNotes)
+      ? (rawNotes as Record<string, unknown>)
+      : {};
+
+  /** Tolerates a bare string as well as a list: the first shipped shape of
+   *  this key was one note per question, and a submission written under it
+   *  must still regenerate correctly.
+   *
+   *  The string branch SPLITS, exactly as parse.ts does for the live shape.
+   *  Returning the raw string instead gave back-compat different semantics
+   *  from the current path -- one item carrying embedded newlines rather than
+   *  one item per line -- which contradicts what the form itself promises
+   *  under the tick box, and hands a multi-line string to PDF text drawing,
+   *  which cannot encode a newline and throws. */
+  const noteLinesFor = (key: string): string[] => {
+    const rawLine = notes[key];
+    if (typeof rawLine === "string") {
+      return rawLine
+        .split(NEWLINE)
+        .map((l) => l.trim())
+        .filter((l) => l !== "");
+    }
+    if (Array.isArray(rawLine)) {
+      return rawLine
+        .filter((l): l is string => typeof l === "string")
+        .map((l) => l.trim())
+        .filter((l) => l !== "");
+    }
+    return [];
+  };
+
+  const dueDate = easternDuePlusDays(args.submittedAt, DEFAULT_DUE_DAYS);
+  const byKey = new Map(args.schema.fields.map((f) => [f.key, f]));
+
+  return ticked.flatMap((key) => {
+    const field = byKey.get(key);
+    // The tick came from the schema, so this should not miss. If it somehow
+    // does, skip rather than inventing a label for a question nobody asked.
+    if (!field) {
+      console.error(`[forms.action-items] ticked key "${key}" not in schema`);
+      return [];
+    }
+    const label = (field.label || key).slice(0, DESCRIPTION_MAX);
+    // The notes are what the person actually SAW; the question label is only
+    // where they were standing. ONE ROW PER LINE, because one question
+    // routinely produces several separate jobs -- mulch and weeds are not the
+    // same task and should not close together. No lines falls back to a single
+    // row described by the label, so an un-noted tick still produces something
+    // usable rather than nothing.
+    const lines = noteLinesFor(key);
+    const descriptions = lines.length > 0 ? lines : [label];
+    const snapshot = snapshotOf(args.payload[key], field);
+    return descriptions.map((d) => ({
+      field_key: key,
+      question_label: label,
+      answer_snapshot: snapshot,
+      description: d.slice(0, DESCRIPTION_MAX),
+      priority: "Medium",
+      due_date: dueDate
+    }));
+  });
+}
+
 export async function createActionItemsForSubmission(
   env: Env,
   args: {
@@ -118,61 +223,22 @@ export async function createActionItemsForSubmission(
     return { attempted: ticked.length, inserted: 0, error };
   }
 
-  const rawNotes = args.payload[ACTION_ITEM_NOTES_PAYLOAD_KEY];
-  const notes: Record<string, unknown> =
-    rawNotes && typeof rawNotes === "object" && !Array.isArray(rawNotes)
-      ? (rawNotes as Record<string, unknown>)
-      : {};
-
-  /** Tolerates a bare string as well as a list: the first shipped shape of
-   *  this key was one note per question, and a submission written under it
-   *  must still regenerate correctly. */
-  const noteLinesFor = (key: string): string[] => {
-    const raw = notes[key];
-    if (typeof raw === "string") return raw.trim() ? [raw.trim()] : [];
-    if (Array.isArray(raw)) {
-      return raw
-        .filter((l): l is string => typeof l === "string")
-        .map((l) => l.trim())
-        .filter((l) => l !== "");
-    }
-    return [];
-  };
-
-  const dueDate = easternDuePlusDays(args.submittedAt, DEFAULT_DUE_DAYS);
-  const byKey = new Map(args.schema.fields.map((f) => [f.key, f]));
-
-  const rows = ticked.flatMap((key) => {
-    const field = byKey.get(key);
-    // The tick came from the schema, so this should not miss. If it somehow
-    // does, skip rather than inventing a label for a question nobody asked.
-    if (!field) {
-      console.error(`[forms.action-items] ticked key "${key}" not in schema`);
-      return [];
-    }
-    const label = (field.label || key).slice(0, DESCRIPTION_MAX);
-    // The notes are what the person actually SAW; the question label is only
-    // where they were standing. ONE ROW PER LINE, because one question
-    // routinely produces several separate jobs -- mulch and weeds are not the
-    // same task and should not close together. No lines falls back to a single
-    // row described by the label, so an un-noted tick still produces something
-    // usable rather than nothing.
-    const lines = noteLinesFor(key);
-    const descriptions = lines.length > 0 ? lines : [label];
-    const snapshot = snapshotOf(args.payload[key], field);
-    return descriptions.map((d) => ({
-      submission_id: args.submissionId,
-      location_code: args.locationCode,
-      field_key: key,
-      question_label: label,
-      answer_snapshot: snapshot,
-      description: d.slice(0, DESCRIPTION_MAX),
-      priority: "Medium",
-      due_date: dueDate,
-      status: "open",
-      created_by: args.createdBy
-    }));
-  });
+  const rows = deriveActionItemRows({
+    schema: args.schema,
+    payload: args.payload,
+    submittedAt: args.submittedAt
+  }).map((r) => ({
+    submission_id: args.submissionId,
+    location_code: args.locationCode,
+    field_key: r.field_key,
+    question_label: r.question_label,
+    answer_snapshot: r.answer_snapshot,
+    description: r.description,
+    priority: r.priority,
+    due_date: r.due_date,
+    status: "open",
+    created_by: args.createdBy
+  }));
 
   if (rows.length === 0) return { attempted: ticked.length, inserted: 0, error: null };
 

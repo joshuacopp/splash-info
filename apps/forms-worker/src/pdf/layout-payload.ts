@@ -49,6 +49,7 @@ import {
   type R2Like
 } from "./layout-utils.js";
 import { collectRatingRun, drawRatingRun } from "./layout-rating-grid.js";
+import { collectChecklistRun, drawChecklistTable } from "./layout-checklist.js";
 
 /**
  * Optional pretty-label resolver for location_code slugs. The generator
@@ -89,6 +90,18 @@ export async function drawPayload(
     if (field.type === "heading") {
       heading = field.text || field.label;
       drawFieldHeading(doc, cursor, fonts, heading, field.level);
+      continue;
+    }
+
+    // Checklist FIRST, grid second. A run whose items each carry their own
+    // notes box is a table in every paper original it came from, and the grid
+    // has nowhere to put the notes; collectChecklistRun only claims a run when
+    // at least one notes field is actually present, so it cannot steal a plain
+    // rated run from the grid.
+    const checklist = collectChecklistRun(all, i);
+    if (checklist) {
+      drawChecklistTable(doc, cursor, fonts, checklist, input.payload);
+      i = checklist.nextIndex - 1;
       continue;
     }
 

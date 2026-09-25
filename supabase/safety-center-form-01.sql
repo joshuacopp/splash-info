@@ -1,0 +1,79 @@
+-- Safety Center Compliance Checklist — authored as a DRAFT, 2026-09-25.
+-- APPLIED via the Supabase connector at the operator's instruction. DO NOT
+-- RE-RUN: it has no guard and a second run creates a duplicate form with the
+-- same slug.
+--
+--   form_id          2ce69e09-42d1-4fc2-bdbe-569708aa9169
+--   draft_version_id 3c835af2-e2e9-42e1-b0e7-469a9d3e3a97
+--   slug             safety-center   audience internal   53 fields
+--
+-- Built by `scripts/gen-safety-center.ts`, which validates against BOTH
+-- formSchemaSchema and draftFormSchemaSchema and asserts what Zod does not:
+-- unique ids, unique keys, unique payload labels, every workflow reference
+-- resolving, and the question/notes pairing described below.
+--
+-- Ported from Splash_Safety_Center_Checklist.docx: 21 Yes/No items across PPE,
+-- Emergency and First Aid Supplies, Safety Equipment and Required Safety
+-- Programs, each with its own Notes box, plus the manager certification.
+--
+-- THE QUESTION/NOTES PAIRING IS LOAD-BEARING
+--
+--   Every item is a Yes/No radio IMMEDIATELY followed by a short_text keyed
+--   `{thatKey}_notes`. The PDF's checklist-table renderer discovers rows by
+--   exactly that adjacency, so putting any field between a question and its
+--   notes box silently demotes that whole section back to stacked label/value
+--   rows. Nothing errors; the PDF just stops looking like the document. The
+--   generator asserts the pairing rather than trusting the loop that writes it.
+--
+-- WHY THE ITEMS ARE REQUIRED (unlike the AM assessment's)
+--
+--   The source document's instruction is "Check Yes or No for every item". On
+--   a compliance check a blank is not a valid answer, where on the AM site
+--   assessment an unrated line legitimately means "did not look".
+--
+-- WHY THE NOTES LABELS ARE NOT ALL "Notes"
+--
+--   The label is the column header in the submissions table and the name in the
+--   CSV, so 21 columns headed "Notes" is the ambiguity that had to be unpicked
+--   on rm-visit and am-assessment after the fact. They carry their item's name.
+--   The PDF prints its own "Notes" column header, so the table is unaffected.
+--
+-- WHY THE CERTIFICATION SENTENCE IS helpText, NOT A HEADING
+--
+--   A heading that long is pinned to the top of the viewport by the sticky
+--   section CSS and ellipsised to a single line -- worse than useless for a
+--   sentence somebody is certifying.
+--
+-- WORKFLOW: submit -> email the RM -> RM reviews or sends back
+--
+--   The document's own instruction is "Completed checklists should be submitted
+--   to your Regional Manager for review and follow-up". The RM is addressed via
+--   {type: payload_field, field_key: rm_email} -- the lookup has already
+--   resolved to an address by cascade time, so its payload value IS the email.
+--   Routing through site_role would make the resolver hunt for a location field
+--   this form does not have, the bug class Briefs 131 and 132 closed.
+--
+--   No outcome email back to the manager. There is no manager email on the
+--   paper form, and inventing a field to carry one is a worse trade than the
+--   manager reading the result on My Requests, which already lists it.
+--
+-- CORRECTIVE ACTION ITEMS
+--
+--   Every item is action_item_eligible, so a No raises a real action item on
+--   the site's /action-items page. The PDF prints the same items as the
+--   document's Corrective Action Items table, derived from the payload via the
+--   shared `deriveActionItemRows` -- NOT read back from the action_items table,
+--   which would be empty at the only moment the PDF is generated (the email
+--   cascade runs before the submission insert and long before the items are
+--   written). The PDF also prints any item answered No that raised no action,
+--   which is the document's own rule stated on its face.
+--
+-- Verified after apply against what was STORED: 53 fields, 21 items, 21 notes
+-- fields, 21 required, 21 action-item eligible, 53 distinct keys, 53 distinct
+-- ids, 48 distinct payload labels across 48 payload fields, 4 workflow stages,
+-- status draft, draft_version_id set, scope_location_field_key still null
+-- (publish sets it).
+--
+-- NEXT STEP IS THE OPERATOR'S: open /admin/forms/2ce69e09-.../ and Publish.
+
+-- (statement intentionally not repeated — see above, do not re-run)

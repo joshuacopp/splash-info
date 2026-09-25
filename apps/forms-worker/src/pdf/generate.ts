@@ -29,6 +29,7 @@ import { drawFooters } from "./layout-footer.js";
 import { drawHeader } from "./layout-header.js";
 import { drawMetadata } from "./layout-metadata.js";
 import { drawPayload, type LocationPrettyResolver } from "./layout-payload.js";
+import { drawCorrectiveActions, ownerLabelFor } from "./layout-checklist.js";
 import { drawWorkflowHistory } from "./layout-workflow-history.js";
 import {
   PAGE_HEIGHT,
@@ -94,6 +95,18 @@ export async function generateCompletedFormPdf(
     bucket,
     resolveLocationPretty: ctx.resolveLocationPretty
   });
+
+  // After the answers, before the approval trail: the corrective actions are
+  // what the answers IMPLY, and a signer reads them in that order. Only drawn
+  // for forms that can raise them at all, so an ordinary form gains nothing.
+  if (ctx.schema.fields.some((f) => f.action_item_eligible)) {
+    drawCorrectiveActions(doc, cursor, fonts, {
+      schema: ctx.schema,
+      payload: ctx.payload,
+      submittedAt: new Date(ctx.submission.submittedAt),
+      ownerLabel: ownerLabelFor(ctx.schema, ctx.payload)
+    });
+  }
 
   await drawWorkflowHistory(doc, cursor, fonts, {
     history: ctx.workflowHistory,
