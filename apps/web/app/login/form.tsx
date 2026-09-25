@@ -89,10 +89,50 @@ export function LoginForm({ returnPath, turnstileSiteKey, startInMfaMode = false
   // switch the form to a 6-digit code entry that posts /api/login/mfa. mfaNext
   // is the server-sanitized redirect target to hand back on success.
   const [mfaMode, setMfaMode] = useState(startInMfaMode);
+  // True when the caller arrived already half way through a login, by either
+  // probe -- as opposed to having just typed a password on this screen.
+  const [steppingUp, setSteppingUp] = useState(startInMfaMode);
   const [mfaNext, setMfaNext] = useState<string>(returnPath);
   const [code, setCode] = useState("");
   const widgetRef = useRef<HTMLDivElement | null>(null);
   const widgetIdRef = useRef<string | null>(null);
+
+  // Client-side fallback for the half-finished-MFA check.
+  //
+  // The page already asks dashboard-worker server-side and passes the answer as
+  // startInMfaMode. This asks again from the browser, because the two paths fail
+  // independently: the server route goes through the DASHBOARD_WORKER service
+  // binding, and if that is unavailable the probe fails soft to `false` and the
+  // caller is silently handed a password form -- which is the very loop this is
+  // meant to end. The browser reaches /api/mfa/status over the ordinary
+  // path-carved route instead, with the same cookie.
+  //
+  // Only ever ADDS the code step, never removes it, and skips entirely once the
+  // form is already in code mode, so it cannot fight the server's answer or
+  // interrupt someone mid-login.
+  useEffect(() => {
+    if (startInMfaMode) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const r = await fetch("/api/mfa/status", {
+          credentials: "include",
+          cache: "no-store"
+        });
+        if (!r.ok || cancelled) return;
+        const data = (await r.json()) as { needsStepUp?: boolean } | null;
+        if (!cancelled && data?.needsStepUp === true) {
+          setMfaMode(true);
+          setSteppingUp(true);
+        }
+      } catch {
+        // Unreachable endpoint leaves the password form exactly as it was.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [startInMfaMode]);
 
   // Render the Turnstile widget once the script + container are ready.
   useEffect(() => {
@@ -282,7 +322,7 @@ export function LoginForm({ returnPath, turnstileSiteKey, startInMfaMode = false
             and "finish signing in" alone reads as a system error. Naming what
             happened is what stops them navigating away again -- which is the
             move that created the loop in the first place. */}
-        {startInMfaMode ? (
+        {steppingUp ? (
           <p className="mb-6 text-sm text-gray-dark">
             You&rsquo;re signed in, but this session still needs your
             authenticator code. Enter the 6-digit code to finish &mdash; you
