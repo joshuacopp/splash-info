@@ -55,7 +55,14 @@ export default async function PendingApprovalsPage({ searchParams }: PageProps) 
 
   const session = await getMe().catch(() => null);
   if (!session) {
-    return <NoAccessCard reason="signin" returnPath="/admin/approvals" />;
+    return (
+      <NoAccessCard
+        reason="signin"
+        returnPath="/admin/approvals"
+        title="Pending Approvals"
+        signinMessage="Sign in to see the approvals waiting on you."
+      />
+    );
   }
 
   const isAdminTier =
