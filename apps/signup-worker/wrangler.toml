@@ -84,6 +84,19 @@ routes = [
 #                        direct maxpass_signups insert and JotForm redirect with
 #                        prefill. See apps/signup-worker/src/signature/.
 [vars]
+# MFA enforcement (layer 3). Read by @splash/auth authenticate(): a user who has
+# a VERIFIED factor but whose session is still aal1 is treated as
+# unauthenticated. Non-enrolled users are unaffected regardless.
+#
+# Rolled out here 2026-09-25. Before that this worker ACCEPTED un-elevated
+# sessions: completing the password step and abandoning the code step granted
+# full access to everything this worker serves, because enforcement lived only
+# on dashboard-worker -- the one worker that merely DESCRIBES the session rather
+# than holding data.
+#
+# Flip to "false" (or delete) + redeploy to disable instantly without a code
+# revert.
+MFA_ENFORCE = "true"
 SIGNATURE_MODE = "inline"
 
 # Bindings (set with `wrangler secret put` for the *_KEY values):
