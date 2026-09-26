@@ -28,8 +28,11 @@ const SHEET_MAX_BYTES = 10 * 1024 * 1024;
  *  parts rather than handed a broken file. */
 const BINDER_MAX_BYTES = 45 * 1024 * 1024;
 
-export function sheetKey(locationCode: string, itemId: string): string {
-  return `sds-sheets/${locationCode}/${itemId}.pdf`;
+/** Keyed by CATALOGUE row: one sheet per product, not per site. Keys written
+ *  before the catalogue existed are site-scoped and were adopted as-is rather
+ *  than copied, so both shapes exist in the bucket and both are read by key. */
+export function sheetKey(catalogId: string): string {
+  return `sds-sheets/catalog/${catalogId}.pdf`;
 }
 
 /** Imported lazily: file-type is ESM-only, and a static import makes this
@@ -79,7 +82,8 @@ export async function handleUploadSheet(
   const bytes = new Uint8Array(await file.arrayBuffer());
   if (!(await isPdf(bytes))) return jsonError(415, "not_a_pdf");
 
-  const key = sheetKey(item.location_code, item.id);
+  if (!item.catalog_id) return jsonError(409, "item_has_no_catalog_entry");
+  const key = sheetKey(item.catalog_id);
   try {
     await env.FORMS_FILES.put(key, bytes, {
       httpMetadata: { contentType: "application/pdf" }
@@ -92,7 +96,10 @@ export async function handleUploadSheet(
   // R2 first, row second. The reverse would leave a row pointing at a sheet
   // that does not exist -- a dangling pointer the print path would 404 on --
   // whereas this order's worst case is an orphan object nobody references.
-  const resp = await ctx.patch(id, {
+  // Stamped on the CATALOGUE: this sheet is now the sheet for this chemical at
+  // every site holding it. That is the point of the feature, and the caller was
+  // told the site count before they picked the file.
+  const resp = await ctx.patch(item.catalog_id, {
     sds_r2_key: key,
     sds_filename: file.name.slice(0, 200),
     sds_size_bytes: bytes.length,
@@ -123,17 +130,18 @@ export async function handleServeSheet(
 ): Promise<Response> {
   const item = await ctx.readItem(id);
   if (!item || !ctx.canRead(item.location_code)) return jsonError(404, "not_found");
-  if (!item.sds_r2_key) return jsonError(404, "no_sheet");
+  const key = item.catalog?.sds_r2_key;
+  if (!key) return jsonError(404, "no_sheet");
 
-  const obj = await env.FORMS_FILES.get(item.sds_r2_key);
+  const obj = await env.FORMS_FILES.get(key);
   if (!obj) {
     // Row says there is a sheet and R2 disagrees. Log it: this is drift, not a
     // missing upload, and the two look identical to the caller.
-    console.error(`[forms.sds] row ${id} points at missing object ${item.sds_r2_key}`);
+    console.error(`[forms.sds] catalog row points at missing object ${key}`);
     return jsonError(404, "no_sheet");
   }
 
-  const safe = (item.product_identifier || "sds").replace(/[^A-Za-z0-9._-]+/g, "-");
+  const safe = (item.catalog?.product_identifier || "sds").replace(/[^A-Za-z0-9._-]+/g, "-");
   return new Response(obj.body, {
     status: 200,
     headers: {
@@ -189,20 +197,22 @@ export async function renderBinderPdf(
   let budget = BINDER_MAX_BYTES;
 
   for (const item of input.items) {
-    if (!item.sds_r2_key) {
-      missing.push(item.product_identifier);
+    const key = item.catalog?.sds_r2_key;
+    const label = item.catalog?.product_identifier ?? "(unnamed)";
+    if (!key) {
+      missing.push(label);
       continue;
     }
     try {
-      const obj = await env.FORMS_FILES.get(item.sds_r2_key);
+      const obj = await env.FORMS_FILES.get(key);
       if (!obj) {
-        missing.push(item.product_identifier);
+        missing.push(label);
         continue;
       }
       const raw = new Uint8Array(await obj.arrayBuffer());
       budget -= raw.length;
       if (budget < 0) {
-        failed.push(`${item.product_identifier} (binder size limit reached)`);
+        failed.push(`${label} (binder size limit reached)`);
         continue;
       }
       // ignoreEncryption: some manufacturers publish sheets with printing
@@ -212,8 +222,8 @@ export async function renderBinderPdf(
       const pages = await out.copyPages(src, src.getPageIndices());
       for (const p of pages) out.addPage(p);
     } catch (err) {
-      console.error(`[forms.sds] merge failed for ${item.sds_r2_key}`, err);
-      failed.push(item.product_identifier);
+      console.error(`[forms.sds] merge failed for ${key}`, err);
+      failed.push(label);
     }
   }
 

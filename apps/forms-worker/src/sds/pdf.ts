@@ -101,8 +101,8 @@ export async function renderSdsPdf(input: SdsPdfInput): Promise<Uint8Array> {
       ],
       input.items.map((i) => [
         oneLine(i.binder_tab),
-        oneLine(i.product_identifier),
-        oneLine(i.manufacturer),
+        oneLine(i.catalog?.product_identifier),
+        oneLine(i.catalog?.manufacturer),
         oneLine(i.work_area)
       ]),
       { fontSize: 9, rowHeight: 17 }

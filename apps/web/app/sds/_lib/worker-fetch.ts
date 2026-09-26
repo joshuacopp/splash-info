@@ -113,21 +113,27 @@ export async function createSdsItem(input: {
   return unwrap(await callForms("/forms/api/sds", { method: "POST", jsonBody: input }));
 }
 
+/**
+ * Edit one listed chemical.
+ *
+ * The patch shape is DELIBERATELY FLAT even though the worker splits it in two:
+ * site fields go to the site row, and identity fields (name, manufacturer,
+ * source URL, revision date) go to the shared catalogue row and change every
+ * site holding that chemical. Callers should not have to know which is which --
+ * the worker does, and it is the only place that should.
+ */
 export async function patchSdsItem(
   id: string,
-  patch: Partial<
-    Pick<
-      SdsItem,
-      | "product_identifier"
-      | "manufacturer"
-      | "work_area"
-      | "binder_tab"
-      | "is_active"
-      | "sort_order"
-      | "source_url"
-      | "sds_revision_date"
-    >
-  >
+  patch: {
+    work_area?: string | null;
+    binder_tab?: string | null;
+    is_active?: boolean;
+    sort_order?: number;
+    product_identifier?: string;
+    manufacturer?: string | null;
+    source_url?: string | null;
+    sds_revision_date?: string | null;
+  }
 ): Promise<Result<{ item: SdsItem }>> {
   return unwrap(
     await callForms(`/forms/api/sds/${encodeURIComponent(id)}`, {

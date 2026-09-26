@@ -155,3 +155,50 @@ alter table public.sds_items
   add column if not exists sds_uploaded_by   text,
   add column if not exists source_url        text,
   add column if not exists sds_revision_date date;
+
+-- ---------------------------------------------------------------------------
+-- The chemical catalogue. APPLIED 2026-09-26 via the connector.
+--
+-- WHY. Manufacturer and the safety data sheet are properties of the PRODUCT,
+-- not of the site, and they were living on the per-site row. Measured on the
+-- first site loaded before anyone else started: its 16 products appear across
+-- 402 site-rows, average 25 sites each, one at 30. So 16 sheets would have
+-- become 402 uploads, 402 manufacturer entries, and a revision would have meant
+-- redoing all of them. That is the kind of wrong that makes people abandon a
+-- tool rather than file a bug about it.
+--
+--   public.sds_catalog  -- what a chemical IS: name, manufacturer, sheet,
+--                          revision date, source URL. One row per product.
+--   public.sds_items    -- where it IS: site, binder tab, work area, presence.
+--
+-- IDENTITY IS name + manufacturer, matched case-insensitively and trimmed,
+-- because the same product typed at two sites differs in exactly those ways and
+-- nothing else. Two sites buying the "same" product from different
+-- manufacturers genuinely hold different sheets and must NOT collapse onto one
+-- row, which is why manufacturer is part of the key rather than just a field.
+--
+-- Uniqueness is on EXPRESSIONS (lower(btrim(...))), which PostgREST's
+-- on_conflict cannot reference -- so the worker does find / insert / find-again
+-- instead. Two sites adding the same chemical at the same moment: one insert
+-- wins, the loser reads the winner's row rather than erroring at somebody who
+-- did nothing wrong.
+--
+-- THE SUPERSEDED COLUMNS WERE DROPPED, product_identifier included. A second
+-- copy of the product name is a second thing to keep in step, and the one that
+-- goes stale is always the one somebody reads. Per-site uniqueness now keys on
+-- catalog_id rather than a copied string.
+--
+-- R2 KEYS WERE ADOPTED, NOT COPIED. New uploads use
+-- sds-sheets/catalog/{catalog_id}.pdf; the 14 sheets uploaded before the
+-- catalogue existed keep their site-scoped keys. The key is an opaque string,
+-- and moving objects to make them match a pattern would have risked breaking
+-- links for no benefit.
+--
+-- NO PER-SITE OVERRIDE of manufacturer or sheet. A site's binder should hold
+-- the current sheet; a site sitting on an old revision is a gap to close, not a
+-- state to model.
+--
+-- Verified after apply: 17 catalogue rows, 14 with sheets, 17 site rows, 0
+-- orphans, 0 broken links, 0 superseded columns remaining, duplicate index
+-- rebuilt on catalog_id, RLS on with zero policies.
+-- ---------------------------------------------------------------------------

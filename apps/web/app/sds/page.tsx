@@ -184,7 +184,7 @@ export default async function SdsPage({ searchParams }: PageProps) {
         </div>
       </div>
 
-      <SdsTable items={items} canEdit={canEdit} />
+      <SdsTable items={items} canEdit={canEdit} usage={resp.catalog_usage ?? {}} />
 
       {canEdit ? (
         <AddChemical locationCode={activeSite} candidates={candidates} />

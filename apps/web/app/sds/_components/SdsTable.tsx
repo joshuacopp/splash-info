@@ -34,7 +34,15 @@ function Field({
   );
 }
 
-function Row({ item, canEdit }: { item: SdsItem; canEdit: boolean }) {
+function Row({
+  item,
+  canEdit,
+  siteCount
+}: {
+  item: SdsItem;
+  canEdit: boolean;
+  siteCount: number;
+}) {
   const router = useRouter();
   const [editing, setEditing] = useState(false);
   const [pending, startTransition] = useTransition();
@@ -81,11 +89,11 @@ function Row({ item, canEdit }: { item: SdsItem; canEdit: boolean }) {
             </label>
             <label className="min-w-[16rem] flex-1 text-xs text-splash-navy/70">
               Product identifier (as shown on the SDS)
-              <Field name="product_identifier" defaultValue={item.product_identifier} />
+              <Field name="product_identifier" defaultValue={item.catalog?.product_identifier ?? ""} />
             </label>
             <label className="min-w-[10rem] flex-1 text-xs text-splash-navy/70">
               Manufacturer
-              <Field name="manufacturer" defaultValue={item.manufacturer ?? ""} />
+              <Field name="manufacturer" defaultValue={item.catalog?.manufacturer ?? ""} />
             </label>
             <label className="min-w-[10rem] flex-1 text-xs text-splash-navy/70">
               Where used / stored
@@ -95,7 +103,7 @@ function Row({ item, canEdit }: { item: SdsItem; canEdit: boolean }) {
               Manufacturer SDS page (optional)
               <Field
                 name="source_url"
-                defaultValue={item.source_url ?? ""}
+                defaultValue={item.catalog?.source_url ?? ""}
                 placeholder="https://… where this sheet came from"
               />
             </label>
@@ -104,7 +112,7 @@ function Row({ item, canEdit }: { item: SdsItem; canEdit: boolean }) {
               <input
                 type="date"
                 name="sds_revision_date"
-                defaultValue={item.sds_revision_date ?? ""}
+                defaultValue={item.catalog?.sds_revision_date ?? ""}
                 className="block rounded-splash-sm border border-gray-light px-2 py-1 text-sm"
               />
             </label>
@@ -139,17 +147,17 @@ function Row({ item, canEdit }: { item: SdsItem; canEdit: boolean }) {
         {item.binder_tab || "—"}
       </td>
       <td className="px-3 py-2 text-sm font-semibold text-splash-navy">
-        {item.product_identifier}
+        {item.catalog?.product_identifier ?? "(unnamed)"}
         {!item.is_active ? (
           <span className="ml-2 rounded-full bg-gray-light px-2 py-0.5 text-[0.6875rem] font-bold text-splash-navy/60">
             removed
           </span>
         ) : null}
       </td>
-      <td className="px-3 py-2 text-sm text-splash-navy/80">{item.manufacturer || "—"}</td>
+      <td className="px-3 py-2 text-sm text-splash-navy/80">{item.catalog?.manufacturer || "—"}</td>
       <td className="px-3 py-2 text-sm text-splash-navy/80">{item.work_area || "—"}</td>
       <td className="px-3 py-2 align-top">
-        <SheetCell item={item} canEdit={canEdit} />
+        <SheetCell item={item} canEdit={canEdit} siteCount={siteCount} />
       </td>
       <td className="px-3 py-2 text-right text-xs">
         {canEdit ? (
@@ -169,7 +177,7 @@ function Row({ item, canEdit }: { item: SdsItem; canEdit: boolean }) {
                   onClick={() => {
                     if (
                       window.confirm(
-                        `Remove "${item.product_identifier}" from this site's list?\n\nIt stays in the record with today's date, and won't appear on the printed index.`
+                        `Remove "${item.catalog?.product_identifier ?? "this chemical"}" from this site's list?\n\nIt stays in the record with today's date, and won't appear on the printed index.`
                       )
                     ) {
                       setActive(false);
@@ -204,10 +212,13 @@ function Row({ item, canEdit }: { item: SdsItem; canEdit: boolean }) {
 
 export default function SdsTable({
   items,
-  canEdit
+  canEdit,
+  usage
 }: {
   items: SdsItem[];
   canEdit: boolean;
+  /** catalog_id -> number of sites holding it. */
+  usage: Record<string, number>;
 }) {
   const sorted = [...items].sort(compareItems);
   if (sorted.length === 0) {
@@ -243,7 +254,12 @@ export default function SdsTable({
         </thead>
         <tbody>
           {sorted.map((i) => (
-            <Row key={i.id} item={i} canEdit={canEdit} />
+            <Row
+              key={i.id}
+              item={i}
+              canEdit={canEdit}
+              siteCount={usage[i.catalog_id] ?? 1}
+            />
           ))}
         </tbody>
       </table>

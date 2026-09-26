@@ -1,28 +1,16 @@
 // Wire shape of apps/forms-worker/src/sds/handlers.ts.
 
-export interface SdsItem {
+/** What a chemical IS -- shared by every site holding it. Editing any of this
+ *  changes it everywhere, which is the point: one sheet per product, not one
+ *  per site. */
+export interface SdsCatalog {
   id: string;
-  location_code: string;
-  binder_tab: string | null;
   /** MUST match the identity on the safety data sheet and the container label.
    *  That matching IS the OSHA requirement (1910.1200(e)(1)(i)), so nothing in
    *  this app rewrites it to look tidier. */
   product_identifier: string;
   manufacturer: string | null;
-  work_area: string | null;
-  /** Set when the row was seeded from the chemical inventory, null when typed
-   *  by hand. Provenance only -- the row is independent once created. */
-  source_product_id: string | null;
-  sort_order: number;
-  notes: string | null;
-  is_active: boolean;
-  removed_at: string | null;
-  created_at: string;
-  updated_at: string;
-  updated_by: string | null;
-  /** R2 key of the stored sheet. THE STORED FILE IS THE ARTIFACT -- source_url
-   *  is only where it came from. Null means no sheet on file, which is a gap
-   *  worth showing rather than hiding. */
+  /** Null means no sheet on file anywhere -- a gap worth showing. */
   sds_r2_key: string | null;
   sds_filename: string | null;
   sds_size_bytes: number | null;
@@ -32,6 +20,24 @@ export interface SdsItem {
   source_url: string | null;
   /** The date printed on the sheet, not the upload date. */
   sds_revision_date: string | null;
+  source_product_id: string | null;
+}
+
+/** A chemical PRESENT AT A SITE. Only the placement lives here. */
+export interface SdsItem {
+  id: string;
+  location_code: string;
+  binder_tab: string | null;
+  work_area: string | null;
+  sort_order: number;
+  notes: string | null;
+  is_active: boolean;
+  removed_at: string | null;
+  created_at: string;
+  updated_at: string;
+  updated_by: string | null;
+  catalog_id: string;
+  catalog: SdsCatalog | null;
 }
 
 export interface SdsReview {
@@ -50,6 +56,9 @@ export interface SdsResponse {
    *  back to the code rather than rendering blank labels.
    */
   site_names?: Record<string, string>;
+  /** catalog_id -> how many sites hold it. Lets the page say what an edit
+   *  affects before it is made. */
+  catalog_usage?: Record<string, number>;
   scope: "all" | "scoped";
   limit_hit: boolean;
 }
@@ -79,7 +88,11 @@ export function compareItems(a: SdsItem, b: SdsItem): number {
     const c = at.localeCompare(bt, undefined, { numeric: true });
     if (c !== 0) return c;
   }
-  return a.product_identifier.localeCompare(b.product_identifier, undefined, {
-    sensitivity: "base"
-  });
+  return (a.catalog?.product_identifier ?? "").localeCompare(
+    b.catalog?.product_identifier ?? "",
+    undefined,
+    {
+      sensitivity: "base"
+    }
+  );
 }

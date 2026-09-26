@@ -19,10 +19,14 @@ const MAX_BYTES = 10 * 1024 * 1024;
 
 export default function SheetCell({
   item,
-  canEdit
+  canEdit,
+  siteCount
 }: {
   item: SdsItem;
   canEdit: boolean;
+  /** How many sites hold this chemical. Shown BEFORE the file picker
+   *  opens, because one upload updates every one of them. */
+  siteCount: number;
 }) {
   const router = useRouter();
   const inputRef = useRef<HTMLInputElement | null>(null);
@@ -67,13 +71,13 @@ export default function SheetCell({
 
   return (
     <div className="text-xs">
-      {item.sds_r2_key ? (
+      {item.catalog?.sds_r2_key ? (
         <a
           href={`/forms/api/sds/${encodeURIComponent(item.id)}/sheet`}
           target="_blank"
           rel="noreferrer"
           className="font-semibold text-splash-blue underline"
-          title={item.sds_filename ?? undefined}
+          title={item.catalog?.sds_filename ?? undefined}
         >
           View SDS
         </a>
@@ -87,10 +91,26 @@ export default function SheetCell({
           <button
             type="button"
             disabled={uploading || busy}
-            onClick={() => inputRef.current?.click()}
+            onClick={() => {
+              // Shared record: confirm only when REPLACING, and only when
+              // more than this site is affected. A first upload harms
+              // nothing, and a dialog on every one would train people to
+              // dismiss the one that matters.
+              if (item.catalog?.sds_r2_key && siteCount > 1) {
+                const ok = window.confirm(
+                  `Replace the sheet for "${item.catalog?.product_identifier}"?
+
+` +
+                    `It is on file for ${siteCount} sites and they all use this one sheet, ` +
+                    `so every binder gets the new version.`
+                );
+                if (!ok) return;
+              }
+              inputRef.current?.click();
+            }}
             className="text-splash-navy/60 underline disabled:opacity-50"
           >
-            {uploading ? "Uploading…" : item.sds_r2_key ? "Replace" : "Upload"}
+            {uploading ? "Uploading…" : item.catalog?.sds_r2_key ? "Replace" : "Upload"}
           </button>
           <input
             ref={inputRef}
@@ -108,19 +128,26 @@ export default function SheetCell({
       {/* Revision date is the date printed ON the sheet, so it is the only thing
           here that answers "is this current?". Upload date would answer "when
           did somebody file it", which is a different and less useful question. */}
-      {item.sds_revision_date ? (
+      {/* Says the sheet is shared before anyone edits it, not after. */}
+      {siteCount > 1 ? (
         <div className="mt-0.5 text-[0.6875rem] text-splash-navy/50">
-          Revised {item.sds_revision_date}
+          Shared with {siteCount} sites
+        </div>
+      ) : null}
+
+      {item.catalog?.sds_revision_date ? (
+        <div className="mt-0.5 text-[0.6875rem] text-splash-navy/50">
+          Revised {item.catalog?.sds_revision_date}
         </div>
       ) : null}
 
       {/* Provenance, not the artifact -- deliberately secondary to View SDS.
           It is how you check the manufacturer for a newer revision, not how
           anyone is meant to reach the sheet. */}
-      {item.source_url ? (
+      {item.catalog?.source_url ? (
         <div className="mt-0.5">
           <a
-            href={item.source_url}
+            href={item.catalog?.source_url}
             target="_blank"
             rel="noreferrer noopener"
             className="text-[0.6875rem] text-splash-navy/50 underline"

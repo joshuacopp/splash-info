@@ -25,6 +25,12 @@ import { resolveSiteAccess, canRead, type SiteAccess } from "../site-access.js";
 import { requireServiceKey } from "../admin/auth.js";
 import type { Env } from "../index.js";
 import { renderSdsPdf } from "./pdf.js";
+import {
+  findOrCreateCatalogEntry,
+  patchCatalogEntry,
+  countSitesUsingCatalog,
+  type SdsCatalogRow
+} from "./catalog.js";
 import { handleUploadSheet, handleServeSheet, renderBinderPdf } from "./sheets.js";
 import { getLocationOptionsFromPricingSimple } from "../db/forms.js";
 
@@ -43,10 +49,7 @@ export interface SdsItemRow {
   id: string;
   location_code: string;
   binder_tab: string | null;
-  product_identifier: string;
-  manufacturer: string | null;
   work_area: string | null;
-  source_product_id: string | null;
   sort_order: number;
   notes: string | null;
   is_active: boolean;
@@ -54,14 +57,15 @@ export interface SdsItemRow {
   created_at: string;
   updated_at: string;
   updated_by: string | null;
-  sds_r2_key: string | null;
-  sds_filename: string | null;
-  sds_size_bytes: number | null;
-  sds_uploaded_at: string | null;
-  sds_uploaded_by: string | null;
-  source_url: string | null;
-  sds_revision_date: string | null;
+  catalog_id: string;
+  /** PostgREST embed. What the chemical IS lives here, shared with every other
+   *  site holding it -- see ./catalog.ts. */
+  catalog: SdsCatalogRow | null;
 }
+
+/** Everything a caller needs about one listed chemical, flattened. The split
+ *  between site and catalogue is a storage concern; a reader wants one thing. */
+const SELECT_WITH_CATALOG = "*,catalog:sds_catalog(*)";
 
 function sbHeaders(env: Env, extra?: Record<string, string>) {
   return {
@@ -119,7 +123,7 @@ function optionalText(v: unknown, max: number): string | null | undefined {
 
 async function readItem(env: Env, id: string): Promise<SdsItemRow | null> {
   const url = new URL("/rest/v1/sds_items", env.SUPABASE_URL);
-  url.searchParams.set("select", "*");
+  url.searchParams.set("select", SELECT_WITH_CATALOG);
   url.searchParams.set("id", `eq.${id}`);
   const resp = await fetch(url.toString(), { headers: sbHeaders(env) });
   if (!resp.ok) return null;
@@ -154,7 +158,7 @@ export async function handleListSds(env: Env, req: Request): Promise<Response> {
   if (location && !canRead(g.access, location)) return jsonError(403, "forbidden");
 
   const q = new URL("/rest/v1/sds_items", env.SUPABASE_URL);
-  q.searchParams.set("select", "*");
+  q.searchParams.set("select", SELECT_WITH_CATALOG);
   q.searchParams.set("order", "location_code.asc,sort_order.asc,product_identifier.asc");
   q.searchParams.set("limit", String(LIST_LIMIT));
   if (!includeInactive) q.searchParams.set("is_active", "eq.true");
@@ -192,6 +196,33 @@ export async function handleListSds(env: Env, req: Request): Promise<Response> {
     }
   }
 
+  // How many sites hold each catalogue entry, so the page can say what an edit
+  // ACTUALLY does before somebody does it. Replacing a sheet updating twenty-five
+  // binders is the feature; the difference between that and a nasty surprise is
+  // entirely whether the number was on screen first.
+  //
+  // One read of a single column rather than a count per row: at 80 sites this is
+  // a couple of thousand ids, and 80 HEAD requests to avoid reading them would be
+  // the worse trade.
+  const usage: Record<string, number> = {};
+  try {
+    const u = new URL("/rest/v1/sds_items", env.SUPABASE_URL);
+    u.searchParams.set("select", "catalog_id");
+    u.searchParams.set("is_active", "eq.true");
+    u.searchParams.set("limit", "20000");
+    const ur = await fetch(u.toString(), { headers: sbHeaders(env) });
+    if (ur.ok) {
+      for (const r of (await ur.json().catch(() => [])) as { catalog_id: string }[]) {
+        if (r.catalog_id) usage[r.catalog_id] = (usage[r.catalog_id] ?? 0) + 1;
+      }
+    }
+  } catch (err) {
+    // A missing count costs a sentence of copy, not correctness. The upload
+    // still works and still applies everywhere; the page just cannot say how
+    // many, and says so rather than guessing.
+    console.error("[forms.sds] usage count failed", err);
+  }
+
   // Site list + display names.
   //
   // AN ADMIN HAS NO locationCodes BY DESIGN -- "everything, no filter
@@ -217,6 +248,7 @@ export async function handleListSds(env: Env, req: Request): Promise<Response> {
     reviews,
     locations,
     site_names: siteNames,
+    catalog_usage: usage,
     scope: g.access.isAdmin ? "all" : "scoped",
     limit_hit: items.length >= LIST_LIMIT
   });
@@ -242,10 +274,19 @@ export async function handleCreateSds(env: Env, req: Request): Promise<Response>
   const identifier = optionalText(body.product_identifier, IDENTIFIER_MAX);
   if (!identifier) return jsonError(400, "product_identifier_required");
 
-  const row = {
-    location_code: location,
+  // The chemical first, the placement second. Two sites adding the same product
+  // land on the SAME catalogue row, which is the whole point: one sheet, one
+  // manufacturer, one revision date, however many binders.
+  const entry = await findOrCreateCatalogEntry(env, {
     product_identifier: identifier,
     manufacturer: optionalText(body.manufacturer, FIELD_MAX) ?? null,
+    email: g.email
+  });
+  if (!entry) return jsonError(502, "catalog_failed");
+
+  const row = {
+    location_code: location,
+    catalog_id: entry.id,
     work_area: optionalText(body.work_area, FIELD_MAX) ?? null,
     binder_tab: optionalText(body.binder_tab, 20) ?? null,
     notes: optionalText(body.notes, NOTES_MAX) ?? null,
@@ -262,16 +303,13 @@ export async function handleCreateSds(env: Env, req: Request): Promise<Response>
     }),
     body: JSON.stringify(row)
   });
-  if (resp.status === 409) {
-    // The partial unique index. Same chemical, same work area, already active.
-    return jsonError(409, "duplicate_active_item");
-  }
+  if (resp.status === 409) return jsonError(409, "duplicate_active_item");
   if (!resp.ok) {
     console.error("[forms.sds] create failed", resp.status, await resp.text().catch(() => ""));
     return jsonError(502, "create_failed");
   }
   const created = (await resp.json().catch(() => [])) as SdsItemRow[];
-  return json({ item: created[0] ?? null }, 201);
+  return json({ item: { ...(created[0] ?? {}), catalog: entry } }, 201);
 }
 
 // =============================================================================
@@ -299,56 +337,77 @@ export async function handlePatchSds(
   const body = (await req.json().catch(() => null)) as Record<string, unknown> | null;
   if (!body) return jsonError(400, "bad_request");
 
-  const patch: Record<string, unknown> = { updated_at: new Date().toISOString(), updated_by: g.email };
+  // TWO DESTINATIONS, and which is which is the whole model. Where the chemical
+  // sits is this site's business; what the chemical IS belongs to every site
+  // holding it, so those edits go to the shared row and change all of them.
+  const sitePatch: Record<string, unknown> = {
+    updated_at: new Date().toISOString(),
+    updated_by: g.email
+  };
+  const catalogPatch: Record<string, unknown> = {};
+
+  for (const [key, max] of [
+    ["work_area", FIELD_MAX],
+    ["notes", NOTES_MAX],
+    ["binder_tab", 20]
+  ] as const) {
+    const v = optionalText(body[key], max);
+    if (v !== undefined) sitePatch[key] = v;
+  }
+  if (typeof body.sort_order === "number" && Number.isFinite(body.sort_order)) {
+    sitePatch.sort_order = Math.trunc(body.sort_order);
+  }
+  // Removal is soft and STAMPED here rather than by the caller, so a row can
+  // never claim it left on a date nobody recorded.
+  if (typeof body.is_active === "boolean" && body.is_active !== existing.is_active) {
+    sitePatch.is_active = body.is_active;
+    sitePatch.removed_at = body.is_active ? null : new Date().toISOString();
+    sitePatch.removed_by = body.is_active ? null : g.email;
+  }
 
   if (body.product_identifier !== undefined) {
     const v = optionalText(body.product_identifier, IDENTIFIER_MAX);
     if (!v) return jsonError(400, "product_identifier_required");
-    patch.product_identifier = v;
+    catalogPatch.product_identifier = v;
   }
   for (const [key, max] of [
     ["manufacturer", FIELD_MAX],
-    ["work_area", FIELD_MAX],
-    ["notes", NOTES_MAX],
-    ["binder_tab", 20],
     ["source_url", 500]
   ] as const) {
     const v = optionalText(body[key], max);
-    if (v !== undefined) patch[key] = v;
+    if (v !== undefined) catalogPatch[key] = v;
   }
-  // A date, or an explicit clear. Anything unparseable is IGNORED rather
-  // than stored: a wrong revision date is worse than none on a field whose
-  // whole job is saying how current the sheet is.
+  // A date, or an explicit clear. Anything unparseable is IGNORED rather than
+  // stored: a wrong revision date is worse than none on a field whose whole job
+  // is saying how current the sheet is.
   if (body.sds_revision_date === null) {
-    patch.sds_revision_date = null;
+    catalogPatch.sds_revision_date = null;
   } else if (typeof body.sds_revision_date === "string") {
     const d = body.sds_revision_date.trim();
-    if (d === "") patch.sds_revision_date = null;
-    else if (ISO_DATE_RE.test(d)) patch.sds_revision_date = d;
-  }
-  if (typeof body.sort_order === "number" && Number.isFinite(body.sort_order)) {
-    patch.sort_order = Math.trunc(body.sort_order);
-  }
-  // Removal is soft and STAMPED here rather than by the caller, so a row can
-  // never claim it left on a date nobody recorded. Restoring clears the stamp,
-  // which is what makes the partial unique index let it back in.
-  if (typeof body.is_active === "boolean" && body.is_active !== existing.is_active) {
-    patch.is_active = body.is_active;
-    patch.removed_at = body.is_active ? null : new Date().toISOString();
-    patch.removed_by = body.is_active ? null : g.email;
+    if (d === "") catalogPatch.sds_revision_date = null;
+    else if (ISO_DATE_RE.test(d)) catalogPatch.sds_revision_date = d;
   }
 
-  if (Object.keys(patch).length === 2) return json({ item: existing, unchanged: true });
+  if (Object.keys(catalogPatch).length > 0) {
+    catalogPatch.updated_by = g.email;
+    const updated = await patchCatalogEntry(env, existing.catalog_id, catalogPatch);
+    if (!updated) return jsonError(502, "patch_failed");
+  }
+
+  if (Object.keys(sitePatch).length === 2 && Object.keys(catalogPatch).length === 0) {
+    return json({ item: existing, unchanged: true });
+  }
 
   const url = new URL("/rest/v1/sds_items", env.SUPABASE_URL);
   url.searchParams.set("id", `eq.${id}`);
+  url.searchParams.set("select", SELECT_WITH_CATALOG);
   const resp = await fetch(url.toString(), {
     method: "PATCH",
     headers: sbHeaders(env, {
       "Content-Type": "application/json",
       Prefer: "return=representation"
     }),
-    body: JSON.stringify(patch)
+    body: JSON.stringify(sitePatch)
   });
   if (resp.status === 409) return jsonError(409, "duplicate_active_item");
   if (!resp.ok) {
@@ -356,7 +415,7 @@ export async function handlePatchSds(
     return jsonError(502, "patch_failed");
   }
   const rows = (await resp.json().catch(() => [])) as SdsItemRow[];
-  return json({ item: rows[0] ?? null });
+  return json({ item: rows[0] ?? (await readItem(env, id)) });
 }
 
 // =============================================================================
@@ -391,18 +450,21 @@ export async function handleSdsCandidates(env: Env, req: Request): Promise<Respo
   // Hide what is already on the list, by provenance OR by name. Provenance
   // alone would re-offer a chemical somebody had already typed by hand.
   const existing = new URL("/rest/v1/sds_items", env.SUPABASE_URL);
-  existing.searchParams.set("select", "source_product_id,product_identifier");
+  existing.searchParams.set("select", "catalog:sds_catalog(source_product_id,product_identifier)");
   existing.searchParams.set("location_code", `eq.${location}`);
   existing.searchParams.set("is_active", "eq.true");
   const er = await fetch(existing.toString(), { headers: sbHeaders(env) });
   const taken = er.ok
     ? ((await er.json().catch(() => [])) as {
-        source_product_id: string | null;
-        product_identifier: string;
+        catalog: { source_product_id: string | null; product_identifier: string } | null;
       }[])
     : [];
-  const takenIds = new Set(taken.map((t) => t.source_product_id).filter(Boolean));
-  const takenNames = new Set(taken.map((t) => t.product_identifier.trim().toLowerCase()));
+  const takenIds = new Set(taken.map((t) => t.catalog?.source_product_id).filter(Boolean));
+  const takenNames = new Set(
+    taken
+      .map((t) => t.catalog?.product_identifier?.trim().toLowerCase())
+      .filter((n): n is string => Boolean(n))
+  );
 
   return json({
     candidates: all.filter(
@@ -448,22 +510,33 @@ export async function handleSeedSds(env: Env, req: Request): Promise<Response> {
   }[];
   if (found.length === 0) return jsonError(400, "no_products");
 
-  const rows = found.map((f, i) => ({
-    location_code: location,
-    product_identifier: f.product_name.slice(0, IDENTIFIER_MAX),
-    source_product_id: f.product_id,
-    sort_order: i,
-    created_by: g.email,
-    updated_by: g.email
-  }));
+  // One catalogue lookup per product. A product already listed at another site
+  // resolves to the EXISTING row, so this site inherits its sheet, manufacturer
+  // and revision date immediately -- nothing to re-upload, nothing to retype.
+  const rows: Record<string, unknown>[] = [];
+  let inherited = 0;
+  for (const [i, f] of found.entries()) {
+    const entry = await findOrCreateCatalogEntry(env, {
+      product_identifier: f.product_name.slice(0, IDENTIFIER_MAX),
+      source_product_id: f.product_id,
+      email: g.email
+    });
+    if (!entry) continue;
+    if (entry.sds_r2_key) inherited++;
+    rows.push({
+      location_code: location,
+      catalog_id: entry.id,
+      sort_order: i,
+      created_by: g.email,
+      updated_by: g.email
+    });
+  }
+  if (rows.length === 0) return jsonError(502, "catalog_failed");
 
   const resp = await fetch(new URL("/rest/v1/sds_items", env.SUPABASE_URL).toString(), {
     method: "POST",
     headers: sbHeaders(env, {
       "Content-Type": "application/json",
-      // A chemical already on the list is not an error worth failing the whole
-      // batch over -- the picker filters them out, but two people seeding at
-      // once would otherwise lose the second batch entirely.
       Prefer: "return=representation,resolution=ignore-duplicates"
     }),
     body: JSON.stringify(rows)
@@ -473,7 +546,10 @@ export async function handleSeedSds(env: Env, req: Request): Promise<Response> {
     return jsonError(502, "seed_failed");
   }
   const created = (await resp.json().catch(() => [])) as SdsItemRow[];
-  return json({ items: created, requested: ids.length, created: created.length }, 201);
+  return json(
+    { items: created, requested: ids.length, created: created.length, inherited_sheets: inherited },
+    201
+  );
 }
 
 // =============================================================================
@@ -543,7 +619,7 @@ export async function handlePrintSds(env: Env, req: Request): Promise<Response> 
   if (!canRead(g.access, location)) return jsonError(403, "forbidden");
 
   const q = new URL("/rest/v1/sds_items", env.SUPABASE_URL);
-  q.searchParams.set("select", "*");
+  q.searchParams.set("select", SELECT_WITH_CATALOG);
   q.searchParams.set("location_code", `eq.${location}`);
   q.searchParams.set("is_active", "eq.true");
   q.searchParams.set("order", "sort_order.asc,product_identifier.asc");
@@ -646,7 +722,14 @@ async function sheetCtx(env: Env, req: Request) {
       readItem: (id: string) => readItem(env, id),
       canRead: (loc: string) => canRead(g.access, loc),
       email: g.email,
-      patch: (id: string, body: Record<string, unknown>) => patchSdsRow(env, id, body)
+      // Patches the CATALOGUE. A sheet belongs to the chemical, so uploading
+      // one updates every site holding it -- which is the feature, and why the
+      // UI states the site count before the file picker opens.
+      patch: async (catalogId: string, body: Record<string, unknown>) => {
+        const updated = await patchCatalogEntry(env, catalogId, body);
+        if (!updated) return jsonError(502, "patch_failed");
+        return json({ catalog: updated });
+      }
     }
   };
 }
@@ -697,7 +780,7 @@ export async function handleSdsBinder(env: Env, req: Request): Promise<Response>
   if (!canRead(g.access, location)) return jsonError(403, "forbidden");
 
   const q = new URL("/rest/v1/sds_items", env.SUPABASE_URL);
-  q.searchParams.set("select", "*");
+  q.searchParams.set("select", SELECT_WITH_CATALOG);
   q.searchParams.set("location_code", `eq.${location}`);
   q.searchParams.set("is_active", "eq.true");
   q.searchParams.set("order", "sort_order.asc,product_identifier.asc");
