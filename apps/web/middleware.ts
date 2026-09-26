@@ -223,6 +223,35 @@ export function middleware(request: NextRequest) {
   if (!hasCookie) {
     return resumeOrLogin(request);
   }
+
+  // AAL2 OR NOTHING. A cookie is not a finished login.
+  //
+  // This gate used to pass anyone holding an access token, which meant a user
+  // who typed their password and then clicked the logo in the header walked
+  // straight past the authenticator prompt into every page here. The prompt was
+  // advisory. It is not any more: an un-elevated session is sent back to finish,
+  // no matter which link it arrives on.
+  //
+  // The enrollment deadline (2026-08-28, @splash/auth/mfa-policy) is long past,
+  // so "has a factor" is no longer a meaningful distinction to make here --
+  // everyone is expected to be at aal2, and a session that is not gets routed
+  // to the one screen that can fix it.
+  //
+  // /login, /logout, /change-password and /mfa/* are reachable at aal1 by
+  // design: enrolling and completing a code step both REQUIRE a session, so
+  // gating them would deadlock. /mfa/* is simply absent from the matcher below.
+  //
+  // What a no-factor user sees: /login shows the password form (nothing is owed
+  // on a code step they have no factor for), and dashboard-worker's
+  // MFA_ENROLL_ENFORCE then routes them to /mfa/enroll?required=true. Their
+  // route out is enrollment, which is self-service and already built.
+  if (tokenAal(hasCookie) !== "aal2") {
+    const url = request.nextUrl.clone();
+    url.pathname = "/login";
+    const qs = searchParams.toString();
+    url.search = `?return=${encodeURIComponent(qs ? `${pathname}?${qs}` : pathname)}`;
+    return NextResponse.redirect(url, 307);
+  }
   return NextResponse.next();
 }
 
