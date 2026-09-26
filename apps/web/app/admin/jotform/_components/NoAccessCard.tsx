@@ -1,49 +1,26 @@
-// Brief 109 / Brief 151 — JotForm admin sign-in card.
+// Maps this feature's own prop shape and copy onto the shared AccessCard.
+// The markup, the Sign In button and the half-finished-MFA rescue all live
+// there now; what stays here is the wording, which is per-feature on purpose.
 //
-// Renders on every /admin/jotform/* page when the caller is unauthenticated.
-// Brief 151 widened all three jotform routes to any-session (the index,
-// the per-form list, and the per-submission detail), so the prior
-// admin-tier "forbidden" branch became unreachable and was removed.
-// Per-row scoping is enforced server-side via
-// accessibleSiteNumbersForSession (Brief 107) — a signed-in user with no
-// matching locations sees a friendly empty-state on the index instead
-// of this card.
+// The exported signature is UNCHANGED, so its call sites did not move. That was
+// the point: rewriting 43 call sites across every admin failure path is a lot of
+// edits on the screens hardest to notice getting wrong.
 
-import Link from "next/link";
-import FinishSignInRedirect from "../../../_components/FinishSignInRedirect";
+import AccessCard from "../../../_components/AccessCard";
 
 interface Props {
   returnPath?: string;
 }
 
+/** Only ever a sign-in state: Brief 151 widened the JotForm index to any
+ *  authenticated session, so there is no "forbidden" to render. */
 export default function NoAccessCard({ returnPath }: Props) {
   return (
-    <section className="mx-auto w-full max-w-[720px] px-5 py-9">
-      <div className="mb-6">
-        <p className="mb-1 text-xs font-semibold uppercase tracking-[0.18em] text-sudsy-blue">
-          Internal Tools
-        </p>
-        <h1 className="text-2xl font-bold text-splash-navy">JotForm</h1>
-      </div>
-
-      <div className="rounded-splash-lg border-[1.5px] border-gray-light bg-white p-7 shadow-splash-card">
-        <p className="mb-3 text-base font-semibold text-splash-navy">
-          Sign in required.
-        </p>
-        <p className="mb-5 text-[0.9375rem] leading-relaxed text-splash-navy/80">
-          JotForm submissions are restricted. Sign in to continue.
-        </p>
-            {/* Rescues a caller stranded here by a half-finished MFA login:
-                the code step, not this card, is what they need. Waiting to be
-                clicked was the bug -- see the component. */}
-            <FinishSignInRedirect returnPath={returnPath ?? "/admin/jotform"} />
-        <Link
-          href={`/login?return=${encodeURIComponent(returnPath ?? "/admin/jotform")}`}
-          className="inline-flex items-center gap-1.5 rounded-splash-sm bg-splash-blue px-5 py-2.5 text-sm font-bold text-white shadow-splash-btn transition-colors hover:bg-splash-blue-dark"
-        >
-          Sign In
-        </Link>
-      </div>
-    </section>
+    <AccessCard
+      title="JotForm"
+      heading="Sign in required."
+      message="JotForm submissions are restricted. Sign in to continue."
+      action={{ kind: "signin", returnPath: returnPath ?? "/admin/jotform" }}
+    />
   );
 }

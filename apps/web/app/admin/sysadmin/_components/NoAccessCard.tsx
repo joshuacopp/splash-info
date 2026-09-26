@@ -1,20 +1,12 @@
-// /admin/sysadmin gate cards. Two render variants:
+// Maps this feature's own prop shape and copy onto the shared AccessCard.
+// The markup, the Sign In button and the half-finished-MFA rescue all live
+// there now; what stays here is the wording, which is per-feature on purpose.
 //
-//   reason="signin"    — caller has no session (or worker returned 401/403).
-//                        Renders a Sign In button targeting /login?return=...
-//                        so the user lands back here after auth.
-//
-//   reason="forbidden" — caller IS authenticated but session.role !== super_admin.
-//                        No Sign In button (signing in won't change the role).
-//                        Renders explanatory text only.
-//
-// Brief 7's gate has two distinct shapes; the Brief 11 pricing pages have
-// one shape each (Sign In only). Per Brief 7 §scope.4, this component is
-// scoped to /admin/sysadmin — don't refactor the existing damage/pricing
-// no-access cards onto it.
+// The exported signature is UNCHANGED, so its call sites did not move. That was
+// the point: rewriting 43 call sites across every admin failure path is a lot of
+// edits on the screens hardest to notice getting wrong.
 
-import Link from "next/link";
-import FinishSignInRedirect from "../../../_components/FinishSignInRedirect";
+import AccessCard from "../../../_components/AccessCard";
 
 interface NoAccessCardProps {
   reason: "signin" | "forbidden";
@@ -22,57 +14,26 @@ interface NoAccessCardProps {
   returnPath?: string;
 }
 
+/** Named export, not default -- its call sites import it that way. */
 export function NoAccessCard({ reason, returnPath }: NoAccessCardProps) {
+  if (reason === "signin") {
+    return (
+      <AccessCard
+        title="System Admin"
+        heading="Sign in required."
+        message="Sysadmin operations are restricted to super-admins. Sign in to continue."
+        action={{ kind: "signin", returnPath: returnPath ?? "/admin/sysadmin" }}
+      />
+    );
+  }
+  // No Sign In button: the caller IS authenticated and signing in again cannot
+  // change their role.
   return (
-    <section className="mx-auto w-full max-w-[720px] px-5 py-9">
-      <div className="mb-6">
-        <p className="mb-1 text-xs font-semibold uppercase tracking-[0.18em] text-sudsy-blue">
-          Internal Tools
-        </p>
-        <h1 className="text-2xl font-bold text-splash-navy">System Admin</h1>
-      </div>
-
-      <div className="rounded-splash-lg border-[1.5px] border-gray-light bg-white p-7 shadow-splash-card">
-        {reason === "signin" ? (
-          <>
-            <p className="mb-3 text-base font-semibold text-splash-navy">
-              Sign in required.
-            </p>
-            <p className="mb-5 text-[0.9375rem] leading-relaxed text-splash-navy/80">
-              Sysadmin operations are restricted to super-admins. Sign in to
-              continue.
-            </p>
-            {/* Rescues a caller stranded here by a half-finished MFA login:
-                the code step, not this card, is what they need. Waiting to be
-                clicked was the bug -- see the component. */}
-            <FinishSignInRedirect returnPath={returnPath ?? "/admin/sysadmin"} />
-            <Link
-              href={`/login?return=${encodeURIComponent(
-                returnPath ?? "/admin/sysadmin"
-              )}`}
-              className="inline-flex items-center gap-1.5 rounded-splash-sm bg-splash-blue px-5 py-2.5 text-sm font-bold text-white shadow-splash-btn transition-colors hover:bg-splash-blue-dark"
-            >
-              Sign In
-            </Link>
-          </>
-        ) : (
-          <>
-            <p className="mb-3 text-base font-semibold text-splash-navy">
-              Access denied.
-            </p>
-            <p className="mb-5 text-[0.9375rem] leading-relaxed text-splash-navy/80">
-              Sysadmin operations are super-admin only. Contact a super-admin
-              if you need access.
-            </p>
-            <Link
-              href="/admin/dashboard"
-              className="inline-flex items-center gap-1.5 rounded-splash-sm bg-splash-blue px-5 py-2.5 text-sm font-bold text-white shadow-splash-btn transition-colors hover:bg-splash-blue-dark"
-            >
-              Back to Dashboard
-            </Link>
-          </>
-        )}
-      </div>
-    </section>
+    <AccessCard
+      title="System Admin"
+      heading="Access denied."
+      message="Sysadmin operations are super-admin only. Contact a super-admin if you need access."
+      action={{ kind: "dashboard" }}
+    />
   );
 }
