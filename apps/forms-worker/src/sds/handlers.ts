@@ -1190,8 +1190,31 @@ export async function handleCatalogFromInventory(
   }[];
   if (found.length === 0) return jsonError(400, "no_products");
 
+  // Skip what the LISTING already called "in catalogue", using the same rule it
+  // used. The listing greys a row on provenance OR name; if create decided
+  // "already there" differently, the screen would disable a row this endpoint
+  // would cheerfully duplicate, and the two would drift silently.
+  const c = new URL("/rest/v1/sds_catalog", env.SUPABASE_URL);
+  c.searchParams.set("select", "product_identifier,source_product_id");
+  c.searchParams.set("limit", "5000");
+  const cr = await fetch(c.toString(), { headers: sbHeaders(env) });
+  if (!cr.ok) return jsonError(502, "catalog_read_failed");
+  const entries = (await cr.json().catch(() => [])) as {
+    product_identifier: string;
+    source_product_id: string | null;
+  }[];
+  const knownIds = new Set(entries.map((e) => e.source_product_id).filter(Boolean));
+  const knownNames = new Set(
+    entries.map((e) => e.product_identifier.trim().toLowerCase())
+  );
+
   let created = 0;
+  let skipped = 0;
   for (const f of found) {
+    if (knownIds.has(f.product_id) || knownNames.has(f.product_name.trim().toLowerCase())) {
+      skipped++;
+      continue;
+    }
     const entry = await findOrCreateCatalogEntry(env, {
       product_identifier: f.product_name.slice(0, IDENTIFIER_MAX),
       source_product_id: f.product_id,
@@ -1199,5 +1222,5 @@ export async function handleCatalogFromInventory(
     });
     if (entry) created++;
   }
-  return json({ requested: ids.length, created }, 201);
+  return json({ requested: ids.length, created, skipped }, 201);
 }

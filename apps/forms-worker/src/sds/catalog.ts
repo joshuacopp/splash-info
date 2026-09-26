@@ -43,6 +43,24 @@ function escapeLike(s: string): string {
   return s.replace(/[\\%_]/g, (c) => `\\${c}`);
 }
 
+/** The entry already created from this inventory product, if any. Oldest wins,
+ *  so a repeat add converges on the row sites are already pointing at rather
+ *  than whichever the database happened to return. */
+async function findBySourceProduct(
+  env: Env,
+  sourceProductId: string
+): Promise<SdsCatalogRow | null> {
+  const url = new URL("/rest/v1/sds_catalog", env.SUPABASE_URL);
+  url.searchParams.set("select", "*");
+  url.searchParams.set("source_product_id", `eq.${sourceProductId}`);
+  url.searchParams.set("order", "created_at.asc");
+  url.searchParams.set("limit", "1");
+  const resp = await fetch(url.toString(), { headers: sbHeaders(env) });
+  if (!resp.ok) return null;
+  const rows = (await resp.json().catch(() => [])) as SdsCatalogRow[];
+  return rows[0] ?? null;
+}
+
 async function findByIdentity(
   env: Env,
   identifier: string,
@@ -88,6 +106,21 @@ export async function findOrCreateCatalogEntry(
   const identifier = input.product_identifier.trim();
   const manufacturer = input.manufacturer?.trim() || null;
   if (!identifier) return null;
+
+  // PROVENANCE FIRST, and it has to be. (name, manufacturer) is a weaker
+  // identity than it looks: the same inventory product arrives with a
+  // manufacturer from one path and without one from another, the pair fails to
+  // match, and a second row is inserted for one chemical. That is not
+  // hypothetical -- it is how "Bug Remover *2X*" ended up in the catalogue
+  // twice, both rows pointing at the same inventory product, 82 minutes apart.
+  //
+  // Two rows sharing a source_product_id ARE the same product by definition, so
+  // check that before anything a human can have typed differently. The risk
+  // grows as manufacturers get filled in, which the catalogue page invites.
+  if (input.source_product_id) {
+    const bySource = await findBySourceProduct(env, input.source_product_id);
+    if (bySource) return bySource;
+  }
 
   const existing = await findByIdentity(env, identifier, manufacturer);
   if (existing) return existing;
