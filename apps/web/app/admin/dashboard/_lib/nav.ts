@@ -104,6 +104,7 @@ export const NAV = [
   // ---- Admin ----
   { id: "pricing", group: "admin", title: "Pricing", href: "/admin/pricing" },
   { id: "form-builder", group: "admin", title: "Form Builder", href: "/admin/forms" },
+  { id: "sds-catalog", group: "admin", title: "SDS Catalogue", href: "/admin/sds-catalog" },
   { id: "database-admin", group: "admin", title: "Database Admin", href: "/admin/sysadmin" },
   { id: "email-queue", group: "admin", title: "Email Queue", href: "/admin/email-queue" },
   { id: "scorm-builder", group: "admin", title: "SCORM Package Builder", href: "/admin/scorm-builder" }

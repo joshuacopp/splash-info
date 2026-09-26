@@ -9,7 +9,12 @@
 import { cookies, headers } from "next/headers";
 import { getCloudflareContext } from "@opennextjs/cloudflare";
 
-import type { SdsCandidate, SdsItem, SdsResponse } from "./types";
+import type {
+  SdsCandidate,
+  SdsCatalogSearchRow,
+  SdsItem,
+  SdsResponse
+} from "./types";
 
 const FORMS_BINDING = "FORMS_WORKER" as const;
 
@@ -198,6 +203,36 @@ export async function setCatalogVerified(
     await callForms(`/forms/api/sds/catalog/${encodeURIComponent(catalogId)}/verify`, {
       method: "POST",
       jsonBody: { verified }
+    })
+  );
+}
+
+/** Search the shared catalogue. Used by the admin curation page; the per-site
+ *  picker queries the same endpoint from the browser. */
+export async function searchSdsCatalog(q: string): Promise<SdsCatalogSearchRow[]> {
+  const resp = await callForms(`/forms/api/sds/catalog?q=${encodeURIComponent(q)}`);
+  // Fail-soft to empty: an unreachable search should leave an empty list and a
+  // working "add" button, not a broken page.
+  if (!resp.ok) return [];
+  const data = (await resp.json()) as { catalog?: SdsCatalogSearchRow[] };
+  return data.catalog ?? [];
+}
+
+export async function createSdsCatalogEntry(input: {
+  product_identifier: string;
+  manufacturer: string | null;
+}): Promise<Result<unknown>> {
+  return unwrap(await callForms("/forms/api/sds/catalog", { method: "POST", jsonBody: input }));
+}
+
+export async function patchSdsCatalogEntry(
+  id: string,
+  patch: Record<string, unknown>
+): Promise<Result<unknown>> {
+  return unwrap(
+    await callForms(`/forms/api/sds/catalog/${encodeURIComponent(id)}`, {
+      method: "PATCH",
+      jsonBody: patch
     })
   );
 }

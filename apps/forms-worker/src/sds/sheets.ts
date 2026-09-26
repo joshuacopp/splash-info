@@ -60,6 +60,7 @@ export async function handleUploadSheet(
     readItem: (id: string) => Promise<SdsItemRow | null>;
     canRead: (locationCode: string) => boolean;
     email: string;
+    isAdmin: boolean;
     patch: (id: string, body: Record<string, unknown>) => Promise<Response>;
   }
 ): Promise<Response> {
@@ -83,6 +84,13 @@ export async function handleUploadSheet(
   if (!(await isPdf(bytes))) return jsonError(415, "not_a_pdf");
 
   if (!item.catalog_id) return jsonError(409, "item_has_no_catalog_entry");
+  // Same rule as editing the identity: replacing the sheet on a VERIFIED entry
+  // is an admin act. The badge says somebody accountable checked that this file
+  // is this chemical's; letting anyone swap the file would retract that
+  // judgement by a route that never required it.
+  if (item.catalog?.verified_at && !ctx.isAdmin) {
+    return jsonError(403, "verified_entry_is_admin_only");
+  }
   const key = sheetKey(item.catalog_id);
   try {
     await env.FORMS_FILES.put(key, bytes, {
@@ -228,4 +236,61 @@ export async function renderBinderPdf(
   }
 
   return { bytes: await out.save(), missing, failed };
+}
+
+/**
+ * Attach a sheet directly to a catalogue entry, with no site row in play.
+ *
+ * Same validation and the same R2 key as the per-site route -- one sheet per
+ * chemical, whichever door it came through. Exists so the catalogue can be
+ * stocked BEFORE any site holds the chemical, which is the whole point of
+ * curating it centrally rather than through forty site pages.
+ */
+export async function handleCatalogUpload(
+  env: Env,
+  req: Request,
+  entry: { id: string },
+  email: string
+): Promise<Response> {
+  let form: FormData;
+  try {
+    form = await req.formData();
+  } catch {
+    return jsonError(400, "invalid_form_data");
+  }
+  const file = form.get("file");
+  if (!(file instanceof File)) return jsonError(400, "no_file");
+  if (file.size > SHEET_MAX_BYTES) return jsonError(413, "file_too_large");
+
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  if (!(await isPdf(bytes))) return jsonError(415, "not_a_pdf");
+
+  const key = sheetKey(entry.id);
+  try {
+    await env.FORMS_FILES.put(key, bytes, {
+      httpMetadata: { contentType: "application/pdf" }
+    });
+  } catch (err) {
+    console.error("[forms.sds] catalog sheet upload failed", err);
+    return jsonError(502, "upload_failed");
+  }
+
+  // R2 first, row second: the worst case that way is an orphan object nobody
+  // references, where the reverse is a row pointing at a file that is not there.
+  const { patchCatalogEntry } = await import("./catalog.js");
+  const updated = await patchCatalogEntry(env, entry.id, {
+    sds_r2_key: key,
+    sds_filename: file.name.slice(0, 200),
+    sds_size_bytes: bytes.length,
+    sds_uploaded_at: new Date().toISOString(),
+    sds_uploaded_by: email
+  });
+  if (!updated) {
+    console.error(`[forms.sds] sheet stored at ${key} but the catalog patch failed`);
+    return jsonError(502, "patch_failed");
+  }
+  return new Response(JSON.stringify({ catalog: updated }), {
+    status: 200,
+    headers: { "content-type": "application/json" }
+  });
 }

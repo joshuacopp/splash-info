@@ -115,6 +115,7 @@ const ADMIN_KNOWN_SUBPATHS = new Set<string>([
   "pricing",
   "promotions",
   "scorm-builder",
+  "sds-catalog",
   "signups",
   "sysadmin",
   "api",

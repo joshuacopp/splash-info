@@ -34,7 +34,12 @@ import {
   setCatalogVerified,
   type SdsCatalogRow
 } from "./catalog.js";
-import { handleUploadSheet, handleServeSheet, renderBinderPdf } from "./sheets.js";
+import {
+  handleUploadSheet,
+  handleServeSheet,
+  handleCatalogUpload,
+  renderBinderPdf
+} from "./sheets.js";
 import { getLocationOptionsFromPricingSimple } from "../db/forms.js";
 
 const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -442,6 +447,17 @@ export async function handlePatchSds(
   }
 
   if (Object.keys(catalogPatch).length > 0) {
+    // A VERIFIED ENTRY IS READ-ONLY TO EVERYONE BUT AN ADMIN.
+    //
+    // Without this, any site contact could rename a verified chemical or change
+    // its revision date, which silently clears the badge -- so the assurance
+    // would be undone by somebody who was never allowed to grant it. The
+    // placement (tab, work area, presence) stays theirs; what the chemical IS
+    // does not, once somebody accountable has vouched for it.
+    const current = await readCatalogEntry(env, existing.catalog_id);
+    if (current?.verified_at && !g.access.isAdmin) {
+      return jsonError(403, "verified_entry_is_admin_only");
+    }
     catalogPatch.updated_by = g.email;
     const updated = await patchCatalogEntry(env, existing.catalog_id, catalogPatch);
     if (!updated) return jsonError(502, "patch_failed");
@@ -777,6 +793,7 @@ async function sheetCtx(env: Env, req: Request) {
     access: g.access,
     ctx: {
       readItem: (id: string) => readItem(env, id),
+      isAdmin: g.access.isAdmin,
       canRead: (loc: string) => canRead(g.access, loc),
       email: g.email,
       // Patches the CATALOGUE. A sheet belongs to the chemical, so uploading
@@ -939,4 +956,115 @@ export async function handleVerifyCatalog(
   const updated = await setCatalogVerified(env, id, verified, g.email);
   if (!updated) return jsonError(502, "verify_failed");
   return json({ catalog: updated });
+}
+
+// =============================================================================
+// Catalogue administration
+//
+// The catalogue is ORG-WIDE, so building it out of the per-site add flow means
+// hopping between sites to enter chemicals that have nothing to do with which
+// site you happen to be looking at. These endpoints let an admin curate it
+// directly: create an entry before any site holds it, fix one, attach its sheet.
+// =============================================================================
+
+/** Every catalogue write here is admin-tier. Curating the shared record is not
+ *  a site's job, and a verified entry is admin-only by the same rule. */
+async function adminGate(env: Env, req: Request) {
+  const g = await gate(env, req);
+  if (!g.ok) return { ok: false as const, response: g.response };
+  if (!g.access.isAdmin) {
+    return { ok: false as const, response: jsonError(403, "admin_only") };
+  }
+  return { ok: true as const, email: g.email };
+}
+
+/** POST /forms/api/sds/catalog — add a chemical to the shared list, with no
+ *  site attached. This is how the catalogue gets built ahead of the sites. */
+export async function handleCreateCatalog(env: Env, req: Request): Promise<Response> {
+  if (!isOriginAllowed(req)) return jsonError(403, "bad_origin");
+  const keyed = requireServiceKey(env);
+  if (keyed) return keyed;
+  const g = await adminGate(env, req);
+  if (!g.ok) return g.response;
+
+  const body = (await req.json().catch(() => null)) as Record<string, unknown> | null;
+  if (!body) return jsonError(400, "bad_request");
+  const identifier = optionalText(body.product_identifier, IDENTIFIER_MAX);
+  if (!identifier) return jsonError(400, "product_identifier_required");
+
+  // Find-or-create rather than plain insert: an admin adding a chemical some
+  // site already entered by hand should land on THAT row and improve it, not
+  // create a second one for the same thing.
+  const entry = await findOrCreateCatalogEntry(env, {
+    product_identifier: identifier,
+    manufacturer: optionalText(body.manufacturer, FIELD_MAX) ?? null,
+    email: g.email
+  });
+  if (!entry) return jsonError(502, "catalog_failed");
+  return json({ catalog: entry }, 201);
+}
+
+/** PATCH /forms/api/sds/catalog/{id} — edit the shared record. */
+export async function handlePatchCatalog(
+  env: Env,
+  req: Request,
+  id: string
+): Promise<Response> {
+  if (!isOriginAllowed(req)) return jsonError(403, "bad_origin");
+  const keyed = requireServiceKey(env);
+  if (keyed) return keyed;
+  if (!UUID_RE.test(id)) return jsonError(400, "bad_id");
+  const g = await adminGate(env, req);
+  if (!g.ok) return g.response;
+
+  const body = (await req.json().catch(() => null)) as Record<string, unknown> | null;
+  if (!body) return jsonError(400, "bad_request");
+
+  const patch: Record<string, unknown> = { updated_by: g.email };
+  if (body.product_identifier !== undefined) {
+    const v = optionalText(body.product_identifier, IDENTIFIER_MAX);
+    if (!v) return jsonError(400, "product_identifier_required");
+    patch.product_identifier = v;
+  }
+  for (const [key, max] of [
+    ["manufacturer", FIELD_MAX],
+    ["source_url", 500]
+  ] as const) {
+    const v = optionalText(body[key], max);
+    if (v !== undefined) patch[key] = v;
+  }
+  if (body.sds_revision_date === null) {
+    patch.sds_revision_date = null;
+  } else if (typeof body.sds_revision_date === "string") {
+    const d = body.sds_revision_date.trim();
+    if (d === "") patch.sds_revision_date = null;
+    else if (ISO_DATE_RE.test(d)) patch.sds_revision_date = d;
+  }
+
+  // Still clears verification, even for an admin. The badge is a claim about a
+  // specific name and a specific sheet; editing either means nobody has checked
+  // the new pairing yet. Re-verifying is one click, and that click is somebody
+  // saying they looked.
+  const updated = await patchCatalogEntry(env, id, patch);
+  if (!updated) return jsonError(502, "patch_failed");
+  return json({ catalog: updated });
+}
+
+/** POST /forms/api/sds/catalog/{id}/sheet — attach a sheet with no site row in
+ *  play, so the catalogue can be stocked before anywhere holds the chemical. */
+export async function handleCatalogSheetUpload(
+  env: Env,
+  req: Request,
+  id: string
+): Promise<Response> {
+  if (!isOriginAllowed(req)) return jsonError(403, "bad_origin");
+  const keyed = requireServiceKey(env);
+  if (keyed) return keyed;
+  if (!UUID_RE.test(id)) return jsonError(400, "bad_id");
+  const g = await adminGate(env, req);
+  if (!g.ok) return g.response;
+
+  const entry = await readCatalogEntry(env, id);
+  if (!entry) return jsonError(404, "catalog_entry_not_found");
+  return handleCatalogUpload(env, req, entry, g.email);
 }

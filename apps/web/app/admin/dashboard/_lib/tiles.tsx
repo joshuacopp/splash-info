@@ -526,6 +526,22 @@ export const TILES: ReadonlyArray<Tile> = [
     visibleTo: allStaff
   },
   {
+    id: "sds-catalog",
+    group: "admin",
+    eyebrow: "Safety",
+    title: "SDS Catalogue",
+    description:
+      "Every chemical the company holds, with one sheet each — sites add from this list.",
+    href: "/admin/sds-catalog",
+    icon: beakerIcon,
+    // Curating the shared record is not a site's job, and a verified entry is
+    // admin-only to edit. The worker enforces both.
+    visibleTo: (s) =>
+      s?.role === "super_admin" ||
+      s?.dcRole === "admin" ||
+      s?.dcRole === "super_admin"
+  },
+  {
     id: "sds",
     group: "operations",
     subgroup: "other-tools",
