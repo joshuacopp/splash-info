@@ -111,3 +111,47 @@ join inventory.products p on p.id = lp.product_id;
 
 -- (Column and table COMMENTs were applied with the original statement; they are
 -- not repeated here. See the tables in Supabase for the authoritative text.)
+
+-- ---------------------------------------------------------------------------
+-- Stored safety data sheets. APPLIED 2026-09-26 via the connector.
+--
+--   sds_r2_key / sds_filename / sds_size_bytes / sds_uploaded_at /
+--   sds_uploaded_by  -- the sheet itself, in FORMS_FILES at
+--                       sds-sheets/{location_code}/{item_id}.pdf
+--   source_url        -- where it came from. PROVENANCE ONLY.
+--   sds_revision_date -- the date printed ON the sheet, not the upload date.
+--
+-- STORED, NOT LINKED, and the reasoning is the whole decision:
+--
+--   * A link is not a document. OSHA wants sheets readily accessible to
+--     employees in their work area during each work shift; a manufacturer URL
+--     depends on their site being up and still organised the same way. That is
+--     a dependency on somebody else's website for an artifact we are
+--     accountable for.
+--   * Link rot is silent. Nobody discovers a dead SDS link until they need the
+--     sheet, which is during a spill or an inspection.
+--   * Version drift is invisible. If the manufacturer revises, a link and the
+--     paper in the binder disagree and nothing says so. A stored copy plus
+--     sds_revision_date makes "is this current?" answerable.
+--   * Printing the binder needs the bytes.
+--
+-- The URL is still worth keeping: it is how someone re-checks for a newer
+-- revision later without hunting for the page again.
+--
+-- PDF only, sniffed from the bytes at upload (a client Content-Type is a claim,
+-- not evidence). The R2 key is DERIVED from the row, never supplied, so a
+-- caller cannot write outside their own site's namespace by posting a path.
+-- Re-upload overwrites: a revised sheet replaces the old one, because keeping
+-- both would leave two answers to "which sheet is in the binder".
+--
+-- Verified after apply: all 7 columns present.
+-- ---------------------------------------------------------------------------
+
+alter table public.sds_items
+  add column if not exists sds_r2_key        text,
+  add column if not exists sds_filename      text,
+  add column if not exists sds_size_bytes    integer,
+  add column if not exists sds_uploaded_at   timestamptz,
+  add column if not exists sds_uploaded_by   text,
+  add column if not exists source_url        text,
+  add column if not exists sds_revision_date date;

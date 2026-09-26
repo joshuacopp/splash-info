@@ -11,6 +11,7 @@ import { useRouter } from "next/navigation";
 
 import { compareItems, type SdsItem } from "../_lib/types";
 import { setChemicalActiveAction, updateChemicalAction } from "../actions";
+import SheetCell from "./SheetCell";
 
 function Field({
   name,
@@ -67,7 +68,7 @@ function Row({ item, canEdit }: { item: SdsItem; canEdit: boolean }) {
   if (editing) {
     return (
       <tr className="border-t border-gray-light bg-splash-navy/[0.02]">
-        <td colSpan={5} className="p-3">
+        <td colSpan={6} className="p-3">
           <form action={save} className="flex flex-wrap items-end gap-2">
             <label className="text-xs text-splash-navy/70">
               Tab
@@ -125,6 +126,9 @@ function Row({ item, canEdit }: { item: SdsItem; canEdit: boolean }) {
       </td>
       <td className="px-3 py-2 text-sm text-splash-navy/80">{item.manufacturer || "—"}</td>
       <td className="px-3 py-2 text-sm text-splash-navy/80">{item.work_area || "—"}</td>
+      <td className="px-3 py-2 align-top">
+        <SheetCell item={item} canEdit={canEdit} />
+      </td>
       <td className="px-3 py-2 text-right text-xs">
         {canEdit ? (
           <div className="flex justify-end gap-3">
@@ -194,7 +198,7 @@ export default function SdsTable({
   }
   return (
     <div className="overflow-x-auto rounded-splash-md border border-gray-light bg-white">
-      <table className="w-full min-w-[46rem] border-collapse">
+      <table className="w-full min-w-[54rem] border-collapse">
         <thead>
           <tr className="bg-splash-navy/[0.04] text-left">
             <th className="w-16 px-3 py-2 text-xs font-bold uppercase tracking-wider text-splash-navy/60">
@@ -208,6 +212,9 @@ export default function SdsTable({
             </th>
             <th className="px-3 py-2 text-xs font-bold uppercase tracking-wider text-splash-navy/60">
               Where used / stored
+            </th>
+            <th className="w-36 px-3 py-2 text-xs font-bold uppercase tracking-wider text-splash-navy/60">
+              Sheet
             </th>
             <th className="w-32 px-3 py-2" />
           </tr>

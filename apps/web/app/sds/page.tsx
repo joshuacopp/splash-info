@@ -162,13 +162,24 @@ export default async function SdsPage({ searchParams }: PageProps) {
           {/* Opens the PDF inline so it can be printed straight from the
               browser -- a download step between "open" and "print" is friction
               on the one action this page exists for. */}
+          {/* Two prints, because they answer different questions: the index
+              alone is the cover page, the binder is the whole thing to refile
+              after a revision. */}
+          <a
+            href={`/forms/api/sds/binder.pdf?location=${encodeURIComponent(activeSite)}`}
+            target="_blank"
+            rel="noreferrer"
+            className="rounded-splash-sm bg-splash-navy px-3 py-1.5 text-xs font-bold text-white"
+          >
+            Print full binder
+          </a>
           <a
             href={`/forms/api/sds/print.pdf?location=${encodeURIComponent(activeSite)}`}
             target="_blank"
             rel="noreferrer"
             className="rounded-splash-sm bg-splash-navy px-3 py-1.5 text-xs font-bold text-white"
           >
-            Print index
+            Print index only
           </a>
         </div>
       </div>

@@ -25,8 +25,10 @@ import { resolveSiteAccess, canRead, type SiteAccess } from "../site-access.js";
 import { requireServiceKey } from "../admin/auth.js";
 import type { Env } from "../index.js";
 import { renderSdsPdf } from "./pdf.js";
+import { handleUploadSheet, handleServeSheet, renderBinderPdf } from "./sheets.js";
 import { getLocationOptionsFromPricingSimple } from "../db/forms.js";
 
+const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 const LIST_LIMIT = 2000;
@@ -52,6 +54,13 @@ export interface SdsItemRow {
   created_at: string;
   updated_at: string;
   updated_by: string | null;
+  sds_r2_key: string | null;
+  sds_filename: string | null;
+  sds_size_bytes: number | null;
+  sds_uploaded_at: string | null;
+  sds_uploaded_by: string | null;
+  source_url: string | null;
+  sds_revision_date: string | null;
 }
 
 function sbHeaders(env: Env, extra?: Record<string, string>) {
@@ -301,10 +310,21 @@ export async function handlePatchSds(
     ["manufacturer", FIELD_MAX],
     ["work_area", FIELD_MAX],
     ["notes", NOTES_MAX],
-    ["binder_tab", 20]
+    ["binder_tab", 20],
+    ["source_url", 500]
   ] as const) {
     const v = optionalText(body[key], max);
     if (v !== undefined) patch[key] = v;
+  }
+  // A date, or an explicit clear. Anything unparseable is IGNORED rather
+  // than stored: a wrong revision date is worse than none on a field whose
+  // whole job is saying how current the sheet is.
+  if (body.sds_revision_date === null) {
+    patch.sds_revision_date = null;
+  } else if (typeof body.sds_revision_date === "string") {
+    const d = body.sds_revision_date.trim();
+    if (d === "") patch.sds_revision_date = null;
+    else if (ISO_DATE_RE.test(d)) patch.sds_revision_date = d;
   }
   if (typeof body.sort_order === "number" && Number.isFinite(body.sort_order)) {
     patch.sort_order = Math.trunc(body.sort_order);
@@ -577,6 +597,153 @@ export async function handlePrintSds(env: Env, req: Request): Promise<Response> 
       // the one action the page exists for.
       "Content-Disposition": `inline; filename="sds-index-${location}.pdf"`,
       "Cache-Control": "no-store"
+    }
+  });
+}
+
+/** Patch helper shared with ./sheets.ts, so an upload stamps the row through
+ *  the same path an edit does rather than a second PostgREST call with its own
+ *  error handling. */
+export async function patchSdsRow(
+  env: Env,
+  id: string,
+  body: Record<string, unknown>
+): Promise<Response> {
+  const url = new URL("/rest/v1/sds_items", env.SUPABASE_URL);
+  url.searchParams.set("id", `eq.${id}`);
+  const resp = await fetch(url.toString(), {
+    method: "PATCH",
+    headers: sbHeaders(env, {
+      "Content-Type": "application/json",
+      Prefer: "return=representation"
+    }),
+    body: JSON.stringify(body)
+  });
+  if (!resp.ok) {
+    console.error("[forms.sds] patch failed", resp.status);
+    return jsonError(502, "patch_failed");
+  }
+  const rows = (await resp.json().catch(() => [])) as SdsItemRow[];
+  return json({ item: rows[0] ?? null });
+}
+
+export { readItem as readSdsItem, gate as sdsGate, canRead as sdsCanRead };
+
+// =============================================================================
+// Sheets: upload one, serve one, print the binder
+// =============================================================================
+
+/** Shared plumbing so every sheet route asks the SAME question about access
+ *  that the rest of this file does. A second answer would drift. */
+async function sheetCtx(env: Env, req: Request) {
+  const g = await gate(env, req);
+  if (!g.ok) return { ok: false as const, response: g.response };
+  return {
+    ok: true as const,
+    email: g.email,
+    access: g.access,
+    ctx: {
+      readItem: (id: string) => readItem(env, id),
+      canRead: (loc: string) => canRead(g.access, loc),
+      email: g.email,
+      patch: (id: string, body: Record<string, unknown>) => patchSdsRow(env, id, body)
+    }
+  };
+}
+
+export async function handleSdsSheetUpload(
+  env: Env,
+  req: Request,
+  id: string
+): Promise<Response> {
+  const keyed = requireServiceKey(env);
+  if (keyed) return keyed;
+  if (!UUID_RE.test(id)) return jsonError(400, "bad_id");
+  const c = await sheetCtx(env, req);
+  if (!c.ok) return c.response;
+  return handleUploadSheet(env, req, id, c.ctx);
+}
+
+export async function handleSdsSheetServe(
+  env: Env,
+  req: Request,
+  id: string
+): Promise<Response> {
+  const keyed = requireServiceKey(env);
+  if (keyed) return keyed;
+  if (!UUID_RE.test(id)) return jsonError(400, "bad_id");
+  const c = await sheetCtx(env, req);
+  if (!c.ok) return c.response;
+  return handleServeSheet(env, id, c.ctx);
+}
+
+/**
+ * GET /forms/api/sds/binder.pdf?location= -- index page plus every sheet, in
+ * tab order, as one print job.
+ *
+ * Sheets that are missing or unmergeable are reported in headers rather than
+ * failing the request: fifteen good sheets are still worth printing, and a
+ * binder that refuses to print because one file is bad is the worst possible
+ * handling of one bad file.
+ */
+export async function handleSdsBinder(env: Env, req: Request): Promise<Response> {
+  const keyed = requireServiceKey(env);
+  if (keyed) return keyed;
+  const g = await gate(env, req);
+  if (!g.ok) return g.response;
+
+  const location = new URL(req.url).searchParams.get("location");
+  if (!location) return jsonError(400, "location_required");
+  if (!canRead(g.access, location)) return jsonError(403, "forbidden");
+
+  const q = new URL("/rest/v1/sds_items", env.SUPABASE_URL);
+  q.searchParams.set("select", "*");
+  q.searchParams.set("location_code", `eq.${location}`);
+  q.searchParams.set("is_active", "eq.true");
+  q.searchParams.set("order", "sort_order.asc,product_identifier.asc");
+  const resp = await fetch(q.toString(), { headers: sbHeaders(env) });
+  if (!resp.ok) return jsonError(502, "list_failed");
+  const items = (await resp.json().catch(() => [])) as SdsItemRow[];
+
+  const r = new URL("/rest/v1/sds_lists", env.SUPABASE_URL);
+  r.searchParams.set("select", "last_reviewed_at,last_reviewed_by");
+  r.searchParams.set("location_code", `eq.${location}`);
+  const rr = await fetch(r.toString(), { headers: sbHeaders(env) });
+  const reviews = rr.ok
+    ? ((await rr.json().catch(() => [])) as { last_reviewed_at: string | null; last_reviewed_by: string | null }[])
+    : [];
+
+  let siteName = location;
+  try {
+    const p = new URL("/rest/v1/pricing_simple", env.SUPABASE_URL);
+    p.searchParams.set("select", "location_pretty");
+    p.searchParams.set("location_code", `eq.${location}`);
+    p.searchParams.set("limit", "1");
+    const pr = await fetch(p.toString(), { headers: sbHeaders(env) });
+    if (pr.ok) {
+      const rows = (await pr.json().catch(() => [])) as { location_pretty: string | null }[];
+      if (rows[0]?.location_pretty) siteName = rows[0].location_pretty;
+    }
+  } catch {
+    // Header falls back to the location_code.
+  }
+
+  const built = await renderBinderPdf(env, {
+    siteName,
+    locationCode: location,
+    items,
+    lastReviewedAt: reviews[0]?.last_reviewed_at ?? null,
+    lastReviewedBy: reviews[0]?.last_reviewed_by ?? null
+  });
+
+  return new Response(built.bytes as unknown as BodyInit, {
+    status: 200,
+    headers: {
+      "Content-Type": "application/pdf",
+      "Content-Disposition": `inline; filename="sds-binder-${location}.pdf"`,
+      "Cache-Control": "no-store",
+      "X-Sds-Missing": String(built.missing.length),
+      "X-Sds-Failed": String(built.failed.length)
     }
   });
 }

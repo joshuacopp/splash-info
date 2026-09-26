@@ -20,6 +20,18 @@ export interface SdsItem {
   created_at: string;
   updated_at: string;
   updated_by: string | null;
+  /** R2 key of the stored sheet. THE STORED FILE IS THE ARTIFACT -- source_url
+   *  is only where it came from. Null means no sheet on file, which is a gap
+   *  worth showing rather than hiding. */
+  sds_r2_key: string | null;
+  sds_filename: string | null;
+  sds_size_bytes: number | null;
+  sds_uploaded_at: string | null;
+  sds_uploaded_by: string | null;
+  /** Provenance only: never served or printed. */
+  source_url: string | null;
+  /** The date printed on the sheet, not the upload date. */
+  sds_revision_date: string | null;
 }
 
 export interface SdsReview {

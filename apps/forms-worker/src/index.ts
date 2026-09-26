@@ -113,7 +113,10 @@ import {
   handleSdsCandidates,
   handleSeedSds,
   handleReviewSds,
-  handlePrintSds
+  handlePrintSds,
+  handleSdsBinder,
+  handleSdsSheetUpload,
+  handleSdsSheetServe
 } from "./sds/handlers.js";
 import { handleEmailQueueClaim } from "./email-queue/claim.js";
 import { handleEmailQueueConfirm } from "./email-queue/confirm.js";
@@ -510,6 +513,16 @@ export default {
     // The fixed sub-paths MUST match before the bare {id} PATCH, or a trailing
     // segment is swallowed as part of the UUID -- the ordering rule /verify,
     // /notes, /transition and /comments all follow.
+    if (url.pathname === "/forms/api/sds/binder.pdf" && req.method === "GET") {
+      return handleSdsBinder(env, req);
+    }
+    // /sheet, like every other fixed sub-path here, MUST match before the
+    // bare {id} PATCH or the trailing segment is swallowed as part of the UUID.
+    const sdsSheetMatch = url.pathname.match(/^\/forms\/api\/sds\/([^/]+)\/sheet$/);
+    if (sdsSheetMatch && sdsSheetMatch[1]) {
+      if (req.method === "POST") return handleSdsSheetUpload(env, req, sdsSheetMatch[1]);
+      if (req.method === "GET") return handleSdsSheetServe(env, req, sdsSheetMatch[1]);
+    }
     if (url.pathname === "/forms/api/sds/print.pdf" && req.method === "GET") {
       return handlePrintSds(env, req);
     }
