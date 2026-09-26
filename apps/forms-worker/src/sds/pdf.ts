@@ -55,6 +55,7 @@ export async function renderSdsPdf(input: SdsPdfInput): Promise<Uint8Array> {
   const cursor: Cursor = await drawHeader(doc, input.bucket, fonts, page, {
     formTitle: "Safety Data Sheet Index",
     submissionId: input.locationCode,
+    subtitle: input.siteName,
     submittedAt: new Date().toISOString()
   });
 
@@ -62,14 +63,6 @@ export async function renderSdsPdf(input: SdsPdfInput): Promise<Uint8Array> {
   // a binder index with no date cannot be told from one three years stale, and
   // "is the binder current" is exactly what an inspection asks.
   addPageIfNeeded(doc, cursor, 40);
-  cursor.page.drawText(sanitizeForWinAnsi(input.siteName), {
-    x: MARGIN,
-    y: cursor.y,
-    size: 15,
-    font: fonts.bold,
-    color: COLORS.navy
-  });
-  cursor.y -= 18;
 
   const reviewed = input.lastReviewedAt
     ? `Last reviewed ${formatEst(input.lastReviewedAt)}` +

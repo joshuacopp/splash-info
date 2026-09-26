@@ -26,6 +26,11 @@ const HEADER_HEIGHT = 80;
 export interface HeaderInput {
   formTitle: string;
   submissionId: string;
+  /** Replaces the shortened submission id in the subtitle. shortId() cuts to
+   *  8 characters, which is right for a UUID and wrong for anything meant to
+   *  be read -- a location_code came out as "binghamt". Callers with a real
+   *  name to show pass it here instead. */
+  subtitle?: string;
   submittedAt: string;
 }
 
@@ -75,7 +80,7 @@ export async function drawHeader(
     color: COLORS.white
   });
 
-  const subText = `${shortId(input.submissionId)}  *  ${formatEst(input.submittedAt)}`;
+  const subText = `${input.subtitle ?? shortId(input.submissionId)}  *  ${formatEst(input.submittedAt)}`;
   const subSize = 9;
   const subW = fonts.regular.widthOfTextAtSize(subText, subSize);
   page.drawText(subText, {
