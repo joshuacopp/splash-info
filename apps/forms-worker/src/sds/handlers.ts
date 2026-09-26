@@ -1068,3 +1068,136 @@ export async function handleCatalogSheetUpload(
   if (!entry) return jsonError(404, "catalog_entry_not_found");
   return handleCatalogUpload(env, req, entry, g.email);
 }
+
+// =============================================================================
+// GET /forms/api/sds/inventory-products  -- the master product list
+// =============================================================================
+
+/**
+ * Every product inventory knows about, so the catalogue can be stocked from the
+ * names ACTUALLY IN USE instead of typed from memory.
+ *
+ * Typing was the problem: an admin writing "Presoak HWS 2X" when inventory
+ * holds "Presoak HWS *2X*" creates a second entry for one chemical, and the
+ * site that later searches for its own product finds neither convincing. This
+ * hands over the real identifier.
+ *
+ * Defaults to products in use somewhere -- 106 of the 469, the rest being
+ * historical -- ordered by how many sites stock them. That ordering is the
+ * point: a product at 40 sites earns a sheet before one at none, and it turns
+ * "stock the catalogue" from an unbounded chore into a ranked list.
+ */
+export async function handleInventoryProducts(env: Env, req: Request): Promise<Response> {
+  const keyed = requireServiceKey(env);
+  if (keyed) return keyed;
+  const g = await adminGate(env, req);
+  if (!g.ok) return g.response;
+
+  const url = new URL(req.url);
+  const q = url.searchParams.get("q")?.trim();
+  const includeUnused = url.searchParams.get("include_unused") === "1";
+
+  const p = new URL("/rest/v1/sds_inventory_products", env.SUPABASE_URL);
+  p.searchParams.set("select", "product_id,product_name,description,site_count");
+  p.searchParams.set("order", "site_count.desc,product_name.asc");
+  p.searchParams.set("limit", "500");
+  if (!includeUnused) p.searchParams.set("site_count", "gt.0");
+  if (q) {
+    p.searchParams.set("product_name", `ilike.*${q.replace(/[\%_]/g, (c) => `\${c}`)}*`);
+  }
+  const pr = await fetch(p.toString(), { headers: sbHeaders(env) });
+  if (!pr.ok) {
+    console.error("[forms.sds] inventory products failed", pr.status);
+    return jsonError(502, "inventory_products_failed");
+  }
+  const products = (await pr.json().catch(() => [])) as {
+    product_id: string;
+    product_name: string;
+    description: string | null;
+    site_count: number;
+  }[];
+
+  // Which already have a catalogue entry, by provenance OR by name. Provenance
+  // alone would re-offer something an admin had already typed in by hand, which
+  // is exactly the duplicate this screen exists to prevent.
+  const c = new URL("/rest/v1/sds_catalog", env.SUPABASE_URL);
+  c.searchParams.set("select", "id,product_identifier,source_product_id,sds_r2_key");
+  c.searchParams.set("limit", "5000");
+  const cr = await fetch(c.toString(), { headers: sbHeaders(env) });
+  const entries = cr.ok
+    ? ((await cr.json().catch(() => [])) as {
+        id: string;
+        product_identifier: string;
+        source_product_id: string | null;
+        sds_r2_key: string | null;
+      }[])
+    : [];
+  const byProductId = new Map(
+    entries.filter((e) => e.source_product_id).map((e) => [e.source_product_id!, e])
+  );
+  const byName = new Map(
+    entries.map((e) => [e.product_identifier.trim().toLowerCase(), e])
+  );
+
+  return json({
+    products: products.map((prod) => {
+      const hit =
+        byProductId.get(prod.product_id) ??
+        byName.get(prod.product_name.trim().toLowerCase());
+      return {
+        ...prod,
+        catalog_id: hit?.id ?? null,
+        has_sheet: Boolean(hit?.sds_r2_key)
+      };
+    })
+  });
+}
+
+// =============================================================================
+// POST /forms/api/sds/catalog/from-inventory
+// =============================================================================
+
+/** Create catalogue entries for the picked inventory products, using their real
+ *  names. find-or-create per product, so re-picking something already present
+ *  is a no-op rather than a duplicate. */
+export async function handleCatalogFromInventory(
+  env: Env,
+  req: Request
+): Promise<Response> {
+  if (!isOriginAllowed(req)) return jsonError(403, "bad_origin");
+  const keyed = requireServiceKey(env);
+  if (keyed) return keyed;
+  const g = await adminGate(env, req);
+  if (!g.ok) return g.response;
+
+  const body = (await req.json().catch(() => null)) as Record<string, unknown> | null;
+  const ids = Array.isArray(body?.product_ids)
+    ? [...new Set(body.product_ids.filter((x): x is string => typeof x === "string" && UUID_RE.test(x)))]
+    : [];
+  if (ids.length === 0) return jsonError(400, "no_products");
+  if (ids.length > SEED_MAX) return jsonError(400, "too_many_products");
+
+  // Names read server-side. The identifier is the load-bearing field on this
+  // list and a client-supplied one could say anything.
+  const p = new URL("/rest/v1/sds_inventory_products", env.SUPABASE_URL);
+  p.searchParams.set("select", "product_id,product_name");
+  p.searchParams.set("product_id", `in.(${ids.join(",")})`);
+  const pr = await fetch(p.toString(), { headers: sbHeaders(env) });
+  if (!pr.ok) return jsonError(502, "inventory_products_failed");
+  const found = (await pr.json().catch(() => [])) as {
+    product_id: string;
+    product_name: string;
+  }[];
+  if (found.length === 0) return jsonError(400, "no_products");
+
+  let created = 0;
+  for (const f of found) {
+    const entry = await findOrCreateCatalogEntry(env, {
+      product_identifier: f.product_name.slice(0, IDENTIFIER_MAX),
+      source_product_id: f.product_id,
+      email: g.email
+    });
+    if (entry) created++;
+  }
+  return json({ requested: ids.length, created }, 201);
+}

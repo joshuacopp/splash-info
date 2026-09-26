@@ -121,7 +121,9 @@ import {
   handleVerifyCatalog,
   handleCreateCatalog,
   handlePatchCatalog,
-  handleCatalogSheetUpload
+  handleCatalogSheetUpload,
+  handleInventoryProducts,
+  handleCatalogFromInventory
 } from "./sds/handlers.js";
 import { handleEmailQueueClaim } from "./email-queue/claim.js";
 import { handleEmailQueueConfirm } from "./email-queue/confirm.js";
@@ -518,6 +520,15 @@ export default {
     // The fixed sub-paths MUST match before the bare {id} PATCH, or a trailing
     // segment is swallowed as part of the UUID -- the ordering rule /verify,
     // /notes, /transition and /comments all follow.
+    if (url.pathname === "/forms/api/sds/inventory-products" && req.method === "GET") {
+      return handleInventoryProducts(env, req);
+    }
+    if (
+      url.pathname === "/forms/api/sds/catalog/from-inventory" &&
+      req.method === "POST"
+    ) {
+      return handleCatalogFromInventory(env, req);
+    }
     if (url.pathname === "/forms/api/sds/catalog" && req.method === "POST") {
       return handleCreateCatalog(env, req);
     }

@@ -231,3 +231,25 @@ alter table public.sds_items
 alter table public.sds_catalog
   add column if not exists verified_at timestamptz,
   add column if not exists verified_by text;
+
+-- ---------------------------------------------------------------------------
+-- APPLIED 2026-09-26. Inventory's master product list, for stocking the
+-- catalogue from the names actually in use.
+--
+-- Deliberately UNSCOPED, unlike public.sds_inventory_candidates next door,
+-- which is per-site. The catalogue is org-wide: an admin building it needs
+-- every product once, not the same product forty times over from forty site
+-- views.
+--
+-- site_count is the ordering the admin screen lives by. At time of writing:
+-- 469 products, 106 stocked anywhere, busiest at 40 sites. That turns
+-- "stock the catalogue" from an unbounded list into a ranked one.
+-- ---------------------------------------------------------------------------
+create or replace view public.sds_inventory_products as
+select p.id as product_id,
+       p.name as product_name,
+       p.description,
+       (select count(distinct lp.location_code)
+          from inventory.location_products lp
+         where lp.product_id = p.id) as site_count
+from inventory.products p;
