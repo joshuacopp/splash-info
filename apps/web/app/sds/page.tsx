@@ -86,6 +86,10 @@ export default async function SdsPage({ searchParams }: PageProps) {
         ? siteCodes[0]!
         : null;
 
+  /** Prefer the site's display name; fall back to the code rather than blank,
+   *  because a picker entry with no label is unclickable in practice. */
+  const nameFor = (code: string) => resp.site_names?.[code] ?? code;
+
   const countFor = (code: string) =>
     resp.items.filter((i) => i.location_code === code && i.is_active).length;
 
@@ -94,7 +98,9 @@ export default async function SdsPage({ searchParams }: PageProps) {
       <Shell>
         <Header />
         <p className="mb-4 text-sm text-splash-navy/70">
-          Pick a site to see its chemical list.
+          {resp.scope === "all"
+            ? `Pick a site to see its chemical list (${siteCodes.length} sites).`
+            : "Pick a site to see its chemical list."}
         </p>
         <ul className="grid gap-2 sm:grid-cols-2">
           {siteCodes.map((code) => (
@@ -103,7 +109,7 @@ export default async function SdsPage({ searchParams }: PageProps) {
                 href={`/sds?location=${encodeURIComponent(code)}`}
                 className="flex items-center justify-between rounded-splash-md border border-gray-light bg-white px-4 py-3 text-sm font-semibold text-splash-navy hover:border-splash-navy/30"
               >
-                {code}
+                {nameFor(code)}
                 <span className="text-xs font-normal text-splash-navy/60">
                   {countFor(code)} listed
                 </span>
@@ -130,7 +136,7 @@ export default async function SdsPage({ searchParams }: PageProps) {
 
       <div className="mb-4 flex flex-wrap items-baseline justify-between gap-3">
         <div>
-          <h2 className="text-xl font-bold text-splash-navy">{activeSite}</h2>
+          <h2 className="text-xl font-bold text-splash-navy">{nameFor(activeSite)}</h2>
           <div className="mt-1">
             <ReviewStamp
               locationCode={activeSite}

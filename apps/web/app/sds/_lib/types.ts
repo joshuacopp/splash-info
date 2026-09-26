@@ -32,6 +32,12 @@ export interface SdsResponse {
   items: SdsItem[];
   reviews: SdsReview[];
   locations: string[];
+  /** location_code -> location_pretty, for display. OPTIONAL on purpose:
+   *  apps/web and forms-worker deploy independently, so for a window the page
+   *  can see a response from a worker that predates this field. Callers fall
+   *  back to the code rather than rendering blank labels.
+   */
+  site_names?: Record<string, string>;
   scope: "all" | "scoped";
   limit_hit: boolean;
 }

@@ -25,6 +25,7 @@ import { resolveSiteAccess, canRead, type SiteAccess } from "../site-access.js";
 import { requireServiceKey } from "../admin/auth.js";
 import type { Env } from "../index.js";
 import { renderSdsPdf } from "./pdf.js";
+import { getLocationOptionsFromPricingSimple } from "../db/forms.js";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -182,10 +183,31 @@ export async function handleListSds(env: Env, req: Request): Promise<Response> {
     }
   }
 
+  // Site list + display names.
+  //
+  // AN ADMIN HAS NO locationCodes BY DESIGN -- "everything, no filter
+  // applies" -- and on a table this new there are no items to infer sites from
+  // either. Returning the access list verbatim therefore gave an admin an empty
+  // site picker and no way to add anything: a dead end on a brand-new tool,
+  // which is exactly when it is least obvious whether the tool or the data is
+  // at fault. So an admin gets every site, and everyone else gets theirs.
+  //
+  // Names come along because a picker of location_codes is a wall of slugs, and
+  // it is the same query either way.
+  const all = await getLocationOptionsFromPricingSimple(env);
+  const siteNames: Record<string, string> = {};
+  for (const o of all) {
+    if (o.code && o.pretty) siteNames[o.code] = o.pretty;
+  }
+  const locations = g.access.isAdmin
+    ? all.map((o) => o.code).filter(Boolean)
+    : g.access.locationCodes;
+
   return json({
     items,
     reviews,
-    locations: g.access.locationCodes,
+    locations,
+    site_names: siteNames,
     scope: g.access.isAdmin ? "all" : "scoped",
     limit_hit: items.length >= LIST_LIMIT
   });
