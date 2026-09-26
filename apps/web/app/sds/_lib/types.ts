@@ -122,9 +122,17 @@ export interface SdsInventoryProduct {
   product_name: string;
   description: string | null;
   site_count: number;
-  /** Non-null when this product is already in the catalogue, by provenance or
-   *  by name -- so the list can say "already added" instead of quietly
-   *  creating a second entry for one chemical. */
+  /** Non-null when this product resolves to a catalogue entry, by recorded
+   *  alias or by an exact name match -- so the list can say what it resolved
+   *  to instead of quietly creating a second entry for one chemical. */
   catalog_id: string | null;
+  /** The chemical's name, which for a purchasing code is a DIFFERENT string:
+   *  DS-FWW-CS resolves to "Flash Wax White". Showing it is the whole point --
+   *  "already added" hides whether the link is the right one. */
+  catalog_name: string | null;
   has_sheet: boolean;
+  verified: boolean;
+  /** "alias" = a person recorded this link. "name" = the strings happened to
+   *  match. Worth distinguishing: only the first is somebody's judgement. */
+  matched_by: "alias" | "name" | null;
 }

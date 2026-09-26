@@ -7,6 +7,8 @@ import { revalidatePath } from "next/cache";
 
 import {
   createCatalogFromInventory,
+  linkCatalogAlias,
+  unlinkCatalogAlias,
   createSdsCatalogEntry,
   patchSdsCatalogEntry,
   setCatalogVerified
@@ -17,6 +19,12 @@ export type SdsActionResult = { ok: true } | { ok: false; error: string };
 function humanise(error: string): string {
   if (error.includes("admin_only") || error.includes("verified_entry_is_admin_only")) {
     return "Only a super admin or DC admin can change the shared catalogue.";
+  }
+  if (error.includes("already_linked")) {
+    return "That purchasing code is already linked to a chemical. Unlink it there first.";
+  }
+  if (error.includes("inventory_product_not_found")) {
+    return "Inventory no longer has that product.";
   }
   if (error.includes("product_identifier_required")) {
     return "Enter the product name exactly as it appears on the safety data sheet.";
@@ -75,4 +83,29 @@ export async function addFromInventoryAction(
   if (!res.ok) return { ok: false, error: humanise(res.error) };
   revalidateBoth();
   return { ok: true, created: res.data.created };
+}
+
+/** Say that an inventory product is this chemical.
+ *
+ *  Deliberately one product at a time and never inferred: DS-FWW-CS and Flash
+ *  Wax White share no characters, so only a person knows they are the same jug,
+ *  and a wrong link hands somebody the wrong safety data sheet. */
+export async function linkAliasAction(
+  catalogId: string,
+  sourceProductId: string
+): Promise<SdsActionResult> {
+  const res = await linkCatalogAlias(catalogId, sourceProductId);
+  if (!res.ok) return { ok: false, error: humanise(res.error) };
+  revalidateBoth();
+  return { ok: true };
+}
+
+export async function unlinkAliasAction(
+  catalogId: string,
+  sourceProductId: string
+): Promise<SdsActionResult> {
+  const res = await unlinkCatalogAlias(catalogId, sourceProductId);
+  if (!res.ok) return { ok: false, error: humanise(res.error) };
+  revalidateBoth();
+  return { ok: true };
 }

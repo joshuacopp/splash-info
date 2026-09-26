@@ -263,3 +263,29 @@ export async function createCatalogFromInventory(
     })
   );
 }
+
+/** Record that an inventory product IS this chemical. Admin-tier; the worker
+ *  is the gate. A 409 carries where the product already points. */
+export async function linkCatalogAlias(
+  catalogId: string,
+  sourceProductId: string
+): Promise<Result<unknown>> {
+  return unwrap(
+    await callForms(`/forms/api/sds/catalog/${encodeURIComponent(catalogId)}/aliases`, {
+      method: "POST",
+      jsonBody: { source_product_id: sourceProductId }
+    })
+  );
+}
+
+export async function unlinkCatalogAlias(
+  catalogId: string,
+  sourceProductId: string
+): Promise<Result<unknown>> {
+  return unwrap(
+    await callForms(
+      `/forms/api/sds/catalog/${encodeURIComponent(catalogId)}/aliases/${encodeURIComponent(sourceProductId)}`,
+      { method: "DELETE" }
+    )
+  );
+}

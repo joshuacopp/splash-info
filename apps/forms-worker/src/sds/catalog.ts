@@ -12,6 +12,7 @@
 // product typed at two sites will differ in exactly those ways and nothing else.
 
 import type { Env } from "../index.js";
+import { linkAlias, resolveByProduct } from "./aliases.js";
 
 export interface SdsCatalogRow {
   id: string;
@@ -24,6 +25,7 @@ export interface SdsCatalogRow {
   sds_uploaded_by: string | null;
   source_url: string | null;
   sds_revision_date: string | null;
+  /** @deprecated superseded by sds_catalog_aliases; no longer written. */
   source_product_id: string | null;
   verified_at: string | null;
   verified_by: string | null;
@@ -43,17 +45,10 @@ function escapeLike(s: string): string {
   return s.replace(/[\\%_]/g, (c) => `\\${c}`);
 }
 
-/** The entry already created from this inventory product, if any. Oldest wins,
- *  so a repeat add converges on the row sites are already pointing at rather
- *  than whichever the database happened to return. */
-async function findBySourceProduct(
-  env: Env,
-  sourceProductId: string
-): Promise<SdsCatalogRow | null> {
+async function findById(env: Env, id: string): Promise<SdsCatalogRow | null> {
   const url = new URL("/rest/v1/sds_catalog", env.SUPABASE_URL);
   url.searchParams.set("select", "*");
-  url.searchParams.set("source_product_id", `eq.${sourceProductId}`);
-  url.searchParams.set("order", "created_at.asc");
+  url.searchParams.set("id", `eq.${id}`);
   url.searchParams.set("limit", "1");
   const resp = await fetch(url.toString(), { headers: sbHeaders(env) });
   if (!resp.ok) return null;
@@ -114,16 +109,31 @@ export async function findOrCreateCatalogEntry(
   // hypothetical -- it is how "Bug Remover *2X*" ended up in the catalogue
   // twice, both rows pointing at the same inventory product, 82 minutes apart.
   //
-  // Two rows sharing a source_product_id ARE the same product by definition, so
-  // check that before anything a human can have typed differently. The risk
-  // grows as manufacturers get filled in, which the catalogue page invites.
+  // The alias table is the provenance record, not sds_catalog.source_product_id,
+  // which it supersedes: one chemical can be stocked under several purchasing
+  // codes and a single column cannot say so.
   if (input.source_product_id) {
-    const bySource = await findBySourceProduct(env, input.source_product_id);
-    if (bySource) return bySource;
+    const aliasedTo = await resolveByProduct(env, input.source_product_id);
+    if (aliasedTo) {
+      const row = await findById(env, aliasedTo);
+      if (row) return row;
+    }
   }
 
   const existing = await findByIdentity(env, identifier, manufacturer);
-  if (existing) return existing;
+  if (existing) {
+    // Already catalogued under a name somebody typed. Record the provenance so
+    // the next pass resolves it without relying on the name matching again.
+    if (input.source_product_id) {
+      await linkAlias(env, {
+        catalogId: existing.id,
+        sourceProductId: input.source_product_id,
+        inventoryName: identifier,
+        email: input.email
+      });
+    }
+    return existing;
+  }
 
   const resp = await fetch(new URL("/rest/v1/sds_catalog", env.SUPABASE_URL).toString(), {
     method: "POST",
@@ -134,7 +144,6 @@ export async function findOrCreateCatalogEntry(
     body: JSON.stringify({
       product_identifier: identifier,
       manufacturer,
-      source_product_id: input.source_product_id ?? null,
       created_by: input.email,
       updated_by: input.email
     })
@@ -145,7 +154,29 @@ export async function findOrCreateCatalogEntry(
     return null;
   }
   const rows = (await resp.json().catch(() => [])) as SdsCatalogRow[];
-  return rows[0] ?? null;
+  const created = rows[0];
+  if (!created) return null;
+
+  // Provenance goes in the alias table, never back onto the retired column.
+  // Failing here leaves a usable catalogue entry that simply is not yet linked
+  // to its purchasing code -- recoverable from the picker, so it must not
+  // discard the row somebody just created.
+  if (input.source_product_id) {
+    const linked = await linkAlias(env, {
+      catalogId: created.id,
+      sourceProductId: input.source_product_id,
+      inventoryName: identifier,
+      email: input.email
+    });
+    if (!linked.ok) {
+      console.warn(
+        "[forms.sds] catalog row created but alias not recorded",
+        created.id,
+        linked.code
+      );
+    }
+  }
+  return created;
 }
 
 /** Fields whose change invalidates a verification, because a verification is a

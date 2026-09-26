@@ -281,3 +281,26 @@ from inventory.products p;
 --
 -- Verified after: 17/17 stored keys resolve to a real PDF in splash-forms-files.
 -- ---------------------------------------------------------------------------
+
+-- ---------------------------------------------------------------------------
+-- APPLIED 2026-09-26. sds_catalog_aliases -- see the migration of the same
+-- name for the table definition and the reasoning.
+--
+-- Backfill run: every sds_catalog.source_product_id became an alias row with
+-- added_by = 'backfill:source_product_id' (25 rows). That column is RETIRED --
+-- no longer read or written by worker code, kept only so existing rows are not
+-- rewritten. Drop it in a later pass once nothing references it.
+--
+-- Also folded the one purchasing code that had wrongly become an entry:
+-- DS-X55-CS (no sheet, unverified, zero sites) was deleted and its inventory
+-- product aliased onto X55, which has the sheet and is verified.
+--
+-- insert into public.sds_catalog_aliases
+--   (catalog_id, source_product_id, inventory_name, added_by)
+-- select c.id, c.source_product_id, coalesce(p.name,'(unknown at backfill)'),
+--        'backfill:source_product_id'
+--   from public.sds_catalog c
+--   left join inventory.products p on p.id = c.source_product_id
+--  where c.source_product_id is not null
+--  on conflict (source_product_id) do nothing;
+-- ---------------------------------------------------------------------------

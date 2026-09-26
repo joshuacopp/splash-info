@@ -123,7 +123,9 @@ import {
   handlePatchCatalog,
   handleCatalogSheetUpload,
   handleInventoryProducts,
-  handleCatalogFromInventory
+  handleCatalogFromInventory,
+  handleLinkAlias,
+  handleUnlinkAlias
 } from "./sds/handlers.js";
 import { handleEmailQueueClaim } from "./email-queue/claim.js";
 import { handleEmailQueueConfirm } from "./email-queue/confirm.js";
@@ -531,6 +533,24 @@ export default {
     }
     if (url.pathname === "/forms/api/sds/catalog" && req.method === "POST") {
       return handleCreateCatalog(env, req);
+    }
+    // Fixed sub-paths before the bare {id} route, per the convention below.
+    const sdsAliasMatch = url.pathname.match(
+      /^\/forms\/api\/sds\/catalog\/([^/]+)\/aliases$/
+    );
+    if (sdsAliasMatch && sdsAliasMatch[1] && req.method === "POST") {
+      return handleLinkAlias(env, req, sdsAliasMatch[1]);
+    }
+    const sdsUnaliasMatch = url.pathname.match(
+      /^\/forms\/api\/sds\/catalog\/([^/]+)\/aliases\/([^/]+)$/
+    );
+    if (
+      sdsUnaliasMatch &&
+      sdsUnaliasMatch[1] &&
+      sdsUnaliasMatch[2] &&
+      req.method === "DELETE"
+    ) {
+      return handleUnlinkAlias(env, req, sdsUnaliasMatch[1], sdsUnaliasMatch[2]);
     }
     const sdsCatSheetMatch = url.pathname.match(
       /^\/forms\/api\/sds\/catalog\/([^/]+)\/sheet$/

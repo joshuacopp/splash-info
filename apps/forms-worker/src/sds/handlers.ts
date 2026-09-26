@@ -40,6 +40,7 @@ import {
   handleCatalogUpload,
   renderBinderPdf
 } from "./sheets.js";
+import { linkAlias, loadAliasMap, unlinkAlias } from "./aliases.js";
 import { getLocationOptionsFromPricingSimple } from "../db/forms.js";
 
 const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -516,29 +517,43 @@ export async function handleSdsCandidates(env: Env, req: Request): Promise<Respo
     description: string | null;
   }[];
 
-  // Hide what is already on the list, by provenance OR by name. Provenance
-  // alone would re-offer a chemical somebody had already typed by hand.
+  // Hide what is already on the list, by alias OR by name. The alias covers the
+  // case the name cannot: this site stocks "DS-FWW-CS" and the list already
+  // carries it as "Flash Wax White", which share no characters.
   const existing = new URL("/rest/v1/sds_items", env.SUPABASE_URL);
-  existing.searchParams.set("select", "catalog:sds_catalog(source_product_id,product_identifier)");
+  existing.searchParams.set("select", "catalog_id,catalog:sds_catalog(product_identifier)");
   existing.searchParams.set("location_code", `eq.${location}`);
   existing.searchParams.set("is_active", "eq.true");
   const er = await fetch(existing.toString(), { headers: sbHeaders(env) });
   const taken = er.ok
     ? ((await er.json().catch(() => [])) as {
-        catalog: { source_product_id: string | null; product_identifier: string } | null;
+        catalog_id: string;
+        catalog: { product_identifier: string } | null;
       }[])
     : [];
-  const takenIds = new Set(taken.map((t) => t.catalog?.source_product_id).filter(Boolean));
+  const takenCatalogIds = new Set(taken.map((t) => t.catalog_id));
   const takenNames = new Set(
     taken
       .map((t) => t.catalog?.product_identifier?.trim().toLowerCase())
       .filter((n): n is string => Boolean(n))
   );
 
+  // A failed alias read must not quietly re-offer chemicals the site already
+  // has; better to surface the fault than to invite a duplicate.
+  let aliases: Map<string, string>;
+  try {
+    aliases = await loadAliasMap(env);
+  } catch (err) {
+    console.error("[forms.sds] candidates alias map failed", err);
+    return jsonError(502, "candidates_failed");
+  }
+
   return json({
-    candidates: all.filter(
-      (c) => !takenIds.has(c.product_id) && !takenNames.has(c.product_name.trim().toLowerCase())
-    )
+    candidates: all.filter((c) => {
+      const aliasedTo = aliases.get(c.product_id);
+      if (aliasedTo && takenCatalogIds.has(aliasedTo)) return false;
+      return !takenNames.has(c.product_name.trim().toLowerCase());
+    })
   });
 }
 
@@ -1117,37 +1132,51 @@ export async function handleInventoryProducts(env: Env, req: Request): Promise<R
     site_count: number;
   }[];
 
-  // Which already have a catalogue entry, by provenance OR by name. Provenance
-  // alone would re-offer something an admin had already typed in by hand, which
-  // is exactly the duplicate this screen exists to prevent.
+  // Which already resolve to a catalogue entry, by ALIAS or by name. The alias
+  // is what connects a purchasing code to a chemical -- "DS-FWW-CS" and "Flash
+  // Wax White" share no characters, so only a recorded link joins them.
   const c = new URL("/rest/v1/sds_catalog", env.SUPABASE_URL);
-  c.searchParams.set("select", "id,product_identifier,source_product_id,sds_r2_key");
+  c.searchParams.set("select", "id,product_identifier,sds_r2_key,verified_at");
   c.searchParams.set("limit", "5000");
   const cr = await fetch(c.toString(), { headers: sbHeaders(env) });
-  const entries = cr.ok
-    ? ((await cr.json().catch(() => [])) as {
-        id: string;
-        product_identifier: string;
-        source_product_id: string | null;
-        sds_r2_key: string | null;
-      }[])
-    : [];
-  const byProductId = new Map(
-    entries.filter((e) => e.source_product_id).map((e) => [e.source_product_id!, e])
-  );
+  if (!cr.ok) return jsonError(502, "catalog_read_failed");
+  const entries = (await cr.json().catch(() => [])) as {
+    id: string;
+    product_identifier: string;
+    sds_r2_key: string | null;
+    verified_at: string | null;
+  }[];
+  const byId = new Map(entries.map((e) => [e.id, e]));
   const byName = new Map(
     entries.map((e) => [e.product_identifier.trim().toLowerCase(), e])
   );
 
+  let aliases: Map<string, string>;
+  try {
+    aliases = await loadAliasMap(env);
+  } catch (err) {
+    // Refuse rather than degrade. An empty alias map would present every already
+    // linked purchasing code as a brand-new chemical, which is the one outcome
+    // this screen exists to prevent.
+    console.error("[forms.sds] inventory products alias map failed", err);
+    return jsonError(502, "alias_map_failed");
+  }
+
   return json({
     products: products.map((prod) => {
+      const aliasedTo = aliases.get(prod.product_id);
       const hit =
-        byProductId.get(prod.product_id) ??
+        (aliasedTo ? byId.get(aliasedTo) : undefined) ??
         byName.get(prod.product_name.trim().toLowerCase());
       return {
         ...prod,
         catalog_id: hit?.id ?? null,
-        has_sheet: Boolean(hit?.sds_r2_key)
+        catalog_name: hit?.product_identifier ?? null,
+        has_sheet: Boolean(hit?.sds_r2_key),
+        verified: Boolean(hit?.verified_at),
+        // How it resolved, so the screen can say "linked to Flash Wax White"
+        // rather than a bare "already there" that hides whether a person said so.
+        matched_by: aliasedTo && byId.has(aliasedTo) ? "alias" : hit ? "name" : null
       };
     })
   });
@@ -1190,28 +1219,32 @@ export async function handleCatalogFromInventory(
   }[];
   if (found.length === 0) return jsonError(400, "no_products");
 
-  // Skip what the LISTING already called "in catalogue", using the same rule it
-  // used. The listing greys a row on provenance OR name; if create decided
-  // "already there" differently, the screen would disable a row this endpoint
-  // would cheerfully duplicate, and the two would drift silently.
+  // Skip what the LISTING already called resolved, using the same rule it used.
+  // If create decided "already there" differently, the screen would disable a row
+  // this endpoint would cheerfully duplicate, and the two would drift silently.
   const c = new URL("/rest/v1/sds_catalog", env.SUPABASE_URL);
-  c.searchParams.set("select", "product_identifier,source_product_id");
+  c.searchParams.set("select", "product_identifier");
   c.searchParams.set("limit", "5000");
   const cr = await fetch(c.toString(), { headers: sbHeaders(env) });
   if (!cr.ok) return jsonError(502, "catalog_read_failed");
   const entries = (await cr.json().catch(() => [])) as {
     product_identifier: string;
-    source_product_id: string | null;
   }[];
-  const knownIds = new Set(entries.map((e) => e.source_product_id).filter(Boolean));
   const knownNames = new Set(
     entries.map((e) => e.product_identifier.trim().toLowerCase())
   );
+  let aliases: Map<string, string>;
+  try {
+    aliases = await loadAliasMap(env);
+  } catch (err) {
+    console.error("[forms.sds] from-inventory alias map failed", err);
+    return jsonError(502, "alias_map_failed");
+  }
 
   let created = 0;
   let skipped = 0;
   for (const f of found) {
-    if (knownIds.has(f.product_id) || knownNames.has(f.product_name.trim().toLowerCase())) {
+    if (aliases.has(f.product_id) || knownNames.has(f.product_name.trim().toLowerCase())) {
       skipped++;
       continue;
     }
@@ -1223,4 +1256,99 @@ export async function handleCatalogFromInventory(
     if (entry) created++;
   }
   return json({ requested: ids.length, created, skipped }, 201);
+}
+
+// =============================================================================
+// POST   /forms/api/sds/catalog/{id}/aliases   {source_product_id}
+// DELETE /forms/api/sds/catalog/{id}/aliases/{productId}
+// =============================================================================
+
+/**
+ * Record that an inventory product IS this chemical.
+ *
+ * Admin-tier, the same gate as verification and for the same reason: saying two
+ * things are one chemical decides which safety data sheet somebody is handed.
+ * Getting it wrong is not a tidiness problem.
+ *
+ * Linking does NOT clear the entry's verified badge. The badge is a claim about
+ * this entry's own name and sheet, and neither changed -- a new purchasing code
+ * pointing at it does not un-check what somebody checked.
+ */
+export async function handleLinkAlias(
+  env: Env,
+  req: Request,
+  catalogId: string
+): Promise<Response> {
+  if (!isOriginAllowed(req)) return jsonError(403, "bad_origin");
+  const keyed = requireServiceKey(env);
+  if (keyed) return keyed;
+  const g = await adminGate(env, req);
+  if (!g.ok) return g.response;
+  if (!UUID_RE.test(catalogId)) return jsonError(400, "bad_catalog_id");
+
+  const body = (await req.json().catch(() => null)) as Record<string, unknown> | null;
+  const productId = typeof body?.source_product_id === "string" ? body.source_product_id : "";
+  if (!UUID_RE.test(productId)) return jsonError(400, "bad_source_product_id");
+
+  const entry = await readCatalogEntry(env, catalogId);
+  if (!entry) return jsonError(404, "catalog_entry_not_found");
+
+  // Name read server-side: it is the audit record of what was matched, and a
+  // client-supplied one could say anything.
+  const p = new URL("/rest/v1/sds_inventory_products", env.SUPABASE_URL);
+  p.searchParams.set("select", "product_name");
+  p.searchParams.set("product_id", `eq.${productId}`);
+  p.searchParams.set("limit", "1");
+  const pr = await fetch(p.toString(), { headers: sbHeaders(env) });
+  if (!pr.ok) return jsonError(502, "inventory_products_failed");
+  const rows = (await pr.json().catch(() => [])) as { product_name: string }[];
+  const inventoryName = rows[0]?.product_name;
+  if (!inventoryName) return jsonError(404, "inventory_product_not_found");
+
+  const res = await linkAlias(env, {
+    catalogId,
+    sourceProductId: productId,
+    inventoryName,
+    email: g.email
+  });
+  if (!res.ok) {
+    if (res.code === "already_linked") {
+      // Say WHERE it already points. "Conflict" leaves an admin with nowhere to
+      // go; "that code is already Flash Wax White" is actionable.
+      const other = res.existingCatalogId
+        ? await readCatalogEntry(env, res.existingCatalogId)
+        : null;
+      return json(
+        {
+          error: "already_linked",
+          existing_catalog_id: res.existingCatalogId ?? null,
+          existing_product_identifier: other?.product_identifier ?? null
+        },
+        409
+      );
+    }
+    return jsonError(500, "alias_write_failed");
+  }
+  return json({ alias: res.alias, catalog: entry }, 201);
+}
+
+/** Undo a link. A wrong match is the failure that matters, so reversing one has
+ *  to be no harder than making it. */
+export async function handleUnlinkAlias(
+  env: Env,
+  req: Request,
+  catalogId: string,
+  productId: string
+): Promise<Response> {
+  if (!isOriginAllowed(req)) return jsonError(403, "bad_origin");
+  const keyed = requireServiceKey(env);
+  if (keyed) return keyed;
+  const g = await adminGate(env, req);
+  if (!g.ok) return g.response;
+  if (!UUID_RE.test(catalogId) || !UUID_RE.test(productId)) {
+    return jsonError(400, "bad_id");
+  }
+  const removed = await unlinkAlias(env, catalogId, productId);
+  if (!removed) return jsonError(404, "alias_not_found");
+  return json({ ok: true });
 }
