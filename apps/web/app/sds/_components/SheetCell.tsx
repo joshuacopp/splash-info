@@ -105,6 +105,31 @@ export default function SheetCell({
         </>
       ) : null}
 
+      {/* Revision date is the date printed ON the sheet, so it is the only thing
+          here that answers "is this current?". Upload date would answer "when
+          did somebody file it", which is a different and less useful question. */}
+      {item.sds_revision_date ? (
+        <div className="mt-0.5 text-[0.6875rem] text-splash-navy/50">
+          Revised {item.sds_revision_date}
+        </div>
+      ) : null}
+
+      {/* Provenance, not the artifact -- deliberately secondary to View SDS.
+          It is how you check the manufacturer for a newer revision, not how
+          anyone is meant to reach the sheet. */}
+      {item.source_url ? (
+        <div className="mt-0.5">
+          <a
+            href={item.source_url}
+            target="_blank"
+            rel="noreferrer noopener"
+            className="text-[0.6875rem] text-splash-navy/50 underline"
+          >
+            Manufacturer page
+          </a>
+        </div>
+      ) : null}
+
       {error ? (
         <p role="alert" className="mt-1 text-racecar-red">
           {error}

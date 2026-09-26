@@ -118,7 +118,14 @@ export async function patchSdsItem(
   patch: Partial<
     Pick<
       SdsItem,
-      "product_identifier" | "manufacturer" | "work_area" | "binder_tab" | "is_active" | "sort_order"
+      | "product_identifier"
+      | "manufacturer"
+      | "work_area"
+      | "binder_tab"
+      | "is_active"
+      | "sort_order"
+      | "source_url"
+      | "sds_revision_date"
     >
   >
 ): Promise<Result<{ item: SdsItem }>> {

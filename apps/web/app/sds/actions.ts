@@ -56,6 +56,8 @@ export async function updateChemicalAction(
     manufacturer?: string | null;
     work_area?: string | null;
     binder_tab?: string | null;
+    source_url?: string | null;
+    sds_revision_date?: string | null;
   }
 ): Promise<SdsActionResult> {
   const res = await patchSdsItem(id, patch);

@@ -48,7 +48,12 @@ function Row({ item, canEdit }: { item: SdsItem; canEdit: boolean }) {
         product_identifier: str("product_identifier"),
         manufacturer: str("manufacturer") || null,
         work_area: str("work_area") || null,
-        binder_tab: str("binder_tab") || null
+        binder_tab: str("binder_tab") || null,
+        source_url: str("source_url") || null,
+        // Empty clears it. An unparseable value is dropped by the worker
+        // rather than stored, because a wrong revision date is worse than
+        // none on the field whose job is saying how current the sheet is.
+        sds_revision_date: str("sds_revision_date") || null
       });
       if (res.ok) setEditing(false);
       else setError(res.error);
@@ -85,6 +90,23 @@ function Row({ item, canEdit }: { item: SdsItem; canEdit: boolean }) {
             <label className="min-w-[10rem] flex-1 text-xs text-splash-navy/70">
               Where used / stored
               <Field name="work_area" defaultValue={item.work_area ?? ""} />
+            </label>
+            <label className="min-w-[14rem] flex-1 text-xs text-splash-navy/70">
+              Manufacturer SDS page (optional)
+              <Field
+                name="source_url"
+                defaultValue={item.source_url ?? ""}
+                placeholder="https://… where this sheet came from"
+              />
+            </label>
+            <label className="text-xs text-splash-navy/70">
+              SDS revision date
+              <input
+                type="date"
+                name="sds_revision_date"
+                defaultValue={item.sds_revision_date ?? ""}
+                className="block rounded-splash-sm border border-gray-light px-2 py-1 text-sm"
+              />
             </label>
             <button
               type="submit"
