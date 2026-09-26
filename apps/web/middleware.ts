@@ -219,7 +219,7 @@ export function middleware(request: NextRequest) {
   }
 
   // /admin/*, /sysadmin/*, /workorders/*, /action-items/*, /schedule/*,
-  // /forms (and /forms/*) — always gated.
+  // /sds (and /sds/*), /forms (and /forms/*) — always gated.
   if (!hasCookie) {
     return resumeOrLogin(request);
   }
@@ -315,6 +315,7 @@ export const config = {
     "/workorders/:path*",
     "/action-items/:path*",
     "/schedule/:path*",
+    "/sds/:path*",
     "/forms/:path*",
     "/change-password",
     "/login",

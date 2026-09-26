@@ -96,6 +96,7 @@ export const NAV = [
   { id: "pending-approvals", group: "operations", subgroup: "other-tools", title: "Pending Approvals", href: "/admin/approvals" },
   { id: "action-items", group: "operations", subgroup: "other-tools", title: "Action Items", href: "/action-items" },
   { id: "forms-fill", group: "operations", subgroup: "other-tools", title: "Fill Out a Form", href: "/forms" },
+  { id: "sds", group: "operations", subgroup: "other-tools", title: "SDS Binder Index", href: "/sds" },
   { id: "inventory", group: "operations", subgroup: "other-tools", title: "Chemical Inventory", href: "/inventory/" },
   { id: "promotions", group: "operations", subgroup: "other-tools", title: "Promotions", href: "/admin/promotions" },
   { id: "promotions-queue", group: "operations", subgroup: "other-tools", title: "IT Promotions Queue", href: "/admin/promotions/queue" },

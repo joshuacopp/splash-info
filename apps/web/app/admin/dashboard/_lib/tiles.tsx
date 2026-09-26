@@ -526,6 +526,20 @@ export const TILES: ReadonlyArray<Tile> = [
     visibleTo: allStaff
   },
   {
+    id: "sds",
+    group: "operations",
+    subgroup: "other-tools",
+    eyebrow: "Safety",
+    title: "SDS Binder Index",
+    description:
+      "The chemicals on site and where they are used — print it for the front of the SDS binder.",
+    href: "/sds",
+    icon: beakerIcon,
+    // Same posture as Action Items: access is email-on-locations, resolved by
+    // the worker. A role check here would be a second answer to that question.
+    visibleTo: allStaff
+  },
+  {
     id: "forms-fill",
     group: "operations",
     subgroup: "other-tools",

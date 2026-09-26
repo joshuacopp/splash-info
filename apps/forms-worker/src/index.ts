@@ -106,6 +106,15 @@ import {
   handleCreateActionItemNote,
   handleCreateActionItem
 } from "./action-items/handlers.js";
+import {
+  handleListSds,
+  handleCreateSds,
+  handlePatchSds,
+  handleSdsCandidates,
+  handleSeedSds,
+  handleReviewSds,
+  handlePrintSds
+} from "./sds/handlers.js";
 import { handleEmailQueueClaim } from "./email-queue/claim.js";
 import { handleEmailQueueConfirm } from "./email-queue/confirm.js";
 import {
@@ -492,6 +501,34 @@ export default {
     if (url.pathname === "/forms/api/action-items") {
       if (req.method === "GET") return handleListActionItems(env, req);
       if (req.method === "POST") return handleCreateActionItem(env, req);
+    }
+
+    // SDS binder index. Under /forms/api/ for the same reason action items are:
+    // the audience is sites and RMs, not form administrators, and authority
+    // comes from the same email-on-locations answer.
+    //
+    // The fixed sub-paths MUST match before the bare {id} PATCH, or a trailing
+    // segment is swallowed as part of the UUID -- the ordering rule /verify,
+    // /notes, /transition and /comments all follow.
+    if (url.pathname === "/forms/api/sds/print.pdf" && req.method === "GET") {
+      return handlePrintSds(env, req);
+    }
+    if (url.pathname === "/forms/api/sds/candidates" && req.method === "GET") {
+      return handleSdsCandidates(env, req);
+    }
+    if (url.pathname === "/forms/api/sds/seed" && req.method === "POST") {
+      return handleSeedSds(env, req);
+    }
+    if (url.pathname === "/forms/api/sds/review" && req.method === "POST") {
+      return handleReviewSds(env, req);
+    }
+    const sdsItemMatch = url.pathname.match(/^\/forms\/api\/sds\/([^/]+)$/);
+    if (sdsItemMatch && sdsItemMatch[1] && req.method === "PATCH") {
+      return handlePatchSds(env, req, sdsItemMatch[1]);
+    }
+    if (url.pathname === "/forms/api/sds") {
+      if (req.method === "GET") return handleListSds(env, req);
+      if (req.method === "POST") return handleCreateSds(env, req);
     }
 
     // GET /forms/admin/api/access-tags
