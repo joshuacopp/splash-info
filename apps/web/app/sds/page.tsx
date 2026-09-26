@@ -59,7 +59,27 @@ export default async function SdsPage({ searchParams }: PageProps) {
     );
   }
 
-  const resp = await listSds({ includeInactive: showRemoved });
+  let resp: Awaited<ReturnType<typeof listSds>>;
+  let loadError: string | null = null;
+  try {
+    resp = await listSds({ includeInactive: showRemoved });
+  } catch (err) {
+    resp = null;
+    loadError = err instanceof Error ? err.message : String(err);
+  }
+  if (loadError) {
+    return (
+      <Shell>
+        <p className="rounded-splash-md border border-racecar-red/30 bg-racecar-red/5 p-4 text-sm text-splash-navy">
+          The SDS index couldn&rsquo;t be loaded. This is a fault, not a
+          permissions problem &mdash; your access is fine.
+          <span className="mt-2 block font-mono text-xs text-splash-navy/60">
+            {loadError}
+          </span>
+        </p>
+      </Shell>
+    );
+  }
   // null is the worker refusing outright, which is a different thing from an
   // empty list and deserves a different sentence.
   if (resp === null) {

@@ -141,6 +141,38 @@ function scopeFor(access: SiteAccess, requested: string | null): string[] | null
   return access.locationCodes;
 }
 
+/**
+ * Binder order: tab first, then name.
+ *
+ * Done here rather than in the query because product_identifier lives on the
+ * catalogue and PostgREST cannot order a base table by an embedded column.
+ * Mirrors compareItems in apps/web -- two bundles, so the logic cannot be
+ * imported, but the printed page and the screen must agree on what order the
+ * binder is in.
+ */
+function sortForBinder(items: SdsItemRow[]): SdsItemRow[] {
+  return [...items].sort((a, b) => {
+    const at = (a.binder_tab ?? "").trim();
+    const bt = (b.binder_tab ?? "").trim();
+    if (at !== bt) {
+      // Untabbed entries last: they are the ones still to be filed.
+      if (!at) return 1;
+      if (!bt) return -1;
+      const an = Number(at);
+      const bn = Number(bt);
+      if (Number.isFinite(an) && Number.isFinite(bn) && an !== bn) return an - bn;
+      if (Number.isFinite(an) !== Number.isFinite(bn)) return Number.isFinite(an) ? -1 : 1;
+      const c = at.localeCompare(bt, undefined, { numeric: true });
+      if (c !== 0) return c;
+    }
+    return (a.catalog?.product_identifier ?? "").localeCompare(
+      b.catalog?.product_identifier ?? "",
+      undefined,
+      { sensitivity: "base" }
+    );
+  });
+}
+
 // =============================================================================
 // GET /forms/api/sds
 // =============================================================================
@@ -159,7 +191,11 @@ export async function handleListSds(env: Env, req: Request): Promise<Response> {
 
   const q = new URL("/rest/v1/sds_items", env.SUPABASE_URL);
   q.searchParams.set("select", SELECT_WITH_CATALOG);
-  q.searchParams.set("order", "location_code.asc,sort_order.asc,product_identifier.asc");
+  // Ordered by what sds_items ACTUALLY has. product_identifier moved to the
+  // catalogue, and PostgREST cannot order a base table by an embedded
+  // column -- asking it to 400s the whole request. Name ordering happens in
+  // JS below / in the client, where the rows are already in hand.
+  q.searchParams.set("order", "location_code.asc,sort_order.asc,created_at.asc");
   q.searchParams.set("limit", String(LIST_LIMIT));
   if (!includeInactive) q.searchParams.set("is_active", "eq.true");
 
@@ -622,7 +658,11 @@ export async function handlePrintSds(env: Env, req: Request): Promise<Response> 
   q.searchParams.set("select", SELECT_WITH_CATALOG);
   q.searchParams.set("location_code", `eq.${location}`);
   q.searchParams.set("is_active", "eq.true");
-  q.searchParams.set("order", "sort_order.asc,product_identifier.asc");
+  // Ordered by what sds_items ACTUALLY has. product_identifier moved to the
+  // catalogue, and PostgREST cannot order a base table by an embedded
+  // column -- asking it to 400s the whole request. Name ordering happens in
+  // JS below / in the client, where the rows are already in hand.
+  q.searchParams.set("order", "sort_order.asc,created_at.asc");
   const resp = await fetch(q.toString(), { headers: sbHeaders(env) });
   if (!resp.ok) return jsonError(502, "list_failed");
   const items = (await resp.json().catch(() => [])) as SdsItemRow[];
@@ -658,7 +698,7 @@ export async function handlePrintSds(env: Env, req: Request): Promise<Response> 
   const bytes = await renderSdsPdf({
     siteName,
     locationCode: location,
-    items,
+    items: sortForBinder(items),
     lastReviewedAt: reviews[0]?.last_reviewed_at ?? null,
     lastReviewedBy: reviews[0]?.last_reviewed_by ?? null,
     bucket: env.FORMS_FILES
@@ -783,7 +823,11 @@ export async function handleSdsBinder(env: Env, req: Request): Promise<Response>
   q.searchParams.set("select", SELECT_WITH_CATALOG);
   q.searchParams.set("location_code", `eq.${location}`);
   q.searchParams.set("is_active", "eq.true");
-  q.searchParams.set("order", "sort_order.asc,product_identifier.asc");
+  // Ordered by what sds_items ACTUALLY has. product_identifier moved to the
+  // catalogue, and PostgREST cannot order a base table by an embedded
+  // column -- asking it to 400s the whole request. Name ordering happens in
+  // JS below / in the client, where the rows are already in hand.
+  q.searchParams.set("order", "sort_order.asc,created_at.asc");
   const resp = await fetch(q.toString(), { headers: sbHeaders(env) });
   if (!resp.ok) return jsonError(502, "list_failed");
   const items = (await resp.json().catch(() => [])) as SdsItemRow[];
@@ -814,7 +858,7 @@ export async function handleSdsBinder(env: Env, req: Request): Promise<Response>
   const built = await renderBinderPdf(env, {
     siteName,
     locationCode: location,
-    items,
+    items: sortForBinder(items),
     lastReviewedAt: reviews[0]?.last_reviewed_at ?? null,
     lastReviewedBy: reviews[0]?.last_reviewed_by ?? null
   });

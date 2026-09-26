@@ -85,7 +85,15 @@ export async function listSds(params?: {
   if (params?.includeInactive) qs.set("include_inactive", "1");
   const suffix = qs.toString() ? `?${qs.toString()}` : "";
   const resp = await callForms(`/forms/api/sds${suffix}`);
-  if (!resp.ok) return null;
+  // 401/403 is the only case that means "this surface is not for you". Anything
+  // else is the tool being broken, and saying "your address isn't on any
+  // location" to somebody whose access is fine sends them looking in entirely
+  // the wrong place -- it did exactly that after a schema change.
+  if (resp.status === 401 || resp.status === 403) return null;
+  if (!resp.ok) {
+    const body = await resp.text().catch(() => "");
+    throw new Error(`SDS list failed: ${resp.status}${body ? ` — ${body.slice(0, 200)}` : ""}`);
+  }
   return (await resp.json()) as SdsResponse;
 }
 
