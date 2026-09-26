@@ -253,3 +253,31 @@ select p.id as product_id,
           from inventory.location_products lp
          where lp.product_id = p.id) as site_count
 from inventory.products p;
+
+-- ---------------------------------------------------------------------------
+-- APPLIED 2026-09-26. Move legacy sheet keys onto the catalogue path.
+--
+-- 14 of 17 sheets were stored at sds-sheets/{location}/{item_id}.pdf, all of
+-- them under binghamton's prefix -- the site the first binder was built at,
+-- before sheets became a property of the CATALOGUE rather than of a site row.
+-- Twelve were already being read by cortland, so a second site's binder
+-- depended on a path filed under a site it has nothing to do with. Nothing
+-- sweeps that prefix today; the hazard is the first cleanup, offboarding or
+-- prefix-scoped delete written against sds-sheets/{location}/, which would
+-- empty most of cortland's binder while the index still listed every chemical.
+--
+-- Objects were COPIED to sds-sheets/catalog/{catalog_id}.pdf first and each
+-- verified by md5 round-trip, then these rows repointed, so a failure at any
+-- point left the old key working. The originals under binghamton/ were NOT
+-- deleted -- they are orphans now and make the rollback trivial.
+--
+-- No code change: handleUploadSheet/handleCatalogUpload already write
+-- sheetKey(catalog_id). Only the pre-refactor rows were wrong.
+--
+-- update public.sds_catalog
+--    set sds_r2_key = 'sds-sheets/catalog/' || id || '.pdf'
+--  where sds_r2_key like 'sds-sheets/%'
+--    and sds_r2_key not like 'sds-sheets/catalog/%';
+--
+-- Verified after: 17/17 stored keys resolve to a real PDF in splash-forms-files.
+-- ---------------------------------------------------------------------------
