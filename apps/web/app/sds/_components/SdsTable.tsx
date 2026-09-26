@@ -37,11 +37,13 @@ function Field({
 function Row({
   item,
   canEdit,
-  siteCount
+  siteCount,
+  canVerify
 }: {
   item: SdsItem;
   canEdit: boolean;
   siteCount: number;
+  canVerify: boolean;
 }) {
   const router = useRouter();
   const [editing, setEditing] = useState(false);
@@ -157,7 +159,12 @@ function Row({
       <td className="px-3 py-2 text-sm text-splash-navy/80">{item.catalog?.manufacturer || "—"}</td>
       <td className="px-3 py-2 text-sm text-splash-navy/80">{item.work_area || "—"}</td>
       <td className="px-3 py-2 align-top">
-        <SheetCell item={item} canEdit={canEdit} siteCount={siteCount} />
+        <SheetCell
+          item={item}
+          canEdit={canEdit}
+          siteCount={siteCount}
+          canVerify={canVerify}
+        />
       </td>
       <td className="px-3 py-2 text-right text-xs">
         {canEdit ? (
@@ -213,12 +220,14 @@ function Row({
 export default function SdsTable({
   items,
   canEdit,
-  usage
+  usage,
+  canVerify
 }: {
   items: SdsItem[];
   canEdit: boolean;
   /** catalog_id -> number of sites holding it. */
   usage: Record<string, number>;
+  canVerify: boolean;
 }) {
   const sorted = [...items].sort(compareItems);
   if (sorted.length === 0) {
@@ -259,6 +268,7 @@ export default function SdsTable({
               item={i}
               canEdit={canEdit}
               siteCount={usage[i.catalog_id] ?? 1}
+              canVerify={canVerify}
             />
           ))}
         </tbody>

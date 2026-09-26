@@ -12,6 +12,7 @@ import { useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 
 import type { SdsItem } from "../_lib/types";
+import { verifyCatalogAction } from "../actions";
 
 /** Mirrors the worker's cap. Checked here too so a too-large file is refused
  *  before it is uploaded rather than after. */
@@ -20,13 +21,17 @@ const MAX_BYTES = 10 * 1024 * 1024;
 export default function SheetCell({
   item,
   canEdit,
-  siteCount
+  siteCount,
+  canVerify
 }: {
   item: SdsItem;
   canEdit: boolean;
   /** How many sites hold this chemical. Shown BEFORE the file picker
    *  opens, because one upload updates every one of them. */
   siteCount: number;
+  /** Admin tier. The worker is the gate; this only decides whether to
+   *  offer the control. */
+  canVerify: boolean;
 }) {
   const router = useRouter();
   const inputRef = useRef<HTMLInputElement | null>(null);
@@ -128,6 +133,40 @@ export default function SheetCell({
       {/* Revision date is the date printed ON the sheet, so it is the only thing
           here that answers "is this current?". Upload date would answer "when
           did somebody file it", which is a different and less useful question. */}
+      {/* A verified entry has been checked by somebody accountable: the name
+          matches a real sheet and the file is that chemical's. It is cleared
+          automatically by any later edit to either, so the badge never
+          outlives what it vouches for. */}
+      {item.catalog?.verified_at ? (
+        <div
+          className="mt-0.5 text-[0.6875rem] font-bold text-emerald-700"
+          title={`Verified${item.catalog?.verified_by ? ` by ${item.catalog.verified_by}` : ""}`}
+        >
+          ✓ Verified
+        </div>
+      ) : null}
+
+      {canVerify ? (
+        <button
+          type="button"
+          disabled={busy}
+          onClick={() => {
+            setError(null);
+            startTransition(async () => {
+              const res = await verifyCatalogAction(
+                item.catalog_id,
+                !item.catalog?.verified_at
+              );
+              if (!res.ok) setError(res.error);
+              router.refresh();
+            });
+          }}
+          className="mt-0.5 block text-[0.6875rem] text-splash-navy/50 underline disabled:opacity-50"
+        >
+          {item.catalog?.verified_at ? "Withdraw verification" : "Mark verified"}
+        </button>
+      ) : null}
+
       {/* Says the sheet is shared before anyone edits it, not after. */}
       {siteCount > 1 ? (
         <div className="mt-0.5 text-[0.6875rem] text-splash-navy/50">

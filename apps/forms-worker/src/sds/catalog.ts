@@ -25,6 +25,8 @@ export interface SdsCatalogRow {
   source_url: string | null;
   sds_revision_date: string | null;
   source_product_id: string | null;
+  verified_at: string | null;
+  verified_by: string | null;
 }
 
 function sbHeaders(env: Env, extra?: Record<string, string>) {
@@ -113,12 +115,37 @@ export async function findOrCreateCatalogEntry(
   return rows[0] ?? null;
 }
 
-/** Update the shared record. Every site holding this chemical sees it. */
+/** Fields whose change invalidates a verification, because a verification is a
+ *  claim about a SPECIFIC identity and a SPECIFIC sheet. */
+const VERIFIED_FIELDS = [
+  "product_identifier",
+  "manufacturer",
+  "sds_r2_key",
+  "sds_filename",
+  "sds_revision_date"
+] as const;
+
+/**
+ * Update the shared record. Every site holding this chemical sees it.
+ *
+ * ANY EDIT TO THE IDENTITY OR THE SHEET CLEARS VERIFICATION. A verified badge
+ * says somebody checked that this name matches a real sheet and that the
+ * attached file is that chemical's; rename it or swap the file afterwards and
+ * the badge is vouching for something nobody looked at. A stale assurance on a
+ * compliance record is worse than none, and re-verifying is one click.
+ *
+ * The caller can override with `keepVerification` -- used by the verify
+ * endpoint itself, which is setting the badge rather than invalidating it.
+ */
 export async function patchCatalogEntry(
   env: Env,
   id: string,
-  body: Record<string, unknown>
+  body: Record<string, unknown>,
+  opts: { keepVerification?: boolean } = {}
 ): Promise<SdsCatalogRow | null> {
+  if (!opts.keepVerification && VERIFIED_FIELDS.some((f) => f in body)) {
+    body = { ...body, verified_at: null, verified_by: null };
+  }
   const url = new URL("/rest/v1/sds_catalog", env.SUPABASE_URL);
   url.searchParams.set("id", `eq.${id}`);
   const resp = await fetch(url.toString(), {
@@ -173,4 +200,99 @@ export async function countSitesUsingCatalog(
   const range = resp.headers.get("content-range");
   const total = range?.split("/")[1];
   return total && total !== "*" ? Number(total) : 0;
+}
+
+export interface CatalogSearchRow extends SdsCatalogRow {
+  /** How many sites already hold it. Not authority, but it is the cheapest
+   *  signal of "this is the entry everyone else uses" when several look alike. */
+  site_count: number;
+}
+
+/**
+ * Search the shared catalogue.
+ *
+ * THE POINT OF THE WHOLE THING: fifty sites hold unleaded gasoline and it is one
+ * chemical with one sheet. A site adding it should find the entry somebody
+ * already made, not type it in again and produce a fifty-first near-duplicate
+ * that nobody can tell apart on a printed index.
+ *
+ * Verified entries sort first because they are the ones a site should reach for.
+ * Unverified ones are still offered -- a site needing something nobody has got
+ * to yet must not be stuck waiting for an administrator.
+ */
+export async function searchCatalog(
+  env: Env,
+  opts: { q?: string; verifiedOnly?: boolean; limit?: number }
+): Promise<CatalogSearchRow[]> {
+  const url = new URL("/rest/v1/sds_catalog", env.SUPABASE_URL);
+  url.searchParams.set("select", "*");
+  url.searchParams.set("limit", String(Math.min(opts.limit ?? 50, 200)));
+  // Verified first, then most recently touched. A plain name sort would bury
+  // the entry fifty sites use under a typo somebody made once.
+  url.searchParams.set("order", "verified_at.desc.nullslast,updated_at.desc");
+  if (opts.verifiedOnly) url.searchParams.set("verified_at", "not.is.null");
+
+  const q = opts.q?.trim();
+  if (q) {
+    const term = `*${escapeLike(q)}*`;
+    // Either field: people search by what is on the drum, which is sometimes
+    // the product and sometimes the maker.
+    url.searchParams.set(
+      "or",
+      `(product_identifier.ilike.${term},manufacturer.ilike.${term})`
+    );
+  }
+
+  const resp = await fetch(url.toString(), { headers: sbHeaders(env) });
+  if (!resp.ok) {
+    console.error("[forms.sds] catalog search failed", resp.status);
+    return [];
+  }
+  const rows = (await resp.json().catch(() => [])) as SdsCatalogRow[];
+  if (rows.length === 0) return [];
+
+  // One read for every count rather than one read per row.
+  const counts: Record<string, number> = {};
+  try {
+    const u = new URL("/rest/v1/sds_items", env.SUPABASE_URL);
+    u.searchParams.set("select", "catalog_id");
+    u.searchParams.set("is_active", "eq.true");
+    u.searchParams.set("limit", "20000");
+    const ur = await fetch(u.toString(), { headers: sbHeaders(env) });
+    if (ur.ok) {
+      for (const r of (await ur.json().catch(() => [])) as { catalog_id: string }[]) {
+        if (r.catalog_id) counts[r.catalog_id] = (counts[r.catalog_id] ?? 0) + 1;
+      }
+    }
+  } catch (err) {
+    // A missing count costs a hint, not the feature.
+    console.error("[forms.sds] catalog search counts failed", err);
+  }
+
+  return rows.map((r) => ({ ...r, site_count: counts[r.id] ?? 0 }));
+}
+
+/**
+ * Mark a catalogue entry verified, or withdraw it.
+ *
+ * Verification says: this entry names a real chemical the way its sheet names
+ * it, and the attached sheet is that chemical's. It is deliberately NOT a
+ * property a site can set for itself -- the whole value is that it was checked
+ * by somebody accountable for checking.
+ */
+export async function setCatalogVerified(
+  env: Env,
+  id: string,
+  verified: boolean,
+  email: string
+): Promise<SdsCatalogRow | null> {
+  return patchCatalogEntry(
+    env,
+    id,
+    verified
+      ? { verified_at: new Date().toISOString(), verified_by: email }
+      : { verified_at: null, verified_by: null },
+    // Setting the badge, not invalidating it.
+    { keepVerification: true }
+  );
 }

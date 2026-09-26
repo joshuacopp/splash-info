@@ -15,6 +15,7 @@ import { useRouter } from "next/navigation";
 
 import type { SdsCandidate } from "../_lib/types";
 import { addChemicalAction, seedFromInventoryAction } from "../actions";
+import CatalogSearch from "./CatalogSearch";
 
 export default function AddChemical({
   locationCode,
@@ -24,7 +25,7 @@ export default function AddChemical({
   candidates: SdsCandidate[];
 }) {
   const router = useRouter();
-  const [mode, setMode] = useState<null | "manual" | "inventory">(null);
+  const [mode, setMode] = useState<null | "manual" | "inventory" | "catalog">(null);
   const [picked, setPicked] = useState<Set<string>>(new Set());
   const [pending, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
@@ -71,6 +72,16 @@ export default function AddChemical({
   if (mode === null) {
     return (
       <div className="mt-4 flex flex-wrap gap-2">
+        {/* First, because reusing an existing entry is the right answer far more
+            often than typing a new one -- and it is the only one that brings a
+            sheet with it. */}
+        <button
+          type="button"
+          onClick={() => setMode("catalog")}
+          className="rounded-splash-md border border-splash-navy/30 px-3 py-1.5 text-sm font-semibold text-splash-navy hover:bg-splash-navy/5"
+        >
+          Find an existing chemical
+        </button>
         <button
           type="button"
           onClick={() => setMode("manual")}
@@ -89,6 +100,10 @@ export default function AddChemical({
         ) : null}
       </div>
     );
+  }
+
+  if (mode === "catalog") {
+    return <CatalogSearch locationCode={locationCode} onDone={reset} />;
   }
 
   if (mode === "inventory") {

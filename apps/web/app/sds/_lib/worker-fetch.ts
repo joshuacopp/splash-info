@@ -173,3 +173,31 @@ export async function markSdsReviewed(
     })
   );
 }
+
+/** Attach an EXISTING catalogue entry to this site: the chemical is already
+ *  described, so this only records that it is here. Inherits the sheet. */
+export async function addSdsFromCatalog(
+  location_code: string,
+  catalog_id: string
+): Promise<Result<{ item: SdsItem }>> {
+  return unwrap(
+    await callForms("/forms/api/sds", {
+      method: "POST",
+      jsonBody: { location_code, catalog_id }
+    })
+  );
+}
+
+/** Mark a catalogue entry verified, or withdraw it. Admin-tier; the worker
+ *  is the gate. */
+export async function setCatalogVerified(
+  catalogId: string,
+  verified: boolean
+): Promise<Result<unknown>> {
+  return unwrap(
+    await callForms(`/forms/api/sds/catalog/${encodeURIComponent(catalogId)}/verify`, {
+      method: "POST",
+      jsonBody: { verified }
+    })
+  );
+}

@@ -21,6 +21,11 @@ export interface SdsCatalog {
   /** The date printed on the sheet, not the upload date. */
   sds_revision_date: string | null;
   source_product_id: string | null;
+  /** Set when somebody accountable confirmed the name matches a real
+   *  sheet and the attached file is that chemical's. CLEARED by any later
+   *  edit to identity or sheet -- a stale assurance is worse than none. */
+  verified_at: string | null;
+  verified_by: string | null;
 }
 
 /** A chemical PRESENT AT A SITE. Only the placement lives here. */
@@ -95,4 +100,11 @@ export function compareItems(a: SdsItem, b: SdsItem): number {
       sensitivity: "base"
     }
   );
+}
+
+/** A catalogue entry as the search returns it. */
+export interface SdsCatalogSearchRow extends SdsCatalog {
+  /** Sites already holding it. Not authority, but the cheapest signal of
+   *  "this is the entry everyone uses" when two look alike. */
+  site_count: number;
 }

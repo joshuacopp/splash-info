@@ -202,3 +202,32 @@ alter table public.sds_items
 -- orphans, 0 broken links, 0 superseded columns remaining, duplicate index
 -- rebuilt on catalog_id, RLS on with zero policies.
 -- ---------------------------------------------------------------------------
+
+-- ---------------------------------------------------------------------------
+-- Verified catalogue entries. APPLIED 2026-09-26 via the connector.
+--
+--   sds_catalog.verified_at / verified_by
+--
+-- WHAT VERIFIED MEANS: somebody accountable confirmed this entry names a real
+-- chemical the way its safety data sheet names it, and that the attached sheet
+-- is that chemical's. Admin tier only -- the entire value of the badge is that
+-- it was checked by somebody answerable for checking, so a site setting it for
+-- itself would be worth nothing.
+--
+-- IT IS CLEARED BY ANY LATER EDIT to the identity or the sheet
+-- (product_identifier, manufacturer, sds_r2_key, sds_filename,
+-- sds_revision_date). A verification is a claim about a SPECIFIC state: rename
+-- the entry or swap the file afterwards and the badge would go on vouching for
+-- something nobody looked at. A stale assurance on a compliance record is worse
+-- than no assurance, and re-verifying is one click. Implemented in
+-- patchCatalogEntry, which is the single write path -- putting it anywhere else
+-- would mean the next write path forgets.
+--
+-- Unverified entries stay selectable. A site needing something nobody has got
+-- round to checking must not be blocked waiting for an administrator; the
+-- search simply sorts verified first and labels the rest.
+-- ---------------------------------------------------------------------------
+
+alter table public.sds_catalog
+  add column if not exists verified_at timestamptz,
+  add column if not exists verified_by text;

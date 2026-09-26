@@ -27,8 +27,11 @@ import type { Env } from "../index.js";
 import { renderSdsPdf } from "./pdf.js";
 import {
   findOrCreateCatalogEntry,
+  readCatalogEntry,
   patchCatalogEntry,
   countSitesUsingCatalog,
+  searchCatalog,
+  setCatalogVerified,
   type SdsCatalogRow
 } from "./catalog.js";
 import { handleUploadSheet, handleServeSheet, renderBinderPdf } from "./sheets.js";
@@ -307,17 +310,31 @@ export async function handleCreateSds(env: Env, req: Request): Promise<Response>
   const location = typeof body.location_code === "string" ? body.location_code : "";
   if (!location || !canRead(g.access, location)) return jsonError(403, "forbidden");
 
-  const identifier = optionalText(body.product_identifier, IDENTIFIER_MAX);
+  // Two ways in. Picking an existing catalogue entry is the one that matters:
+  // fifty sites holding unleaded gasoline should be fifty rows pointing at ONE
+  // chemical, inheriting its sheet, not fifty near-duplicates nobody can tell
+  // apart on a printed index.
+  let entryFromId: Awaited<ReturnType<typeof findOrCreateCatalogEntry>> = null;
+  if (typeof body.catalog_id === "string" && UUID_RE.test(body.catalog_id)) {
+    entryFromId = await readCatalogEntry(env, body.catalog_id);
+    if (!entryFromId) return jsonError(404, "catalog_entry_not_found");
+  }
+
+  const identifier = entryFromId
+    ? entryFromId.product_identifier
+    : optionalText(body.product_identifier, IDENTIFIER_MAX);
   if (!identifier) return jsonError(400, "product_identifier_required");
 
   // The chemical first, the placement second. Two sites adding the same product
   // land on the SAME catalogue row, which is the whole point: one sheet, one
   // manufacturer, one revision date, however many binders.
-  const entry = await findOrCreateCatalogEntry(env, {
-    product_identifier: identifier,
-    manufacturer: optionalText(body.manufacturer, FIELD_MAX) ?? null,
-    email: g.email
-  });
+  const entry =
+    entryFromId ??
+    (await findOrCreateCatalogEntry(env, {
+      product_identifier: identifier,
+      manufacturer: optionalText(body.manufacturer, FIELD_MAX) ?? null,
+      email: g.email
+    }));
   if (!entry) return jsonError(502, "catalog_failed");
 
   const row = {
@@ -873,4 +890,53 @@ export async function handleSdsBinder(env: Env, req: Request): Promise<Response>
       "X-Sds-Failed": String(built.failed.length)
     }
   });
+}
+
+// =============================================================================
+// GET /forms/api/sds/catalog  -- search the shared chemical list
+// =============================================================================
+
+export async function handleSearchCatalog(env: Env, req: Request): Promise<Response> {
+  const keyed = requireServiceKey(env);
+  if (keyed) return keyed;
+  // Any caller who can reach the SDS surface at all may search it. The
+  // catalogue is a list of chemical names and public safety data sheets, not
+  // anything site-scoped -- gating it per location would only stop a site
+  // finding the entry it is supposed to reuse.
+  const g = await gate(env, req);
+  if (!g.ok) return g.response;
+
+  const url = new URL(req.url);
+  const rows = await searchCatalog(env, {
+    q: url.searchParams.get("q") ?? undefined,
+    verifiedOnly: url.searchParams.get("verified_only") === "1"
+  });
+  return json({ catalog: rows, can_verify: g.access.isAdmin });
+}
+
+// =============================================================================
+// POST /forms/api/sds/catalog/{id}/verify
+// =============================================================================
+
+export async function handleVerifyCatalog(
+  env: Env,
+  req: Request,
+  id: string
+): Promise<Response> {
+  if (!isOriginAllowed(req)) return jsonError(403, "bad_origin");
+  const keyed = requireServiceKey(env);
+  if (keyed) return keyed;
+  if (!UUID_RE.test(id)) return jsonError(400, "bad_id");
+  const g = await gate(env, req);
+  if (!g.ok) return g.response;
+
+  // Deliberately NOT something a site can set for itself: the entire value of
+  // the badge is that somebody accountable for checking did the checking.
+  if (!g.access.isAdmin) return jsonError(403, "verification_is_admin_only");
+
+  const body = (await req.json().catch(() => null)) as { verified?: unknown } | null;
+  const verified = body?.verified !== false;
+  const updated = await setCatalogVerified(env, id, verified, g.email);
+  if (!updated) return jsonError(502, "verify_failed");
+  return json({ catalog: updated });
 }

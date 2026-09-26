@@ -9,10 +9,12 @@
 import { revalidatePath } from "next/cache";
 
 import {
+  addSdsFromCatalog,
   createSdsItem,
   markSdsReviewed,
   patchSdsItem,
-  seedSdsFromInventory
+  seedSdsFromInventory,
+  setCatalogVerified as setCatalogVerifiedApi
 } from "./_lib/worker-fetch";
 
 export type SdsActionResult = { ok: true } | { ok: false; error: string };
@@ -99,6 +101,29 @@ export async function markReviewedAction(
   locationCode: string
 ): Promise<SdsActionResult> {
   const res = await markSdsReviewed(locationCode);
+  if (!res.ok) return { ok: false, error: humanise(res.error) };
+  revalidatePath("/sds");
+  return { ok: true };
+}
+
+export async function addFromCatalogAction(
+  locationCode: string,
+  catalogId: string
+): Promise<SdsActionResult> {
+  const res = await addSdsFromCatalog(locationCode, catalogId);
+  if (!res.ok) return { ok: false, error: humanise(res.error) };
+  revalidatePath("/sds");
+  return { ok: true };
+}
+
+/** Verification is a claim somebody accountable makes about a specific
+ *  identity and a specific sheet. The worker enforces the tier; this only
+ *  carries the intent. */
+export async function verifyCatalogAction(
+  catalogId: string,
+  verified: boolean
+): Promise<SdsActionResult> {
+  const res = await setCatalogVerifiedApi(catalogId, verified);
   if (!res.ok) return { ok: false, error: humanise(res.error) };
   revalidatePath("/sds");
   return { ok: true };
