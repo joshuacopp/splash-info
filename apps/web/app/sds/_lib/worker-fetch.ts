@@ -289,3 +289,27 @@ export async function unlinkCatalogAlias(
     )
   );
 }
+
+export interface NumberTabsResult {
+  mode: "fill" | "renumber";
+  changed: number;
+  total: number;
+  highest: number;
+  over_limit: boolean;
+  tab_limit: number;
+}
+
+/** Assign binder tab numbers. `fill` numbers only what has none and cannot
+ *  move a filed sheet; `renumber` rewrites 1..N alphabetically and means the
+ *  binder has to be re-tabbed. */
+export async function numberSdsTabs(
+  location_code: string,
+  mode: "fill" | "renumber"
+): Promise<Result<NumberTabsResult>> {
+  return unwrap(
+    await callForms("/forms/api/sds/number-tabs", {
+      method: "POST",
+      jsonBody: { location_code, mode }
+    })
+  );
+}

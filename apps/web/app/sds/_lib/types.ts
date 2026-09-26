@@ -74,25 +74,16 @@ export interface SdsCandidate {
   description: string | null;
 }
 
-/** Binder order: by tab when tabs are numbered, then by name.
+/**
+ * Index order: ALPHABETICAL. The tab number is shown as a column, not used as
+ * the sort.
  *
- *  Tabs sort NUMERICALLY when they look like numbers -- "10" belongs after "9",
- *  and a plain string sort puts it after "1". Mixed or lettered tabs fall back
- *  to a text compare rather than coercing to NaN and shuffling. */
+ * It used to sort by tab. That breaks as soon as numbers append -- a chemical
+ * added after the binder was numbered takes the highest tab, and sorting by tab
+ * drops it at the end where nobody looks a name up. Mirrors sortForBinder in
+ * the worker; the screen and the printed index must agree.
+ */
 export function compareItems(a: SdsItem, b: SdsItem): number {
-  const at = (a.binder_tab ?? "").trim();
-  const bt = (b.binder_tab ?? "").trim();
-  if (at !== bt) {
-    // Untabbed entries sort last: they are the ones still to be filed.
-    if (!at) return 1;
-    if (!bt) return -1;
-    const an = Number(at);
-    const bn = Number(bt);
-    if (Number.isFinite(an) && Number.isFinite(bn) && an !== bn) return an - bn;
-    if (Number.isFinite(an) !== Number.isFinite(bn)) return Number.isFinite(an) ? -1 : 1;
-    const c = at.localeCompare(bt, undefined, { numeric: true });
-    if (c !== 0) return c;
-  }
   return (a.catalog?.product_identifier ?? "").localeCompare(
     b.catalog?.product_identifier ?? "",
     undefined,

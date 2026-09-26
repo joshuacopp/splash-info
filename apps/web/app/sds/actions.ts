@@ -13,6 +13,7 @@ import {
   createSdsItem,
   markSdsReviewed,
   patchSdsItem,
+  numberSdsTabs,
   seedSdsFromInventory,
   setCatalogVerified as setCatalogVerifiedApi
 } from "./_lib/worker-fetch";
@@ -127,4 +128,31 @@ export async function verifyCatalogAction(
   if (!res.ok) return { ok: false, error: humanise(res.error) };
   revalidatePath("/sds");
   return { ok: true };
+}
+
+/**
+ * Assign the binder's tab numbers.
+ *
+ * Returns the counts rather than a bare ok: "renumbered 28, highest 28" tells
+ * the operator how much of the physical binder just changed, which is the whole
+ * question they are asking when they press it.
+ */
+export async function numberTabsAction(
+  locationCode: string,
+  mode: "fill" | "renumber"
+): Promise<
+  | { ok: true; changed: number; total: number; highest: number; overLimit: boolean; limit: number }
+  | { ok: false; error: string }
+> {
+  const res = await numberSdsTabs(locationCode, mode);
+  if (!res.ok) return { ok: false, error: humanise(res.error) };
+  revalidatePath("/sds");
+  return {
+    ok: true,
+    changed: res.data.changed,
+    total: res.data.total,
+    highest: res.data.highest,
+    overLimit: res.data.over_limit,
+    limit: res.data.tab_limit
+  };
 }

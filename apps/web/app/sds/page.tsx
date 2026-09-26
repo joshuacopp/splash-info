@@ -23,6 +23,7 @@ import { listSds, listSdsCandidates } from "./_lib/worker-fetch";
 import SdsTable from "./_components/SdsTable";
 import AddChemical from "./_components/AddChemical";
 import ReviewStamp from "./_components/ReviewStamp";
+import NumberTabs from "./_components/NumberTabs";
 
 export const dynamic = "force-dynamic";
 
@@ -212,7 +213,21 @@ export default async function SdsPage({ searchParams }: PageProps) {
       />
 
       {canEdit ? (
-        <AddChemical locationCode={activeSite} candidates={candidates} />
+        <>
+          <AddChemical locationCode={activeSite} candidates={candidates} />
+          {/* Active only, matching what the worker numbers. Counting the removed
+              rows shown by "Show removed" would promise a number the button then
+              did not deliver. */}
+          <NumberTabs
+            locationCode={activeSite}
+            total={items.filter((i) => i.is_active).length}
+            untabbed={
+              items.filter(
+                (i) => i.is_active && !/^\d+$/.test((i.binder_tab ?? "").trim())
+              ).length
+            }
+          />
+        </>
       ) : null}
     </Shell>
   );

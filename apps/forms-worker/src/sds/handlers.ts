@@ -41,6 +41,7 @@ import {
   renderBinderPdf
 } from "./sheets.js";
 import { linkAlias, loadAliasMap, unlinkAlias } from "./aliases.js";
+import { assignTabs, nextTabFor, TAB_LIMIT } from "./tabs.js";
 import { getLocationOptionsFromPricingSimple } from "../db/forms.js";
 
 const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -151,35 +152,28 @@ function scopeFor(access: SiteAccess, requested: string | null): string[] | null
 }
 
 /**
- * Binder order: tab first, then name.
+ * Index order: ALPHABETICAL, with the tab number carried as a column.
+ *
+ * It used to sort by tab. That becomes wrong the moment tab numbers append: a
+ * chemical added after the binder was numbered takes the HIGHEST number, so
+ * sorting by tab buries it at the end -- the one place nobody looks up a name.
+ * The index is the lookup and the number is the address, like a parts catalogue,
+ * so A-Z is the order that makes a number findable. Straight after a Renumber
+ * the two orders are identical anyway.
  *
  * Done here rather than in the query because product_identifier lives on the
  * catalogue and PostgREST cannot order a base table by an embedded column.
  * Mirrors compareItems in apps/web -- two bundles, so the logic cannot be
- * imported, but the printed page and the screen must agree on what order the
- * binder is in.
+ * imported, but the printed page and the screen must agree.
  */
 function sortForBinder(items: SdsItemRow[]): SdsItemRow[] {
-  return [...items].sort((a, b) => {
-    const at = (a.binder_tab ?? "").trim();
-    const bt = (b.binder_tab ?? "").trim();
-    if (at !== bt) {
-      // Untabbed entries last: they are the ones still to be filed.
-      if (!at) return 1;
-      if (!bt) return -1;
-      const an = Number(at);
-      const bn = Number(bt);
-      if (Number.isFinite(an) && Number.isFinite(bn) && an !== bn) return an - bn;
-      if (Number.isFinite(an) !== Number.isFinite(bn)) return Number.isFinite(an) ? -1 : 1;
-      const c = at.localeCompare(bt, undefined, { numeric: true });
-      if (c !== 0) return c;
-    }
-    return (a.catalog?.product_identifier ?? "").localeCompare(
+  return [...items].sort((a, b) =>
+    (a.catalog?.product_identifier ?? "").localeCompare(
       b.catalog?.product_identifier ?? "",
       undefined,
       { sensitivity: "base" }
-    );
-  });
+    )
+  );
 }
 
 // =============================================================================
@@ -343,11 +337,16 @@ export async function handleCreateSds(env: Env, req: Request): Promise<Response>
     }));
   if (!entry) return jsonError(502, "catalog_failed");
 
+  // An explicit tab wins. Otherwise append -- but only at a site that has
+  // already been numbered, so a site still building its list stays untabbed
+  // until somebody presses the button.
+  const explicitTab = optionalText(body.binder_tab, 20) ?? null;
+
   const row = {
     location_code: location,
     catalog_id: entry.id,
     work_area: optionalText(body.work_area, FIELD_MAX) ?? null,
-    binder_tab: optionalText(body.binder_tab, 20) ?? null,
+    binder_tab: explicitTab ?? (await nextTabFor(env, location)),
     notes: optionalText(body.notes, NOTES_MAX) ?? null,
     sort_order: Number.isFinite(body.sort_order) ? Number(body.sort_order) : 0,
     created_by: g.email,
@@ -630,6 +629,22 @@ export async function handleSeedSds(env: Env, req: Request): Promise<Response> {
     return jsonError(502, "seed_failed");
   }
   const created = (await resp.json().catch(() => [])) as SdsItemRow[];
+
+  // Number the new rows only if this site is already numbered. Done AFTER the
+  // insert rather than in the payload because `ignore-duplicates` silently drops
+  // rows, and numbers computed up front would leave gaps for adds that never
+  // happened. `fill` never touches a tab that already exists, so it cannot move
+  // anything already filed in the binder.
+  if (created.length > 0 && (await nextTabFor(env, location)) !== null) {
+    try {
+      await assignTabs(env, location, "fill", g.email);
+    } catch (err) {
+      // An unnumbered row is visible and fixable from the page; losing the seed
+      // would not be.
+      console.warn("[forms.sds] seed tab fill failed", err);
+    }
+  }
+
   return json(
     { items: created, requested: ids.length, created: created.length, inherited_sheets: inherited },
     201
@@ -1351,4 +1366,42 @@ export async function handleUnlinkAlias(
   const removed = await unlinkAlias(env, catalogId, productId);
   if (!removed) return jsonError(404, "alias_not_found");
   return json({ ok: true });
+}
+
+// =============================================================================
+// POST /forms/api/sds/number-tabs   {location_code, mode}
+// =============================================================================
+
+/**
+ * Assign the binder's tab numbers.
+ *
+ * Site-tier, not admin: the person holding the binder is the person filing the
+ * sheets, and they are who knows whether the book can be re-tabbed right now.
+ *
+ * `fill` is safe at any time -- it only numbers what has no number, so it cannot
+ * move a sheet already filed. `renumber` rewrites 1..N alphabetically and closes
+ * gaps, which DOES invalidate the physical binder; the UI confirms before asking
+ * for it, and the response says how many rows moved so the answer is not a
+ * silent one.
+ */
+export async function handleNumberTabs(env: Env, req: Request): Promise<Response> {
+  if (!isOriginAllowed(req)) return jsonError(403, "bad_origin");
+  const keyed = requireServiceKey(env);
+  if (keyed) return keyed;
+  const g = await gate(env, req);
+  if (!g.ok) return g.response;
+
+  const body = (await req.json().catch(() => null)) as Record<string, unknown> | null;
+  const location = typeof body?.location_code === "string" ? body.location_code : "";
+  if (!location || !canRead(g.access, location)) return jsonError(403, "forbidden");
+
+  const mode = body?.mode === "renumber" ? "renumber" : "fill";
+
+  try {
+    const result = await assignTabs(env, location, mode, g.email);
+    return json({ ...result, tab_limit: TAB_LIMIT });
+  } catch (err) {
+    console.error("[forms.sds] number tabs failed", err);
+    return jsonError(502, "number_tabs_failed");
+  }
 }

@@ -125,7 +125,8 @@ import {
   handleInventoryProducts,
   handleCatalogFromInventory,
   handleLinkAlias,
-  handleUnlinkAlias
+  handleUnlinkAlias,
+  handleNumberTabs
 } from "./sds/handlers.js";
 import { handleEmailQueueClaim } from "./email-queue/claim.js";
 import { handleEmailQueueConfirm } from "./email-queue/confirm.js";
@@ -586,6 +587,9 @@ export default {
     }
     if (url.pathname === "/forms/api/sds/candidates" && req.method === "GET") {
       return handleSdsCandidates(env, req);
+    }
+    if (url.pathname === "/forms/api/sds/number-tabs" && req.method === "POST") {
+      return handleNumberTabs(env, req);
     }
     if (url.pathname === "/forms/api/sds/seed" && req.method === "POST") {
       return handleSeedSds(env, req);
