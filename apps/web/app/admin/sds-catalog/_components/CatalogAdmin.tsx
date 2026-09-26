@@ -18,6 +18,7 @@ import {
   patchCatalogEntryAction,
   verifyCatalogAction
 } from "../actions";
+import InventoryPicker from "./InventoryPicker";
 
 function Row({ row }: { row: SdsCatalogSearchRow }) {
   const router = useRouter();
@@ -236,6 +237,7 @@ export default function CatalogAdmin({
   const router = useRouter();
   const [q, setQ] = useState(initialQuery);
   const [adding, setAdding] = useState(false);
+  const [fromInventory, setFromInventory] = useState(false);
   const [pending, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
 
@@ -275,14 +277,31 @@ export default function CatalogAdmin({
           placeholder="Search by product or manufacturer…"
           className="min-w-[18rem] flex-1 rounded-splash-sm border border-gray-light px-2 py-1.5 text-sm"
         />
+        {/* First, because inventory's names are the ones on the drums -- typing
+            from memory is how one chemical becomes two entries. */}
         <button
           type="button"
-          onClick={() => setAdding((v) => !v)}
+          onClick={() => {
+            setFromInventory((v) => !v);
+            setAdding(false);
+          }}
+          className="rounded-splash-md border border-splash-navy/30 px-3 py-1.5 text-sm font-semibold text-splash-navy hover:bg-splash-navy/5"
+        >
+          Add from chemical inventory
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            setAdding((v) => !v);
+            setFromInventory(false);
+          }}
           className="rounded-splash-md border border-splash-navy/30 px-3 py-1.5 text-sm font-semibold text-splash-navy hover:bg-splash-navy/5"
         >
           + Add a chemical
         </button>
       </div>
+
+      {fromInventory ? <InventoryPicker onDone={() => setFromInventory(false)} /> : null}
 
       {adding ? (
         <form

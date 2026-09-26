@@ -6,6 +6,7 @@
 import { revalidatePath } from "next/cache";
 
 import {
+  createCatalogFromInventory,
   createSdsCatalogEntry,
   patchSdsCatalogEntry,
   setCatalogVerified
@@ -62,4 +63,16 @@ export async function verifyCatalogAction(
   if (!res.ok) return { ok: false, error: humanise(res.error) };
   revalidateBoth();
   return { ok: true };
+}
+
+/** Stock the catalogue from inventory's own product names. Returns how many
+ *  entries were created so the caller can say something true -- picking five
+ *  products of which three already existed creates two. */
+export async function addFromInventoryAction(
+  productIds: string[]
+): Promise<{ ok: true; created: number } | { ok: false; error: string }> {
+  const res = await createCatalogFromInventory(productIds);
+  if (!res.ok) return { ok: false, error: humanise(res.error) };
+  revalidateBoth();
+  return { ok: true, created: res.data.created };
 }

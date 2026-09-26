@@ -12,6 +12,7 @@ import { getCloudflareContext } from "@opennextjs/cloudflare";
 import type {
   SdsCandidate,
   SdsCatalogSearchRow,
+  SdsInventoryProduct,
   SdsItem,
   SdsResponse
 } from "./types";
@@ -233,6 +234,32 @@ export async function patchSdsCatalogEntry(
     await callForms(`/forms/api/sds/catalog/${encodeURIComponent(id)}`, {
       method: "PATCH",
       jsonBody: patch
+    })
+  );
+}
+
+/** The inventory master product list, for stocking the catalogue from real
+ *  product names. Admin-tier; the worker is the gate. */
+export async function listInventoryProducts(
+  q: string,
+  includeUnused = false
+): Promise<SdsInventoryProduct[]> {
+  const qs = new URLSearchParams();
+  if (q) qs.set("q", q);
+  if (includeUnused) qs.set("include_unused", "1");
+  const resp = await callForms(`/forms/api/sds/inventory-products?${qs.toString()}`);
+  if (!resp.ok) return [];
+  const data = (await resp.json()) as { products?: SdsInventoryProduct[] };
+  return data.products ?? [];
+}
+
+export async function createCatalogFromInventory(
+  product_ids: string[]
+): Promise<Result<{ created: number; requested: number }>> {
+  return unwrap(
+    await callForms("/forms/api/sds/catalog/from-inventory", {
+      method: "POST",
+      jsonBody: { product_ids }
     })
   );
 }

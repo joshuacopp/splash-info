@@ -108,3 +108,23 @@ export interface SdsCatalogSearchRow extends SdsCatalog {
    *  "this is the entry everyone uses" when two look alike. */
   site_count: number;
 }
+
+/**
+ * A product the chemical inventory knows about, offered as a catalogue
+ * candidate.
+ *
+ * `site_count` is how many sites stock it and is the ONLY sensible ordering
+ * here: 469 products exist, ~106 are in use anywhere, and the one at 40 sites
+ * earns a safety data sheet long before the one at none.
+ */
+export interface SdsInventoryProduct {
+  product_id: string;
+  product_name: string;
+  description: string | null;
+  site_count: number;
+  /** Non-null when this product is already in the catalogue, by provenance or
+   *  by name -- so the list can say "already added" instead of quietly
+   *  creating a second entry for one chemical. */
+  catalog_id: string | null;
+  has_sheet: boolean;
+}
