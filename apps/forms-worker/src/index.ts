@@ -116,7 +116,12 @@ import {
   handlePrintSds,
   handleSdsBinder,
   handleSdsSheetUpload,
-  handleSdsSheetServe
+  handleSdsSheetServe,
+  handleSearchCatalog,
+  handleVerifyCatalog,
+  handleCreateCatalog,
+  handlePatchCatalog,
+  handleCatalogSheetUpload
 } from "./sds/handlers.js";
 import { handleEmailQueueClaim } from "./email-queue/claim.js";
 import { handleEmailQueueConfirm } from "./email-queue/confirm.js";
@@ -513,6 +518,28 @@ export default {
     // The fixed sub-paths MUST match before the bare {id} PATCH, or a trailing
     // segment is swallowed as part of the UUID -- the ordering rule /verify,
     // /notes, /transition and /comments all follow.
+    if (url.pathname === "/forms/api/sds/catalog" && req.method === "POST") {
+      return handleCreateCatalog(env, req);
+    }
+    const sdsCatSheetMatch = url.pathname.match(
+      /^\/forms\/api\/sds\/catalog\/([^/]+)\/sheet$/
+    );
+    if (sdsCatSheetMatch && sdsCatSheetMatch[1] && req.method === "POST") {
+      return handleCatalogSheetUpload(env, req, sdsCatSheetMatch[1]);
+    }
+    const sdsCatMatch = url.pathname.match(/^\/forms\/api\/sds\/catalog\/([^/]+)$/);
+    if (sdsCatMatch && sdsCatMatch[1] && req.method === "PATCH") {
+      return handlePatchCatalog(env, req, sdsCatMatch[1]);
+    }
+    if (url.pathname === "/forms/api/sds/catalog" && req.method === "GET") {
+      return handleSearchCatalog(env, req);
+    }
+    const sdsVerifyMatch = url.pathname.match(
+      /^\/forms\/api\/sds\/catalog\/([^/]+)\/verify$/
+    );
+    if (sdsVerifyMatch && sdsVerifyMatch[1] && req.method === "POST") {
+      return handleVerifyCatalog(env, req, sdsVerifyMatch[1]);
+    }
     if (url.pathname === "/forms/api/sds/binder.pdf" && req.method === "GET") {
       return handleSdsBinder(env, req);
     }
@@ -606,6 +633,24 @@ export default {
       return handleListVersions(env, req, versionsMatch[1]);
     }
 
+    // Unmatched. An API path gets JSON; only a real page request gets the page.
+    //
+    // This used to return the form-render 404 for everything, so calling an
+    // endpoint that did not exist yet -- a route mid-deploy, a typo, a client
+    // ahead of the worker -- answered with "Form not found. This form is
+    // unavailable." That sends the reader looking at forms, which is not where
+    // the problem is, and it took a live debug to work out that a missing route
+    // was impersonating a missing form.
+    if (
+      url.pathname.startsWith("/forms/api/") ||
+      url.pathname.startsWith("/forms/internal/api/") ||
+      url.pathname.startsWith("/forms/admin/api/")
+    ) {
+      return new Response(JSON.stringify({ error: "no_such_endpoint" }), {
+        status: 404,
+        headers: { "Content-Type": "application/json", "Cache-Control": "no-store" }
+      });
+    }
     return notFoundPage();
   },
 
