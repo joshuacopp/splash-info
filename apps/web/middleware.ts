@@ -168,9 +168,30 @@ export function middleware(request: NextRequest) {
 
   // ── 3. Auth gate ────────────────────────────────────────────────────────
 
-  // /login: if the user already has a session cookie, send them past it.
+  // /login: send the user past it only if their session is actually FINISHED.
+  //
+  // This used to bounce on cookie presence alone, and that single line cost
+  // hours. A user who types their password and abandons the authenticator
+  // prompt holds a valid aal1 cookie, so /login bounced them to a dashboard
+  // whose every gated page then refused them -- and the one screen that could
+  // have rescued them, /login itself, was the one screen they could not reach.
+  // Three fixes shipped to that page before anyone noticed it was unreachable.
+  //
+  // aal2 means both factors are proven, so that session is complete and the
+  // convenience bounce is right. Anything else -- aal1, or a token with no aal
+  // claim at all -- is either half way through a login or unreadable, and both
+  // are better served by being shown the login page than by being sent
+  // somewhere that will refuse them without saying why. /login decides what to
+  // render: it asks dashboard-worker whether a code step is owed and shows the
+  // code field instead of the password form when it is.
+  //
+  // Read locally off the JWT: a base64 decode, no network. Middleware runs on
+  // the Edge where service bindings are unreachable and a same-zone URL fetch
+  // 522s (Brief 17), so a claim read is the only affordable check here. It is
+  // not a security decision -- every worker still validates the token properly.
+  // It only decides which of two screens to show.
   if (pathname === "/login") {
-    if (hasCookie) {
+    if (hasCookie && tokenAal(hasCookie) === "aal2") {
       const url = request.nextUrl.clone();
       url.pathname = DEFAULT_AUTHED_LANDING;
       url.search = "";
@@ -271,3 +292,24 @@ export const config = {
     "/logout"
   ]
 };
+
+/**
+ * Read the `aal` claim off a Supabase access token WITHOUT verifying it.
+ *
+ * Safe for what it is used for: choosing between the login form and a redirect.
+ * No access is granted on the strength of this -- every worker re-validates the
+ * token against GoTrue. Returns null for a malformed or claimless token, which
+ * callers must treat as "not complete" rather than as "fine".
+ */
+function tokenAal(token: string): string | null {
+  const parts = token.split(".");
+  if (parts.length < 2 || !parts[1]) return null;
+  try {
+    const b64 = parts[1].replace(/-/g, "+").replace(/_/g, "/");
+    const padded = b64 + "=".repeat((4 - (b64.length % 4)) % 4);
+    const payload = JSON.parse(atob(padded)) as { aal?: unknown };
+    return typeof payload.aal === "string" ? payload.aal : null;
+  } catch {
+    return null;
+  }
+}
