@@ -14,6 +14,7 @@
 // no-access cards onto it.
 
 import Link from "next/link";
+import FinishSignInRedirect from "../../../_components/FinishSignInRedirect";
 
 interface NoAccessCardProps {
   reason: "signin" | "forbidden";
@@ -41,6 +42,10 @@ export function NoAccessCard({ reason, returnPath }: NoAccessCardProps) {
               Sysadmin operations are restricted to super-admins. Sign in to
               continue.
             </p>
+            {/* Rescues a caller stranded here by a half-finished MFA login:
+                the code step, not this card, is what they need. Waiting to be
+                clicked was the bug -- see the component. */}
+            <FinishSignInRedirect returnPath={returnPath ?? "/admin/sysadmin"} />
             <Link
               href={`/login?return=${encodeURIComponent(
                 returnPath ?? "/admin/sysadmin"

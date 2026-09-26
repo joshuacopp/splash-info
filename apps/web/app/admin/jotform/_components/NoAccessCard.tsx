@@ -10,6 +10,7 @@
 // of this card.
 
 import Link from "next/link";
+import FinishSignInRedirect from "../../../_components/FinishSignInRedirect";
 
 interface Props {
   returnPath?: string;
@@ -32,6 +33,10 @@ export default function NoAccessCard({ returnPath }: Props) {
         <p className="mb-5 text-[0.9375rem] leading-relaxed text-splash-navy/80">
           JotForm submissions are restricted. Sign in to continue.
         </p>
+            {/* Rescues a caller stranded here by a half-finished MFA login:
+                the code step, not this card, is what they need. Waiting to be
+                clicked was the bug -- see the component. */}
+            <FinishSignInRedirect returnPath={returnPath ?? "/admin/jotform"} />
         <Link
           href={`/login?return=${encodeURIComponent(returnPath ?? "/admin/jotform")}`}
           className="inline-flex items-center gap-1.5 rounded-splash-sm bg-splash-blue px-5 py-2.5 text-sm font-bold text-white shadow-splash-btn transition-colors hover:bg-splash-blue-dark"
