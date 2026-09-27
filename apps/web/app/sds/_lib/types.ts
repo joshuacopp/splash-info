@@ -93,11 +93,26 @@ export function compareItems(a: SdsItem, b: SdsItem): number {
   );
 }
 
+/** One purchasing code that resolves to a catalogue entry. */
+export interface SdsAlias {
+  source_product_id: string;
+  inventory_name: string;
+  added_by: string;
+}
+
 /** A catalogue entry as the search returns it. */
 export interface SdsCatalogSearchRow extends SdsCatalog {
   /** Sites already holding it. Not authority, but the cheapest signal of
    *  "this is the entry everyone uses" when two look alike. */
   site_count: number;
+  /** Purchasing codes pointing here. OPTIONAL because apps/web and the worker
+   *  deploy separately, so for a window the page can see a response from a
+   *  worker that predates the field. */
+  aliases?: SdsAlias[];
+  /** False when a site holds it, so the delete button can be disabled with a
+   *  reason rather than failing on click. Optional for the same deploy-skew
+   *  reason; treated as not-deletable when absent, which errs safe. */
+  deletable?: boolean;
 }
 
 /**

@@ -7,6 +7,7 @@ import { revalidatePath } from "next/cache";
 
 import {
   createCatalogFromInventory,
+  deleteSdsCatalogEntry,
   linkCatalogAlias,
   unlinkCatalogAlias,
   createSdsCatalogEntry,
@@ -19,6 +20,12 @@ export type SdsActionResult = { ok: true } | { ok: false; error: string };
 function humanise(error: string): string {
   if (error.includes("admin_only") || error.includes("verified_entry_is_admin_only")) {
     return "Only a super admin or DC admin can change the shared catalogue.";
+  }
+  if (error.includes("catalog_entry_in_use")) {
+    return "A site still has this on its list, so it can't be deleted. Remove it from that site first, or edit this entry instead.";
+  }
+  if (error.includes("withdraw_verification_first")) {
+    return "Withdraw the verified mark before deleting — deleting a verified entry should be a deliberate second step.";
   }
   if (error.includes("already_linked")) {
     return "That purchasing code is already linked to a chemical. Unlink it there first.";
@@ -105,6 +112,15 @@ export async function unlinkAliasAction(
   sourceProductId: string
 ): Promise<SdsActionResult> {
   const res = await unlinkCatalogAlias(catalogId, sourceProductId);
+  if (!res.ok) return { ok: false, error: humanise(res.error) };
+  revalidateBoth();
+  return { ok: true };
+}
+
+export async function deleteCatalogEntryAction(
+  id: string
+): Promise<SdsActionResult> {
+  const res = await deleteSdsCatalogEntry(id);
   if (!res.ok) return { ok: false, error: humanise(res.error) };
   revalidateBoth();
   return { ok: true };

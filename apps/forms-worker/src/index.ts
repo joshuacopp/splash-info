@@ -126,7 +126,8 @@ import {
   handleCatalogFromInventory,
   handleLinkAlias,
   handleUnlinkAlias,
-  handleNumberTabs
+  handleNumberTabs,
+  handleDeleteCatalog
 } from "./sds/handlers.js";
 import { handleEmailQueueClaim } from "./email-queue/claim.js";
 import { handleEmailQueueConfirm } from "./email-queue/confirm.js";
@@ -562,6 +563,9 @@ export default {
     const sdsCatMatch = url.pathname.match(/^\/forms\/api\/sds\/catalog\/([^/]+)$/);
     if (sdsCatMatch && sdsCatMatch[1] && req.method === "PATCH") {
       return handlePatchCatalog(env, req, sdsCatMatch[1]);
+    }
+    if (sdsCatMatch && sdsCatMatch[1] && req.method === "DELETE") {
+      return handleDeleteCatalog(env, req, sdsCatMatch[1]);
     }
     if (url.pathname === "/forms/api/sds/catalog" && req.method === "GET") {
       return handleSearchCatalog(env, req);

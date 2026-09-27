@@ -12,13 +12,243 @@
 import { useEffect, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 
-import type { SdsCatalogSearchRow } from "../../../sds/_lib/types";
+import type {
+  SdsCatalogSearchRow,
+  SdsInventoryProduct
+} from "../../../sds/_lib/types";
 import {
   createCatalogEntryAction,
+  deleteCatalogEntryAction,
+  linkAliasAction,
   patchCatalogEntryAction,
+  unlinkAliasAction,
   verifyCatalogAction
 } from "../actions";
 import InventoryPicker from "./InventoryPicker";
+
+/**
+ * The purchasing codes that resolve to this chemical: what is linked, and a way
+ * to link or unlink.
+ *
+ * Shows `added_by` because a link is somebody's judgement, not a derived fact --
+ * "backfill:source_product_id" means it came from the old single-value column
+ * and nobody has actually eyeballed it.
+ */
+function AliasEditor({ row }: { row: SdsCatalogSearchRow }) {
+  const router = useRouter();
+  const [adding, setAdding] = useState(false);
+  const [q, setQ] = useState("");
+  const [hits, setHits] = useState<SdsInventoryProduct[]>([]);
+  const [pending, startTransition] = useTransition();
+  const [error, setError] = useState<string | null>(null);
+  const aliases = row.aliases ?? [];
+
+  useEffect(() => {
+    if (!adding) return;
+    let cancelled = false;
+    const t = setTimeout(async () => {
+      try {
+        const r = await fetch(
+          `/forms/api/sds/inventory-products?include_unused=1&q=${encodeURIComponent(q)}`,
+          { credentials: "include", cache: "no-store" }
+        );
+        if (!r.ok || cancelled) return;
+        const data = (await r.json()) as { products?: SdsInventoryProduct[] };
+        // Only offer codes that resolve nowhere yet. One product means one
+        // chemical, so anything already linked has to be unlinked there first --
+        // offering it here would just produce a 409 the operator has to decode.
+        if (!cancelled) setHits((data.products ?? []).filter((p) => !p.catalog_id));
+      } catch {
+        // Leave the list be; cancelling out is adjacent.
+      }
+    }, 250);
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+    };
+  }, [q, adding]);
+
+  return (
+    <div className="mt-3 border-t border-gray-light pt-3">
+      <p className="text-xs font-semibold uppercase tracking-wider text-splash-navy/60">
+        Inventory / purchasing codes
+      </p>
+      {aliases.length === 0 ? (
+        <p className="mt-1 text-xs text-splash-navy/50">
+          Nothing linked. Sites stocking this under a purchasing code will show
+          it as a new chemical until one is.
+        </p>
+      ) : (
+        <ul className="mt-1 flex flex-wrap gap-1.5">
+          {aliases.map((a) => (
+            <li
+              key={a.source_product_id}
+              className="flex items-center gap-1.5 rounded-full bg-gray-light px-2 py-0.5 text-[0.6875rem] text-splash-navy/80"
+              title={`linked by ${a.added_by}`}
+            >
+              {a.inventory_name}
+              <button
+                type="button"
+                disabled={pending}
+                aria-label={`Unlink ${a.inventory_name}`}
+                onClick={() => {
+                  setError(null);
+                  startTransition(async () => {
+                    const res = await unlinkAliasAction(row.id, a.source_product_id);
+                    if (!res.ok) setError(res.error);
+                    router.refresh();
+                  });
+                }}
+                className="font-bold text-splash-navy/50 hover:text-racecar-red disabled:opacity-50"
+              >
+                ×
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+
+      {adding ? (
+        <div className="mt-2">
+          <input
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            autoFocus
+            placeholder="Search inventory for the code…"
+            className="w-full rounded-splash-sm border border-gray-light px-2 py-1 text-sm"
+          />
+          <ul className="mt-1 max-h-40 space-y-1 overflow-y-auto">
+            {hits.map((p) => (
+              <li
+                key={p.product_id}
+                className="flex items-center justify-between gap-2 rounded-splash-sm border border-gray-light bg-white px-2 py-1"
+              >
+                <span className="min-w-0 truncate text-xs text-splash-navy">
+                  {p.product_name}
+                  <span className="text-splash-navy/50">
+                    {p.site_count > 0 ? ` · ${p.site_count} sites` : " · no sites"}
+                  </span>
+                </span>
+                <button
+                  type="button"
+                  disabled={pending}
+                  onClick={() => {
+                    setError(null);
+                    startTransition(async () => {
+                      const res = await linkAliasAction(row.id, p.product_id);
+                      if (res.ok) {
+                        setAdding(false);
+                        setQ("");
+                      } else setError(res.error);
+                      router.refresh();
+                    });
+                  }}
+                  className="shrink-0 rounded-splash-sm bg-splash-navy px-2 py-0.5 text-[0.6875rem] font-bold text-white disabled:opacity-50"
+                >
+                  Link
+                </button>
+              </li>
+            ))}
+          </ul>
+          {hits.length === 0 ? (
+            <p className="mt-1 text-xs text-splash-navy/50">
+              No unlinked products match.
+            </p>
+          ) : null}
+          <button
+            type="button"
+            onClick={() => setAdding(false)}
+            className="mt-1 text-xs text-splash-navy/60 underline"
+          >
+            Done
+          </button>
+        </div>
+      ) : (
+        <button
+          type="button"
+          onClick={() => setAdding(true)}
+          className="mt-2 text-xs text-splash-blue underline"
+        >
+          + Link a purchasing code
+        </button>
+      )}
+
+      {error ? (
+        <p role="alert" className="mt-1 text-xs text-racecar-red">
+          {error}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+/**
+ * Delete an entry outright, for one added in error.
+ *
+ * Disabled with a reason rather than failing on click. The database has the
+ * final say either way -- sds_items.catalog_id is RESTRICT -- so this is a
+ * courtesy, not the guard.
+ */
+function DeleteEntry({ row }: { row: SdsCatalogSearchRow }) {
+  const router = useRouter();
+  const [pending, startTransition] = useTransition();
+  const [error, setError] = useState<string | null>(null);
+
+  // site_count is ACTIVE listings; deletable accounts for removed ones too,
+  // because the FK is RESTRICT and a removed row still blocks. So "not
+  // deletable with zero active sites" is a real state and gets its own
+  // sentence -- the alternative read "0 sites still list this", which is
+  // nonsense on its face and sends somebody hunting for a site that isn't
+  // there.
+  const blocked = row.verified_at
+    ? "Withdraw the verified mark first."
+    : row.deletable === false
+      ? row.site_count > 0
+        ? `${row.site_count} site${row.site_count === 1 ? "" : "s"} still list this. Remove it there first, or just edit this entry.`
+        : "A site listed this and then removed it, which still pins the entry. Edit it instead."
+      : row.deletable === undefined
+        ? "Not available until the API catches up with this page."
+        : null;
+
+  return (
+    <div>
+      <button
+        type="button"
+        disabled={pending || blocked !== null}
+        title={blocked ?? "Delete this entry permanently"}
+        onClick={() => {
+          if (
+            !window.confirm(
+              `Delete "${row.product_identifier}" from the catalogue?\n\n` +
+                `This cannot be undone. Its links to inventory go with it. Any ` +
+                `safety data sheet file stays in storage but nothing will point ` +
+                `at it.`
+            )
+          ) {
+            return;
+          }
+          setError(null);
+          startTransition(async () => {
+            const res = await deleteCatalogEntryAction(row.id);
+            if (!res.ok) setError(res.error);
+            router.refresh();
+          });
+        }}
+        className="text-xs text-racecar-red underline disabled:text-splash-navy/30 disabled:no-underline"
+      >
+        {pending ? "Deleting…" : "Delete entry"}
+      </button>
+      {blocked ? (
+        <span className="ml-2 text-xs text-splash-navy/50">{blocked}</span>
+      ) : null}
+      {error ? (
+        <p role="alert" className="mt-1 text-xs text-racecar-red">
+          {error}
+        </p>
+      ) : null}
+    </div>
+  );
+}
 
 function Row({ row }: { row: SdsCatalogSearchRow }) {
   const router = useRouter();
@@ -132,6 +362,16 @@ function Row({ row }: { row: SdsCatalogSearchRow }) {
               </p>
             ) : null}
           </form>
+
+          {/* Links live in the edit panel because a wrong link is a correction
+              to the entry, the same kind of thing as a misspelled name -- and
+              because until now the only way to make one was the inventory
+              picker, which cannot show what is ALREADY linked. */}
+          <AliasEditor row={row} />
+
+          <div className="mt-3 border-t border-gray-light pt-3">
+            <DeleteEntry row={row} />
+          </div>
         </td>
       </tr>
     );

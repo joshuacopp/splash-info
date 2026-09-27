@@ -313,3 +313,15 @@ export async function numberSdsTabs(
     })
   );
 }
+
+/** Remove a catalogue entry. The worker refuses when a site holds it (the FK is
+ *  RESTRICT) or when it is still verified. */
+export async function deleteSdsCatalogEntry(
+  id: string
+): Promise<Result<{ ok: true; deleted: string }>> {
+  return unwrap(
+    await callForms(`/forms/api/sds/catalog/${encodeURIComponent(id)}`, {
+      method: "DELETE"
+    })
+  );
+}

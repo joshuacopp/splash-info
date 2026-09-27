@@ -30,6 +30,7 @@ import {
   readCatalogEntry,
   patchCatalogEntry,
   countSitesUsingCatalog,
+  deleteCatalogEntry,
   searchCatalog,
   setCatalogVerified,
   type SdsCatalogRow
@@ -1404,4 +1405,51 @@ export async function handleNumberTabs(env: Env, req: Request): Promise<Response
     console.error("[forms.sds] number tabs failed", err);
     return jsonError(502, "number_tabs_failed");
   }
+}
+
+// =============================================================================
+// DELETE /forms/api/sds/catalog/{id}
+// =============================================================================
+
+/**
+ * Remove a catalogue entry outright, for one added in error.
+ *
+ * Admin-tier, and additionally refused for a VERIFIED entry: a verified badge
+ * means somebody accountable checked this, and deleting it is a bigger claim
+ * than editing it. Withdraw the verification first -- that way the deletion is
+ * two deliberate acts, and the second one happens with the badge already gone.
+ *
+ * Whether a site holds it is the database's call, not ours (RESTRICT on
+ * sds_items.catalog_id). An application-side check could race a site adding the
+ * chemical between the check and the delete; the constraint cannot.
+ */
+export async function handleDeleteCatalog(
+  env: Env,
+  req: Request,
+  id: string
+): Promise<Response> {
+  if (!isOriginAllowed(req)) return jsonError(403, "bad_origin");
+  const keyed = requireServiceKey(env);
+  if (keyed) return keyed;
+  const g = await adminGate(env, req);
+  if (!g.ok) return g.response;
+  if (!UUID_RE.test(id)) return jsonError(400, "bad_catalog_id");
+
+  const entry = await readCatalogEntry(env, id);
+  if (!entry) return jsonError(404, "catalog_entry_not_found");
+  if (entry.verified_at) return jsonError(409, "withdraw_verification_first");
+
+  const res = await deleteCatalogEntry(env, id);
+  if (!res.ok) {
+    if (res.reason === "in_use") {
+      // Say how many sites, because the useful next step depends on it: one site
+      // that added it by mistake removes it themselves, whereas several mean the
+      // entry is real and wants editing rather than deleting.
+      const sites = await countSitesUsingCatalog(env, id);
+      return json({ error: "catalog_entry_in_use", site_count: sites }, 409);
+    }
+    if (res.reason === "not_found") return jsonError(404, "catalog_entry_not_found");
+    return jsonError(502, "delete_failed");
+  }
+  return json({ ok: true, deleted: entry.product_identifier });
 }

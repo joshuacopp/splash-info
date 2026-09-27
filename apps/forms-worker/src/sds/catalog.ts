@@ -270,6 +270,14 @@ export interface CatalogSearchRow extends SdsCatalogRow {
   /** How many sites already hold it. Not authority, but it is the cheapest
    *  signal of "this is the entry everyone else uses" when several look alike. */
   site_count: number;
+  /** Purchasing codes that resolve here. Shown so a wrong link is VISIBLE on the
+   *  row rather than only discoverable by opening the inventory picker and
+   *  noticing something is missing from it. */
+  aliases: { source_product_id: string; inventory_name: string; added_by: string }[];
+  /** False when a site holds it, in which case the database refuses the delete
+   *  (sds_items.catalog_id is RESTRICT). Computed here so the button can be
+   *  disabled with a reason instead of failing on click. */
+  deletable: boolean;
 }
 
 /**
@@ -333,7 +341,94 @@ export async function searchCatalog(
     console.error("[forms.sds] catalog search counts failed", err);
   }
 
-  return rows.map((r) => ({ ...r, site_count: counts[r.id] ?? 0 }));
+  // Counts above are ACTIVE items only, because that is what "used at N sites"
+  // means to a reader. Deletability is a different question and needs ANY item,
+  // active or removed: sds_items.catalog_id is RESTRICT, so a removed row still
+  // blocks the delete, and a button that looked enabled would just fail.
+  const held = new Set<string>();
+  try {
+    const u = new URL("/rest/v1/sds_items", env.SUPABASE_URL);
+    u.searchParams.set("select", "catalog_id");
+    u.searchParams.set("limit", "20000");
+    const ur = await fetch(u.toString(), { headers: sbHeaders(env) });
+    if (ur.ok) {
+      for (const r of (await ur.json().catch(() => [])) as { catalog_id: string }[]) {
+        if (r.catalog_id) held.add(r.catalog_id);
+      }
+    }
+  } catch (err) {
+    console.error("[forms.sds] catalog search held-set failed", err);
+  }
+
+  const aliasesBy: Record<
+    string,
+    { source_product_id: string; inventory_name: string; added_by: string }[]
+  > = {};
+  try {
+    const a = new URL("/rest/v1/sds_catalog_aliases", env.SUPABASE_URL);
+    a.searchParams.set("select", "catalog_id,source_product_id,inventory_name,added_by");
+    a.searchParams.set("order", "inventory_name.asc");
+    a.searchParams.set("limit", "5000");
+    const ar = await fetch(a.toString(), { headers: sbHeaders(env) });
+    if (ar.ok) {
+      for (const r of (await ar.json().catch(() => [])) as {
+        catalog_id: string;
+        source_product_id: string;
+        inventory_name: string;
+        added_by: string;
+      }[]) {
+        (aliasesBy[r.catalog_id] ??= []).push({
+          source_product_id: r.source_product_id,
+          inventory_name: r.inventory_name,
+          added_by: r.added_by
+        });
+      }
+    }
+  } catch (err) {
+    console.error("[forms.sds] catalog search aliases failed", err);
+  }
+
+  return rows.map((r) => ({
+    ...r,
+    site_count: counts[r.id] ?? 0,
+    aliases: aliasesBy[r.id] ?? [],
+    deletable: !held.has(r.id)
+  }));
+}
+
+/**
+ * Delete a catalogue entry.
+ *
+ * Nothing here checks whether a site holds it -- sds_items.catalog_id is
+ * RESTRICT, so the DATABASE refuses, and that refusal is the guarantee worth
+ * relying on. A check in application code could race with a site adding the
+ * chemical a moment later; the constraint cannot.
+ *
+ * Its aliases go with it (CASCADE), which is right: they described this entry's
+ * identity and mean nothing without it.
+ */
+export async function deleteCatalogEntry(
+  env: Env,
+  id: string
+): Promise<{ ok: true } | { ok: false; reason: "in_use" | "not_found" | "failed" }> {
+  const url = new URL("/rest/v1/sds_catalog", env.SUPABASE_URL);
+  url.searchParams.set("id", `eq.${id}`);
+  const resp = await fetch(url.toString(), {
+    method: "DELETE",
+    headers: sbHeaders(env, { Prefer: "return=representation" })
+  });
+  if (resp.status === 409) return { ok: false, reason: "in_use" };
+  if (!resp.ok) {
+    const body = await resp.text().catch(() => "");
+    // 23503 is the FK violation RESTRICT raises. PostgREST does not always
+    // surface it as 409, so match the code too rather than reporting a generic
+    // failure for the one case that has a real explanation.
+    if (body.includes("23503")) return { ok: false, reason: "in_use" };
+    console.error("[forms.sds] catalog delete failed", resp.status, body);
+    return { ok: false, reason: "failed" };
+  }
+  const rows = (await resp.json().catch(() => [])) as SdsCatalogRow[];
+  return rows.length > 0 ? { ok: true } : { ok: false, reason: "not_found" };
 }
 
 /**
