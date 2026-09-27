@@ -13,6 +13,7 @@ import { useEffect, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 
 import type {
+  SdsAlias,
   SdsCatalogSearchRow,
   SdsInventoryProduct
 } from "../../../sds/_lib/types";
@@ -403,6 +404,67 @@ function DeleteEntry({ row }: { row: SdsCatalogSearchRow }) {
   );
 }
 
+/**
+ * The purchasing codes that roll up into one chemical, shown on the row.
+ *
+ * A code whose name already MATCHES the chemical is listed too, greyed. It
+ * carries no new information by itself, but its absence would read as "not
+ * linked" and send somebody off to link it again -- which then 409s, because a
+ * product can only ever resolve to one chemical.
+ *
+ * Codes that differ from the parent name come FIRST and in normal weight: those
+ * are the ones a reader is scanning for, because those are the ones a mistake
+ * hides in. "DS-FWW-CS" under "Flash Wax White" is right; the same code under
+ * "Lo pHoam" is wrong, and nothing but a person reading it will catch that.
+ */
+function RowLinks({
+  aliases,
+  parentName
+}: {
+  aliases?: SdsAlias[];
+  parentName: string;
+}) {
+  // Undefined means the worker predates the field, which is NOT the same as an
+  // entry having no links -- saying "no inventory link" there would be a lie
+  // during a deploy window.
+  if (aliases === undefined) return null;
+  if (aliases.length === 0) {
+    return (
+      <div className="mt-0.5 text-[0.6875rem] text-splash-navy/40">
+        No inventory link
+      </div>
+    );
+  }
+
+  const norm = (s: string) => s.trim().toLowerCase();
+  const differing = aliases.filter((a) => norm(a.inventory_name) !== norm(parentName));
+  const same = aliases.filter((a) => norm(a.inventory_name) === norm(parentName));
+
+  return (
+    <div className="mt-1 flex flex-wrap items-center gap-1">
+      <span className="text-[0.6875rem] text-splash-navy/40">&#8627;</span>
+      {differing.map((a) => (
+        <span
+          key={a.source_product_id}
+          title={`Inventory product, linked by ${a.added_by}`}
+          className="rounded-full bg-sudsy-blue/10 px-1.5 py-0.5 text-[0.6875rem] font-medium text-splash-navy/80"
+        >
+          {a.inventory_name}
+        </span>
+      ))}
+      {same.map((a) => (
+        <span
+          key={a.source_product_id}
+          title={`Inventory product of the same name, linked by ${a.added_by}`}
+          className="rounded-full bg-gray-light px-1.5 py-0.5 text-[0.6875rem] text-splash-navy/45"
+        >
+          {a.inventory_name}
+        </span>
+      ))}
+    </div>
+  );
+}
+
 function Row({ row }: { row: SdsCatalogSearchRow }) {
   const router = useRouter();
   const [editing, setEditing] = useState(false);
@@ -542,6 +604,12 @@ function Row({ row }: { row: SdsCatalogSearchRow }) {
         <div className="text-xs text-splash-navy/60">
           {row.manufacturer || "Manufacturer not recorded"}
         </div>
+        {/* The purchasing codes that roll up into this chemical, on the row
+            itself. They used to be visible only after opening Edit, which meant
+            a wrong link -- the failure that actually matters here -- could not
+            be spotted by reading the page. Rendered as children of the name
+            because that is the relationship: one chemical, many codes. */}
+        <RowLinks aliases={row.aliases} parentName={row.product_identifier} />
       </td>
       <td className="px-3 py-2 text-xs">
         {row.sds_r2_key ? (
