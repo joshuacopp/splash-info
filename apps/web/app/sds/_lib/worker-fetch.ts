@@ -325,3 +325,26 @@ export async function deleteSdsCatalogEntry(
     })
   );
 }
+
+export interface MergeSummary {
+  merged: string | null;
+  into: string;
+  aliases_moved: number;
+  items_moved: number;
+  items_deactivated: number;
+  sheet_carried: boolean;
+}
+
+/** Fold `id` into `targetId`: the codes and site listings move, then `id` is
+ *  deleted. `id` is the entry that GOES. */
+export async function mergeSdsCatalogEntry(
+  id: string,
+  targetId: string
+): Promise<Result<MergeSummary>> {
+  return unwrap(
+    await callForms(`/forms/api/sds/catalog/${encodeURIComponent(id)}/merge-into`, {
+      method: "POST",
+      jsonBody: { target_id: targetId }
+    })
+  );
+}

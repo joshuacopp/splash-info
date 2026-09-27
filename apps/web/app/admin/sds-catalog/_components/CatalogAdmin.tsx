@@ -20,6 +20,7 @@ import {
   createCatalogEntryAction,
   deleteCatalogEntryAction,
   linkAliasAction,
+  mergeCatalogAction,
   patchCatalogEntryAction,
   unlinkAliasAction,
   verifyCatalogAction
@@ -178,6 +179,158 @@ function AliasEditor({ row }: { row: SdsCatalogSearchRow }) {
           {error}
         </p>
       ) : null}
+    </div>
+  );
+}
+
+/**
+ * Fold this entry into the one it duplicates.
+ *
+ * THIS IS THE ANSWER FOR A DUPLICATE, which delete is not: delete is refused
+ * the moment a site lists the entry, and editing only renames one of the pair.
+ * Bulk-adding from inventory produces exactly this -- "L-UF222-CS" beside
+ * "UF222 - Ultra Presoak", one chemical, two rows.
+ *
+ * The operator picks the survivor. Which of two names is the one on the safety
+ * data sheet is the judgement no rule can make -- "UF421" is a real identity
+ * and "L-UF421-CS" is a distributor code, and nothing in the strings says so.
+ */
+function MergeEntry({ row }: { row: SdsCatalogSearchRow }) {
+  const router = useRouter();
+  const [open, setOpen] = useState(false);
+  const [q, setQ] = useState("");
+  const [hits, setHits] = useState<SdsCatalogSearchRow[]>([]);
+  const [pending, startTransition] = useTransition();
+  const [error, setError] = useState<string | null>(null);
+  const [done, setDone] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    const t = setTimeout(async () => {
+      try {
+        const r = await fetch(`/forms/api/sds/catalog?q=${encodeURIComponent(q)}`, {
+          credentials: "include",
+          cache: "no-store"
+        });
+        if (!r.ok || cancelled) return;
+        const data = (await r.json()) as { catalog?: SdsCatalogSearchRow[] };
+        // Never offer itself as its own survivor.
+        if (!cancelled) setHits((data.catalog ?? []).filter((c) => c.id !== row.id));
+      } catch {
+        // Leave the list; cancelling out is adjacent.
+      }
+    }, 250);
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+    };
+  }, [q, open, row.id]);
+
+  if (done) {
+    return <p className="text-xs text-emerald-700">{done}</p>;
+  }
+
+  return (
+    <div>
+      {!open ? (
+        <button
+          type="button"
+          onClick={() => setOpen(true)}
+          className="text-xs text-splash-blue underline"
+        >
+          Merge into another entry&hellip;
+        </button>
+      ) : (
+        <div className="rounded-splash-sm border border-splash-navy/40 bg-splash-navy/[0.03] p-3">
+          <p className="text-xs text-splash-navy/70">
+            <span className="font-semibold">{row.product_identifier}</span> is
+            really which chemical? Its purchasing codes and any site listings
+            move there, and this entry is deleted.
+          </p>
+          <input
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            autoFocus
+            placeholder="Search for the entry to keep…"
+            className="my-2 w-full rounded-splash-sm border border-gray-light px-2 py-1 text-sm"
+          />
+          <ul className="max-h-48 space-y-1 overflow-y-auto">
+            {hits.map((t) => (
+              <li
+                key={t.id}
+                className="flex items-center justify-between gap-2 rounded-splash-sm border border-gray-light bg-white px-2 py-1"
+              >
+                <span className="min-w-0 truncate text-xs text-splash-navy">
+                  {t.product_identifier}
+                  {t.verified_at ? (
+                    <span className="ml-1 font-bold text-emerald-700">✓</span>
+                  ) : null}
+                  <span className="text-splash-navy/50">
+                    {t.site_count > 0 ? ` · ${t.site_count} sites` : " · no sites"}
+                    {t.sds_r2_key ? "" : " · no sheet"}
+                  </span>
+                </span>
+                <button
+                  type="button"
+                  disabled={pending}
+                  onClick={() => {
+                    if (
+                      !window.confirm(
+                        `Merge "${row.product_identifier}" into "${t.product_identifier}"?\n\n` +
+                          `"${row.product_identifier}" will be deleted. Its purchasing ` +
+                          `codes and any site listings move to "${t.product_identifier}".\n\n` +
+                          `This cannot be undone.`
+                      )
+                    ) {
+                      return;
+                    }
+                    setError(null);
+                    startTransition(async () => {
+                      const res = await mergeCatalogAction(row.id, t.id);
+                      if (!res.ok) {
+                        setError(res.error);
+                        return;
+                      }
+                      const s = res.summary;
+                      const bits = [
+                        `${s.aliases_moved} code${s.aliases_moved === 1 ? "" : "s"}`,
+                        `${s.items_moved} listing${s.items_moved === 1 ? "" : "s"}`
+                      ];
+                      if (s.items_deactivated > 0) {
+                        bits.push(
+                          `${s.items_deactivated} already there, removed`
+                        );
+                      }
+                      if (s.sheet_carried) bits.push("sheet carried over");
+                      setDone(`Merged into ${s.into} — ${bits.join(", ")}.`);
+                      router.refresh();
+                    });
+                  }}
+                  className="shrink-0 rounded-splash-sm bg-splash-navy px-2 py-0.5 text-[0.6875rem] font-bold text-white disabled:opacity-50"
+                >
+                  Keep this
+                </button>
+              </li>
+            ))}
+          </ul>
+          {hits.length === 0 ? (
+            <p className="text-xs text-splash-navy/50">Nothing else matches.</p>
+          ) : null}
+          {error ? (
+            <p role="alert" className="mt-1 text-xs text-racecar-red">
+              {error}
+            </p>
+          ) : null}
+          <button
+            type="button"
+            onClick={() => setOpen(false)}
+            className="mt-2 text-xs text-splash-navy/60 underline"
+          >
+            Cancel
+          </button>
+        </div>
+      )}
     </div>
   );
 }
@@ -369,7 +522,10 @@ function Row({ row }: { row: SdsCatalogSearchRow }) {
               picker, which cannot show what is ALREADY linked. */}
           <AliasEditor row={row} />
 
-          <div className="mt-3 border-t border-gray-light pt-3">
+          {/* Merge above delete: for a duplicate it is almost always the right
+              action, and delete is refused outright once a site lists it. */}
+          <div className="mt-3 space-y-2 border-t border-gray-light pt-3">
+            <MergeEntry row={row} />
             <DeleteEntry row={row} />
           </div>
         </td>

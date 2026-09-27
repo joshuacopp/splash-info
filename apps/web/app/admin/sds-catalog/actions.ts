@@ -8,18 +8,26 @@ import { revalidatePath } from "next/cache";
 import {
   createCatalogFromInventory,
   deleteSdsCatalogEntry,
+  mergeSdsCatalogEntry,
   linkCatalogAlias,
   unlinkCatalogAlias,
   createSdsCatalogEntry,
   patchSdsCatalogEntry,
   setCatalogVerified
 } from "../../sds/_lib/worker-fetch";
+import type { MergeSummary } from "../../sds/_lib/worker-fetch";
 
 export type SdsActionResult = { ok: true } | { ok: false; error: string };
 
 function humanise(error: string): string {
   if (error.includes("admin_only") || error.includes("verified_entry_is_admin_only")) {
     return "Only a super admin or DC admin can change the shared catalogue.";
+  }
+  if (error.includes("source_verified")) {
+    return "Withdraw the verified mark on this entry before merging it away.";
+  }
+  if (error.includes("same_entry")) {
+    return "That's the same entry.";
   }
   if (error.includes("catalog_entry_in_use")) {
     return "A site still has this on its list, so it can't be deleted. Remove it from that site first, or edit this entry instead.";
@@ -124,4 +132,24 @@ export async function deleteCatalogEntryAction(
   if (!res.ok) return { ok: false, error: humanise(res.error) };
   revalidateBoth();
   return { ok: true };
+}
+
+/**
+ * Fold a duplicate entry into the correct one.
+ *
+ * Returns the counts because a merge moves things the operator cannot see from
+ * the row -- "2 codes and 1 site moved" is how they confirm they merged the
+ * pair they meant to.
+ */
+export async function mergeCatalogAction(
+  sourceId: string,
+  targetId: string
+): Promise<
+  | { ok: true; summary: MergeSummary }
+  | { ok: false; error: string }
+> {
+  const res = await mergeSdsCatalogEntry(sourceId, targetId);
+  if (!res.ok) return { ok: false, error: humanise(res.error) };
+  revalidateBoth();
+  return { ok: true, summary: res.data };
 }

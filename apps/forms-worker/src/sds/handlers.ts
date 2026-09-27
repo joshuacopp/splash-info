@@ -43,6 +43,7 @@ import {
 } from "./sheets.js";
 import { linkAlias, loadAliasMap, unlinkAlias } from "./aliases.js";
 import { assignTabs, nextTabFor, TAB_LIMIT } from "./tabs.js";
+import { mergeCatalogEntries } from "./merge.js";
 import { getLocationOptionsFromPricingSimple } from "../db/forms.js";
 
 const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -1452,4 +1453,51 @@ export async function handleDeleteCatalog(
     return jsonError(502, "delete_failed");
   }
   return json({ ok: true, deleted: entry.product_identifier });
+}
+
+// =============================================================================
+// POST /forms/api/sds/catalog/{id}/merge-into   {target_id}
+// =============================================================================
+
+/**
+ * Fold this entry into another: same chemical, keep the other one.
+ *
+ * {id} is the entry that GOES. Naming it that way round matches the button --
+ * the operator is looking at the wrong row and saying "this one is really that
+ * one" -- and the response echoes both names so a misread is visible before
+ * anybody trusts it.
+ */
+export async function handleMergeCatalog(
+  env: Env,
+  req: Request,
+  sourceId: string
+): Promise<Response> {
+  if (!isOriginAllowed(req)) return jsonError(403, "bad_origin");
+  const keyed = requireServiceKey(env);
+  if (keyed) return keyed;
+  const g = await adminGate(env, req);
+  if (!g.ok) return g.response;
+  if (!UUID_RE.test(sourceId)) return jsonError(400, "bad_catalog_id");
+
+  const body = (await req.json().catch(() => null)) as Record<string, unknown> | null;
+  const targetId = typeof body?.target_id === "string" ? body.target_id : "";
+  if (!UUID_RE.test(targetId)) return jsonError(400, "bad_target_id");
+
+  const source = await readCatalogEntry(env, sourceId);
+  const res = await mergeCatalogEntries(env, sourceId, targetId, g.email, readCatalogEntry);
+  if (!res.ok) {
+    const status =
+      res.code === "source_not_found" || res.code === "target_not_found"
+        ? 404
+        : res.code === "failed"
+          ? 502
+          : 409;
+    return json({ error: res.code }, status);
+  }
+  return json({
+    ok: true,
+    merged: source?.product_identifier ?? null,
+    into: res.survivor.product_identifier,
+    ...res.result
+  });
 }

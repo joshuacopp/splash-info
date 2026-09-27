@@ -127,7 +127,8 @@ import {
   handleLinkAlias,
   handleUnlinkAlias,
   handleNumberTabs,
-  handleDeleteCatalog
+  handleDeleteCatalog,
+  handleMergeCatalog
 } from "./sds/handlers.js";
 import { handleEmailQueueClaim } from "./email-queue/claim.js";
 import { handleEmailQueueConfirm } from "./email-queue/confirm.js";
@@ -553,6 +554,12 @@ export default {
       req.method === "DELETE"
     ) {
       return handleUnlinkAlias(env, req, sdsUnaliasMatch[1], sdsUnaliasMatch[2]);
+    }
+    const sdsMergeMatch = url.pathname.match(
+      /^\/forms\/api\/sds\/catalog\/([^/]+)\/merge-into$/
+    );
+    if (sdsMergeMatch && sdsMergeMatch[1] && req.method === "POST") {
+      return handleMergeCatalog(env, req, sdsMergeMatch[1]);
     }
     const sdsCatSheetMatch = url.pathname.match(
       /^\/forms\/api\/sds\/catalog\/([^/]+)\/sheet$/
