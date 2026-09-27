@@ -114,7 +114,9 @@ export default function AddChemical({
         </p>
         <p className="mt-1 mb-3 text-xs text-splash-navy/60">
           Tick the ones actually on site. Check each name against the safety data
-          sheet — the list has to use the same identity the sheet does. Oil-lube,
+          sheet — the list has to use the same identity the sheet does. Where an
+          arrow is shown, inventory&rsquo;s name is a purchasing code and the
+          list will use the chemical&rsquo;s real name instead. Oil-lube,
           cleaning products and anything else not tracked in inventory must be
           added by hand.
         </p>
@@ -133,6 +135,15 @@ export default function AddChemical({
                   }}
                 />
                 {c.product_name}
+                {/* Inventory's name for a product is sometimes a purchasing
+                    code, and the list has to carry the identity on the safety
+                    data sheet instead. Showing the change here stops it looking
+                    like the wrong chemical got added. */}
+                {c.catalog_name ? (
+                  <span className="text-splash-navy/60">
+                    &rarr; {c.catalog_name}
+                  </span>
+                ) : null}
               </label>
             </li>
           ))}

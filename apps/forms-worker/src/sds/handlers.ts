@@ -549,11 +549,57 @@ export async function handleSdsCandidates(env: Env, req: Request): Promise<Respo
     return jsonError(502, "candidates_failed");
   }
 
+  // What each surviving candidate will actually be CALLED once added. A site
+  // ticking "L-UF222-CS" gets a row reading "UF222 - Ultra Presoak", and without
+  // saying so up front the obvious reaction is "that is not what I picked" --
+  // followed by adding the right-looking name by hand, which is the duplicate
+  // this whole mechanism exists to stop.
+  const survivors = all.filter((c) => {
+    const aliasedTo = aliases.get(c.product_id);
+    if (aliasedTo && takenCatalogIds.has(aliasedTo)) return false;
+    return !takenNames.has(c.product_name.trim().toLowerCase());
+  });
+
+  const resolvedIds = [
+    ...new Set(
+      survivors.map((c) => aliases.get(c.product_id)).filter((v): v is string => Boolean(v))
+    )
+  ];
+  const nameById = new Map<string, string>();
+  if (resolvedIds.length > 0) {
+    try {
+      const n = new URL("/rest/v1/sds_catalog", env.SUPABASE_URL);
+      n.searchParams.set("select", "id,product_identifier");
+      n.searchParams.set("id", `in.(${resolvedIds.join(",")})`);
+      n.searchParams.set("limit", String(resolvedIds.length));
+      const nr = await fetch(n.toString(), { headers: sbHeaders(env) });
+      if (nr.ok) {
+        for (const r of (await nr.json().catch(() => [])) as {
+          id: string;
+          product_identifier: string;
+        }[]) {
+          nameById.set(r.id, r.product_identifier);
+        }
+      }
+    } catch (err) {
+      // A missing label costs a hint, not the ability to add the chemical.
+      console.error("[forms.sds] candidate resolved-name lookup failed", err);
+    }
+  }
+
   return json({
-    candidates: all.filter((c) => {
+    candidates: survivors.map((c) => {
       const aliasedTo = aliases.get(c.product_id);
-      if (aliasedTo && takenCatalogIds.has(aliasedTo)) return false;
-      return !takenNames.has(c.product_name.trim().toLowerCase());
+      const resolved = aliasedTo ? (nameById.get(aliasedTo) ?? null) : null;
+      return {
+        ...c,
+        // Null when it resolves to nothing, or to a name already identical --
+        // the picker only needs to warn where the label will CHANGE.
+        catalog_name:
+          resolved && resolved.trim().toLowerCase() !== c.product_name.trim().toLowerCase()
+            ? resolved
+            : null
+      };
     })
   });
 }

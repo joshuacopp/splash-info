@@ -72,6 +72,12 @@ export interface SdsCandidate {
   product_id: string;
   product_name: string;
   description: string | null;
+  /** What this will be CALLED on the list, when that differs from the inventory
+   *  name -- a purchasing code resolves to the chemical's real identity, so
+   *  ticking "L-UF222-CS" produces a row reading "UF222 - Ultra Presoak".
+   *  Null when the name does not change. OPTIONAL because apps/web and the
+   *  worker deploy separately. */
+  catalog_name?: string | null;
 }
 
 /**
