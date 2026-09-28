@@ -21,12 +21,18 @@ import { numberTabsAction } from "../actions";
 export default function NumberTabs({
   locationCode,
   untabbed,
-  total
+  total,
+  outOfOrder
 }: {
   locationCode: string;
   /** Active chemicals with no numeric tab -- what "Number tabs" would act on. */
   untabbed: number;
   total: number;
+  /** True when tab order and alphabetical order have diverged, which happens
+   *  the moment a chemical is added after the binder was numbered. The index
+   *  prints in TAB order, so that chemical prints last, away from its
+   *  neighbours -- correct, and invisible unless the page says so. */
+  outOfOrder: boolean;
 }) {
   const router = useRouter();
   const [pending, startTransition] = useTransition();
@@ -96,10 +102,17 @@ export default function NumberTabs({
         </button>
       </div>
       <p className="mt-1 text-xs text-splash-navy/60">
-        Tabs match pre-numbered dividers. New chemicals take the next free number,
-        so nothing already in the binder moves &mdash; the index stays
-        alphabetical and tells you which tab to go to.
+        Tabs match pre-numbered dividers, and the index prints in tab order. A
+        new chemical takes the next free number, so nothing already filed moves
+        &mdash; but it prints at the end until you renumber.
       </p>
+      {outOfOrder ? (
+        <p className="mt-1 text-xs text-amber-700">
+          Some chemicals are filed out of alphabetical order. That is fine to
+          print &mdash; the tabs still run in sequence &mdash; but Renumber
+          A&ndash;Z puts the list back in order if you are ready to re-file.
+        </p>
+      ) : null}
       {note ? (
         <p role="status" className="mt-1 text-xs text-emerald-700">
           {note}

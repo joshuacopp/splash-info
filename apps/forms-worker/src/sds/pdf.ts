@@ -105,7 +105,7 @@ export async function renderSdsPdf(input: SdsPdfInput): Promise<Uint8Array> {
       // site today, so giving it room the identifiers need would be spending
       // space on nothing.
       [
-        { header: "Tab", width: 34 },
+        { header: "Tab", width: 36 },
         { header: "Product identifier (as shown on the SDS)", width: 238, wrap: true },
         { header: "Manufacturer", width: 140, wrap: true },
         { header: "Where used / stored", width: CONTENT_WIDTH - 412, wrap: true }

@@ -219,6 +219,24 @@ export default async function SdsPage({ searchParams }: PageProps) {
               rows shown by "Show removed" would promise a number the button then
               did not deliver. */}
           <NumberTabs
+            outOfOrder={(() => {
+              // Tab order IS the print order, so divergence from alphabetical
+              // is what a reader notices and the only thing worth flagging.
+              const numbered = items
+                .filter((i) => i.is_active && /^\d+$/.test((i.binder_tab ?? "").trim()))
+                .sort((a, b) =>
+                  (a.catalog?.product_identifier ?? "").localeCompare(
+                    b.catalog?.product_identifier ?? "",
+                    undefined,
+                    { sensitivity: "base" }
+                  )
+                );
+              return numbered.some(
+                (it, idx) =>
+                  idx > 0 &&
+                  Number(numbered[idx - 1]!.binder_tab) > Number(it.binder_tab)
+              );
+            })()}
             locationCode={activeSite}
             total={items.filter((i) => i.is_active).length}
             untabbed={

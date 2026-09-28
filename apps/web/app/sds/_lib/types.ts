@@ -81,15 +81,31 @@ export interface SdsCandidate {
 }
 
 /**
- * Index order: ALPHABETICAL. The tab number is shown as a column, not used as
- * the sort.
+ * Index order: BY TAB NUMBER, then by name.
  *
- * It used to sort by tab. That breaks as soon as numbers append -- a chemical
- * added after the binder was numbered takes the highest tab, and sorting by tab
- * drops it at the end where nobody looks a name up. Mirrors sortForBinder in
- * the worker; the screen and the printed index must agree.
+ * Operator decision 2026-09-28: a Tab column running 32, 37, 33, 34 is wrong on
+ * its face to somebody holding the printed page, so the column has to count.
+ * The cost is that a chemical added after the binder was numbered prints LAST
+ * until a Renumber A-Z -- see sortForBinder in the worker for the full
+ * reasoning. Mirrors it exactly; the screen and the printed index must agree.
+ *
+ * Numeric tabs sort NUMERICALLY ("10" after "9", not after "1"); lettered tabs
+ * sort after every numbered one; untabbed rows sort last, being the ones still
+ * to be filed.
  */
 export function compareItems(a: SdsItem, b: SdsItem): number {
+  const at = (a.binder_tab ?? "").trim();
+  const bt = (b.binder_tab ?? "").trim();
+  if (at !== bt) {
+    if (!at) return 1;
+    if (!bt) return -1;
+    const an = Number(at);
+    const bn = Number(bt);
+    if (Number.isFinite(an) && Number.isFinite(bn) && an !== bn) return an - bn;
+    if (Number.isFinite(an) !== Number.isFinite(bn)) return Number.isFinite(an) ? -1 : 1;
+    const c = at.localeCompare(bt, undefined, { numeric: true });
+    if (c !== 0) return c;
+  }
   return (a.catalog?.product_identifier ?? "").localeCompare(
     b.catalog?.product_identifier ?? "",
     undefined,

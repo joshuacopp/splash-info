@@ -155,14 +155,24 @@ function scopeFor(access: SiteAccess, requested: string | null): string[] | null
 }
 
 /**
- * Index order: ALPHABETICAL, with the tab number carried as a column.
+ * Index order: BY TAB NUMBER, then by name.
  *
- * It used to sort by tab. That becomes wrong the moment tab numbers append: a
- * chemical added after the binder was numbered takes the HIGHEST number, so
- * sorting by tab buries it at the end -- the one place nobody looks up a name.
- * The index is the lookup and the number is the address, like a parts catalogue,
- * so A-Z is the order that makes a number findable. Straight after a Renumber
- * the two orders are identical anyway.
+ * OPERATOR DECISION, 2026-09-28, reversing an earlier call of mine. I had this
+ * sorting alphabetically with the tab as a column, on the reasoning that the
+ * index is a lookup and the number is just an address -- which is how a parts
+ * catalogue works. It is not how a binder of numbered dividers reads. A Tab
+ * column running 32, 37, 33, 34 is wrong on its face to anyone holding the
+ * page, and "can't have numerical tabs out of sequence" settles it: the printed
+ * column has to count.
+ *
+ * THE COST, so nobody re-litigates this by accident: a chemical added after the
+ * binder was numbered takes the next free number and therefore prints LAST,
+ * away from its alphabetical neighbours, until somebody presses Renumber A-Z.
+ * That is the deliberate trade -- an index that reads in order, at the price of
+ * re-filing sheets when you want it alphabetical again.
+ *
+ * Untabbed rows sort last: they are the ones still to be filed. Numeric tabs
+ * sort NUMERICALLY, so 10 follows 9 rather than 1.
  *
  * Done here rather than in the query because product_identifier lives on the
  * catalogue and PostgREST cannot order a base table by an embedded column.
@@ -170,13 +180,27 @@ function scopeFor(access: SiteAccess, requested: string | null): string[] | null
  * imported, but the printed page and the screen must agree.
  */
 function sortForBinder(items: SdsItemRow[]): SdsItemRow[] {
-  return [...items].sort((a, b) =>
-    (a.catalog?.product_identifier ?? "").localeCompare(
+  return [...items].sort((a, b) => {
+    const at = (a.binder_tab ?? "").trim();
+    const bt = (b.binder_tab ?? "").trim();
+    if (at !== bt) {
+      if (!at) return 1;
+      if (!bt) return -1;
+      const an = Number(at);
+      const bn = Number(bt);
+      if (Number.isFinite(an) && Number.isFinite(bn) && an !== bn) return an - bn;
+      // A lettered tab sorts after every numbered one rather than being coerced
+      // to NaN and shuffling unpredictably.
+      if (Number.isFinite(an) !== Number.isFinite(bn)) return Number.isFinite(an) ? -1 : 1;
+      const c = at.localeCompare(bt, undefined, { numeric: true });
+      if (c !== 0) return c;
+    }
+    return (a.catalog?.product_identifier ?? "").localeCompare(
       b.catalog?.product_identifier ?? "",
       undefined,
       { sensitivity: "base" }
-    )
-  );
+    );
+  });
 }
 
 // =============================================================================
