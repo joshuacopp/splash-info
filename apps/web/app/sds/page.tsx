@@ -186,26 +186,32 @@ export default async function SdsPage({ searchParams }: PageProps) {
           {/* Two prints, because they answer different questions: the index
               alone is the cover page, the binder is the whole thing to refile
               after a revision. */}
-          <a
-            href={`/forms/api/sds/binder.pdf?location=${encodeURIComponent(activeSite)}`}
-            target="_blank"
-            rel="noreferrer"
-            className="rounded-splash-sm bg-splash-navy px-3 py-1.5 text-xs font-bold text-white"
-          >
-            Print full binder
-          </a>
-          {/* A separate link rather than a checkbox on the one above: the two
-              produce genuinely different files, and which is right depends on
-              how the printer is set. Padding blanks are invisible when duplexed
-              and wasted paper when not. */}
+          {/* NEITHER of these is the default, deliberately. They are different
+              files and both failure modes are silent: print the single-sided
+              file double-sided and tab 2 lands on the back of tab 1's last
+              page, so the binder cannot be filed at all; print the
+              double-sided file single-sided and every pad becomes a wasted
+              sheet. Naming one "Print full binder" made the other look
+              optional, which is how somebody picks wrong. So the label states
+              the printer setting, and the operator picks the one matching the
+              machine in front of them. */}
           <a
             href={`/forms/api/sds/binder.pdf?location=${encodeURIComponent(activeSite)}&duplex=1`}
             target="_blank"
             rel="noreferrer"
-            title="Adds a blank page after any sheet with an odd page count, so every chemical starts on a front face"
-            className="rounded-splash-sm border border-splash-navy/30 px-3 py-1.5 text-xs font-bold text-splash-navy hover:bg-splash-navy/5"
+            title="Pads each chemical to an even page count so every sheet starts on a front face. Uses no extra paper when printed double-sided."
+            className="rounded-splash-sm bg-splash-navy px-3 py-1.5 text-xs font-bold text-white"
           >
-            Binder for double-sided
+            Binder &mdash; double-sided
+          </a>
+          <a
+            href={`/forms/api/sds/binder.pdf?location=${encodeURIComponent(activeSite)}`}
+            target="_blank"
+            rel="noreferrer"
+            title="No padding. Use only when the printer is set to single-sided, or for reading on screen."
+            className="rounded-splash-sm bg-splash-navy px-3 py-1.5 text-xs font-bold text-white"
+          >
+            Binder &mdash; single-sided
           </a>
           <a
             href={`/forms/api/sds/print.pdf?location=${encodeURIComponent(activeSite)}`}
