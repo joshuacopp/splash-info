@@ -507,6 +507,19 @@ export interface TableColumn {
    *  inside CONTENT_WIDTH; anything wider is clipped by the page edge. */
   width: number;
   align?: "left" | "right";
+  /**
+   * Wrap onto extra lines instead of truncating with an ellipsis. Off by
+   * default, so every existing table renders exactly as before.
+   *
+   * Turn it on for a column whose content is the POINT of the document rather
+   * than a label for it. On the SDS index, "ARM & HAMMER Liquid Laundry
+   * Detergent Clean Burst" needs 227pt in a 202pt column, and the truncated
+   * version is no longer the identity printed on the sheet -- which is the one
+   * thing OSHA 1910.1200(e)(1)(i) actually requires of that column. Five of
+   * Elmira Heights' 36 chemicals were affected, the widest needing 306pt, so no
+   * redistribution of a 504pt content width could have fixed it.
+   */
+  wrap?: boolean;
 }
 
 export interface TableOptions {
@@ -570,21 +583,40 @@ export function drawTable(
 
   drawHeader();
 
+  const lineGap = size + 2;
+
   for (let i = 0; i < rows.length; i++) {
-    // Reserve one row plus a repeated header, so a page never ends with a
+    const row = rows[i]!;
+
+    // Lay every cell out BEFORE drawing anything, because a wrapping column
+    // decides how tall this row is and therefore whether it fits on the page at
+    // all. Measuring after drawing the first cell would strand half a row.
+    const cells = columns.map((col, c) => {
+      const raw = sanitizeForWinAnsi(row[c] ?? "");
+      if (!col.wrap) {
+        return [truncateToWidth(raw, fonts.regular, size, col.width - 12)];
+      }
+      const lines = wrapText(raw, fonts.regular, size, col.width - 12);
+      return lines.length > 0 ? lines : [""];
+    });
+    const lineCount = Math.max(1, ...cells.map((l) => l.length));
+    // One line keeps the caller's exact row height, so an unwrapped table is
+    // pixel-identical to before; extra lines add their own leading.
+    const thisRowHeight = rowHeight + (lineCount - 1) * lineGap;
+
+    // Reserve this row plus a repeated header, so a page never ends with a
     // header stranded at the bottom and its first row overleaf.
-    if (cursor.y - rowHeight < MARGIN + FOOTER_Y) {
+    if (cursor.y - thisRowHeight < MARGIN + FOOTER_Y) {
       addPageIfNeeded(doc, cursor, PAGE_HEIGHT);
       drawHeader();
     }
 
-    const row = rows[i]!;
     if (zebra && i % 2 === 1) {
       cursor.page.drawRectangle({
         x: MARGIN,
-        y: cursor.y - rowHeight + 4,
+        y: cursor.y - thisRowHeight + 4,
         width: CONTENT_WIDTH,
-        height: rowHeight,
+        height: thisRowHeight,
         color: rgb(248 / 255, 250 / 255, 252 / 255) // slate-50
       });
     }
@@ -592,22 +624,22 @@ export function drawTable(
     let x = MARGIN + 6;
     for (let c = 0; c < columns.length; c++) {
       const col = columns[c]!;
-      const text = truncateToWidth(
-        sanitizeForWinAnsi(row[c] ?? ""),
-        fonts.regular,
-        size,
-        col.width - 12
-      );
-      const w = fonts.regular.widthOfTextAtSize(text, size);
-      cursor.page.drawText(text, {
-        x: col.align === "right" ? x + col.width - 12 - w : x,
-        y: cursor.y - rowHeight + 9,
-        size,
-        font: fonts.regular,
-        color: COLORS.text
+      const lines = cells[c]!;
+      lines.forEach((text, li) => {
+        const w = fonts.regular.widthOfTextAtSize(text, size);
+        cursor.page.drawText(text, {
+          x: col.align === "right" ? x + col.width - 12 - w : x,
+          // Top-aligned within the row: a wrapped cell reads as one entry
+          // continuing, and short cells stay level with the first line of the
+          // tall one rather than floating in the middle of it.
+          y: cursor.y - rowHeight + 9 - li * lineGap,
+          size,
+          font: fonts.regular,
+          color: COLORS.text
+        });
       });
       x += col.width;
     }
-    cursor.y -= rowHeight;
+    cursor.y -= thisRowHeight;
   }
 }

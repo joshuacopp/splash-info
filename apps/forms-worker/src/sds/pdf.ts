@@ -93,11 +93,22 @@ export async function renderSdsPdf(input: SdsPdfInput): Promise<Uint8Array> {
       doc,
       cursor,
       fonts,
+      // Widths measured against real data rather than guessed. At 9pt Helvetica
+      // the longest identifier in use needs 306pt and the longest manufacturer
+      // 126pt, against a 504pt content width that also has to carry a tab
+      // number and a work area -- so no split fits everything on one line, and
+      // the two columns carrying real text WRAP. Truncating an identifier is
+      // not a cosmetic loss: the column's whole job is to match the sheet.
+      //
+      // Tab is sized for "50", not for its own header. Work area is last and
+      // narrowest because it is the only optional one -- and is empty at every
+      // site today, so giving it room the identifiers need would be spending
+      // space on nothing.
       [
-        { header: "Tab", width: 46 },
-        { header: "Product identifier (as shown on the SDS)", width: 214 },
-        { header: "Manufacturer", width: 130 },
-        { header: "Where used / stored", width: CONTENT_WIDTH - 390 }
+        { header: "Tab", width: 34 },
+        { header: "Product identifier (as shown on the SDS)", width: 238, wrap: true },
+        { header: "Manufacturer", width: 140, wrap: true },
+        { header: "Where used / stored", width: CONTENT_WIDTH - 412, wrap: true }
       ],
       input.items.map((i) => [
         oneLine(i.binder_tab),
