@@ -997,7 +997,10 @@ export async function handleSdsBinder(env: Env, req: Request): Promise<Response>
     locationCode: location,
     items: sortForBinder(items),
     lastReviewedAt: reviews[0]?.last_reviewed_at ?? null,
-    lastReviewedBy: reviews[0]?.last_reviewed_by ?? null
+    lastReviewedBy: reviews[0]?.last_reviewed_by ?? null,
+    // Opt-in: the padding blanks are invisible when duplexed and pure waste
+    // when not, so only the operator knows which is right.
+    duplex: new URL(req.url).searchParams.get("duplex") === "1"
   });
 
   return new Response(built.bytes as unknown as BodyInit, {

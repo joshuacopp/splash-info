@@ -202,6 +202,11 @@ export async function handleServeCatalogSheet(
 
 export interface BinderInput {
   siteName: string;
+  /** Insert a blank page after any odd-length section, so every chemical starts
+   *  on a front face when the binder is printed double-sided. OFF by default:
+   *  the blanks are invisible when duplexed and pure waste when not, so this
+   *  has to be the operator saying how they are going to print it. */
+  duplex?: boolean;
   locationCode: string;
   items: SdsItemRow[];
   lastReviewedAt: string | null;
@@ -226,6 +231,27 @@ export interface BinderResult {
  * and a binder that refuses to print because one file is bad is the worst
  * possible handling of one bad file.
  */
+/**
+ * Make the document an even number of pages, so the NEXT section starts on a
+ * front face when printed double-sided.
+ *
+ * Without this, any sheet with an odd page count puts the following chemical's
+ * first page on the back of its last page, and the error accumulates down the
+ * binder -- so from the first odd sheet onward, nothing sits behind its own
+ * divider. Sections are padded as they are added rather than fixed up at the
+ * end, because what matters is the boundary between each pair.
+ *
+ * The blank copies the size of the page it follows, so a Letter sheet is not
+ * padded with an A4 blank.
+ */
+function padToEven(doc: PDFDocument): void {
+  const count = doc.getPageCount();
+  if (count === 0 || count % 2 === 0) return;
+  const last = doc.getPage(count - 1);
+  const { width, height } = last.getSize();
+  doc.addPage([width, height]);
+}
+
 export async function renderBinderPdf(
   env: Env,
   input: BinderInput
@@ -240,6 +266,9 @@ export async function renderBinderPdf(
   });
 
   const out = await PDFDocument.load(indexBytes);
+  // The index is a section like any other: an odd-length index puts the first
+  // sheet on its back and shifts every section after it.
+  if (input.duplex) padToEven(out);
   const missing: string[] = [];
   const failed: string[] = [];
   let budget = BINDER_MAX_BYTES;
@@ -269,6 +298,7 @@ export async function renderBinderPdf(
       const src = await PDFDocument.load(raw, { ignoreEncryption: true });
       const pages = await out.copyPages(src, src.getPageIndices());
       for (const p of pages) out.addPage(p);
+      if (input.duplex) padToEven(out);
     } catch (err) {
       console.error(`[forms.sds] merge failed for ${key}`, err);
       failed.push(label);

@@ -104,11 +104,15 @@ export async function renderSdsPdf(input: SdsPdfInput): Promise<Uint8Array> {
       // narrowest because it is the only optional one -- and is empty at every
       // site today, so giving it room the identifiers need would be spending
       // space on nothing.
+      // Every width below is measured at 9pt, not guessed. The work-area column
+      // was 92pt: its HEADER needs 86pt and "Backroom/Backroom" needs 83pt
+      // against 80pt of usable space, so both were being clipped. The 12pt it
+      // needed comes out of the product column, which wraps and can afford it.
       [
         { header: "Tab", width: 36 },
-        { header: "Product identifier (as shown on the SDS)", width: 238, wrap: true },
+        { header: "Product identifier (as shown on the SDS)", width: 226, wrap: true },
         { header: "Manufacturer", width: 140, wrap: true },
-        { header: "Where used / stored", width: CONTENT_WIDTH - 412, wrap: true }
+        { header: "Where used / stored", width: CONTENT_WIDTH - 402, wrap: true }
       ],
       input.items.map((i) => [
         oneLine(i.binder_tab),

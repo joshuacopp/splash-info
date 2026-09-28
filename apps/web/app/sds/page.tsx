@@ -194,6 +194,19 @@ export default async function SdsPage({ searchParams }: PageProps) {
           >
             Print full binder
           </a>
+          {/* A separate link rather than a checkbox on the one above: the two
+              produce genuinely different files, and which is right depends on
+              how the printer is set. Padding blanks are invisible when duplexed
+              and wasted paper when not. */}
+          <a
+            href={`/forms/api/sds/binder.pdf?location=${encodeURIComponent(activeSite)}&duplex=1`}
+            target="_blank"
+            rel="noreferrer"
+            title="Adds a blank page after any sheet with an odd page count, so every chemical starts on a front face"
+            className="rounded-splash-sm border border-splash-navy/30 px-3 py-1.5 text-xs font-bold text-splash-navy hover:bg-splash-navy/5"
+          >
+            Binder for double-sided
+          </a>
           <a
             href={`/forms/api/sds/print.pdf?location=${encodeURIComponent(activeSite)}`}
             target="_blank"

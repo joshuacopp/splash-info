@@ -551,34 +551,46 @@ export function drawTable(
   const rowHeight = options.rowHeight ?? 18;
   const zebra = options.zebra ?? true;
 
+  const headerGap = headerSize + 2;
+
+  // Headers wrap on the same columns their cells do. A truncated HEADER is the
+  // worse of the two failures -- "Where used / sto..." leaves a reader guessing
+  // what the column even is, and unlike a clipped value there is nothing
+  // elsewhere on the page to recover it from.
+  const headerLines = columns.map((col) =>
+    col.wrap
+      ? wrapText(col.header, fonts.bold, headerSize, col.width - 12)
+      : [truncateToWidth(sanitizeForWinAnsi(col.header), fonts.bold, headerSize, col.width - 12)]
+  );
+  const headerLineCount = Math.max(1, ...headerLines.map((l) => Math.max(1, l.length)));
+  const headerHeight = rowHeight + (headerLineCount - 1) * headerGap;
+
   const drawHeader = () => {
     // Header band, drawn as a filled rectangle behind bold label text.
     cursor.page.drawRectangle({
       x: MARGIN,
-      y: cursor.y - rowHeight + 4,
+      y: cursor.y - headerHeight + 4,
       width: CONTENT_WIDTH,
-      height: rowHeight,
+      height: headerHeight,
       color: COLORS.navy
     });
     let x = MARGIN + 6;
-    for (const col of columns) {
-      const label = truncateToWidth(
-        sanitizeForWinAnsi(col.header),
-        fonts.bold,
-        headerSize,
-        col.width - 12
-      );
-      const w = fonts.bold.widthOfTextAtSize(label, headerSize);
-      cursor.page.drawText(label, {
-        x: col.align === "right" ? x + col.width - 12 - w : x,
-        y: cursor.y - rowHeight + 9,
-        size: headerSize,
-        font: fonts.bold,
-        color: COLORS.white
+    for (let c = 0; c < columns.length; c++) {
+      const col = columns[c]!;
+      const lines = headerLines[c]!;
+      (lines.length > 0 ? lines : [""]).forEach((label, li) => {
+        const w = fonts.bold.widthOfTextAtSize(label, headerSize);
+        cursor.page.drawText(label, {
+          x: col.align === "right" ? x + col.width - 12 - w : x,
+          y: cursor.y - rowHeight + 9 - li * headerGap,
+          size: headerSize,
+          font: fonts.bold,
+          color: COLORS.white
+        });
       });
       x += col.width;
     }
-    cursor.y -= rowHeight;
+    cursor.y -= headerHeight;
   };
 
   drawHeader();
