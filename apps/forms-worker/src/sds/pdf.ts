@@ -39,6 +39,16 @@ export interface SdsPdfInput {
   lastReviewedAt: string | null;
   lastReviewedBy: string | null;
   bucket: R2Like;
+  /**
+   * Set on the BINDER only, to print the instruction on the page being printed.
+   *
+   * A button on a web page cannot set anybody's printer, and by the time the
+   * print dialog is open that page is gone. Somebody pressing "double-sided"
+   * and then printing 300 pages one-sided has wasted a ream and produced a
+   * binder full of blanks. The instruction therefore travels WITH the file, and
+   * is read at the moment the decision is actually made.
+   */
+  binderMode?: "duplex" | "simplex";
 }
 
 /** A cell is one line; a stray newline in a manufacturer or work area would
@@ -78,6 +88,39 @@ export async function renderSdsPdf(input: SdsPdfInput): Promise<Uint8Array> {
     { x: MARGIN, y: cursor.y, size: 9, font: fonts.regular, color: COLORS.muted }
   );
   cursor.y -= 20;
+
+  // Loud, because the cost of missing it is a ream of paper and a binder that
+  // cannot be filed.
+  if (input.binderMode) {
+    const duplex = input.binderMode === "duplex";
+    cursor.page.drawText(
+      sanitizeForWinAnsi(
+        duplex
+          ? "PRINT THIS FILE DOUBLE-SIDED (2-sided / duplex)."
+          : "PRINT THIS FILE SINGLE-SIDED (1-sided)."
+      ),
+      { x: MARGIN, y: cursor.y, size: 10, font: fonts.bold, color: COLORS.navy }
+    );
+    cursor.y -= 13;
+    cursor.page.drawText(
+      sanitizeForWinAnsi(
+        duplex
+          ? "Blank backs are deliberate: they keep every chemical starting on a front page. Printing"
+          : "This copy has no padding. Printing it double-sided puts each chemical on the back of the"
+      ),
+      { x: MARGIN, y: cursor.y, size: 8.5, font: fonts.regular, color: COLORS.muted }
+    );
+    cursor.y -= 11;
+    cursor.page.drawText(
+      sanitizeForWinAnsi(
+        duplex
+          ? "this copy single-sided wastes one sheet per blank -- use the single-sided version instead."
+          : "one before it, so it cannot be filed behind its divider -- use the double-sided version."
+      ),
+      { x: MARGIN, y: cursor.y, size: 8.5, font: fonts.regular, color: COLORS.muted }
+    );
+    cursor.y -= 16;
+  }
 
   if (input.items.length === 0) {
     cursor.page.drawText("No chemicals recorded for this site yet.", {

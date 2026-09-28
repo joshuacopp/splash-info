@@ -199,20 +199,26 @@ export default async function SdsPage({ searchParams }: PageProps) {
             href={`/forms/api/sds/binder.pdf?location=${encodeURIComponent(activeSite)}&duplex=1`}
             target="_blank"
             rel="noreferrer"
-            title="Pads each chemical to an even page count so every sheet starts on a front face. Uses no extra paper when printed double-sided."
+            title="Prepares the file. You still have to set your printer to 2-sided. Uses no extra paper when you do."
             className="rounded-splash-sm bg-splash-navy px-3 py-1.5 text-xs font-bold text-white"
           >
-            Binder &mdash; double-sided
+            Binder for 2-sided printing
           </a>
           <a
             href={`/forms/api/sds/binder.pdf?location=${encodeURIComponent(activeSite)}`}
             target="_blank"
             rel="noreferrer"
-            title="No padding. Use only when the printer is set to single-sided, or for reading on screen."
+            title="Prepares the file. Use only if your printer is set to 1-sided, or for reading on screen."
             className="rounded-splash-sm bg-splash-navy px-3 py-1.5 text-xs font-bold text-white"
           >
-            Binder &mdash; single-sided
+            Binder for 1-sided printing
           </a>
+          {/* Said once, next to both, because the buttons name a printer
+              setting and cannot apply one. */}
+          <span className="basis-full text-xs text-splash-navy/60">
+            These prepare the file &mdash; set your printer to match. The binder
+            says which one it is on its first page.
+          </span>
           <a
             href={`/forms/api/sds/print.pdf?location=${encodeURIComponent(activeSite)}`}
             target="_blank"

@@ -262,7 +262,10 @@ export async function renderBinderPdf(
     items: input.items,
     lastReviewedAt: input.lastReviewedAt,
     lastReviewedBy: input.lastReviewedBy,
-    bucket: env.FORMS_FILES
+    bucket: env.FORMS_FILES,
+    // The binder says how to print itself; the index-only print does not, since
+    // one page has no sides to get wrong.
+    binderMode: input.duplex ? "duplex" : "simplex"
   });
 
   const out = await PDFDocument.load(indexBytes);
