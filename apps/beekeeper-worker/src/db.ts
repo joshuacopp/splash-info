@@ -1,7 +1,11 @@
 // Supabase cache access for beekeeper-worker.
 
 
-import { createServiceClient, type SupabaseClient } from "@splash/db-supabase";
+import {
+  createServiceClient,
+  filterRosterEligible,
+  type SupabaseClient
+} from "@splash/db-supabase";
 import type { Env } from "./env.js";
 import {
   customFieldNumber,
@@ -149,97 +153,13 @@ export async function getUsersByIds(
  * Roster (assignable employees for a schedule)
  * ============================================================ */
 
-/**
- * How far BEHIND THE MOST RECENT SYNC a user's row may fall before the person
- * is treated as gone. The sync runs daily, so 2 means a user has to be absent
- * from two consecutive tenant listings — enough to ride out one transient
- * pagination hiccup, short enough that a manager isn't scheduling a ghost for a
- * week.
- *
- * Measured against the newest row rather than the wall clock ON PURPOSE. If the
- * cutoff were `now - 2 days`, a sync that stopped running — expired token,
- * broken cron, Beekeeper outage — would age every row past it simultaneously
- * and empty the assignable roster at every location in the company. Comparing
- * rows to each other makes that failure inert: if nothing is syncing, nothing
- * is fresh, the newest row ages in lockstep with the rest, and nobody is
- * dropped. The filter only bites when the sync is demonstrably alive and has
- * chosen not to return someone.
- */
-const ROSTER_STALE_DAYS = 2;
-
-/**
- * Whether a cached user still counts as employed here.
- *
- * This matters beyond a tidy dropdown: the schedule grid derives the salaried
- * payroll baseline from the ROSTER, not from shifts, so a departed GM left in
- * this list keeps adding rate x 40 to the week total forever — a wrong number
- * on a screen whose entire job is to be a correct number.
- *
- * Three independent signals, any one of which disqualifies, because none of
- * them is individually trustworthy in this tenant (checked against the full
- * 2026-08-22 user dump, where all ~100 users are suspended:false and
- * employmentStatus "Active" — so neither field has ever been observed in its
- * off state and neither can be confirmed to fire on offboarding):
- *
- *   suspended         Beekeeper-native, set by the platform rather than typed
- *                     by an admin, so it is the one least likely to be
- *                     forgotten. Only `true` disqualifies.
- *   employment_status Admin-typed free text. Only a non-empty value that is not
- *                     "Active" disqualifies — blank means "nobody filled it in",
- *                     which must not silently delete a real employee.
- *   synced_at         The one that actually fires, and the reason the other two
- *                     are not enough. VERIFIED 2026-08-23 against the live
- *                     tenant: GET /users EXCLUDES suspended users entirely.
- *                     Carter Mullen (suspended 2026-08-06, org_unit_ids still
- *                     containing Batavia) returns suspended:true from
- *                     GET /users/{id} but is simply absent from
- *                     GET /users?org_unit_id=<batavia>, which returned exactly
- *                     the 8 people the Beekeeper location UI shows. So the sync
- *                     can never observe suspended:true — a suspended user does
- *                     not come back flagged, they stop coming back at all, and
- *                     the upsert-only sync leaves their row frozen with stale
- *                     org_unit_ids. Falling out of the listing IS the signal.
- *
- * The suspended and employment_status checks are kept anyway: they cost nothing,
- * they catch the case same-day rather than after ROSTER_STALE_DAYS, and if
- * Beekeeper ever starts including deactivated users in the listing (or the
- * tenant starts maintaining employmentStatus) they begin working on their own.
- *
- * A null synced_at passes: rows predate the column and must not vanish before
- * the first sync writes it.
- *
- * `latestSyncMs` is the newest synced_at among the rows being considered — see
- * ROSTER_STALE_DAYS for why the comparison is row-relative and not wall-clock.
- */
-export function isRosterEligible(
-  row: BeekeeperUserRow,
-  latestSyncMs: number | null
-): boolean {
-  if (row.suspended === true) return false;
-  const status = (row.employment_status ?? "").trim().toLowerCase();
-  if (status && status !== "active") return false;
-  if (latestSyncMs !== null && row.synced_at) {
-    const seen = Date.parse(row.synced_at);
-    if (
-      Number.isFinite(seen) &&
-      latestSyncMs - seen > ROSTER_STALE_DAYS * 86_400_000
-    ) {
-      return false;
-    }
-  }
-  return true;
-}
-
-/** Newest synced_at across a set of rows, or null when none carry one. */
-function latestSync(rows: Iterable<BeekeeperUserRow>): number | null {
-  let max: number | null = null;
-  for (const r of rows) {
-    if (!r.synced_at) continue;
-    const t = Date.parse(r.synced_at);
-    if (Number.isFinite(t) && (max === null || t > max)) max = t;
-  }
-  return max;
-}
+// The rule itself now lives in @splash/db-supabase/beekeeper-roster, because
+// the greeter scorecard needs the same answer and a package cannot import from
+// an app. It was duplicated there WITHOUT the filter and that picker spent
+// months offering departed employees — see that module's header. Re-exported
+// here so existing importers of this module keep working, but there is one
+// implementation and it is not this file.
+export { isRosterEligible, ROSTER_STALE_DAYS } from "@splash/db-supabase";
 
 /**
  * Assignable roster for a schedule: members whose org_unit_ids contains the
@@ -279,11 +199,9 @@ export async function getRoster(
     for (const [id, r] of extra) byId.set(id, r);
   }
 
-  const rows = [...byId.values()];
-  const newest = latestSync(rows);
-  return rows
-    .filter((r) => isRosterEligible(r, newest))
-    .sort((a, b) => nameFromRow(a, a.id).localeCompare(nameFromRow(b, b.id)));
+  return filterRosterEligible([...byId.values()]).sort((a, b) =>
+    nameFromRow(a, a.id).localeCompare(nameFromRow(b, b.id))
+  );
 }
 
 /* ============================================================

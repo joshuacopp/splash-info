@@ -17,6 +17,10 @@
 // for the caller that knows the window. See supabase/greeter-labor-revenue-14.sql.
 
 import type { SupabaseClient } from "@supabase/supabase-js";
+import {
+  ROSTER_ELIGIBILITY_COLUMNS,
+  filterRosterEligible
+} from "./beekeeper-roster.js";
 import type {
   GreeterDailyInsert,
   GreeterDailyRow,
@@ -118,7 +122,18 @@ interface BeekeeperUserRow {
   display_name: string | null;
   firstname: string | null;
   lastname: string | null;
+  // Read by isRosterEligible. Selected via ROSTER_ELIGIBILITY_COLUMNS -- if
+  // they are ever dropped from the select, the filter sees three undefineds and
+  // passes everyone, which is the bug this fixed.
+  suspended: boolean | null;
+  employment_status: string | null;
+  synced_at: string | null;
 }
+
+/** Both roster queries below select exactly this. Kept as one literal so the
+ *  two cannot drift: a person present in one branch and absent from the other
+ *  would be filtered inconsistently depending on which branch found them. */
+const ROSTER_USER_COLUMNS = `id,display_name,firstname,lastname,${ROSTER_ELIGIBILITY_COLUMNS}`;
 
 /** display_name -> "first last" -> "User xxxxxxxx". Mirrors nameFromRow() in
  *  beekeeper-worker/src/db.ts so the same person is labelled identically in
@@ -132,7 +147,7 @@ function rosterName(row: BeekeeperUserRow): string {
 /**
  * The assignable people at a location, for the greeter dropdown.
  *
- * Deliberately duplicated here rather than called across to beekeeper-worker:
+ * The QUERY is deliberately not routed through beekeeper-worker:
  *
  *  1. beekeeper-worker gates every route on `scheduleGate` (the "schedule" /
  *     "pricing" tool grant). A user granted only "pertrack" would be 403'd by
@@ -140,6 +155,12 @@ function rosterName(row: BeekeeperUserRow): string {
  *     permission.
  *  2. Its handlers 404 when no schedule is mapped, which is the wrong shape for
  *     a picker — we want to render an explanatory empty state instead.
+ *
+ * The ELIGIBILITY RULE is NOT duplicated, and must not be again. It lives in
+ * ./beekeeper-roster.ts and both this and the scheduler import it. Duplicating
+ * the query while dropping the filter is precisely how this picker came to
+ * offer departed employees: 172 names across 7 sites where the scheduler
+ * offered 135 (measured 2026-09-28).
  *
  * The Beekeeper org-unit id is only obtainable from `beekeeper_schedules`, so a
  * site with no mapped schedule genuinely has no roster; that returns
@@ -181,7 +202,7 @@ export async function getGreeterRoster(
     // (Same workaround as getRoster() in beekeeper-worker/src/db.ts.)
     const { data, error } = await client
       .from("beekeeper_users")
-      .select("id,display_name,firstname,lastname")
+      .select(ROSTER_USER_COLUMNS)
       .contains("org_unit_ids", JSON.stringify([orgUnitId]));
     if (error) throw error;
     for (const r of (data ?? []) as BeekeeperUserRow[]) byId.set(r.id, r);
@@ -193,13 +214,18 @@ export async function getGreeterRoster(
   if (missing.length > 0) {
     const { data, error } = await client
       .from("beekeeper_users")
-      .select("id,display_name,firstname,lastname")
+      .select(ROSTER_USER_COLUMNS)
       .in("id", [...new Set(missing)]);
     if (error) throw error;
     for (const r of (data ?? []) as BeekeeperUserRow[]) byId.set(r.id, r);
   }
 
-  const members: GreeterRosterMember[] = [...byId.values()]
+  // Departed staff stop being assignable; they do not stop being history. A
+  // logged greeter day snapshots the person's name into greeter_day.greeter_name
+  // at write time, so filtering here cannot turn a past record into "User
+  // 3f2a1b8c" -- the same separation the scheduler makes between getRoster
+  // (filtered) and getUsersByIds (not).
+  const members: GreeterRosterMember[] = filterRosterEligible([...byId.values()])
     .map((r) => ({ id: r.id, name: rosterName(r) }))
     .sort((a, b) => a.name.localeCompare(b.name));
 

@@ -21,6 +21,7 @@ export * from "./maintainx-users.js";
 export * from "./maintainx-ingest.js";
 export * from "./performance.js";
 export * from "./greeter.js";
+export * from "./beekeeper-roster.js";
 export * from "./expense.js";
 export * from "./audit.js";
 export * from "./summary.js";
