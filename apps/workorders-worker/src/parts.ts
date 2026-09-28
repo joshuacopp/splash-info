@@ -115,6 +115,14 @@ const MAX_URL = 2048;
 const MAX_R2_KEY = 512;
 const MAX_LOCATION_CODES = 200;
 const MAX_EQUIPMENT = 100;
+/** One part answering more than a handful of checklist questions is a data
+ *  entry mistake, not a real part. Generous enough not to be in anyone's way. */
+const MAX_FORM_FIELD_KEYS = 50;
+/** The form-schema key shape, enforced by the builder's KeyEditor and by
+ *  @splash/forms-schema. Duplicated here rather than imported because
+ *  workorders-worker has no dependency on the forms package and one regex does
+ *  not justify adding one. */
+const FORM_FIELD_KEY_RE = /^[a-z][a-z0-9_]*$/;
 
 /** Thrown by the field readers; caught once per handler → 400. */
 class ValidationError extends Error {}
@@ -221,6 +229,44 @@ function readLocationCodes(body: Record<string, unknown>): string[] | undefined 
 }
 
 /**
+ * `form_field_keys` — the checklist questions this part answers.
+ *
+ * Keys are the form-schema key shape (`^[a-z][a-z0-9_]*$`) and are validated
+ * against it rather than accepted as free text: a typo here does not error
+ * anywhere, it simply matches no question, and the part silently never appears
+ * against the answer it was meant for. Rejecting a malformed key is the only
+ * moment anything can notice.
+ *
+ * NOT checked against a live form. A part may legitimately be mapped before
+ * the form that uses the key is published, and the parts worker has no
+ * business reading form schemas to find out. The editor's picker is what keeps
+ * operators on real keys; this just keeps the column clean.
+ *
+ * null and [] both mean "answers no question", which is the normal state of an
+ * ordinary mechanical part.
+ */
+function readFormFieldKeys(body: Record<string, unknown>): string[] | undefined {
+  if (!("form_field_keys" in body)) return undefined;
+  const value = body.form_field_keys;
+  if (value === null) return [];
+  if (!Array.isArray(value)) fail("form_field_keys must be an array of strings");
+  if (value.length > MAX_FORM_FIELD_KEYS) {
+    fail(`form_field_keys has too many entries (max ${MAX_FORM_FIELD_KEYS})`);
+  }
+  const out = new Set<string>();
+  for (const entry of value) {
+    if (typeof entry !== "string") fail("form_field_keys must be an array of strings");
+    const key = entry.trim();
+    if (!key) continue;
+    if (!FORM_FIELD_KEY_RE.test(key)) {
+      fail(`form_field_keys entry "${key}" is not a valid field key`);
+    }
+    out.add(key);
+  }
+  return [...out];
+}
+
+/**
  * `parent_equipment` — array of machine names, trimmed and deduped
  * case-insensitively (first spelling wins, caller's order preserved), mirroring
  * `normalizeEquipment` in @splash/db-supabase.
@@ -297,6 +343,9 @@ function readPartsInput(
 
   const locationCodes = readLocationCodes(body);
   if (locationCodes !== undefined) input.location_codes = locationCodes;
+
+  const formFieldKeys = readFormFieldKeys(body);
+  if (formFieldKeys !== undefined) input.form_field_keys = formFieldKeys;
 
   const notes = readOptionalText(body, "notes", MAX_NOTES);
   if (notes !== undefined) input.notes = notes;

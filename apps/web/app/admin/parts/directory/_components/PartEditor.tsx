@@ -36,10 +36,14 @@
 // part number the same VENDOR already uses — is answered upstream, and its
 // `{ error }` message is routed back to the field it names.
 
-import { useCallback, useEffect, useId, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import type { FormEvent, KeyboardEvent, ReactNode } from "react";
 import { useRouter } from "next/navigation";
-import { partPhotoUrl, type PartRow } from "../_lib/parts-shared";
+import {
+  partPhotoUrl,
+  type ChecklistQuestionGroup,
+  type PartRow
+} from "../_lib/parts-shared";
 
 const API_PARTS = "/admin/parts/directory/api/parts";
 const API_PHOTO = "/admin/parts/directory/api/photo";
@@ -54,6 +58,7 @@ const FIELD_KEYS = [
   "unit_cost",
   "vendor_url",
   "location_codes",
+  "form_field_keys",
   "notes"
 ] as const;
 type FieldKey = (typeof FIELD_KEYS)[number];
@@ -325,10 +330,18 @@ export interface PartEditorProps {
    *  offered as suggestions so machine names stay consistent instead of
    *  sprouting "MacNeil" and "macneil". */
   equipment: string[];
+  /** Checklist questions this part can be mapped to, grouped by form. Empty
+   *  hides the picker entirely. */
+  questionGroups?: ChecklistQuestionGroup[];
   onClose: () => void;
 }
 
-export function PartEditor({ part, equipment, onClose }: PartEditorProps) {
+export function PartEditor({
+  part,
+  equipment,
+  questionGroups = [],
+  onClose
+}: PartEditorProps) {
   const router = useRouter();
   const titleId = useId();
   const equipListId = useId();
@@ -352,6 +365,41 @@ export function PartEditor({ part, equipment, onClose }: PartEditorProps) {
     (part?.location_codes ?? []).join(", ")
   );
   const [notes, setNotes] = useState(part?.notes ?? "");
+  // A Set, not an array: the picker toggles by key and order carries no
+  // meaning. Seeded from the row so an edit preserves mappings made elsewhere
+  // (the Safety Center seed, or SQL) rather than clearing what it cannot see.
+  const [formFieldKeys, setFormFieldKeys] = useState<Set<string>>(
+    () => new Set(part?.form_field_keys ?? [])
+  );
+  // 165 questions across three checklists at the time of writing, so the list
+  // needs narrowing to be usable. A CHECKED question always stays visible
+  // regardless of the filter — otherwise typing hides what you already picked
+  // and the box reads as though you had picked nothing.
+  const [questionFilter, setQuestionFilter] = useState("");
+  const visibleQuestionGroups = useMemo(() => {
+    const needle = questionFilter.trim().toLowerCase();
+    if (!needle) return questionGroups;
+    return questionGroups
+      .map((group) => ({
+        ...group,
+        questions: group.questions.filter(
+          (q) =>
+            formFieldKeys.has(q.key) ||
+            q.label.toLowerCase().includes(needle) ||
+            q.key.includes(needle)
+        )
+      }))
+      .filter((group) => group.questions.length > 0);
+  }, [questionGroups, questionFilter, formFieldKeys]);
+
+  const toggleFieldKey = useCallback((key: string) => {
+    setFormFieldKeys((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }, []);
   const [photoKey, setPhotoKey] = useState<string | null>(
     part?.photo_r2_key ?? null
   );
@@ -447,6 +495,17 @@ export function PartEditor({ part, equipment, onClose }: PartEditorProps) {
         .split(/[\s,]+/)
         .map((c) => c.trim())
         .filter(Boolean),
+      // Sent unconditionally for the same reason every other field is: the
+      // worker treats an absent key as "leave it alone", so omitting an
+      // emptied set would silently keep the old mapping.
+      //
+      // The Set is seeded from the ROW, not from the picker, so a key the
+      // picker cannot display — mapped by SQL, or pointing at a form that is
+      // not published — stays in it and survives this save. It is invisible
+      // rather than lost. The trade is that such a mapping also cannot be
+      // REMOVED here; that still needs SQL, which is the right way round:
+      // silently dropping a mapping nobody was shown would be worse.
+      form_field_keys: [...formFieldKeys],
       notes: notes.trim() || null
     };
 
@@ -659,6 +718,66 @@ export function PartEditor({ part, equipment, onClose }: PartEditorProps) {
               <p className={errorClass}>{fieldErrors.location_codes}</p>
             )}
           </div>
+
+          {/* Checklist mapping. Hidden entirely when no checklist is published
+              or the forms worker was unreachable — an empty picker would read
+              as "there are no questions", which is a different claim. */}
+          {questionGroups.length > 0 && (
+            <div className="sm:col-span-2">
+              <span className={labelClass}>Answers these checklist questions</span>
+              <p className="mt-1 mb-2 text-xs text-splash-navy/50">
+                When one of these is answered No, this part shows up as
+                something to order — on the site&apos;s copy of the completed
+                checklist and on its action items. Most parts answer none.
+              </p>
+              <input
+                type="search"
+                value={questionFilter}
+                onChange={(e) => setQuestionFilter(e.target.value)}
+                disabled={busy}
+                placeholder="Filter questions…"
+                aria-label="Filter checklist questions"
+                className={`${inputClass} mb-2`}
+              />
+              <div className="max-h-56 overflow-y-auto rounded-md border border-splash-navy/15 p-2">
+                {visibleQuestionGroups.length === 0 && (
+                  <p className="px-1 py-2 text-xs text-splash-navy/50">
+                    Nothing matches that filter.
+                  </p>
+                )}
+                {visibleQuestionGroups.map((group) => (
+                  <fieldset key={group.form_id} className="mb-2 last:mb-0">
+                    <legend className="px-1 text-xs font-semibold text-splash-navy/70">
+                      {group.form_title}
+                    </legend>
+                    {group.questions.map((q) => (
+                      <label
+                        key={`${group.form_id}:${q.key}`}
+                        className="flex cursor-pointer items-start gap-2 rounded px-1 py-1 text-sm hover:bg-splash-navy/5"
+                      >
+                        <input
+                          type="checkbox"
+                          className="mt-0.5"
+                          disabled={busy}
+                          checked={formFieldKeys.has(q.key)}
+                          onChange={() => toggleFieldKey(q.key)}
+                        />
+                        <span>
+                          {q.label}
+                          <span className="ml-1 font-mono text-[0.6875rem] text-splash-navy/40">
+                            {q.key}
+                          </span>
+                        </span>
+                      </label>
+                    ))}
+                  </fieldset>
+                ))}
+              </div>
+              {fieldErrors.form_field_keys && (
+                <p className={errorClass}>{fieldErrors.form_field_keys}</p>
+              )}
+            </div>
+          )}
 
           <div className="sm:col-span-2">
             <label className={labelClass} htmlFor={`${titleId}-notes`}>

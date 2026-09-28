@@ -37,6 +37,10 @@ export interface PartRow {
   vendor_url: string | null;
   /** Sites that use this part. Display metadata, NOT an access scope. */
   location_codes: string[];
+  /** Checklist questions this part answers. When one of these is answered No,
+   *  the completion email and the action item link here. Empty is the normal
+   *  state of an ordinary mechanical part. */
+  form_field_keys: string[];
   notes: string | null;
   created_at: string;
   created_by: string | null;
@@ -64,6 +68,20 @@ export function toEquipmentList(value: unknown): string[] {
   }
   if (typeof value === "string" && value.trim()) return [value.trim()];
   return [];
+}
+
+/**
+ * Checklist questions a part can be mapped to, grouped by the form they came
+ * from. Mirrors `GET /forms/admin/api/action-item-questions`.
+ *
+ * Lives here rather than in checklist-questions.ts because PartEditor is a
+ * client component and that module imports next/headers — the same split
+ * PartRow is in, for the same reason.
+ */
+export interface ChecklistQuestionGroup {
+  form_id: string;
+  form_title: string;
+  questions: { key: string; label: string }[];
 }
 
 export type PartsFetchResult =

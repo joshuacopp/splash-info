@@ -33,6 +33,7 @@ import Link from "next/link";
 import { fetchParts } from "./_lib/parts";
 import { getMe } from "../../../_lib/me";
 import { PartsDirectory } from "./_components/PartsDirectory";
+import { fetchChecklistQuestions } from "./_lib/checklist-questions";
 
 export const dynamic = "force-dynamic";
 export const metadata = { title: "Parts Directory" };
@@ -51,10 +52,13 @@ export default async function PartsDirectoryPage({
   // In parallel: the directory itself (workorders-worker) and the session
   // (dashboard-worker). Two unrelated services, so there is no reason to pay
   // for them serially.
-  const [result, session, params] = await Promise.all([
+  const [result, session, params, questionGroups] = await Promise.all([
     fetchParts(),
     getMe().catch(() => null),
-    searchParams ?? emptyParams
+    searchParams ?? emptyParams,
+    // Fail-soft to [] — an unreachable forms worker hides the mapping picker
+    // rather than taking out a page about ordering bearings.
+    fetchChecklistQuestions()
   ]);
   const canEdit = session?.role === "super_admin";
   const rawQuery = params.q;
@@ -120,6 +124,7 @@ export default async function PartsDirectoryPage({
           equipment={result.equipment}
           canEdit={canEdit}
           initialQuery={initialQuery}
+          questionGroups={questionGroups}
         />
       )}
     </section>

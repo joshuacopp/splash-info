@@ -59,7 +59,11 @@
 // person with dev tools can flip this prop and get nothing for it.
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { partPhotoUrl, type PartRow } from "../_lib/parts-shared";
+import {
+  partPhotoUrl,
+  type ChecklistQuestionGroup,
+  type PartRow
+} from "../_lib/parts-shared";
 import { PartDeleteConfirm, PartEditor } from "./PartEditor";
 
 interface Props {
@@ -69,6 +73,10 @@ interface Props {
    *  rather than dropping somebody at the top of the whole directory. Search
    *  stays client-side after that — this only sets the starting value. */
   initialQuery?: string;
+  /** Checklist questions the editor can map a part to, grouped by form. Empty
+   *  when no checklist is published or the forms worker was unreachable — the
+   *  editor hides the picker rather than showing an empty control. */
+  questionGroups?: ChecklistQuestionGroup[];
   /** Flattened, deduped, sorted union of parent_equipment over ALL rows —
    *  drives the filter and the order sections render in. It deliberately does
    *  not shrink while a search is active. */
@@ -127,7 +135,8 @@ export function PartsDirectory({
   parts,
   equipment,
   canEdit = false,
-  initialQuery = ""
+  initialQuery = "",
+  questionGroups = []
 }: Props) {
   const [query, setQuery] = useState(initialQuery);
   const [equipFilter, setEquipFilter] = useState<string>(ALL_EQUIPMENT);
@@ -317,6 +326,7 @@ export function PartsDirectory({
           key={editing === "new" ? "new" : editing.id}
           part={editing === "new" ? null : editing}
           equipment={equipment}
+          questionGroups={questionGroups}
           onClose={() => setEditing(null)}
         />
       )}

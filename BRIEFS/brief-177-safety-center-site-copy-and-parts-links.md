@@ -122,6 +122,49 @@ gloves and then has to work out, unaided, what to order and from whom.
   `forms.draft_version_id` was load-bearing rather than defensive.
 - No runtime smoke test: needs Publish, which is the operator's.
 
+## Follow-up, same day — the mapping picker
+
+The first pass added `form_field_keys` with no UI, so a part created through
+the editor answered no checklist question and only SQL could map one. Closed:
+
+- **`GET /forms/admin/api/action-item-questions`** (new,
+  `apps/forms-worker/src/admin/action-item-questions.ts`) — mappable questions
+  grouped by form, PUBLISHED versions only. Lives on forms-worker because a
+  question is a fact about a form schema; teaching the parts worker to read
+  `form_versions.schema` would give a second worker an opinion about what a
+  form field is. apps/web holds bindings to both and does the join.
+- **`form_field_keys` is now writable** end to end: `PartsDirectoryInput` /
+  `PARTS_COLS` / `normalizeRow` / `buildWritableBody` in `@splash/db-supabase`,
+  `readFormFieldKeys` in `apps/workorders-worker/src/parts.ts`. The apps/web
+  write proxy forwards bodies verbatim and needed no change.
+- **Picker in `PartEditor`** — checkboxes grouped by form, with a filter
+  because there are 165 mappable questions across the three checklists today.
+
+Decisions:
+
+- **Keys are validated against `^[a-z][a-z0-9_]*$` but NOT against a live
+  form.** A typo produces no error anywhere — it just matches no question and
+  the part never appears against the answer it was meant for. Rejecting a
+  malformed key is the only moment anything can notice. A part may also
+  legitimately be mapped before its form is published.
+- **A checked question stays visible through the filter.** Otherwise typing
+  hides what you already picked and the box reads as though you had picked
+  nothing.
+- **The Set is seeded from the ROW, not the picker.** A key the picker cannot
+  display (mapped by SQL, or against an unpublished form) survives a save
+  instead of being silently dropped. The trade is that it cannot be REMOVED
+  here either — which is the right way round.
+- **Editing a part was already safe** before this: `buildWritableBody` builds a
+  sparse body and PostgREST leaves absent columns untouched, so the seeded
+  mappings were never at risk from a UI edit. Verified rather than assumed,
+  because a full-row write would have wiped every mapping on first edit with
+  nothing to indicate it.
+
+Verified against live data before shipping: the endpoint's query returns 90 /
+54 / 21 mappable questions for the AM assessment, RM visit and Safety Center
+respectively, and **all 17 seeded keys resolve to a question the picker will
+show** — a seeded key that matched nothing would have been a dead mapping.
+
 ## Operator steps
 
 1. ~~Run `supabase/parts-directory-03-form-field-keys.sql`~~ — DONE 2026-09-28.

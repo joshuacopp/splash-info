@@ -91,6 +91,7 @@ import { handleListVersions } from "./admin/versions.js";
 import { handlePendingApprovals } from "./admin/pending-approvals.js";
 import { handleMyRequests } from "./admin/my-requests.js";
 import { handleUserSearch } from "./admin/users-search.js";
+import { handleListActionItemQuestions } from "./admin/action-item-questions.js";
 import { handleTransitionSignatureUpload } from "./admin/transition-signatures.js";
 import {
   handleListComments,
@@ -346,6 +347,16 @@ export default {
       req.method === "GET"
     ) {
       return handleMyRequests(env, req);
+    }
+
+    // Brief 177 — GET /forms/admin/api/action-item-questions
+    //   Checklist questions a Parts Directory row can be mapped to, grouped
+    //   by form. Published versions only. Admin-tier gate.
+    if (
+      url.pathname === "/forms/admin/api/action-item-questions" &&
+      req.method === "GET"
+    ) {
+      return handleListActionItemQuestions(env, req);
     }
 
     // Brief 125 — GET /forms/admin/api/users/search?q=

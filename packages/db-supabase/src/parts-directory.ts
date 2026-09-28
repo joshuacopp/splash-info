@@ -32,7 +32,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 
 /** Every column, as PostgREST returns it. */
 const PARTS_COLS =
-  "id,parent_equipment,part_name,part_number,vendor,photo_r2_key,unit_cost,vendor_url,location_codes,notes,created_at,created_by,updated_at,updated_by";
+  "id,parent_equipment,part_name,part_number,vendor,photo_r2_key,unit_cost,vendor_url,location_codes,form_field_keys,notes,created_at,created_by,updated_at,updated_by";
 
 export interface PartsDirectoryRow {
   id: string;
@@ -45,6 +45,9 @@ export interface PartsDirectoryRow {
   unit_cost: number | null;
   vendor_url: string | null;
   location_codes: string[];
+  /** Checklist questions this part answers. Empty = not tied to any question,
+   *  which is the normal case for an ordinary mechanical part. */
+  form_field_keys: string[];
   notes: string | null;
   created_at: string;
   created_by: string | null;
@@ -71,6 +74,9 @@ export interface PartsDirectoryInput {
   unit_cost?: number | null;
   vendor_url?: string | null;
   location_codes?: string[];
+  /** Checklist questions this part answers — see the column comment in
+   *  supabase/parts-directory-03-form-field-keys.sql. */
+  form_field_keys?: string[];
   notes?: string | null;
 }
 
@@ -210,6 +216,9 @@ function normalizeRow(raw: unknown): PartsDirectoryRow | null {
     vendor_url: toStringOrNull(r.vendor_url),
     location_codes: Array.isArray(r.location_codes)
       ? r.location_codes.filter((c): c is string => typeof c === "string")
+      : [],
+    form_field_keys: Array.isArray(r.form_field_keys)
+      ? r.form_field_keys.filter((k): k is string => typeof k === "string")
       : [],
     notes: toStringOrNull(r.notes),
     created_at: typeof r.created_at === "string" ? r.created_at : "",
@@ -390,6 +399,7 @@ function buildWritableBody(input: PartsDirectoryInput): Record<string, unknown> 
   if (input.unit_cost !== undefined) body.unit_cost = input.unit_cost;
   if (input.vendor_url !== undefined) body.vendor_url = input.vendor_url;
   if (input.location_codes !== undefined) body.location_codes = input.location_codes;
+  if (input.form_field_keys !== undefined) body.form_field_keys = input.form_field_keys;
   if (input.notes !== undefined) body.notes = input.notes;
   return body;
 }
