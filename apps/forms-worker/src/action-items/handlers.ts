@@ -18,6 +18,7 @@ import {
   type ActionItemAccess
 } from "./access.js";
 import { requireServiceKey } from "../admin/auth.js";
+import { lookupPartsForFieldKeys } from "../parts-lookup.js";
 import type { Env } from "../index.js";
 
 const UUID_RE =
@@ -166,13 +167,23 @@ export async function handleListActionItems(
       return jsonError(500, "list_failed");
     }
     const items = (await resp.json().catch(() => [])) as ActionItemRow[];
+    // What to order for the questions these items came from, resolved
+    // worker-side in ONE overlap query for the whole page rather than per row.
+    // Fail-soft by construction: lookupPartsForFieldKeys returns an empty map
+    // on any failure, and an item with no parts renders exactly as it did
+    // before this existed.
+    const partsByKey = await lookupPartsForFieldKeys(
+      env,
+      items.map((r) => r.field_key).filter((k): k is string => typeof k === "string")
+    );
     // Per-row capability, so the page never renders a control the worker will
     // refuse. Derived from the SAME functions the writes gate on, so the two
     // cannot disagree.
     const withCaps = items.map((r) => ({
       ...r,
       can_edit: canEdit(g.access, r.location_code),
-      can_verify: canVerify(g.access, r.location_code)
+      can_verify: canVerify(g.access, r.location_code),
+      parts: (r.field_key ? partsByKey.get(r.field_key) : undefined) ?? []
     }));
     return new Response(
       JSON.stringify({

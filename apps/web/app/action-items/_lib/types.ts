@@ -29,6 +29,27 @@ export interface ActionItem {
    *  may act" drifts from the first, and the drift is silent. */
   can_edit: boolean;
   can_verify: boolean;
+  /** What to order for the question this item came from, matched on
+   *  parts_directory.form_field_keys. Empty for hand-added items (no
+   *  field_key), for questions nothing is mapped to, and whenever the lookup
+   *  failed — the row renders identically in all three cases. */
+  parts?: ActionItemPart[];
+}
+
+/** Subset of parts_directory the action items page links to. */
+export interface ActionItemPart {
+  id: string;
+  part_name: string;
+  part_number: string | null;
+  vendor: string | null;
+  vendor_url: string | null;
+}
+
+/** The parts directory card for a part. The page seeds its client-side search
+ *  from `q`, so the exact name lands on the row. Mirrors partsDirectoryUrl in
+ *  apps/forms-worker/src/parts-lookup.ts — same URL from both sides. */
+export function partsDirectoryUrl(partName: string): string {
+  return `/admin/parts/directory?q=${encodeURIComponent(partName)}`;
 }
 
 export interface ActionItemsResponse {

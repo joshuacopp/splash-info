@@ -37,15 +37,28 @@ import { PartsDirectory } from "./_components/PartsDirectory";
 export const dynamic = "force-dynamic";
 export const metadata = { title: "Parts Directory" };
 
-export default async function PartsDirectoryPage() {
+type SearchParams = Record<string, string | string[] | undefined>;
+
+export default async function PartsDirectoryPage({
+  searchParams
+}: {
+  // `?q=` seeds the search box so the action items page and the Safety Center
+  // completion email can link to one part by name. Filtering itself stays
+  // client-side; this only sets the starting value.
+  searchParams?: Promise<SearchParams>;
+}) {
+  const emptyParams: Promise<SearchParams> = Promise.resolve({});
   // In parallel: the directory itself (workorders-worker) and the session
   // (dashboard-worker). Two unrelated services, so there is no reason to pay
   // for them serially.
-  const [result, session] = await Promise.all([
+  const [result, session, params] = await Promise.all([
     fetchParts(),
-    getMe().catch(() => null)
+    getMe().catch(() => null),
+    searchParams ?? emptyParams
   ]);
   const canEdit = session?.role === "super_admin";
+  const rawQuery = params.q;
+  const initialQuery = typeof rawQuery === "string" ? rawQuery : "";
 
   return (
     <section className="mx-auto w-full max-w-[1100px] px-5 py-9">
@@ -106,6 +119,7 @@ export default async function PartsDirectoryPage() {
           parts={result.parts}
           equipment={result.equipment}
           canEdit={canEdit}
+          initialQuery={initialQuery}
         />
       )}
     </section>

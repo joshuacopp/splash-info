@@ -19,6 +19,7 @@
 
 import type { PDFDocument } from "pdf-lib";
 import type { DropdownOption, Field, FormSchema } from "@splash/forms-schema";
+import { negativeAnswerKeys } from "@splash/forms-schema";
 
 import {
   COLORS,
@@ -266,16 +267,14 @@ function unflaggedNegatives(schema: FormSchema, payload: Record<string, unknown>
   const ticked = new Set(
     Array.isArray(raw) ? raw.filter((k): k is string => typeof k === "string") : []
   );
-  const out: string[] = [];
-  for (const f of schema.fields) {
-    if (!isSingleChoice(f) || f.options.length !== 2) continue;
-    if (!f.action_item_eligible) continue;
-    const negative = f.options[1]!.value;
-    if (valueOf(payload, f.key) !== negative) continue;
-    if (ticked.has(f.key)) continue;
-    out.push(f.label);
-  }
-  return out;
+  // `negativeAnswerKeys` IS the rule described above, lifted into the schema
+  // package so the Safety Center completion email can offer parts for the same
+  // set of answers this table scolds about. Behaviour here is unchanged: the
+  // negatives, minus the ones that already raised an action item.
+  const byKey = new Map(schema.fields.map((f) => [f.key, f]));
+  return negativeAnswerKeys(schema, payload)
+    .filter((key) => !ticked.has(key))
+    .map((key) => byKey.get(key)?.label ?? key);
 }
 
 /**

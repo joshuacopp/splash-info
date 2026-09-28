@@ -12,6 +12,7 @@ import {
   PRIORITIES,
   STATUS_LABEL,
   STATUS_ORDER,
+  partsDirectoryUrl,
   type ActionItem,
   type ActionItemPriority,
   type ActionItemStatus
@@ -170,6 +171,34 @@ export default function ActionItemRow({
                   </>
                 )}
               </p>
+
+              {/* What to order for this question. Absent for hand-added items,
+                  for questions nothing is mapped to, and when the lookup
+                  failed — in every case the row above is already complete, so
+                  this section simply does not render. */}
+              {item.parts && item.parts.length > 0 ? (
+                <p className="mt-1 text-xs text-splash-navy/70">
+                  <span className="font-semibold">Order:</span>{" "}
+                  {item.parts.map((part, i) => (
+                    <span key={part.id}>
+                      {i > 0 ? " · " : ""}
+                      <a
+                        href={part.vendor_url ?? partsDirectoryUrl(part.part_name)}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="underline underline-offset-2 hover:text-splash-navy"
+                      >
+                        {part.part_name}
+                      </a>
+                      {part.part_number ? (
+                        <span className="text-splash-navy/50">
+                          {` #${part.part_number}`}
+                        </span>
+                      ) : null}
+                    </span>
+                  ))}
+                </p>
+              ) : null}
             </>
           )}
         </div>

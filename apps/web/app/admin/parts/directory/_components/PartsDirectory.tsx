@@ -64,6 +64,11 @@ import { PartDeleteConfirm, PartEditor } from "./PartEditor";
 
 interface Props {
   parts: PartRow[];
+  /** Seeds the search box, from `?q=` on the URL. Lets the action items page
+   *  and the Safety Center completion email deep-link to one part by name
+   *  rather than dropping somebody at the top of the whole directory. Search
+   *  stays client-side after that — this only sets the starting value. */
+  initialQuery?: string;
   /** Flattened, deduped, sorted union of parent_equipment over ALL rows —
    *  drives the filter and the order sections render in. It deliberately does
    *  not shrink while a search is active. */
@@ -118,8 +123,13 @@ function searchText(part: PartRow): string {
     .toLowerCase();
 }
 
-export function PartsDirectory({ parts, equipment, canEdit = false }: Props) {
-  const [query, setQuery] = useState("");
+export function PartsDirectory({
+  parts,
+  equipment,
+  canEdit = false,
+  initialQuery = ""
+}: Props) {
+  const [query, setQuery] = useState(initialQuery);
   const [equipFilter, setEquipFilter] = useState<string>(ALL_EQUIPMENT);
   const [lightbox, setLightbox] = useState<PartRow | null>(null);
   const [editing, setEditing] = useState<EditorTarget>(null);

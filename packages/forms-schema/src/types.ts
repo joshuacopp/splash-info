@@ -551,3 +551,57 @@ export function isFieldVisible(
   }
   return typeof raw === "string" && vis.equals.includes(raw);
 }
+
+/**
+ * Keys of every two-option, action-item-eligible question answered with its
+ * SECOND option.
+ *
+ * SECOND-IS-THE-BAD-ONE is a convention, not a schema property: it holds for
+ * Yes/No, Pass/Fail and OK/Not OK alike, and the PDF's rating grid marks the
+ * same position with an X. Restricted to action-item-eligible questions so an
+ * ordinary either/or question is never treated as a problem for being answered.
+ *
+ * DELIBERATELY WIDER THAN `_action_items`. A tick is an explicit checkbox the
+ * person has to remember; a No is the answer itself. Anything keying off "what
+ * went wrong here" wants both — the completed-form PDF prints negatives that
+ * raised no action, and the Safety Center email offers parts for them, because
+ * a site that is out of gloves needs gloves whether or not anybody ticked a
+ * box.
+ *
+ * This lives in the schema package, not in a consumer, because it is the
+ * definition of a bad answer and two implementations of that drift silently.
+ */
+export function negativeAnswerKeys(
+  schema: FormSchema,
+  payload: Record<string, unknown>
+): string[] {
+  const out: string[] = [];
+  for (const f of schema.fields) {
+    if (f.type !== "radio" && f.type !== "dropdown") continue;
+    if (f.options.length !== 2) continue;
+    if (!f.action_item_eligible) continue;
+    if (!isFieldVisible(f, payload)) continue;
+    const value = payload[f.key];
+    if (typeof value !== "string") continue;
+    if (value !== f.options[1]!.value) continue;
+    out.push(f.key);
+  }
+  return out;
+}
+
+/**
+ * Everything this submission surfaced as needing attention: questions answered
+ * negatively, plus questions explicitly ticked for an action item (which
+ * includes ones with more than two options, where there is no "second is bad"
+ * convention to read).
+ */
+export function flaggedFieldKeys(
+  schema: FormSchema,
+  payload: Record<string, unknown>
+): string[] {
+  const raw = payload[ACTION_ITEM_PAYLOAD_KEY];
+  const ticked = Array.isArray(raw)
+    ? raw.filter((k): k is string => typeof k === "string")
+    : [];
+  return [...new Set([...ticked, ...negativeAnswerKeys(schema, payload)])];
+}

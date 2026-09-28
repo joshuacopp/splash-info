@@ -35,6 +35,7 @@ import type {
   WorkflowHistoryEntry,
   WorkflowStage
 } from "@splash/forms-schema";
+import { flaggedFieldKeys } from "@splash/forms-schema";
 import {
   enqueueOutboundEmail,
   type EnqueueOutboundEmailResult,
@@ -44,6 +45,11 @@ import {
 
 import type { Env } from "./index.js";
 import { resolveApproverEmails } from "./workflow-resolution.js";
+import {
+  lookupPartsForFieldKeys,
+  partsDirectoryUrl,
+  type PartLink
+} from "./parts-lookup.js";
 import { generateOrReuseCompletedPdf } from "./pdf/cascade-attach.js";
 import { wrapInEmailShell } from "@splash/email-shell";
 
@@ -65,6 +71,13 @@ export interface RuntimeContext {
   submissionId: string;
   formId: string;
   outcome: OutcomeContext;
+  /** Parts answering the questions this submission flagged, keyed by field
+   *  key. Backs `{parts.needed}`.
+   *
+   *  OPTIONAL and populated INSIDE the cascade, not by callers: it needs a
+   *  database read, and only a workflow whose template actually contains the
+   *  token pays for it. Absent (or empty) renders the token as nothing. */
+  partsNeeded?: Map<string, PartLink[]>;
 }
 
 export interface CascadeResult {
@@ -143,6 +156,18 @@ export async function cascadeThroughEmailSteps(
   const appended: WorkflowHistoryEntry[] = [];
   const enqueuedEmailIds: string[] = [];
 
+  // Parts for `{parts.needed}`, resolved ONCE for the whole cascade and only
+  // when some email step on this workflow actually asks for them — every other
+  // form's cascade must not pay for a query it has no use for.
+  //
+  // Flagged keys come from `flaggedFieldKeys` in the schema package — ticked
+  // action items PLUS anything answered with the second (bad) option of a
+  // two-option question. Wider than `_action_items` on purpose: a tick is a
+  // checkbox somebody has to remember, and a site that is out of gloves needs
+  // gloves either way. That rule lives in the schema package precisely so this
+  // and the PDF cannot end up disagreeing about what a bad answer is.
+  const partsNeeded = (await resolvePartsNeeded(env, ctx.schema, ctx.payload)) ?? undefined;
+
   for (let depth = 0; depth < MAX_CASCADE_DEPTH; depth++) {
     const stage = workflow.stages.find((s) => s.id === currentStageId);
     if (!stage) {
@@ -183,7 +208,8 @@ export async function cascadeThroughEmailSteps(
 
     const localRuntime: RuntimeContext = {
       ...ctx.runtime,
-      outcome: outcomeForRender
+      outcome: outcomeForRender,
+      partsNeeded
     };
 
     const recipients = await resolveEmailRecipients(env, ctx.schema, ctx.payload, stage);
@@ -440,6 +466,10 @@ function normaliseSubmitterEmailSource(
  *   {form.title}            — form's title
  *   {form.url}              — public form URL
  *   {submission.url}        — admin-facing submission URL
+ *   {parts.needed}          — parts answering the questions this submission
+ *                              flagged, from parts_directory.form_field_keys.
+ *                              Emits its own heading, or nothing at all when
+ *                              nothing was flagged / nothing is mapped.
  *   {approvals.url}         — Brief 134: pending-approvals dashboard URL
  *                              (HTML renders a labeled CTA button)
  *   {my_requests.url}       — Brief 134: "my requests" dashboard URL
@@ -488,6 +518,8 @@ export function renderTemplate(
         return runtime.outcome.outcomeReachedAt ?? "";
       case "payload.summary":
         return renderPayloadSummary(payload, fields);
+      case "parts.needed":
+        return renderPartsNeeded(runtime.partsNeeded, fields);
     }
     if (token.startsWith("field.")) {
       const key = token.slice("field.".length);
@@ -620,6 +652,8 @@ function renderTokenHtml(
       return escapeHtml(runtime.outcome.outcomeReachedAt ?? "");
     case "payload.summary":
       return renderPayloadSummaryHtml(payload, fields);
+    case "parts.needed":
+      return renderPartsNeededHtml(runtime.partsNeeded, fields);
   }
   if (token.startsWith("field.")) {
     const key = token.slice("field.".length);
@@ -678,6 +712,120 @@ function renderPayloadSummaryHtml(
     `</tbody>`,
     `</table>`
   ].join("");
+}
+
+/**
+ * Parts for every question this submission flagged, or null when no email step
+ * on this workflow references `{parts.needed}`.
+ *
+ * Returning null rather than an empty map keeps "nobody asked" distinguishable
+ * from "asked, found nothing" in a debugger; both render as nothing.
+ */
+async function resolvePartsNeeded(
+  env: Env,
+  schema: FormSchema,
+  payload: SubmissionPayload
+): Promise<Map<string, PartLink[]> | null> {
+  const workflow = schema.workflow;
+  if (!workflow) return null;
+  const wanted = workflow.stages.some(
+    (s) =>
+      isEmailStage(s) &&
+      (`${s.subject_template ?? ""}${s.body_template ?? ""}`).includes("{parts.needed}")
+  );
+  if (!wanted) return null;
+
+  const flagged = flaggedFieldKeys(schema, payload);
+  if (flagged.length === 0) return new Map();
+  return lookupPartsForFieldKeys(env, flagged);
+}
+
+/** "MacNeil, part #ABC123" — whichever of the two the operator has filled in,
+ *  and nothing at all when neither is set yet (the seeded rows ship name-only). */
+function partDetailLine(part: PartLink): string {
+  const bits: string[] = [];
+  if (part.vendor) bits.push(part.vendor);
+  if (part.part_number) bits.push(`part #${part.part_number}`);
+  return bits.join(", ");
+}
+
+/** The question a part was matched against, for the sub-heading. Falls back to
+ *  the key so a part mapped to a question that has since been renamed still
+ *  prints something traceable. */
+function questionLabelFor(key: string, fields: Map<string, Field>): string {
+  return fields.get(key)?.label ?? key;
+}
+
+/**
+ * The token emits its OWN heading and emits NOTHING when there is nothing to
+ * order — so a clean checklist does not leave a dangling "Items to order:"
+ * above an empty space, and the template author does not have to write the
+ * heading conditionally (which templates cannot express).
+ */
+function renderPartsNeeded(
+  parts: Map<string, PartLink[]> | undefined,
+  fields: Map<string, Field>
+): string {
+  if (!parts || parts.size === 0) return "";
+  const lines: string[] = ["Items to order:"];
+  for (const [key, list] of parts.entries()) {
+    lines.push("", questionLabelFor(key, fields));
+    for (const part of list) {
+      const detail = partDetailLine(part);
+      lines.push(`  - ${part.part_name}${detail ? ` (${detail})` : ""}`);
+      if (part.vendor_url) lines.push(`    Order: ${part.vendor_url}`);
+      lines.push(`    Details: ${partsDirectoryUrl(part.part_name)}`);
+    }
+  }
+  return lines.join("\n");
+}
+
+function renderPartsNeededHtml(
+  parts: Map<string, PartLink[]> | undefined,
+  fields: Map<string, Field>
+): string {
+  if (!parts || parts.size === 0) return "";
+  const rows: string[] = [];
+  for (const [key, list] of parts.entries()) {
+    for (const part of list) {
+      const detail = partDetailLine(part);
+      const links: string[] = [];
+      if (part.vendor_url) {
+        links.push(
+          `<a href="${escapeAttrValue(part.vendor_url)}" style="color: #0B6BCB; text-decoration: underline;">Order</a>`
+        );
+      }
+      links.push(
+        `<a href="${escapeAttrValue(partsDirectoryUrl(part.part_name))}" style="color: #0B6BCB; text-decoration: underline;">Details</a>`
+      );
+      rows.push(
+        `<tr>` +
+          `<td style="padding: 8px 12px 8px 0; vertical-align: top; font-size: 14px; font-weight: 600; color: #0E2745; border-bottom: 1px solid #E5E7EB; width: 35%;">${escapeHtml(questionLabelFor(key, fields))}</td>` +
+          `<td style="padding: 8px 0; vertical-align: top; font-size: 14px; color: #1f2937; border-bottom: 1px solid #E5E7EB;">` +
+            `${escapeHtml(part.part_name)}` +
+            (detail ? `<br><span style="color: #6b7280;">${escapeHtml(detail)}</span>` : "") +
+            `<br>${links.join(" &middot; ")}` +
+          `</td>` +
+        `</tr>`
+      );
+    }
+  }
+  if (rows.length === 0) return "";
+  return [
+    `<p style="margin: 20px 0 4px 0; font-size: 14px; font-weight: 600; color: #0E2745;">Items to order</p>`,
+    `<table role="presentation" cellpadding="0" cellspacing="0" border="0" style="width: 100%; border-collapse: collapse; margin: 4px 0 20px 0; background-color: #F9FAFB; border-radius: 6px; padding: 4px 12px;">`,
+    `<tbody>`,
+    rows.join(""),
+    `</tbody>`,
+    `</table>`
+  ].join("");
+}
+
+/** Attribute-position escaping for a URL we are about to drop into `href="..."`.
+ *  `escapeHtml` already covers the quote, but going through a named helper
+ *  keeps the intent obvious at the call site. */
+function escapeAttrValue(s: string): string {
+  return escapeHtml(s);
 }
 
 function outcomeTintColor(label: string): string {

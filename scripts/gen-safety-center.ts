@@ -112,6 +112,11 @@ function lookup(key: string, label: string, sourceColumn: string) {
 }
 lookup("site_name", "Site", "location_pretty");
 lookup("rm_email", "RM email", "rm_email");
+// Addressed by the completion email back to the site. Same reasoning as
+// rm_email: the lookup has already resolved to an address by cascade time, so
+// the payload value IS the email and the workflow can use payload_field
+// without the resolver hunting for a location field this form does not have.
+lookup("site_email", "Site email", "site_email");
 
 push({ key: "manager", type: "short_text", label: "Manager", required: true, maxLength: 120 });
 
@@ -197,13 +202,44 @@ push({
 // Workflow. The document's own instruction: "Completed checklists should be
 // submitted to your Regional Manager for review and follow-up."
 //
-// No outcome emails back to the manager. There is no manager email on the
-// paper form and inventing a field to carry one is a worse trade than the
-// manager reading the result on My Requests, which already lists it.
+// The site gets its own copy first. The original build sent nothing back to
+// the person who filled it in, reasoning that there is no manager email on the
+// paper form and inventing a field to carry one was a bad trade. `site_email`
+// resolves the same way `rm_email` already did, so the copy costs one more
+// lookup and no new field for anybody to fill in.
+//
+// BOTH EMAILS FIRE IN ONE CASCADE AT SUBMIT. Email steps auto-advance, so
+// notify_site -> notify_rm -> rm_review runs start to finish before the
+// submission lands. The PDF is generated once and reused across both steps
+// (Brief 129 reuse keys on the workflow_history timestamp), so attach_pdf on
+// each does not cost two renders.
+//
+// A site with no site_email on pricing_simple resolves to zero recipients and
+// the step enqueues nothing. Silent by design -- it must not block the RM's
+// copy, which is the one the document actually requires.
 // ---------------------------------------------------------------------------
 const workflow: FormWorkflow = {
-  default_stage: "notify_rm",
+  default_stage: "notify_site",
   stages: [
+    {
+      id: "notify_site",
+      label: "Copy to the site",
+      kind: "email",
+      recipients: [{ type: "payload_field", field_key: "site_email" }],
+      subject_template:
+        "Safety Center checklist completed - {field.site_name} (site {field.site_number})",
+      body_template:
+        "{field.manager} completed the Safety Center Compliance Checklist for {field.site_name} (site {field.site_number}) on {field.inspection_date}.\n\n" +
+        "Your full copy is attached. Every answer is below.\n\n" +
+        "{payload.summary}\n\n" +
+        // Emits its own heading and nothing at all when the checklist came back
+        // clean or nothing is mapped, so a fully-stocked site does not get a
+        // shopping list header over empty space.
+        "{parts.needed}\n\n" +
+        "Anything answered No is also on your action items page, where it stays until it is closed out.",
+      attach_pdf: true,
+      transitions: [{ to: "notify_rm", label: "Email the RM" }]
+    },
     {
       id: "notify_rm",
       label: "Email the RM",
