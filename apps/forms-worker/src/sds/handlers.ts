@@ -1672,5 +1672,22 @@ export async function handleSetHazard(
     { keepHazardCall: true }
   );
   if (!updated) return jsonError(502, "hazard_update_failed");
+
+  // Its divider is gone, so its number goes with it. A stale tab would keep
+  // sorting the chemical among the numbered ones on screen and in print, and
+  // point at a divider that now holds something else -- worse than no number.
+  if (notHazardous) {
+    const u = new URL("/rest/v1/sds_items", env.SUPABASE_URL);
+    u.searchParams.set("catalog_id", `eq.${id}`);
+    const r = await fetch(u.toString(), {
+      method: "PATCH",
+      headers: sbHeaders(env, { "Content-Type": "application/json" }),
+      body: JSON.stringify({ binder_tab: null, updated_by: g.email })
+    });
+    if (!r.ok) {
+      console.error("[forms.sds] could not clear tabs after hazard call", id, r.status);
+    }
+  }
+
   return json({ catalog: updated });
 }

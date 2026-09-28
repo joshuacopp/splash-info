@@ -286,9 +286,18 @@ export async function renderBinderPdf(
   //
   // So they go at the END, after the numbered tabs, in their own section. Off
   // the compliance list, still findable by a person holding the book.
+  const byName = (a: SdsItemRow, b: SdsItemRow) =>
+    (a.catalog?.product_identifier ?? "").localeCompare(
+      b.catalog?.product_identifier ?? "",
+      undefined,
+      { sensitivity: "base" }
+    );
   const ordered = [
+    // Numbered chemicals in tab order, as the caller sorted them.
     ...input.items.filter((i) => !i.catalog?.not_hazardous),
-    ...input.items.filter((i) => i.catalog?.not_hazardous)
+    // Then the unnumbered ones, alphabetically -- the only order that makes a
+    // sheet findable behind a single divider.
+    ...input.items.filter((i) => i.catalog?.not_hazardous).sort(byName)
   ];
 
   for (const item of ordered) {

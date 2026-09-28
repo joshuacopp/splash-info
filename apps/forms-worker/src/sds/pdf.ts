@@ -90,7 +90,7 @@ export async function renderSdsPdf(input: SdsPdfInput): Promise<Uint8Array> {
       sanitizeForWinAnsi(
       `${listed.length} hazardous chemicals on site` +
         (excluded.length > 0
-          ? `  |  ${excluded.length} non-hazardous (listed separately, sheets in the binder)`
+          ? `  |  ${excluded.length} non-hazardous (listed below, sheets in the binder)`
           : "") +
         `  |  ${reviewed}`
     ),
@@ -196,37 +196,33 @@ export async function renderSdsPdf(input: SdsPdfInput): Promise<Uint8Array> {
       { x: MARGIN, y: cursor.y, size: 9, font: fonts.bold, color: COLORS.navy }
     );
     cursor.y -= 11;
-    cursor.page.drawText(
-      sanitizeForWinAnsi(
-        "Their safety data sheets are in this binder, behind the tabs below. They are"
-      ),
-      { x: MARGIN, y: cursor.y, size: 8.5, font: fonts.regular, color: COLORS.muted }
-    );
-    cursor.y -= 11;
-    cursor.page.drawText(
-      sanitizeForWinAnsi(
-        "listed separately because the sheet records no hazard classification, so they are"
-      ),
-      { x: MARGIN, y: cursor.y, size: 8.5, font: fonts.regular, color: COLORS.muted }
-    );
-    cursor.y -= 11;
-    cursor.page.drawText(
-      sanitizeForWinAnsi("not required on the hazardous chemical list above."),
-      { x: MARGIN, y: cursor.y, size: 8.5, font: fonts.regular, color: COLORS.muted }
-    );
-    cursor.y -= 16;
+    for (const line of [
+      'Their safety data sheets ARE in this binder, behind the "Non-Hazardous" divider at',
+      "the back, in alphabetical order. They have no tab number.",
+      "They are listed separately because their sheets record no hazard classification, so",
+      "they are not required on the list above. If you have been exposed to one, read its",
+      "sheet the same way you would any other."
+    ]) {
+      cursor.page.drawText(sanitizeForWinAnsi(line), {
+        x: MARGIN,
+        y: cursor.y,
+        size: 8.5,
+        font: fonts.regular,
+        color: COLORS.muted
+      });
+      cursor.y -= 11;
+    }
+    cursor.y -= 6;
     drawTable(
       doc,
       cursor,
       fonts,
       [
-        { header: "Tab", width: 36 },
-        { header: "Product identifier (as shown on the SDS)", width: 226, wrap: true },
-        { header: "Manufacturer", width: 140, wrap: true },
-        { header: "Where used / stored", width: CONTENT_WIDTH - 402, wrap: true }
+        { header: "Product identifier (as shown on the SDS)", width: 250, wrap: true },
+        { header: "Manufacturer", width: 150, wrap: true },
+        { header: "Where used / stored", width: CONTENT_WIDTH - 400, wrap: true }
       ],
       excluded.map((i) => [
-        oneLine(i.binder_tab),
         oneLine(i.catalog?.product_identifier),
         oneLine(i.catalog?.manufacturer),
         oneLine(i.work_area)

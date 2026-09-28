@@ -64,24 +64,29 @@ function numericTab(v: string | null): number | null {
   return Number.isFinite(n) && n > 0 ? n : null;
 }
 
-/**
- * Hazardous first, then the non-hazardous ones, alphabetical within each.
- *
- * Non-hazardous chemicals ARE numbered and ARE in the binder -- an employee
- * looking one up after an exposure must find it, and must not have to read
- * anything into its absence. Keeping them as a contiguous block at the END lets
- * the index print them under their own heading with real tab numbers, while the
- * required list above stays the hazardous ones.
- */
 function byName(a: TabRow, b: TabRow): number {
-  const ah = a.catalog?.not_hazardous ? 1 : 0;
-  const bh = b.catalog?.not_hazardous ? 1 : 0;
-  if (ah !== bh) return ah - bh;
   return (a.catalog?.product_identifier ?? "").localeCompare(
     b.catalog?.product_identifier ?? "",
     undefined,
     { sensitivity: "base" }
   );
+}
+
+/**
+ * Only hazardous chemicals take a numbered divider.
+ *
+ * Non-hazardous ones live behind a single "Non-Hazardous" divider at the back,
+ * filed alphabetically with no number. THAT IS WHAT KEEPS THE TWO SECTIONS
+ * INDEPENDENT: numbering both from one sequence meant a newly added HAZARDOUS
+ * chemical took the next number and landed after the non-hazardous block, and
+ * only a full renumber -- re-filing the whole binder -- could pull it back.
+ *
+ * Numbering them separately was the alternative and costs a second pack of
+ * dividers plus an ambiguous "tab 3". This way adding a non-hazardous chemical
+ * is filing one sheet alphabetically, and nothing is ever renumbered.
+ */
+function takesATab(r: TabRow): boolean {
+  return !r.catalog?.not_hazardous;
 }
 
 /**
@@ -110,7 +115,10 @@ export async function nextTabFor(
     console.warn("[forms.sds] next tab lookup failed", err);
     return null;
   }
-  const used = items.map((i) => numericTab(i.binder_tab)).filter((n): n is number => n !== null);
+  const used = items
+    .filter(takesATab)
+    .map((i) => numericTab(i.binder_tab))
+    .filter((n): n is number => n !== null);
   if (used.length === 0) return null;
   return String(Math.max(...used) + 1);
 }
@@ -143,7 +151,10 @@ export async function assignTabs(
   mode: "fill" | "renumber",
   email: string
 ): Promise<AssignResult> {
-  const items = await readActiveItems(env, locationCode);
+  const all = await readActiveItems(env, locationCode);
+  // Non-hazardous chemicals are filed behind one divider, not numbered, so they
+  // are not part of any numbering pass -- in either direction.
+  const items = all.filter(takesATab);
   const sorted = [...items].sort(byName);
 
   const updates: { id: string; tab: string }[] = [];
