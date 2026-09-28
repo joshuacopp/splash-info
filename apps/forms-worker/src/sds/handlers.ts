@@ -1603,3 +1603,74 @@ export async function handleServeCatalogSheetById(
   if (!entry) return jsonError(404, "catalog_entry_not_found");
   return handleServeCatalogSheet(env, entry);
 }
+
+// =============================================================================
+// POST /forms/api/sds/catalog/{id}/hazard   {not_hazardous, note?}
+// =============================================================================
+
+/**
+ * Record that a chemical does not belong on the HazCom list.
+ *
+ * OSHA 1910.1200(e)(1)(i) asks for the HAZARDOUS chemicals known to be present.
+ * A sheet whose section 2 classifies the product as not hazardous, with no
+ * pictogram and no hazard statements, is not required on it -- and listing it
+ * anyway makes the list longer without making it truer.
+ *
+ * Admin-tier, the same gate as verification, because it is the same KIND of
+ * claim: somebody read the sheet and is answerable for what they concluded. A
+ * site keeping its own list must not be able to shorten it by deciding a
+ * chemical is safe.
+ *
+ * The sheet is NOT deleted and the entry is NOT removed. The determination hangs
+ * off the chemical so the next person to ask "why isn't this in the book?" finds
+ * the answer and the reasoning rather than re-adding it.
+ */
+export async function handleSetHazard(
+  env: Env,
+  req: Request,
+  id: string
+): Promise<Response> {
+  if (!isOriginAllowed(req)) return jsonError(403, "bad_origin");
+  const keyed = requireServiceKey(env);
+  if (keyed) return keyed;
+  const g = await adminGate(env, req);
+  if (!g.ok) return g.response;
+  if (!UUID_RE.test(id)) return jsonError(400, "bad_catalog_id");
+
+  const body = (await req.json().catch(() => null)) as Record<string, unknown> | null;
+  if (typeof body?.not_hazardous !== "boolean") return jsonError(400, "not_hazardous_required");
+  const notHazardous = body.not_hazardous;
+  const note = optionalText(body.note, NOTES_MAX) ?? null;
+
+  const entry = await readCatalogEntry(env, id);
+  if (!entry) return jsonError(404, "catalog_entry_not_found");
+  if (notHazardous && !entry.sds_r2_key) {
+    // The call is a reading of a sheet. Without one there is nothing to have
+    // read, and an unevidenced exclusion is the worst row in the catalogue.
+    return jsonError(409, "no_sheet_to_assess");
+  }
+
+  const updated = await patchCatalogEntry(
+    env,
+    id,
+    notHazardous
+      ? {
+          not_hazardous: true,
+          not_hazardous_at: new Date().toISOString(),
+          not_hazardous_by: g.email,
+          not_hazardous_note: note,
+          updated_by: g.email
+        }
+      : {
+          not_hazardous: false,
+          not_hazardous_at: null,
+          not_hazardous_by: null,
+          not_hazardous_note: null,
+          updated_by: g.email
+        },
+    // This IS the hazard call; do not let the helper clear what it is setting.
+    { keepHazardCall: true }
+  );
+  if (!updated) return jsonError(502, "hazard_update_failed");
+  return json({ catalog: updated });
+}

@@ -276,7 +276,22 @@ export async function renderBinderPdf(
   const failed: string[] = [];
   let budget = BINDER_MAX_BYTES;
 
-  for (const item of input.items) {
+  // THE SHEET IS ALWAYS IN THE BINDER, including for chemicals kept off the
+  // list. The list and the binder are different things: OSHA wants the LIST to
+  // be the hazardous chemicals, and nothing stops the binder holding every
+  // sheet. Somebody who has just splashed a product in their eyes should not
+  // have to infer that it is safe because they cannot find it -- that is an
+  // inference nobody can make under pressure, and it is exactly backwards from
+  // what an emergency reference is for.
+  //
+  // So they go at the END, after the numbered tabs, in their own section. Off
+  // the compliance list, still findable by a person holding the book.
+  const ordered = [
+    ...input.items.filter((i) => !i.catalog?.not_hazardous),
+    ...input.items.filter((i) => i.catalog?.not_hazardous)
+  ];
+
+  for (const item of ordered) {
     const key = item.catalog?.sds_r2_key;
     const label = item.catalog?.product_identifier ?? "(unnamed)";
     if (!key) {

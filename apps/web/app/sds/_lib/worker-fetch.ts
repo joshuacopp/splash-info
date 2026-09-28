@@ -348,3 +348,18 @@ export async function mergeSdsCatalogEntry(
     })
   );
 }
+
+/** Record that a chemical is not hazardous and belongs off the list, or undo
+ *  that. Admin-tier; the worker is the gate. */
+export async function setCatalogHazard(
+  catalogId: string,
+  notHazardous: boolean,
+  note: string | null
+): Promise<Result<unknown>> {
+  return unwrap(
+    await callForms(`/forms/api/sds/catalog/${encodeURIComponent(catalogId)}/hazard`, {
+      method: "POST",
+      jsonBody: { not_hazardous: notHazardous, note }
+    })
+  );
+}

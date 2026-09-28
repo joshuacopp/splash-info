@@ -26,6 +26,13 @@ export interface SdsCatalog {
    *  edit to identity or sheet -- a stale assurance is worse than none. */
   verified_at: string | null;
   verified_by: string | null;
+  /** SDS on file, but the sheet classifies it as not hazardous -- so it is kept
+   *  off the printed HazCom list and out of the binder. Optional because
+   *  apps/web and the worker deploy separately. */
+  not_hazardous?: boolean;
+  not_hazardous_at?: string | null;
+  not_hazardous_by?: string | null;
+  not_hazardous_note?: string | null;
 }
 
 /** A chemical PRESENT AT A SITE. Only the placement lives here. */

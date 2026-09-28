@@ -22,6 +22,7 @@ import {
   deleteCatalogEntryAction,
   linkAliasAction,
   mergeCatalogAction,
+  setHazardAction,
   patchCatalogEntryAction,
   unlinkAliasAction,
   verifyCatalogAction
@@ -465,6 +466,87 @@ function RowLinks({
   );
 }
 
+/**
+ * Whether this chemical belongs on the printed HazCom list.
+ *
+ * Plenty of safety data sheets classify a product as NOT hazardous -- no
+ * pictogram, no hazard statements, section 2 says so. OSHA asks for a list of
+ * the hazardous chemicals present, so those do not belong on it, and including
+ * them makes the list longer without making it truer.
+ *
+ * The sheet is kept either way. This records a reading of it, with a name
+ * against the conclusion, rather than deleting the evidence.
+ */
+function HazardCell({ row }: { row: SdsCatalogSearchRow }) {
+  const router = useRouter();
+  const [pending, startTransition] = useTransition();
+  const [error, setError] = useState<string | null>(null);
+  const excluded = row.not_hazardous === true;
+
+  function set(next: boolean) {
+    if (next) {
+      const note = window.prompt(
+        `Mark "${row.product_identifier}" as NOT hazardous?
+
+` +
+          `It will be left off every site's printed list and out of the binder. ` +
+          `The sheet stays on file.
+
+` +
+          `What does the sheet say? (e.g. "Section 2: not classified, no pictogram")`,
+        ""
+      );
+      // Cancel returns null; an empty string is somebody choosing not to
+      // explain, which is allowed but not encouraged.
+      if (note === null) return;
+      setError(null);
+      startTransition(async () => {
+        const res = await setHazardAction(row.id, true, note.trim() || null);
+        if (!res.ok) setError(res.error);
+        router.refresh();
+      });
+      return;
+    }
+    setError(null);
+    startTransition(async () => {
+      const res = await setHazardAction(row.id, false, null);
+      if (!res.ok) setError(res.error);
+      router.refresh();
+    });
+  }
+
+  return (
+    <div>
+      {excluded ? (
+        <span
+          className="rounded-full bg-gray-light px-2 py-0.5 text-[0.6875rem] font-semibold text-splash-navy/70"
+          title={
+            (row.not_hazardous_note || "No reason recorded") +
+            (row.not_hazardous_by ? ` - ${row.not_hazardous_by}` : "")
+          }
+        >
+          Not hazardous
+        </span>
+      ) : (
+        <span className="text-[0.6875rem] text-splash-navy/50">On the list</span>
+      )}
+      <button
+        type="button"
+        disabled={pending}
+        onClick={() => set(!excluded)}
+        className="mt-0.5 block text-[0.6875rem] text-splash-blue underline disabled:opacity-50"
+      >
+        {excluded ? "Put back on list" : "Not hazardous…"}
+      </button>
+      {error ? (
+        <p role="alert" className="mt-0.5 text-[0.6875rem] text-racecar-red">
+          {error}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
 function Row({ row }: { row: SdsCatalogSearchRow }) {
   const router = useRouter();
   const [editing, setEditing] = useState(false);
@@ -515,7 +597,7 @@ function Row({ row }: { row: SdsCatalogSearchRow }) {
   if (editing) {
     return (
       <tr className="border-t border-gray-light bg-splash-navy/[0.02]">
-        <td colSpan={5} className="p-3">
+        <td colSpan={6} className="p-3">
           <form action={save} className="flex flex-wrap items-end gap-2">
             <label className="min-w-[16rem] flex-1 text-xs text-splash-navy/70">
               Product identifier (as shown on the SDS)
@@ -646,6 +728,9 @@ function Row({ row }: { row: SdsCatalogSearchRow }) {
         ) : (
           <span className="text-splash-navy/40">Not verified</span>
         )}
+      </td>
+      <td className="px-3 py-2 text-xs">
+        <HazardCell row={row} />
       </td>
       <td className="px-3 py-2 text-xs tabular-nums text-splash-navy/70">
         {row.site_count}
@@ -820,7 +905,7 @@ export default function CatalogAdmin({
         <table className="w-full min-w-[52rem] border-collapse">
           <thead>
             <tr className="bg-splash-navy/[0.04] text-left">
-              {["Chemical", "Sheet", "Verified", "Sites", ""].map((h, i) => (
+              {["Chemical", "Sheet", "Verified", "On list", "Sites", ""].map((h, i) => (
                 <th
                   key={h || i}
                   className="px-3 py-2 text-xs font-bold uppercase tracking-wider text-splash-navy/60"

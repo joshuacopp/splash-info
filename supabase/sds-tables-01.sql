@@ -304,3 +304,22 @@ from inventory.products p;
 --  where c.source_product_id is not null
 --  on conflict (source_product_id) do nothing;
 -- ---------------------------------------------------------------------------
+
+-- ---------------------------------------------------------------------------
+-- APPLIED 2026-09-28. sds_catalog.not_hazardous + who/when/why.
+--
+-- Many safety data sheets classify a product as NOT hazardous: no pictogram, no
+-- hazard statements, section 2 says so. OSHA 1910.1200(e)(1)(i) asks for a list
+-- of the HAZARDOUS chemicals present, so those are not required on it.
+--
+-- They are NOT hidden. They get tab numbers, their sheets go in the binder, and
+-- the index prints them under a "Non-hazardous chemicals" heading after the
+-- required list. An employee who has just splashed something in their eyes must
+-- be able to find its sheet, and must never have to conclude a product is
+-- harmless because it is missing from the book -- an absence is not an answer.
+--
+-- On the CATALOGUE, because hazard is a property of the product and its sheet,
+-- identical at every site. Cleared automatically when the sheet is replaced: the
+-- call was a reading of one revision, and the failure mode of keeping it is a
+-- newly-hazardous product silently staying off the list.
+-- ---------------------------------------------------------------------------

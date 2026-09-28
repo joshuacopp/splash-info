@@ -37,12 +37,15 @@ function sbHeaders(env: Env, extra?: Record<string, string>) {
 interface TabRow {
   id: string;
   binder_tab: string | null;
-  catalog: { product_identifier: string } | null;
+  catalog: { product_identifier: string; not_hazardous?: boolean } | null;
 }
 
 async function readActiveItems(env: Env, locationCode: string): Promise<TabRow[]> {
   const url = new URL("/rest/v1/sds_items", env.SUPABASE_URL);
-  url.searchParams.set("select", "id,binder_tab,catalog:sds_catalog(product_identifier)");
+  url.searchParams.set(
+    "select",
+    "id,binder_tab,catalog:sds_catalog(product_identifier,not_hazardous)"
+  );
   url.searchParams.set("location_code", `eq.${locationCode}`);
   url.searchParams.set("is_active", "eq.true");
   url.searchParams.set("limit", "2000");
@@ -61,7 +64,19 @@ function numericTab(v: string | null): number | null {
   return Number.isFinite(n) && n > 0 ? n : null;
 }
 
+/**
+ * Hazardous first, then the non-hazardous ones, alphabetical within each.
+ *
+ * Non-hazardous chemicals ARE numbered and ARE in the binder -- an employee
+ * looking one up after an exposure must find it, and must not have to read
+ * anything into its absence. Keeping them as a contiguous block at the END lets
+ * the index print them under their own heading with real tab numbers, while the
+ * required list above stays the hazardous ones.
+ */
 function byName(a: TabRow, b: TabRow): number {
+  const ah = a.catalog?.not_hazardous ? 1 : 0;
+  const bh = b.catalog?.not_hazardous ? 1 : 0;
+  if (ah !== bh) return ah - bh;
   return (a.catalog?.product_identifier ?? "").localeCompare(
     b.catalog?.product_identifier ?? "",
     undefined,

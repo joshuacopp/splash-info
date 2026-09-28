@@ -9,6 +9,7 @@ import {
   createCatalogFromInventory,
   deleteSdsCatalogEntry,
   mergeSdsCatalogEntry,
+  setCatalogHazard,
   linkCatalogAlias,
   unlinkCatalogAlias,
   createSdsCatalogEntry,
@@ -22,6 +23,9 @@ export type SdsActionResult = { ok: true } | { ok: false; error: string };
 function humanise(error: string): string {
   if (error.includes("admin_only") || error.includes("verified_entry_is_admin_only")) {
     return "Only a super admin or DC admin can change the shared catalogue.";
+  }
+  if (error.includes("no_sheet_to_assess")) {
+    return "Attach the safety data sheet first — the call is a reading of that sheet.";
   }
   if (error.includes("source_verified")) {
     return "Withdraw the verified mark on this entry before merging it away.";
@@ -152,4 +156,21 @@ export async function mergeCatalogAction(
   if (!res.ok) return { ok: false, error: humanise(res.error) };
   revalidateBoth();
   return { ok: true, summary: res.data };
+}
+
+/**
+ * Mark a chemical as not belonging on the HazCom list, or put it back.
+ *
+ * Same admin gate as verification, because it is the same kind of claim: a
+ * person read the sheet and is answerable for the conclusion.
+ */
+export async function setHazardAction(
+  catalogId: string,
+  notHazardous: boolean,
+  note: string | null
+): Promise<SdsActionResult> {
+  const res = await setCatalogHazard(catalogId, notHazardous, note);
+  if (!res.ok) return { ok: false, error: humanise(res.error) };
+  revalidateBoth();
+  return { ok: true };
 }

@@ -130,6 +130,7 @@ import {
   handleUnlinkAlias,
   handleNumberTabs,
   handleDeleteCatalog,
+  handleSetHazard,
   handleMergeCatalog
 } from "./sds/handlers.js";
 import { handleEmailQueueClaim } from "./email-queue/claim.js";
@@ -550,6 +551,12 @@ export default {
       return handleCreateCatalog(env, req);
     }
     // Fixed sub-paths before the bare {id} route, per the convention below.
+    const sdsHazardMatch = url.pathname.match(
+      /^\/forms\/api\/sds\/catalog\/([^/]+)\/hazard$/
+    );
+    if (sdsHazardMatch && sdsHazardMatch[1] && req.method === "POST") {
+      return handleSetHazard(env, req, sdsHazardMatch[1]);
+    }
     const sdsAliasMatch = url.pathname.match(
       /^\/forms\/api\/sds\/catalog\/([^/]+)\/aliases$/
     );

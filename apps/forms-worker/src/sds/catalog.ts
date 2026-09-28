@@ -29,6 +29,12 @@ export interface SdsCatalogRow {
   source_product_id: string | null;
   verified_at: string | null;
   verified_by: string | null;
+  /** SDS on file, but not classified as hazardous -- kept out of the printed
+   *  HazCom list and the binder. See the column comment in Supabase. */
+  not_hazardous: boolean;
+  not_hazardous_at: string | null;
+  not_hazardous_by: string | null;
+  not_hazardous_note: string | null;
 }
 
 function sbHeaders(env: Env, extra?: Record<string, string>) {
@@ -181,6 +187,10 @@ export async function findOrCreateCatalogEntry(
 
 /** Fields whose change invalidates a verification, because a verification is a
  *  claim about a SPECIFIC identity and a SPECIFIC sheet. */
+/** Changing any of these means the attached file is not the one a hazard call
+ *  was made against. */
+const SHEET_FIELDS = ["sds_r2_key", "sds_filename", "sds_revision_date"] as const;
+
 const VERIFIED_FIELDS = [
   "product_identifier",
   "manufacturer",
@@ -205,10 +215,23 @@ export async function patchCatalogEntry(
   env: Env,
   id: string,
   body: Record<string, unknown>,
-  opts: { keepVerification?: boolean } = {}
+  opts: { keepVerification?: boolean; keepHazardCall?: boolean } = {}
 ): Promise<SdsCatalogRow | null> {
   if (!opts.keepVerification && VERIFIED_FIELDS.some((f) => f in body)) {
     body = { ...body, verified_at: null, verified_by: null };
+  }
+  // A "not hazardous" call is a reading of ONE revision of ONE sheet. Swap the
+  // file and nobody has read the new one -- and the failure mode is a chemical
+  // that IS hazardous silently staying off the list. Renaming the product does
+  // not touch it, because the classification did not change.
+  if (!opts.keepHazardCall && SHEET_FIELDS.some((f) => f in body)) {
+    body = {
+      ...body,
+      not_hazardous: false,
+      not_hazardous_at: null,
+      not_hazardous_by: null,
+      not_hazardous_note: null
+    };
   }
   const url = new URL("/rest/v1/sds_catalog", env.SUPABASE_URL);
   url.searchParams.set("id", `eq.${id}`);

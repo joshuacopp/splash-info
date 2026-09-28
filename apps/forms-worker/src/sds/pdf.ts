@@ -69,6 +69,13 @@ export async function renderSdsPdf(input: SdsPdfInput): Promise<Uint8Array> {
     submittedAt: new Date().toISOString()
   });
 
+  // THE LIST IS THE HAZARDOUS ONES. 1910.1200(e)(1)(i) asks for the hazardous
+  // chemicals known to be present; a product whose sheet classifies it as not
+  // hazardous is not required, and padding the list with it does not make the
+  // list truer.
+  const listed = input.items.filter((i) => !i.catalog?.not_hazardous);
+  const excluded = input.items.filter((i) => i.catalog?.not_hazardous);
+
   // Site and review line. The review date is on the printed page on purpose:
   // a binder index with no date cannot be told from one three years stale, and
   // "is the binder current" is exactly what an inspection asks.
@@ -80,7 +87,13 @@ export async function renderSdsPdf(input: SdsPdfInput): Promise<Uint8Array> {
     : "Not yet marked reviewed";
   cursor.page.drawText(
     truncateToWidth(
-      sanitizeForWinAnsi(`${input.items.length} chemicals on site  |  ${reviewed}`),
+      sanitizeForWinAnsi(
+      `${listed.length} hazardous chemicals on site` +
+        (excluded.length > 0
+          ? `  |  ${excluded.length} non-hazardous (listed separately, sheets in the binder)`
+          : "") +
+        `  |  ${reviewed}`
+    ),
       fonts.regular,
       9,
       CONTENT_WIDTH
@@ -122,7 +135,7 @@ export async function renderSdsPdf(input: SdsPdfInput): Promise<Uint8Array> {
     cursor.y -= 16;
   }
 
-  if (input.items.length === 0) {
+  if (listed.length === 0) {
     cursor.page.drawText("No chemicals recorded for this site yet.", {
       x: MARGIN,
       y: cursor.y,
@@ -157,7 +170,7 @@ export async function renderSdsPdf(input: SdsPdfInput): Promise<Uint8Array> {
         { header: "Manufacturer", width: 140, wrap: true },
         { header: "Where used / stored", width: CONTENT_WIDTH - 402, wrap: true }
       ],
-      input.items.map((i) => [
+      listed.map((i) => [
         oneLine(i.binder_tab),
         oneLine(i.catalog?.product_identifier),
         oneLine(i.catalog?.manufacturer),
@@ -165,6 +178,62 @@ export async function renderSdsPdf(input: SdsPdfInput): Promise<Uint8Array> {
       ]),
       { fontSize: 9, rowHeight: 17 }
     );
+  }
+
+  // The excluded ones are PRINTED, not merely absent -- and their sheets are in
+  // the binder, after the numbered tabs.
+  //
+  // Two reasons, and the second one outranks the first. A chemical on the shelf
+  // and missing from the index reads as an oversight, so the next person adds it
+  // back. And an employee who has just splashed something in their eyes must not
+  // have to conclude it is harmless because it is not in the book -- an absence
+  // is not an answer, least of all then.
+  if (excluded.length > 0) {
+    cursor.y -= 14;
+    addPageIfNeeded(doc, cursor, 60);
+    cursor.page.drawText(
+      sanitizeForWinAnsi("Non-hazardous chemicals"),
+      { x: MARGIN, y: cursor.y, size: 9, font: fonts.bold, color: COLORS.navy }
+    );
+    cursor.y -= 11;
+    cursor.page.drawText(
+      sanitizeForWinAnsi(
+        "Their safety data sheets are in this binder, behind the tabs below. They are"
+      ),
+      { x: MARGIN, y: cursor.y, size: 8.5, font: fonts.regular, color: COLORS.muted }
+    );
+    cursor.y -= 11;
+    cursor.page.drawText(
+      sanitizeForWinAnsi(
+        "listed separately because the sheet records no hazard classification, so they are"
+      ),
+      { x: MARGIN, y: cursor.y, size: 8.5, font: fonts.regular, color: COLORS.muted }
+    );
+    cursor.y -= 11;
+    cursor.page.drawText(
+      sanitizeForWinAnsi("not required on the hazardous chemical list above."),
+      { x: MARGIN, y: cursor.y, size: 8.5, font: fonts.regular, color: COLORS.muted }
+    );
+    cursor.y -= 16;
+    drawTable(
+      doc,
+      cursor,
+      fonts,
+      [
+        { header: "Tab", width: 36 },
+        { header: "Product identifier (as shown on the SDS)", width: 226, wrap: true },
+        { header: "Manufacturer", width: 140, wrap: true },
+        { header: "Where used / stored", width: CONTENT_WIDTH - 402, wrap: true }
+      ],
+      excluded.map((i) => [
+        oneLine(i.binder_tab),
+        oneLine(i.catalog?.product_identifier),
+        oneLine(i.catalog?.manufacturer),
+        oneLine(i.work_area)
+      ]),
+      { fontSize: 9, rowHeight: 17 }
+    );
+    cursor.y -= 4;
   }
 
   // Says what the document is and, as importantly, what it is not. Somebody
