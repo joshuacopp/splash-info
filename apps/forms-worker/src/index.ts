@@ -122,6 +122,7 @@ import {
   handleCreateCatalog,
   handlePatchCatalog,
   handleCatalogSheetUpload,
+  handleServeCatalogSheetById,
   handleInventoryProducts,
   handleCatalogFromInventory,
   handleLinkAlias,
@@ -566,6 +567,9 @@ export default {
     );
     if (sdsCatSheetMatch && sdsCatSheetMatch[1] && req.method === "POST") {
       return handleCatalogSheetUpload(env, req, sdsCatSheetMatch[1]);
+    }
+    if (sdsCatSheetMatch && sdsCatSheetMatch[1] && req.method === "GET") {
+      return handleServeCatalogSheetById(env, req, sdsCatSheetMatch[1]);
     }
     const sdsCatMatch = url.pathname.match(/^\/forms\/api\/sds\/catalog\/([^/]+)$/);
     if (sdsCatMatch && sdsCatMatch[1] && req.method === "PATCH") {

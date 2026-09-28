@@ -613,7 +613,19 @@ function Row({ row }: { row: SdsCatalogSearchRow }) {
       </td>
       <td className="px-3 py-2 text-xs">
         {row.sds_r2_key ? (
-          <span className="font-semibold text-splash-navy/80">On file</span>
+          /* A LINK, not a label. Until now the only way to read a sheet was
+             through a site that listed the chemical, so an entry no site had
+             picked up yet could not be opened at all -- and those are exactly
+             the ones somebody curating needs to look at before verifying that
+             the file is the chemical it claims to be. */
+          <a
+            href={`/forms/api/sds/catalog/${encodeURIComponent(row.id)}/sheet`}
+            target="_blank"
+            rel="noreferrer"
+            className="font-semibold text-splash-blue underline"
+          >
+            View sheet
+          </a>
         ) : (
           <span className="text-amber-700">Missing</span>
         )}

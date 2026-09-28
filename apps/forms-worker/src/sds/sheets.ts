@@ -160,6 +160,46 @@ export async function handleServeSheet(
   });
 }
 
+/**
+ * Serve a sheet by CATALOGUE id rather than by a site's listing.
+ *
+ * The per-item route needs an sds_items row, so a catalogue entry no site has
+ * picked up yet -- 55 of them at the time of writing -- had no way to be opened
+ * at all. Which is the wrong way round: those are precisely the entries somebody
+ * curating the catalogue needs to look at, to check the file is the chemical it
+ * claims to be before verifying it.
+ *
+ * Caller supplies the entry; the gate lives with the route, not here.
+ */
+export async function handleServeCatalogSheet(
+  env: Env,
+  entry: { product_identifier: string; sds_r2_key: string | null }
+): Promise<Response> {
+  const key = entry.sds_r2_key;
+  if (!key) return jsonError(404, "no_sheet");
+
+  const obj = await env.FORMS_FILES.get(key);
+  if (!obj) {
+    // The row claims a sheet and R2 disagrees. Worth a log: this is drift, and
+    // to the caller it looks identical to nobody ever having uploaded one.
+    console.error(`[forms.sds] catalog row points at missing object ${key}`);
+    return jsonError(404, "no_sheet");
+  }
+
+  const safe = (entry.product_identifier || "sds").replace(/[^A-Za-z0-9._-]+/g, "-");
+  return new Response(obj.body, {
+    status: 200,
+    headers: {
+      "Content-Type": "application/pdf",
+      // Inline so it opens in the browser's viewer -- the point is to LOOK at
+      // it, and a download step between "open" and "read" is friction on the
+      // only thing this route is for.
+      "Content-Disposition": `inline; filename="${safe}.pdf"`,
+      "Cache-Control": "private, max-age=300"
+    }
+  });
+}
+
 export interface BinderInput {
   siteName: string;
   locationCode: string;

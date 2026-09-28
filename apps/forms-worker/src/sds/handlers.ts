@@ -39,6 +39,7 @@ import {
   handleUploadSheet,
   handleServeSheet,
   handleCatalogUpload,
+  handleServeCatalogSheet,
   renderBinderPdf
 } from "./sheets.js";
 import { linkAlias, loadAliasMap, unlinkAlias } from "./aliases.js";
@@ -1546,4 +1547,32 @@ export async function handleMergeCatalog(
     into: res.survivor.product_identifier,
     ...res.result
   });
+}
+
+// =============================================================================
+// GET /forms/api/sds/catalog/{id}/sheet
+// =============================================================================
+
+/**
+ * Open the sheet attached to a catalogue entry.
+ *
+ * Any authenticated site user, NOT admin-tier. A safety data sheet is the one
+ * thing in this system everybody is entitled to read -- that is the whole point
+ * of the OSHA requirement -- and gating it behind curation rights would be
+ * exactly backwards. Write access to the catalogue stays admin-only.
+ */
+export async function handleServeCatalogSheetById(
+  env: Env,
+  req: Request,
+  id: string
+): Promise<Response> {
+  const keyed = requireServiceKey(env);
+  if (keyed) return keyed;
+  const g = await gate(env, req);
+  if (!g.ok) return g.response;
+  if (!UUID_RE.test(id)) return jsonError(400, "bad_catalog_id");
+
+  const entry = await readCatalogEntry(env, id);
+  if (!entry) return jsonError(404, "catalog_entry_not_found");
+  return handleServeCatalogSheet(env, entry);
 }
