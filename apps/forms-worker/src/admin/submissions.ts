@@ -131,7 +131,10 @@ function resolveDateRange(url: URL): DateRange {
  * of a form they are supposed to see whole -- a silent under-fetch, which is
  * the failure mode this codebase keeps getting bitten by.
  */
-function formScopeFor(
+/** Exported for tests (the Brief 161 precedent). This is the rule that decides
+ *  who may read a ticket; it has been wrong twice in production and had no
+ *  coverage either time. */
+export function formScopeFor(
   scope: SubmissionScope,
   formId: string
 ): { allow: true; locationScope: string[] | undefined } | { allow: false } {
