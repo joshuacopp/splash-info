@@ -489,11 +489,24 @@ function HazardCell({ row }: { row: SdsCatalogSearchRow }) {
         `Mark "${row.product_identifier}" as NOT hazardous?
 
 ` +
-          `It will be left off every site's printed list and out of the binder. ` +
-          `The sheet stays on file.
+          `CHECK SECTION 2 OF THE SHEET, ALL OF IT.
 
 ` +
-          `What does the sheet say? (e.g. "Section 2: not classified, no pictogram")`,
+          `An empty "Classification" line is NOT enough. If there is anything ` +
+          `under "Hazards Not Otherwise Classified (HNOC)" -- even "causes mild ` +
+          `skin irritation" -- the product IS a hazardous chemical under ` +
+          `1910.1200(c) and belongs on the list.
+
+` +
+          `A missing pictogram proves nothing either: HNOC hazards are never ` +
+          `shown on labels, only on the sheet.
+
+` +
+          `This qualifies only when Section 2 records no hazard at all, HNOC ` +
+          `included.
+
+` +
+          `What does the sheet say?`,
         ""
       );
       // Cancel returns null; an empty string is somebody choosing not to

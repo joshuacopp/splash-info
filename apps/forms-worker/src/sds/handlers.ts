@@ -1611,10 +1611,22 @@ export async function handleServeCatalogSheetById(
 /**
  * Record that a chemical does not belong on the HazCom list.
  *
- * OSHA 1910.1200(e)(1)(i) asks for the HAZARDOUS chemicals known to be present.
- * A sheet whose section 2 classifies the product as not hazardous, with no
- * pictogram and no hazard statements, is not required on it -- and listing it
- * anyway makes the list longer without making it truer.
+ * OSHA 1910.1200(e)(1)(i) asks for the HAZARDOUS chemicals known to be present,
+ * so a product with no hazard at all is not required on it and listing it makes
+ * the list longer without making it truer.
+ *
+ * THE BAR IS HIGHER THAN AN EMPTY "CLASSIFICATION" LINE, and this is the trap.
+ * 1910.1200(c) defines a hazardous chemical as one classified as a physical or
+ * health hazard, a simple asphyxiant, combustible dust, pyrophoric gas, OR A
+ * HAZARD NOT OTHERWISE CLASSIFIED. So a sheet with a blank Classification and
+ * "causes mild skin irritation" under HNOC describes a hazardous chemical, and
+ * it belongs on the list.
+ *
+ * Nor does a missing pictogram mean anything: HNOC hazards are disclosed on the
+ * SDS and deliberately excluded from label elements, so the most common
+ * shortcut -- "no pictogram, must be fine" -- fails on exactly the sheets where
+ * being wrong matters. Nothing here can check that; only the person reading
+ * section 2 can, which is why the note exists and why this is admin-tier.
  *
  * Admin-tier, the same gate as verification, because it is the same KIND of
  * claim: somebody read the sheet and is answerable for what they concluded. A
