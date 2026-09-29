@@ -176,7 +176,7 @@ export default function SheetCell({
 
       {item.catalog?.sds_revision_date ? (
         <div className="mt-0.5 text-[0.6875rem] text-splash-navy/50">
-          Revised {item.catalog?.sds_revision_date}
+          Sheet revised {item.catalog?.sds_revision_date}
         </div>
       ) : null}
 

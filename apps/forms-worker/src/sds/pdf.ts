@@ -51,6 +51,20 @@ export interface SdsPdfInput {
   binderMode?: "duplex" | "simplex";
 }
 
+/**
+ * The line printed under a chemical's name.
+ *
+ * This is the date on the MANUFACTURER'S SHEET, not when the record was edited.
+ * Nothing is printed when it is unrecorded: 45 of 103 entries have no date yet,
+ * and a "no revision date" line on each would add a line to half the rows to say
+ * nothing. The gap is visible and actionable in the app, which is where somebody
+ * can do something about it.
+ */
+function revisionLine(d: string | null | undefined): string | null {
+  const v = (d ?? "").trim();
+  return v ? `Sheet revised ${v}` : null;
+}
+
 /** A cell is one line; a stray newline in a manufacturer or work area would
  *  throw on draw, because WinAnsi cannot encode one. */
 function oneLine(s: string | null | undefined): string {
@@ -172,7 +186,13 @@ export async function renderSdsPdf(input: SdsPdfInput): Promise<Uint8Array> {
       ],
       listed.map((i) => [
         oneLine(i.binder_tab),
-        oneLine(i.catalog?.product_identifier),
+        // The sheet's own revision date rides UNDER the name rather than taking
+        // a column. "Is this sheet current?" is what an inspection asks of a
+        // binder, and until now the answer existed only in the app.
+        {
+          text: oneLine(i.catalog?.product_identifier),
+          sub: revisionLine(i.catalog?.sds_revision_date)
+        },
         oneLine(i.catalog?.manufacturer),
         oneLine(i.work_area)
       ]),
@@ -223,7 +243,10 @@ export async function renderSdsPdf(input: SdsPdfInput): Promise<Uint8Array> {
         { header: "Where used / stored", width: CONTENT_WIDTH - 400, wrap: true }
       ],
       excluded.map((i) => [
-        oneLine(i.catalog?.product_identifier),
+        {
+          text: oneLine(i.catalog?.product_identifier),
+          sub: revisionLine(i.catalog?.sds_revision_date)
+        },
         oneLine(i.catalog?.manufacturer),
         oneLine(i.work_area)
       ]),

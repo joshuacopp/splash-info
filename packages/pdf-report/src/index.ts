@@ -522,8 +522,20 @@ export interface TableColumn {
   wrap?: boolean;
 }
 
+/**
+ * A cell is a string, or a string with a smaller second line beneath it.
+ *
+ * The sub-line exists so a fact ABOUT the cell's value can sit with it instead
+ * of claiming a column. On the SDS index the sheet's revision date belongs under
+ * the chemical's name -- a fifth column would have squeezed the identifiers back
+ * into truncation, which is the one thing that column cannot afford.
+ */
+export type TableCell = string | { text: string; sub?: string | null };
+
 export interface TableOptions {
   fontSize?: number;
+  /** Size of a cell's sub-line. Defaults to 1.5pt under the body size. */
+  subFontSize?: number;
   headerFontSize?: number;
   rowHeight?: number;
   /** Tint every other body row. Helps the eye track across wide tables. */
@@ -543,7 +555,7 @@ export function drawTable(
   cursor: Cursor,
   fonts: Fonts,
   columns: TableColumn[],
-  rows: string[][],
+  rows: TableCell[][],
   options: TableOptions = {}
 ): void {
   const size = options.fontSize ?? 9;
@@ -596,6 +608,8 @@ export function drawTable(
   drawHeader();
 
   const lineGap = size + 2;
+  const subSize = options.subFontSize ?? Math.max(6.5, size - 1.5);
+  const subGap = subSize + 2;
 
   for (let i = 0; i < rows.length; i++) {
     const row = rows[i]!;
@@ -604,17 +618,27 @@ export function drawTable(
     // decides how tall this row is and therefore whether it fits on the page at
     // all. Measuring after drawing the first cell would strand half a row.
     const cells = columns.map((col, c) => {
-      const raw = sanitizeForWinAnsi(row[c] ?? "");
-      if (!col.wrap) {
-        return [truncateToWidth(raw, fonts.regular, size, col.width - 12)];
-      }
-      const lines = wrapText(raw, fonts.regular, size, col.width - 12);
-      return lines.length > 0 ? lines : [""];
+      const cell = row[c] ?? "";
+      const value = typeof cell === "string" ? cell : cell.text;
+      const sub = typeof cell === "string" ? null : (cell.sub ?? null);
+      const raw = sanitizeForWinAnsi(value);
+      const lines = col.wrap
+        ? wrapText(raw, fonts.regular, size, col.width - 12)
+        : [truncateToWidth(raw, fonts.regular, size, col.width - 12)];
+      return {
+        lines: lines.length > 0 ? lines : [""],
+        // One line, truncated. A sub-line that wraps would push the row around
+        // for something that is an annotation, not content.
+        sub: sub
+          ? truncateToWidth(sanitizeForWinAnsi(sub), fonts.regular, subSize, col.width - 12)
+          : null
+      };
     });
-    const lineCount = Math.max(1, ...cells.map((l) => l.length));
+    const lineCount = Math.max(1, ...cells.map((c) => c.lines.length));
+    const anySub = cells.some((c) => c.sub !== null);
     // One line keeps the caller's exact row height, so an unwrapped table is
     // pixel-identical to before; extra lines add their own leading.
-    const thisRowHeight = rowHeight + (lineCount - 1) * lineGap;
+    const thisRowHeight = rowHeight + (lineCount - 1) * lineGap + (anySub ? subGap : 0);
 
     // Reserve this row plus a repeated header, so a page never ends with a
     // header stranded at the bottom and its first row overleaf.
@@ -636,7 +660,7 @@ export function drawTable(
     let x = MARGIN + 6;
     for (let c = 0; c < columns.length; c++) {
       const col = columns[c]!;
-      const lines = cells[c]!;
+      const { lines, sub } = cells[c]!;
       lines.forEach((text, li) => {
         const w = fonts.regular.widthOfTextAtSize(text, size);
         cursor.page.drawText(text, {
@@ -650,6 +674,17 @@ export function drawTable(
           color: COLORS.text
         });
       });
+      if (sub) {
+        // Directly under this cell's own last line, so it reads as belonging to
+        // that value rather than floating in the row.
+        cursor.page.drawText(sub, {
+          x,
+          y: cursor.y - rowHeight + 9 - lines.length * lineGap + (lineGap - subGap),
+          size: subSize,
+          font: fonts.regular,
+          color: COLORS.muted
+        });
+      }
       x += col.width;
     }
     cursor.y -= thisRowHeight;

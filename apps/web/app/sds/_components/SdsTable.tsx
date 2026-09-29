@@ -110,7 +110,7 @@ function Row({
               />
             </label>
             <label className="text-xs text-splash-navy/70">
-              SDS revision date
+              Revision date (on the sheet)
               <input
                 type="date"
                 name="sds_revision_date"

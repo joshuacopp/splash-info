@@ -638,7 +638,7 @@ function Row({ row }: { row: SdsCatalogSearchRow }) {
               />
             </label>
             <label className="text-xs text-splash-navy/70">
-              Revision date
+              Revision date (on the sheet)
               <input
                 type="date"
                 name="sds_revision_date"
@@ -726,7 +726,7 @@ function Row({ row }: { row: SdsCatalogSearchRow }) {
         )}
         {row.sds_revision_date ? (
           <div className="text-[0.6875rem] text-splash-navy/50">
-            Revised {row.sds_revision_date}
+            Sheet revised {row.sds_revision_date}
           </div>
         ) : null}
       </td>
