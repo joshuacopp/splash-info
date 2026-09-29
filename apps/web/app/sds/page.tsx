@@ -180,55 +180,15 @@ export default async function SdsPage({ searchParams }: PageProps) {
             {showRemoved ? "Hide" : "Show"} removed
             {removedCount > 0 && !showRemoved ? ` (${removedCount})` : ""}
           </Link>
-          {/* Opens the PDF inline so it can be printed straight from the
-              browser -- a download step between "open" and "print" is friction
-              on the one action this page exists for. */}
-          {/* Two prints, because they answer different questions: the index
-              alone is the cover page, the binder is the whole thing to refile
-              after a revision. */}
-          {/* NEITHER of these is the default, deliberately. They are different
-              files and both failure modes are silent: print the single-sided
-              file double-sided and tab 2 lands on the back of tab 1's last
-              page, so the binder cannot be filed at all; print the
-              double-sided file single-sided and every pad becomes a wasted
-              sheet. Naming one "Print full binder" made the other look
-              optional, which is how somebody picks wrong. So the label states
-              the printer setting, and the operator picks the one matching the
-              machine in front of them. */}
-          <a
-            href={`/forms/api/sds/binder.pdf?location=${encodeURIComponent(activeSite)}&duplex=1`}
-            target="_blank"
-            rel="noreferrer"
-            title="Prepares the file. You still have to set your printer to 2-sided. Uses no extra paper when you do."
-            className="rounded-splash-sm bg-splash-navy px-3 py-1.5 text-xs font-bold text-white"
-          >
-            Binder for 2-sided printing
-          </a>
-          <a
-            href={`/forms/api/sds/binder.pdf?location=${encodeURIComponent(activeSite)}`}
-            target="_blank"
-            rel="noreferrer"
-            title="Prepares the file. Use only if your printer is set to 1-sided, or for reading on screen."
-            className="rounded-splash-sm bg-splash-navy px-3 py-1.5 text-xs font-bold text-white"
-          >
-            Binder for 1-sided printing
-          </a>
-          {/* Said once, next to both, because the buttons name a printer
-              setting and cannot apply one. */}
-          <span className="basis-full text-xs text-splash-navy/60">
-            These prepare the file &mdash; set your printer to match. The binder
-            says which one it is on its first page.
-          </span>
-          <a
-            href={`/forms/api/sds/print.pdf?location=${encodeURIComponent(activeSite)}`}
-            target="_blank"
-            rel="noreferrer"
-            className="rounded-splash-sm bg-splash-navy px-3 py-1.5 text-xs font-bold text-white"
-          >
-            Print index only
-          </a>
         </div>
       </div>
+
+      {/* Adding comes FIRST, above the list. It is the action taken most while
+          a binder is being built, and below a 37-row table it is a scroll away
+          on a phone -- which is where this page actually gets used. */}
+      {canEdit ? (
+        <AddChemical locationCode={activeSite} candidates={candidates} />
+      ) : null}
 
       <SdsTable
         items={items}
@@ -239,7 +199,6 @@ export default async function SdsPage({ searchParams }: PageProps) {
 
       {canEdit ? (
         <>
-          <AddChemical locationCode={activeSite} candidates={candidates} />
           {/* Active only, matching what the worker numbers. Counting the removed
               rows shown by "Show removed" would promise a number the button then
               did not deliver. */}
@@ -272,6 +231,62 @@ export default async function SdsPage({ searchParams }: PageProps) {
           />
         </>
       ) : null}
+
+      {/* PRINT LAST, because it is the last thing anybody does here. The page
+          used to lead with it and bury "add a chemical" under the table, which
+          is the job backwards. The order now follows the work: add what is on
+          the shelf, check the list, number the dividers, print. */}
+      <div className="mt-8 border-t border-gray-light pt-5">
+        <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-splash-navy/60">
+          Print
+        </p>
+        <div className="flex flex-wrap items-center gap-3 text-sm">
+          {/* Opens the PDF inline so it can be printed straight from the
+              browser -- a download step between "open" and "print" is friction
+              on the one action this page exists for. */}
+          {/* NEITHER binder file is the default, deliberately. They are
+              different files and both wrong choices fail silently: print the
+              single-sided file double-sided and tab 2 lands on the back of tab
+              1's last page, so the binder cannot be filed at all; print the
+              double-sided file single-sided and every pad becomes a wasted
+              sheet. So each is named for the printer setting it matches. */}
+          <a
+            href={`/forms/api/sds/binder.pdf?location=${encodeURIComponent(activeSite)}&duplex=1`}
+            target="_blank"
+            rel="noreferrer"
+            title="Prepares the file. You still have to set your printer to 2-sided. Uses no extra paper when you do."
+            className="rounded-splash-sm bg-splash-navy px-3 py-1.5 text-xs font-bold text-white"
+          >
+            Binder for 2-sided printing
+          </a>
+          <a
+            href={`/forms/api/sds/binder.pdf?location=${encodeURIComponent(activeSite)}`}
+            target="_blank"
+            rel="noreferrer"
+            title="Prepares the file. Use only if your printer is set to 1-sided, or for reading on screen."
+            className="rounded-splash-sm bg-splash-navy px-3 py-1.5 text-xs font-bold text-white"
+          >
+            Binder for 1-sided printing
+          </a>
+          {/* The index alone is the cover page; the binder is the whole thing
+              to refile after a revision. Different questions, so both stay. */}
+          <a
+            href={`/forms/api/sds/print.pdf?location=${encodeURIComponent(activeSite)}`}
+            target="_blank"
+            rel="noreferrer"
+            title="The index page only, without the safety data sheets."
+            className="rounded-splash-sm border border-splash-navy/30 px-3 py-1.5 text-xs font-bold text-splash-navy hover:bg-splash-navy/5"
+          >
+            Index page only
+          </a>
+          {/* Said once, beside all three, because the buttons name a printer
+              setting and cannot apply one. */}
+          <span className="basis-full text-xs text-splash-navy/60">
+            These prepare the file &mdash; set your printer to match. The binder
+            says which one it is on its first page.
+          </span>
+        </div>
+      </div>
     </Shell>
   );
 }
