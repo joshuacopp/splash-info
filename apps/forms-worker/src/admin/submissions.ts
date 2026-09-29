@@ -104,9 +104,18 @@ function resolveDateRange(url: URL): DateRange {
  * helpers expect: `undefined` for full-admin ("all") callers, or the location
  * code array for scoped callers.
  */
-function locationScopeFor(scope: SubmissionScope): string[] | undefined {
-  return scope === "all" ? undefined : scope.locations;
-}
+// DELETED 2026-09-29: locationScopeFor(scope).
+//
+// It returned `scope.locations` and silently ignored `scope.forms`, so a
+// caller whose access comes from a form-access tag rather than a location
+// grant was scoped to the empty set and read nothing. handleGetSubmission was
+// its last caller and 404'd the named approver of a live CRD ticket for months.
+//
+// There is no correct use for it: every scoped read in this file is per-form,
+// and formScopeFor below is the only helper that can answer "does this
+// caller's grant reach THIS form" -- which is the question all of them are
+// actually asking. Reintroducing a locations-only variant would reintroduce
+// the bug, so it is recorded here rather than left as a tempting one-liner.
 
 /**
  * Per-form resolution of a scoped caller. Every endpoint below already has the
@@ -271,36 +280,70 @@ export async function handleGetSubmission(
   // a 401; widening that would be a different and much worse change.
   if (!gate.ok && gate.status !== 403) return adminGateResponse(gate);
 
-  // Admin/location callers keep their existing scope. The approver path
-  // deliberately passes NO location scope: it is already narrower than any
-  // location filter -- it authorises exactly one submission -- and scoping it
-  // would break the legitimate approver who holds no locations at all, which
-  // is the normal case for the people this exists for.
-  const locationScope = gate.ok ? locationScopeFor(gate.scope) : undefined;
+  // PER-FORM, NOT PER-LOCATION -- and this line is why a real approver got a
+  // 404 on her own ticket.
+  //
+  // formScopeFor checks the caller's form-access TAG first and returns no
+  // location filter when that tag covers this form. The other four handlers in
+  // this file already call it. This one called locationScopeFor, which ignores
+  // scope.forms entirely and hands back scope.locations.
+  //
+  // For a tag-only caller -- no user_permissions row, therefore locations []
+  // -- that empty array reached applyLocationScope, which maps empty to the
+  // match-nothing sentinel `location_code=in.("__no_location__")` (correctly:
+  // empty scope must not read as unfiltered). Zero rows, null submission, 404.
+  //
+  // The approver fallback below could not save her, because it only runs for
+  // callers who FAILED the gate and she had passed it. So HOLDING THE CORRECT
+  // GRANT WAS WHAT BROKE IT: a caller with no grant at all fell through to the
+  // approver path and got in, while the person the ticket was assigned to did
+  // not. Measured 2026-09-29 on a live CRD ticket.
+  //
+  // The approver path still passes NO location scope: it is already narrower
+  // than any location filter -- it authorises exactly one submission -- and
+  // scoping it would break the legitimate approver who holds no locations at
+  // all, which is the normal case for the people it exists for.
+  const fs = gate.ok ? formScopeFor(gate.scope, formId) : null;
+  const scoped = fs !== null && fs.allow;
+  const locationScope = fs !== null && fs.allow ? fs.locationScope : undefined;
 
   try {
     const submission = await getSubmission(env, formId, subId, locationScope);
     if (!submission) return jsonError(404, "not_found");
 
-    if (!gate.ok) {
+    // Anyone the scope did not already authorise gets the approver check --
+    // including a caller who PASSED the gate but whose grant does not reach
+    // this particular form. That second case used to be impossible to reach
+    // and is exactly the one that broke.
+    if (!scoped) {
       const approved = await callerMayViewSubmission(env, req, submission);
-      // Not an approver either -- return the ORIGINAL gate refusal rather than
-      // a new one, so a caller cannot tell "exists but not yours" apart from
-      // "no access to this surface".
-      if (!approved) return adminGateResponse(gate);
+      if (!approved) {
+        // Refuse in the shape the caller would have seen anyway, so neither
+        // can tell "exists but not yours" from "no access to this surface":
+        // a gate-passing caller gets the 404 their out-of-scope read already
+        // produced, and a gate-failing one gets the ORIGINAL gate refusal
+        // rather than a fresh one.
+        return gate.ok ? jsonError(404, "not_found") : adminGateResponse(gate);
+      }
     }
 
-    // CAPABILITY, NOT ROLE. `can_edit` is literally "did this caller pass
-    // submissionGate", which is the SAME gate handlePatchSubmission applies --
-    // so the page can hide a form the caller cannot submit without re-deriving
-    // the rule and drifting from it.
+    // CAPABILITY, NOT ROLE. `can_edit` is "would handlePatchSubmission accept
+    // this caller on this form" -- the same gate AND the same formScopeFor
+    // narrowing it applies -- so the page can hide an editor the caller cannot
+    // submit without re-deriving the rule and drifting from it.
+    //
+    // It was bare `gate.ok` until 2026-09-29, which was the same bug as the
+    // scope line above one field over: a tagged caller on a form their tag
+    // does not cover passes the gate, so they were offered an editor whose
+    // Save the PATCH would refuse. Losing somebody's typing at the Save button
+    // is the expensive direction of this mistake.
     //
     // This was wrong once already: the page gated the Status & Splash Notes
     // card on admin tier, while the PATCH allows admin tier OR the
     // form_submissions grant with locations. A location admin could save that
     // form and had it hidden from them. Anything the UI shows or hides based
     // on what a caller may DO belongs here, next to the gate that decides it.
-    return new Response(JSON.stringify({ submission, can_edit: gate.ok }), {
+    return new Response(JSON.stringify({ submission, can_edit: scoped }), {
       status: 200,
       headers: {
         "Content-Type": "application/json",
