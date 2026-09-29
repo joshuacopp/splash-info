@@ -18,7 +18,9 @@
 // is the right call for a multi-version form because per-version columns
 // would diverge across submissions and break the wide-table shape.
 
-import { authenticate } from "@splash/auth";
+// Via ./auth.js, not @splash/auth directly -- see the re-export's note there.
+// Same function; the relative specifier is what makes the read paths below
+// reachable by a test.
 import { isOriginAllowed, jsonError } from "@splash/http";
 import type {
   Field,
@@ -28,6 +30,7 @@ import type {
 } from "@splash/forms-schema";
 import {
   adminGateResponse,
+  authenticate,
   requireServiceKey,
   submissionGate,
   type SubmissionScope

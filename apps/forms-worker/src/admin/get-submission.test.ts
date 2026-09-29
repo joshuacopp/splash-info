@@ -49,6 +49,11 @@ const STRANGER = "nobody@splashcarwashes.com";
  *  states the caller's grant as the gate would have resolved it. */
 let gateResult: unknown = { ok: false, status: 401, body: '{"error":"unauthenticated"}' };
 
+/** Who the caller is, for the approver / submitter / acted-on read paths.
+ *  Reachable at all only because submissions.ts now takes `authenticate` from
+ *  ./auth.js -- a relative specifier this pool can intercept. */
+let authResult: unknown = { status: "unauthenticated" };
+
 vi.mock("./auth.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./auth.js")>();
   return {
@@ -56,7 +61,8 @@ vi.mock("./auth.js", async (importOriginal) => {
     // requireServiceKey and adminGateResponse stay real: the first decides
     // whether the handler runs at all, and the second IS the refusal shape
     // these tests assert on.
-    submissionGate: async () => gateResult
+    submissionGate: async () => gateResult,
+    authenticate: async () => authResult
   };
 });
 
@@ -123,7 +129,7 @@ const GATE_403 = { ok: false, status: 403, body: '{"error":"forbidden"}' };
 const GATE_401 = { ok: false, status: 401, body: '{"error":"unauthenticated"}' };
 
 /** Only one read survives a mocked gate: the submission itself. */
-function stubFetch() {
+function stubFetch(row: unknown = SUBMISSION_ROW) {
   globalThis.fetch = (async (input: RequestInfo | URL) => {
     const url = new URL(typeof input === "string" ? input : input.toString());
     if (url.pathname !== "/rest/v1/form_submissions") {
@@ -133,7 +139,7 @@ function stubFetch() {
     // it -- including the in.("__no_location__") sentinel an empty scope
     // produces. Reproducing that is what makes the first test mean something:
     // pre-fix, the handler sent exactly that filter and got nothing back.
-    const body = url.searchParams.get("location_code") ? [] : [SUBMISSION_ROW];
+    const body = url.searchParams.get("location_code") ? [] : [row];
     return new Response(JSON.stringify(body), {
       status: 200,
       headers: { "Content-Type": "application/json" }
@@ -141,10 +147,29 @@ function stubFetch() {
   }) as never;
 }
 
+/** Signs someone in for the read-path checks. They hold no grant, so the gate
+ *  refuses them and authority has to come from the submission itself. */
+function signedInAs(email: string) {
+  authResult = {
+    status: "authenticated",
+    session: {
+      userId: "11111111-1111-4111-8111-111111111111",
+      email,
+      role: null,
+      dcRole: null,
+      promoRole: null,
+      mustChangePassword: false,
+      tools: [],
+      locations: []
+    }
+  };
+}
+
 const realFetch = globalThis.fetch;
 afterEach(() => {
   globalThis.fetch = realFetch;
   gateResult = GATE_401;
+  authResult = { status: "unauthenticated" };
 });
 
 const get = () =>
@@ -213,14 +238,83 @@ describe("handleGetSubmission authority", () => {
     expect((await get()).status).toBe(401);
   });
 
-  // BLOCKED, not forgotten. These are the approver/submitter READ paths, and
-  // they need `authenticate` stubbed -- which lives in @splash/auth, a
-  // workspace package this pool will not mock (see the header). Opening that
-  // seam (an injectable authenticate, or routing its /auth/v1/user call
-  // through the fetch stub) is the next piece of work, and it is the one that
-  // would pin the 2026-09-21 regression where acting on a ticket revoked the
-  // ability to see it.
-  it.todo("serves the named approver who holds no grant at all");
-  it.todo("serves the submitter their own ticket");
-  it.todo("serves someone who already acted, after the stage moves on");
+  // ---------------------------------------------------------------------
+  // The three READ paths of callerMayViewSubmission. Every caller below FAILS
+  // the gate outright -- no tag, no locations -- so authority comes entirely
+  // from the submission: who it names, who raised it, who has touched it.
+  // ---------------------------------------------------------------------
+
+  it("serves the named approver who holds no grant at all", async () => {
+    gateResult = GATE_403;
+    signedInAs(APPROVER);
+    stubFetch();
+
+    const res = await get();
+    expect(res.status).toBe(200);
+
+    // Read, but not edit: no grant reaches the form, so the PATCH would refuse
+    // them and offering an editor would lose their typing at the Save button.
+    expect(((await res.json()) as { can_edit: boolean }).can_edit).toBe(false);
+  });
+
+  // Brief 126's My Requests links submitters straight at this page, so without
+  // this path they cannot open their own submission.
+  it("serves the submitter their own ticket", async () => {
+    gateResult = GATE_403;
+    signedInAs(SUBMITTER);
+    stubFetch();
+
+    expect((await get()).status).toBe(200);
+  });
+
+  // THE 2026-09-21 REGRESSION. The ticket has moved to a terminal outcome, so
+  // the caller is no longer its current approver -- they are only in
+  // workflow_history, as the person who put it there.
+  //
+  // Under the original rule (current approver ONLY) this 404s, which meant
+  // ACTING ON A TICKET REVOKED THE ABILITY TO SEE IT: the transition
+  // succeeded, the page refreshed, and the UI reported failure on a write that
+  // had worked, with a retry that did nothing because the stage had moved.
+  it("serves someone who already acted, after the stage moves on", async () => {
+    gateResult = GATE_403;
+    signedInAs(APPROVER);
+    stubFetch({
+      ...SUBMISSION_ROW,
+      workflow_stage: "approved",
+      current_approver_emails: [],
+      workflow_history: [
+        {
+          from: "approval",
+          to: "approved",
+          actor_email: APPROVER,
+          at: "2026-09-26T15:00:00Z"
+        }
+      ]
+    });
+
+    expect((await get()).status).toBe(200);
+  });
+
+  // The mirror of the case above: a terminal stage carries no approver_source,
+  // so nobody is its approver. Someone who never touched the ticket must not
+  // inherit access just because it reached an outcome.
+  it("still refuses a stranger once the ticket is closed out", async () => {
+    gateResult = GATE_403;
+    signedInAs(STRANGER);
+    stubFetch({
+      ...SUBMISSION_ROW,
+      workflow_stage: "approved",
+      current_approver_emails: [],
+      workflow_history: [
+        {
+          from: "approval",
+          to: "approved",
+          actor_email: APPROVER,
+          at: "2026-09-26T15:00:00Z"
+        }
+      ]
+    });
+
+    expect((await get()).status).toBe(403);
+  });
 });

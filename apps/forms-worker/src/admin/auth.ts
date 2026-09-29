@@ -19,6 +19,25 @@
 // every admin endpoint to 503 anyway.
 
 import { authenticate, checkToolAccess, type Session } from "@splash/auth";
+
+/**
+ * Re-exported so every auth concern in this worker arrives through ONE module.
+ *
+ * Two reasons, and the second is the one that bites. On the merits: the admin
+ * handlers already take `submissionGate`, `adminGateResponse` and
+ * `requireServiceKey` from here, so a direct `@splash/auth` import alongside
+ * them was the odd one out.
+ *
+ * On testing: a module specifier is a SEAM -- a place a test can stand in
+ * front of without editing the code under test -- and under
+ * @cloudflare/vitest-pool-workers only RELATIVE specifiers are interceptable.
+ * `vi.mock("@splash/auth", ...)` is accepted and then silently does nothing,
+ * leaving the real function in place, so the caller's tests fail on their
+ * assertions rather than on the mock and read like logic bugs. Importing
+ * `authenticate` from here instead makes the approver / submitter / acted-on
+ * read paths reachable by a test at all. Same function, same behaviour.
+ */
+export { authenticate };
 import type { Env } from "../index.js";
 
 export type AdminGateResult =
