@@ -987,9 +987,10 @@ export default async function GreetersPage({ searchParams }: PageProps) {
             description:
               "One row per greeter per day. Submitting the same greeter and date again updates that row rather than adding a second one. D.O.B. and capture % are calculated for you.",
             form: (
+              // No defaultDate: a new submission must start with an empty
+              // date. See the field in GreeterDayForm.
               <GreeterDayForm
                 action={submitGreeterDayAction}
-                defaultDate={today}
                 returnTo={returnPath}
               />
             )
@@ -1009,13 +1010,18 @@ export default async function GreetersPage({ searchParams }: PageProps) {
                 <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                   <label className="flex flex-col gap-1">
                     <span className={LABEL_CLS}>Date *</span>
+                    {/* Starts EMPTY for the same reason the greeter form does:
+                        a day is logged one or two days later, so prefilling
+                        today made the commonest error invisible. */}
                     <input
                       type="date"
                       name="business_date"
                       required
-                      defaultValue={today}
                       className={INPUT_CLS}
                     />
+                    <span className={HINT_CLS}>
+                      The day being reported, not today.
+                    </span>
                   </label>
                   <div className="flex flex-col gap-1">
                     <span className={LABEL_CLS}>Location *</span>

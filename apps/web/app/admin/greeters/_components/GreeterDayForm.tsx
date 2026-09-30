@@ -68,7 +68,9 @@ export function GreeterDayForm({
   returnTo
 }: {
   action: (formData: FormData) => Promise<RedirectResult>;
-  defaultDate: string;
+  /** Prefill for the date field. EDITING passes one; a NEW submission must
+   *  not -- see the date input below. */
+  defaultDate?: string;
   /** Present = editing that row. Absent = a new day. */
   row?: GreeterDayEditRow | null;
   /**
@@ -194,13 +196,24 @@ export function GreeterDayForm({
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
         <label className="flex flex-col gap-1">
           <span className={labelCls}>Date *</span>
+          {/* A NEW submission starts EMPTY, deliberately. A day is normally
+              logged one or two days after it happened, so prefilling today made
+              the commonest mistake -- recording yesterday’s numbers against
+              today -- require no action and look right on screen. Editing still
+              prefills, because there the date is a fact about the row being
+              corrected rather than a choice. */}
           <input
             type="date"
             name="business_date"
             required
-            defaultValue={row?.business_date ?? defaultDate}
+            defaultValue={row?.business_date ?? defaultDate ?? ""}
             className={inputCls}
           />
+          {row ? null : (
+            <span className="text-xs text-splash-navy/60">
+              The day being reported, not today.
+            </span>
+          )}
         </label>
 
         <div className="flex flex-col gap-1">
