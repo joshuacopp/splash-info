@@ -11,9 +11,13 @@
 //
 // Sections (top -> bottom):
 //   1. Action-error / success banners.
-//   2. Filter bar — date range, location, greeter-name substring, Regional
+//   2. "Add data" button row — opens each submission form in a modal. FIRST,
+//      because recording a day is what the page is opened to do. The filter bar
+//      below is for reading back what was recorded, and it stands five stacked
+//      fields tall on a phone; ahead of these buttons it put a screenful of
+//      controls in front of the action used most.
+//   3. Filter bar — date range, location, greeter-name substring, Regional
 //      Director, Regional Manager.
-//   3. "Add data" button row — opens each submission form in a modal.
 //   4. Insight panels (last 7 days, ignoring the date/location/greeter filters
 //      on purpose but honouring the manager filter): "No submissions" then
 //      "Underreported".
@@ -967,211 +971,13 @@ export default async function GreetersPage({ searchParams }: PageProps) {
       {successMessage ? <SuccessBanner message={successMessage} /> : null}
       <PageBanner mgrQs={mgrQs} />
 
-      {/* Filter bar */}
-      <form
-        method="GET"
-        action="/admin/greeters"
-        className="mb-5 rounded-splash-lg border border-gray-light bg-white p-5 shadow-splash-card"
-      >
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-          <label className="flex flex-col gap-1">
-            <span className={LABEL_CLS}>Date from</span>
-            <input
-              type="date"
-              name="date_from"
-              defaultValue={dateFrom}
-              className={INPUT_CLS}
-            />
-          </label>
-
-          <label className="flex flex-col gap-1">
-            <span className={LABEL_CLS}>Date to</span>
-            <input
-              type="date"
-              name="date_to"
-              defaultValue={dateTo}
-              className={INPUT_CLS}
-            />
-          </label>
-
-          <div className="flex flex-col gap-1">
-            <span className={LABEL_CLS}>Location</span>
-            <LocationPicker
-              name="location_id"
-              defaultValue={locationIdNum}
-              defaultLabel={filterLocationLabel}
-              placeholder="Search by site number, name, or code…"
-            />
-          </div>
-
-          <label className="flex flex-col gap-1">
-            <span className={LABEL_CLS}>Greeter</span>
-            <input
-              type="text"
-              name="greeter"
-              defaultValue={greeter}
-              placeholder="Name contains…"
-              className={INPUT_CLS}
-            />
-          </label>
-
-          <ManagerFilters rosters={rosters} rd={rd} rm={rm} />
-        </div>
-
-        <div className="mt-4 flex items-center gap-3">
-          <button
-            type="submit"
-            className="inline-flex items-center gap-1.5 rounded-splash-sm bg-splash-blue px-5 py-2.5 text-sm font-bold text-white shadow-splash-btn transition-colors hover:bg-splash-blue-dark"
-          >
-            Apply filters
-          </button>
-          <Link
-            href="/admin/greeters"
-            className="text-sm font-semibold text-splash-blue hover:text-splash-blue-dark"
-          >
-            Reset
-          </Link>
-        </div>
-      </form>
-
-      {/* Corrections.
-          A card in the page body rather than a fourth modal panel. SubmitPanels
-          keeps its open/closed state on the client and is deliberately
-          mounted-but-hidden so half-typed input survives a close, which is
-          exactly wrong for a prefilled form: it would either fail to open on a
-          client-side navigation or keep the previous row's numbers on screen.
-          An edit is addressed by the URL, so it belongs where a server render
-          can key it on the row id.
-
-          KEYED ON THE ROW ID, and that is load-bearing. Both forms seed
-          themselves from `defaultValue` / initial useState, neither of which is
-          re-read on a re-render. Without the key, going from editing one row to
-          editing another would leave the first row's numbers in every box while
-          the hidden id pointed at the second. */}
-      {editDayId && !editDay ? (
-        <EditNotFoundNote
-          what="greeter day"
-          backHref={`/admin/greeters${suffix}`}
-        />
-      ) : null}
-      {editDay ? (
-        <Card
-          title={`Editing ${editDay.greeter_name} — ${editDay.business_date}`}
-          subtitle="Every field is editable, including the date, the site and the person: this updates the row in place rather than adding a second one. Goals are re-applied from whichever window covers the date you save, so moving a day re-grades it."
-        >
-          <div className="px-5 py-5">
-            <GreeterDayForm
-              key={editDay.id}
-              action={submitGreeterDayAction}
-              defaultDate={today}
-              row={editDay}
-              locationLabel={editDayLocationLabel}
-              returnTo={returnPath}
-            />
-            <CancelEditLink href={`/admin/greeters${suffix}`} />
-          </div>
-        </Card>
-      ) : null}
-
-      {editLocationDayId && !editLocationDay ? (
-        <EditNotFoundNote
-          what="site-wide day"
-          backHref={`/admin/greeters${suffix}`}
-        />
-      ) : null}
-      {editLocationDay ? (
-        <Card
-          title={`Editing ${editLocationDay.location_code} — ${editLocationDay.business_date}`}
-          subtitle="The whole location's day. Changing the date or the site moves the row rather than copying it, and the goal snapshot is re-applied from whichever window covers the date you save."
-        >
-          <div className="px-5 py-5">
-            <RedirectForm
-              key={editLocationDay.id}
-              action={submitLocationDayAction}
-              className="flex flex-col gap-4"
-            >
-              {/* The whole of edit mode, as far as the worker is concerned. */}
-              <input type="hidden" name="id" value={editLocationDay.id} />
-              {/* See GreeterDayForm's returnTo doc — this is the same field,
-                  and it is what keeps the save from throwing away the filters
-                  that were used to find this row in the first place. */}
-              <input type="hidden" name="return_to" value={returnPath} />
-              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                <label className="flex flex-col gap-1">
-                  <span className={LABEL_CLS}>Date *</span>
-                  <input
-                    type="date"
-                    name="business_date"
-                    required
-                    defaultValue={editLocationDay.business_date}
-                    className={INPUT_CLS}
-                  />
-                </label>
-                <div className="flex flex-col gap-1">
-                  <span className={LABEL_CLS}>Location *</span>
-                  <LocationPicker
-                    name="location_id"
-                    required
-                    placeholder="Search by site number, name, or code…"
-                    defaultValue={editLocationDay.location_id}
-                    defaultLabel={`${editLocationDay.location_code} · ${editLocationDay.site_number}`}
-                  />
-                </div>
-              </div>
-              <LocationMetricFields row={editLocationDay} />
-              <div className="mt-1">
-                <SavingButton>Save changes</SavingButton>
-              </div>
-            </RedirectForm>
-            <CancelEditLink href={`/admin/greeters${suffix}`} />
-          </div>
-        </Card>
-      ) : null}
-
-      {/* The row chooser, opened from a row's date cell. It lives here with the
-          edit forms because it is the same kind of thing — a row addressed by
-          the URL, resolved out of what the page already fetched — and being
-          `fixed`, where it sits in the markup changes nothing on screen.
-
-          NEITHER OF THESE HAS A "not found" NOTE, unlike the two edit forms
-          above. See where actionsDay is resolved. */}
-      {actionsDay ? (
-        <RowActionsModal
-          title={`${actionsDay.greeter_name} — ${actionsDay.business_date}`}
-          subtitle={`${actionsDay.location_code} · ${actionsDay.site_number}`}
-          id={actionsDay.id}
-          editHref={rowHref("edit_day", actionsDay.id)}
-          voided={actionsDay.voided_at !== null}
-          voidAction={voidDayAction}
-          restoreAction={restoreDayAction}
-          returnTo={returnPath}
-          closeHref={`/admin/greeters${suffix}`}
-          // The missing-list clause is CONDITIONAL and says so.
-          // greeter_missing_days() flags a day only when the site has no live
-          // greeter rows left for it, so voiding one of three greeters changes
-          // nothing there. Stating it flatly would be a consequence the feature
-          // doesn't carry, and people stop reading confirms that overstate.
-          confirmText={`Void ${actionsDay.greeter_name}'s day at ${actionsDay.location_code} on ${actionsDay.business_date}?\n\nThe row is kept but struck out: it drops out of every report and rollup. If it was the last greeter logged for that site's day, the day goes back onto the missing-submissions list until someone logs it again. You can restore it from this table.`}
-        />
-      ) : null}
-
-      {actionsLocationDay ? (
-        <RowActionsModal
-          title={`${actionsLocationDay.location_code} — ${actionsLocationDay.business_date}`}
-          subtitle={`Site-wide totals · ${actionsLocationDay.site_number}`}
-          id={actionsLocationDay.id}
-          editHref={rowHref("edit_location_day", actionsLocationDay.id)}
-          voided={actionsLocationDay.voided_at !== null}
-          voidAction={voidLocationDayAction}
-          restoreAction={restoreLocationDayAction}
-          returnTo={returnPath}
-          closeHref={`/admin/greeters${suffix}`}
-          confirmText={`Void the site-wide totals for ${actionsLocationDay.location_code} on ${actionsLocationDay.business_date}?\n\nThe row is kept but struck out: it drops out of every report, the Scanned % for that day loses its denominator, and the day goes back onto the missing-submissions list. The greeters' own rows for that day are NOT affected. You can restore it from this table.`}
-        />
-      ) : null}
-
-      {/* Submissions. Buttons, not stacked cards — see the note up top. The
-          forms are built here (server components) and handed down as props. */}
+      {/* LOGGING COMES FIRST, above the filter bar. Recording a day is what
+          this page is opened to do; the filter bar is for reading back what
+          was already recorded, and it stands five stacked fields tall on a
+          phone -- so putting it first meant scrolling a whole screen of
+          controls to reach the buttons used most. */}
+      {/* Buttons, not stacked cards — see the note up top. The forms are
+          built here (server components) and handed down as props. */}
       <SubmitPanels
         panels={[
           {
@@ -1436,6 +1242,210 @@ export default async function GreetersPage({ searchParams }: PageProps) {
           }
         ]}
       />
+
+      {/* Filter bar */}
+      <form
+        method="GET"
+        action="/admin/greeters"
+        className="mb-5 rounded-splash-lg border border-gray-light bg-white p-5 shadow-splash-card"
+      >
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          <label className="flex flex-col gap-1">
+            <span className={LABEL_CLS}>Date from</span>
+            <input
+              type="date"
+              name="date_from"
+              defaultValue={dateFrom}
+              className={INPUT_CLS}
+            />
+          </label>
+
+          <label className="flex flex-col gap-1">
+            <span className={LABEL_CLS}>Date to</span>
+            <input
+              type="date"
+              name="date_to"
+              defaultValue={dateTo}
+              className={INPUT_CLS}
+            />
+          </label>
+
+          <div className="flex flex-col gap-1">
+            <span className={LABEL_CLS}>Location</span>
+            <LocationPicker
+              name="location_id"
+              defaultValue={locationIdNum}
+              defaultLabel={filterLocationLabel}
+              placeholder="Search by site number, name, or code…"
+            />
+          </div>
+
+          <label className="flex flex-col gap-1">
+            <span className={LABEL_CLS}>Greeter</span>
+            <input
+              type="text"
+              name="greeter"
+              defaultValue={greeter}
+              placeholder="Name contains…"
+              className={INPUT_CLS}
+            />
+          </label>
+
+          <ManagerFilters rosters={rosters} rd={rd} rm={rm} />
+        </div>
+
+        <div className="mt-4 flex items-center gap-3">
+          <button
+            type="submit"
+            className="inline-flex items-center gap-1.5 rounded-splash-sm bg-splash-blue px-5 py-2.5 text-sm font-bold text-white shadow-splash-btn transition-colors hover:bg-splash-blue-dark"
+          >
+            Apply filters
+          </button>
+          <Link
+            href="/admin/greeters"
+            className="text-sm font-semibold text-splash-blue hover:text-splash-blue-dark"
+          >
+            Reset
+          </Link>
+        </div>
+      </form>
+
+      {/* Corrections.
+          A card in the page body rather than a fourth modal panel. SubmitPanels
+          keeps its open/closed state on the client and is deliberately
+          mounted-but-hidden so half-typed input survives a close, which is
+          exactly wrong for a prefilled form: it would either fail to open on a
+          client-side navigation or keep the previous row's numbers on screen.
+          An edit is addressed by the URL, so it belongs where a server render
+          can key it on the row id.
+
+          KEYED ON THE ROW ID, and that is load-bearing. Both forms seed
+          themselves from `defaultValue` / initial useState, neither of which is
+          re-read on a re-render. Without the key, going from editing one row to
+          editing another would leave the first row's numbers in every box while
+          the hidden id pointed at the second. */}
+      {editDayId && !editDay ? (
+        <EditNotFoundNote
+          what="greeter day"
+          backHref={`/admin/greeters${suffix}`}
+        />
+      ) : null}
+      {editDay ? (
+        <Card
+          title={`Editing ${editDay.greeter_name} — ${editDay.business_date}`}
+          subtitle="Every field is editable, including the date, the site and the person: this updates the row in place rather than adding a second one. Goals are re-applied from whichever window covers the date you save, so moving a day re-grades it."
+        >
+          <div className="px-5 py-5">
+            <GreeterDayForm
+              key={editDay.id}
+              action={submitGreeterDayAction}
+              defaultDate={today}
+              row={editDay}
+              locationLabel={editDayLocationLabel}
+              returnTo={returnPath}
+            />
+            <CancelEditLink href={`/admin/greeters${suffix}`} />
+          </div>
+        </Card>
+      ) : null}
+
+      {editLocationDayId && !editLocationDay ? (
+        <EditNotFoundNote
+          what="site-wide day"
+          backHref={`/admin/greeters${suffix}`}
+        />
+      ) : null}
+      {editLocationDay ? (
+        <Card
+          title={`Editing ${editLocationDay.location_code} — ${editLocationDay.business_date}`}
+          subtitle="The whole location's day. Changing the date or the site moves the row rather than copying it, and the goal snapshot is re-applied from whichever window covers the date you save."
+        >
+          <div className="px-5 py-5">
+            <RedirectForm
+              key={editLocationDay.id}
+              action={submitLocationDayAction}
+              className="flex flex-col gap-4"
+            >
+              {/* The whole of edit mode, as far as the worker is concerned. */}
+              <input type="hidden" name="id" value={editLocationDay.id} />
+              {/* See GreeterDayForm's returnTo doc — this is the same field,
+                  and it is what keeps the save from throwing away the filters
+                  that were used to find this row in the first place. */}
+              <input type="hidden" name="return_to" value={returnPath} />
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <label className="flex flex-col gap-1">
+                  <span className={LABEL_CLS}>Date *</span>
+                  <input
+                    type="date"
+                    name="business_date"
+                    required
+                    defaultValue={editLocationDay.business_date}
+                    className={INPUT_CLS}
+                  />
+                </label>
+                <div className="flex flex-col gap-1">
+                  <span className={LABEL_CLS}>Location *</span>
+                  <LocationPicker
+                    name="location_id"
+                    required
+                    placeholder="Search by site number, name, or code…"
+                    defaultValue={editLocationDay.location_id}
+                    defaultLabel={`${editLocationDay.location_code} · ${editLocationDay.site_number}`}
+                  />
+                </div>
+              </div>
+              <LocationMetricFields row={editLocationDay} />
+              <div className="mt-1">
+                <SavingButton>Save changes</SavingButton>
+              </div>
+            </RedirectForm>
+            <CancelEditLink href={`/admin/greeters${suffix}`} />
+          </div>
+        </Card>
+      ) : null}
+
+      {/* The row chooser, opened from a row's date cell. It lives here with the
+          edit forms because it is the same kind of thing — a row addressed by
+          the URL, resolved out of what the page already fetched — and being
+          `fixed`, where it sits in the markup changes nothing on screen.
+
+          NEITHER OF THESE HAS A "not found" NOTE, unlike the two edit forms
+          above. See where actionsDay is resolved. */}
+      {actionsDay ? (
+        <RowActionsModal
+          title={`${actionsDay.greeter_name} — ${actionsDay.business_date}`}
+          subtitle={`${actionsDay.location_code} · ${actionsDay.site_number}`}
+          id={actionsDay.id}
+          editHref={rowHref("edit_day", actionsDay.id)}
+          voided={actionsDay.voided_at !== null}
+          voidAction={voidDayAction}
+          restoreAction={restoreDayAction}
+          returnTo={returnPath}
+          closeHref={`/admin/greeters${suffix}`}
+          // The missing-list clause is CONDITIONAL and says so.
+          // greeter_missing_days() flags a day only when the site has no live
+          // greeter rows left for it, so voiding one of three greeters changes
+          // nothing there. Stating it flatly would be a consequence the feature
+          // doesn't carry, and people stop reading confirms that overstate.
+          confirmText={`Void ${actionsDay.greeter_name}'s day at ${actionsDay.location_code} on ${actionsDay.business_date}?\n\nThe row is kept but struck out: it drops out of every report and rollup. If it was the last greeter logged for that site's day, the day goes back onto the missing-submissions list until someone logs it again. You can restore it from this table.`}
+        />
+      ) : null}
+
+      {actionsLocationDay ? (
+        <RowActionsModal
+          title={`${actionsLocationDay.location_code} — ${actionsLocationDay.business_date}`}
+          subtitle={`Site-wide totals · ${actionsLocationDay.site_number}`}
+          id={actionsLocationDay.id}
+          editHref={rowHref("edit_location_day", actionsLocationDay.id)}
+          voided={actionsLocationDay.voided_at !== null}
+          voidAction={voidLocationDayAction}
+          restoreAction={restoreLocationDayAction}
+          returnTo={returnPath}
+          closeHref={`/admin/greeters${suffix}`}
+          confirmText={`Void the site-wide totals for ${actionsLocationDay.location_code} on ${actionsLocationDay.business_date}?\n\nThe row is kept but struck out: it drops out of every report, the Scanned % for that day loses its denominator, and the day goes back onto the missing-submissions list. The greeters' own rows for that day are NOT affected. You can restore it from this table.`}
+        />
+      ) : null}
+
 
       {/* Two insights, deliberately not one. "Didn't report" and "reported but
           scanned badly" are different failures with different owners, and a day
