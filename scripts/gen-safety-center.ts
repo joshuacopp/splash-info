@@ -129,6 +129,13 @@ const SECTIONS: { sec: string; prefix: string; items: [string, string][] }[] = [
     prefix: "ppe",
     items: [
       ["safety_glasses", "Safety Glasses"],
+      // NOT on the paper document, added 2026-09-30 at the operator's request.
+      // Distinct from safety glasses on purpose: glasses are impact protection
+      // and goggles are splash protection, and a site can hold a full box of the
+      // first while having nothing that keeps an acid out of somebody's eyes.
+      // One question covering both would be answered "yes" on the strength of
+      // whichever is on the shelf.
+      ["chemical_goggles", "Chemical Splash Goggles"],
       ["disposable_gloves", "Disposable Gloves"],
       ["waterproof_gloves", "Waterproof Long Gloves (Ninja Operations)"],
       ["burn_sleeves", "Burn Sleeves (Oil Lube Operations)"],
