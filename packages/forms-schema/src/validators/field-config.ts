@@ -32,6 +32,7 @@ const fieldBaseSchema = {
   // how many it honours.
   show_in_queue: z.boolean().optional(),
   action_item_eligible: z.boolean().optional(),
+  action_item_label: z.string().trim().min(1).max(60).optional(),
   visible_if: z
     .object({
       field_key: z.string().min(1),
@@ -577,6 +578,7 @@ const fieldBaseSchemaDraft = {
   // Brief 173 — same, for the queue-column flag.
   show_in_queue: z.boolean().optional(),
   action_item_eligible: z.boolean().optional(),
+  action_item_label: z.string().trim().min(1).max(60).optional(),
   visible_if: z
     .object({
       field_key: z.string().min(1),

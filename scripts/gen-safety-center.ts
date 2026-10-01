@@ -60,7 +60,13 @@ function item(key: string, label: string) {
     layout: "inline",
     options: YES_NO,
     required: true,
-    action_item_eligible: true
+    action_item_eligible: true,
+    // "Create action item" is the right phrase on an inspection form and the
+    // wrong one here. Ticking "Disposable Gloves" on a supply checklist is
+    // adding a line to an order, not opening tracked work -- and the heavier
+    // phrasing is what made people type "order gloves" into a note that was
+    // never required. Blank already falls back to the question's own label.
+    action_item_label: "Add to list"
   });
   // Labelled per item rather than a bare "Notes": the label is the column
   // header in the submissions table and the CSV, and 21 columns all headed

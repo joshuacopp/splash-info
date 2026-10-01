@@ -51,14 +51,22 @@ function actionItemCheckbox(field: Field): string {
   // this form has already been broken once by a stale cached script. The
   // checkbox is a direct child rather than nested in the <label> so
   // `:checked ~ .field-action-item-note` can reach it.
+  // The note has ALWAYS been optional -- an un-noted tick falls back to the
+  // question's own label (see deriveActionItemRows). The old copy hid that:
+  // a placeholder reading "Action item title/description" and a hint about one
+  // item per line both describe a box you must fill, so people retyped the
+  // question they had just ticked. Say what blank does, and the common case
+  // costs one click.
+  const label = field.action_item_label ?? "Create action item";
+  const questionLabel = field.label || field.key;
   return `
 <div class="field-action-item">
   <input type="checkbox" id="${escapeHtml(id)}" name="${escapeHtml(name)}" value="1" />
-  <label for="${escapeHtml(id)}">Create action item</label>
+  <label for="${escapeHtml(id)}">${escapeHtml(label)}</label>
   <textarea class="field-action-item-note" rows="2" maxlength="2000"
             name="${escapeHtml(noteName)}"
-            placeholder="Action item title/description"></textarea>
-  <span class="field-action-item-hint">One per line &mdash; each line becomes its own action item.</span>
+            placeholder="Optional &mdash; leave blank for &ldquo;${escapeHtml(questionLabel)}&rdquo;"></textarea>
+  <span class="field-action-item-hint">Optional. Leave blank and it is added as &ldquo;${escapeHtml(questionLabel)}&rdquo;; type one per line to add several.</span>
 </div>`;
 }
 

@@ -54,6 +54,21 @@ export interface FieldBase {
   // and are never eligible, same rule as show_in_queue.
   action_item_eligible?: boolean;
   /**
+   * What the tick-box beside an eligible question is CALLED. Defaults to
+   * "Create action item".
+   *
+   * Exists because the default phrasing is wrong on a supply checklist. There,
+   * ticking "Disposable Gloves" is adding a line to an order, not opening a
+   * piece of tracked work, and "Create action item" reads as something heavier
+   * that must need explaining -- so people type "order gloves" into a note
+   * that was never required. The row already falls back to the question's own
+   * label when no note is given.
+   *
+   * Per FIELD rather than per form because it is a property of what the
+   * question is asking, and nothing here knows which form it belongs to.
+   */
+  action_item_label?: string;
+  /**
    * Show this field only when another field's value matches. Omitted = always
    * visible, which is every field that existed before this.
    *
