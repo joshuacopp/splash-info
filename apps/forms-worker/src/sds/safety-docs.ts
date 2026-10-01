@@ -15,6 +15,7 @@
 
 import { jsonError } from "@splash/http";
 import type { Env } from "../index.js";
+import { fillSafetyDocPdf, type DocFillValues } from "./doc-fill.js";
 
 /** One file per document, keyed by the stable slug rather than the title, so
  *  renaming "OSHA SDS Training" does not orphan the object. */
@@ -100,11 +101,22 @@ export async function lookupSafetyDocsForFieldKeys(
   return rows.filter((r) => r.r2_key);
 }
 
+/** A site's details to write onto the copy, and the code they came from. */
+export interface SafetyDocFill {
+  locationCode: string;
+  values: DocFillValues;
+}
+
 /** Serve the file. Any authenticated user: a safety programme is a thing
- *  everybody is meant to be able to read, which is the entire point of it. */
+ *  everybody is meant to be able to read, which is the entire point of it.
+ *
+ *  With `fill`, the site's contacts are written into the document's form fields
+ *  and flattened; without it the stored bytes are served untouched, blanks and
+ *  all. See doc-fill.ts for why those are two different things. */
 export async function serveSafetyDoc(
   env: Env,
-  doc: SafetyDocRow
+  doc: SafetyDocRow,
+  fill?: SafetyDocFill
 ): Promise<Response> {
   if (!doc.r2_key) return jsonError(404, "not_uploaded_yet");
   const obj = await env.FORMS_FILES.get(doc.r2_key);
@@ -114,8 +126,47 @@ export async function serveSafetyDoc(
     console.error(`[forms.safety-docs] row points at missing object ${doc.r2_key}`);
     return jsonError(404, "file_missing");
   }
-  const safe = (doc.file_name || `${doc.slug}.pdf`).replace(/[^A-Za-z0-9._-]+/g, "-");
-  return new Response(obj.body, {
+
+  const base = (doc.file_name || `${doc.slug}.pdf`).replace(/[^A-Za-z0-9._-]+/g, "-");
+  let body: BodyInit = obj.body;
+  let safe = base;
+
+  if (fill) {
+    try {
+      const filled = await fillSafetyDocPdf(await obj.arrayBuffer(), fill.values);
+      if (filled) {
+        // Slice to a standalone ArrayBuffer rather than passing the view: the
+        // body type will not take a Uint8Array, and reaching for `.buffer`
+        // would be wrong the day pdf-lib returns a view into a larger one.
+        body = filled.buffer.slice(
+          filled.byteOffset,
+          filled.byteOffset + filled.byteLength
+        ) as ArrayBuffer;
+        // The filename carries the site, so a copy saved to a phone is still
+        // identifiable a month later -- and so a copy that could NOT be filled
+        // is visibly the generic one rather than quietly passing as a site's.
+        const codePart = fill.locationCode.replace(/[^A-Za-z0-9._-]+/g, "-");
+        safe = base.replace(/\.pdf$/i, "") + `-${codePart}.pdf`;
+      } else {
+        // Normal for a programme nobody has made fillable. Not an error, but
+        // worth a line: it is also what a document uploaded WITHOUT its fields
+        // looks like, and that one is a mistake somebody should fix.
+        console.warn(
+          `[forms.safety-docs] ${doc.slug} has no fillable fields; served unfilled`
+        );
+      }
+    } catch (err) {
+      // Degrade to the unfilled document: that is the paper process this
+      // replaces, blank lines and all, and it is a far better outcome than
+      // failing a safety programme download outright.
+      console.error(`[forms.safety-docs] fill failed for ${doc.slug}`, err);
+      const again = await env.FORMS_FILES.get(doc.r2_key);
+      if (!again) return jsonError(404, "file_missing");
+      body = again.body;
+    }
+  }
+
+  return new Response(body, {
     status: 200,
     headers: {
       "Content-Type": "application/pdf",
@@ -123,6 +174,8 @@ export async function serveSafetyDoc(
       // get filed, and a download step between "tap" and "read" is friction on
       // the only thing this route is for.
       "Content-Disposition": `inline; filename="${safe}"`,
+      // Private AND per-site: a shared cache handing one site's filled copy to
+      // another would be a wrong answer, not a slow one.
       "Cache-Control": "private, max-age=300"
     }
   });

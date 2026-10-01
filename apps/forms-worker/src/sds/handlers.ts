@@ -51,6 +51,7 @@ import {
   serveSafetyDoc,
   safetyDocKey
 } from "./safety-docs.js";
+import { resolveDocFill } from "./doc-fill.js";
 import { mergeCatalogEntries } from "./merge.js";
 import { getLocationOptionsFromPricingSimple } from "../db/forms.js";
 
@@ -1735,8 +1736,19 @@ export async function handleListSafetyDocs(env: Env, req: Request): Promise<Resp
   }
 }
 
-/** Open one. Any authenticated user -- a safety programme everybody is meant to
- *  follow is one everybody is meant to be able to read. */
+/**
+ * Open one. Any authenticated user -- a safety programme everybody is meant to
+ * follow is one everybody is meant to be able to read.
+ *
+ * `?location=CODE` fills that site's name, address and emergency contacts onto
+ * the copy. WITHOUT IT THE BLANK MASTER IS SERVED, which is a real request and
+ * not a fallback: a site with no contacts set yet, or anybody who wants the
+ * hand-writable version, asks for exactly this.
+ *
+ * The location is permission-checked like any other site read. Someone probing
+ * codes they do not hold gets 403 rather than another site's manager's mobile
+ * number, which is the only part of this document worth guarding.
+ */
 export async function handleServeSafetyDoc(
   env: Env,
   req: Request,
@@ -1748,7 +1760,17 @@ export async function handleServeSafetyDoc(
   if (!g.ok) return g.response;
   const doc = await readSafetyDoc(env, slug);
   if (!doc) return jsonError(404, "not_found");
-  return serveSafetyDoc(env, doc);
+
+  const requested = new URL(req.url).searchParams.get("location");
+  if (!requested) return serveSafetyDoc(env, doc);
+
+  if (!canRead(g.access, requested)) return jsonError(403, "location_not_accessible");
+  const values = await resolveDocFill(env, requested);
+  // A code that resolves to no site would otherwise produce a document headed
+  // with blanks that LOOKS filled. Refusing says which of the two it is.
+  if (!values) return jsonError(404, "location_not_found");
+
+  return serveSafetyDoc(env, doc, { locationCode: requested, values });
 }
 
 /**
