@@ -1,6 +1,6 @@
 // Weekly greeter digest — the send half.
 //
-// One entry point, runWeeklyGreeterDigest(), used by BOTH the Monday cron and
+// One entry point, runWeeklyGreeterDigest(), used by BOTH the Wednesday cron and
 // the preview route. That is deliberate: a preview that walked a different code
 // path would verify a different email than the one that ships. The only thing
 // `dryRun` changes is whether enqueueOutboundEmail() is called; every read,
@@ -101,7 +101,7 @@ export interface DigestRunOptions {
 }
 
 /**
- * Build and queue Monday's digest for every eligible recipient.
+ * Build and queue the week's digest for every eligible recipient.
  *
  * `now` is a parameter rather than a `new Date()` inside, so the preview route
  * and any future backfill can ask for a specific week without the function

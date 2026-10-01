@@ -31,11 +31,37 @@ routes = [
   # { pattern = "splashcarwashes.info/pertrack/*", zone_name = "splashcarwashes.info" }
 ]
 
-# Weekly greeter digest. Mondays 09:00 UTC = 4am EST / 5am EDT.
+# Weekly greeter digest. WEDNESDAYS 09:00 UTC = 4am EST / 5am EDT.
+#
+# WEDNESDAY, NOT MONDAY, AND THE REASON IS DATA NOT TASTE. `digestWeekFor`
+# reports the last COMPLETE Mon-Sun week, so the send day decides two things at
+# once: how stale the report is, and how much of it exists yet. Measured over
+# the settled weeks of Aug-Sep 2026, the share of a week's greeter_daily rows
+# actually entered by each candidate send time:
+#
+#     send day      data present     report age
+#     Monday        ~70%             1 day
+#     Wednesday     ~95%             3 days
+#     Sunday        ~98%             7 days
+#
+# Monday is the tempting one and it is a trap: it reports a week that is barely
+# two-thirds typed in, AND compares it against a prior week that is fully in,
+# so every site reads as declining when nothing has changed. Wednesday buys
+# near-complete data for two days of freshness.
+#
+# WHAT THIS REPLACED. Production fired on SUNDAY 09:00 UTC for the first three
+# sends (confirmed from outbound_emails: 2026-09-13, -20, -27, all Sun), while
+# this file said Monday and always had. One day of schedule error cost SEVEN
+# days of report lag, because a Sunday run falls inside the not-yet-complete
+# week and `digestWeekFor` correctly steps back a whole week. If the digest
+# ever looks a week stale again, check the firing DAY in outbound_emails before
+# anything else.
 #
 # Cron triggers fire independently of the `routes` table above — a worker with
 # no production route still runs its cron. Deploying this file schedules the
-# send; there is no second switch.
+# send; there is no second switch. NOTE the Sunday divergence above means a
+# dashboard-set trigger can outlive what is written here — check Settings →
+# Trigger Events after deploying, not just this line.
 #
 # UTC IS THE ONLY OPTION Cloudflare offers, so the send time moves an hour at
 # each DST boundary rather than the weekday moving. Do not "fix" the drift by
@@ -43,7 +69,7 @@ routes = [
 # outbound_emails dedup index would absorb it, the second run is still a full
 # estate read for nothing.
 [triggers]
-crons = ["0 9 * * 1"]
+crons = ["0 9 * * 3"]
 
 # Bindings:
 # SUPABASE_URL          — string

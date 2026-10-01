@@ -8,7 +8,7 @@
 // THE ARITHMETIC IS NOT HERE EITHER. Every number comes out of
 // @splash/greeter-metrics, the same module /admin/greeters/report renders from.
 // That is the entire reason that package was extracted: the manager who reads
-// Monday's email opens the report on Tuesday, and if the two disagreed by a
+// the email opens the report a day later, and if the two disagreed by a
 // decimal the only thing they would learn is not to trust either. Do not compute
 // a rate in this file. Sum a numerator here and you have started a second
 // implementation.
@@ -48,12 +48,24 @@ export interface DigestWeek {
 /**
  * The last COMPLETE Monday-to-Sunday week before `now`, plus the week before it.
  *
- * DERIVED FROM THE DAY OF WEEK, NOT FROM "seven days ago". The cron fires on a
- * Monday, so subtracting seven days would happen to work — but the preview route
- * runs on whatever day somebody opens it, and a Wednesday preview must show the
- * same week Monday's mail showed, or it is not a preview. Anchoring on the
- * containing Monday makes the answer constant for the whole week, which is also
- * what lets the send loop key on it for idempotency.
+ * DERIVED FROM THE DAY OF WEEK, NOT FROM "seven days ago". This used to be a
+ * nicety for the preview route; since the cron moved to Wednesday it is the
+ * only thing that works. Subtracting seven days from a Wednesday gives the
+ * previous Wednesday — a window straddling two weeks, which is not a week at
+ * all. Anchoring on the containing Monday makes the answer constant for the
+ * whole week, which is what lets a preview opened on any day show the same
+ * week the mail did, and what lets the send loop key on it for idempotency.
+ *
+ * THE SEND DAY IS LOAD-BEARING AND THE TRAP IS NON-OBVIOUS. Every day inside a
+ * given Mon-Sun week yields the SAME window — that is the point of anchoring.
+ * The catch is where the boundary falls: Sunday is the LAST day of its week, so
+ * a Sunday run reports the week before the one just finishing, while a run the
+ * very next morning reports the week that ended hours earlier. Consecutive
+ * days, seven days apart in output.
+ *
+ * Production shipped firing on Sunday against a file that said Monday, and the
+ * symptom was a digest that read a full week stale. See the cron block in
+ * wrangler.toml for why the fix was Wednesday rather than Monday.
  *
  * ALL UTC, deliberately. The cron is pinned to 09:00 UTC rather than a local 4am
  * precisely so nothing has to track DST twice a year; doing the date arithmetic

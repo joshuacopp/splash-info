@@ -26,7 +26,7 @@
 //                             route list. Same "pertrack" grant as the other
 //                             two features, same single auth gate below.
 //
-// CRON: Mondays 09:00 UTC, the weekly greeter digest (./digest-send.ts). It
+// CRON: Wednesdays 09:00 UTC, the weekly greeter digest (./digest-send.ts). It
 // runs with no request and no session, so the auth gate below is not in its
 // path — its authority is the service key, and who receives mail is decided by
 // listGreeterDigestRecipients reading auth_unified, not by this file.
@@ -172,7 +172,9 @@ export default {
   },
 
   /**
-   * Cron: the weekly greeter digest, Mondays at 09:00 UTC.
+   * Cron: the weekly greeter digest, Wednesdays at 09:00 UTC. Wednesday rather
+   * than Monday because the week it reports on is only ~70% entered by Monday
+   * and ~95% by Wednesday — see the cron block in wrangler.toml.
    *
    * PINNED TO UTC, NOT TO EASTERN. 09:00Z is 4am EST and 5am EDT — the send
    * drifts an hour across the year rather than the schedule drifting a week,

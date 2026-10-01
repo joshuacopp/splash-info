@@ -81,7 +81,7 @@ export function renderGreeterDigest(
   );
 
   // The missing-day count goes in the subject because it is the one thing that
-  // makes this mail worth opening on a Monday morning. "All days reported" is
+  // makes this mail worth opening at all. "All days reported" is
   // stated positively rather than left off — a subject that only ever names
   // problems teaches people to read a plain subject as "nothing to see", and
   // then a delivery failure looks exactly like a clean week.
