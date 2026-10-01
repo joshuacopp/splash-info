@@ -159,11 +159,22 @@ export default async function SdsPage({ searchParams }: PageProps) {
   // BEFORE the site picker, because this tab needs no site.
   if (tab === "documents") {
     const safety = await listSafetyDocuments();
+    // Sorted by the name people read, not the slug underneath it -- a picker
+    // ordered by code puts "batavia_veterans" next to "batavia" and reads as
+    // arbitrary to anyone scanning for their own site.
+    const docSites = siteCodes
+      .map((code) => ({ code, name: nameFor(code) }))
+      .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
     return (
       <Shell>
         <Header />
         <TabNav active="documents" />
-        <SafetyDocuments documents={safety.documents} canUpload={safety.canUpload} />
+        <SafetyDocuments
+          documents={safety.documents}
+          canUpload={safety.canUpload}
+          sites={docSites}
+          defaultSite={activeSite}
+        />
       </Shell>
     );
   }

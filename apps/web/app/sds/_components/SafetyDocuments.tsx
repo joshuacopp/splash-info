@@ -17,19 +17,42 @@ import { useRouter } from "next/navigation";
 
 import type { SafetyDocument } from "../_lib/types";
 
+/** A site the caller may download a filled copy for. */
+export interface DocSite {
+  code: string;
+  name: string;
+}
+
+/** The blank master, as a `<select>` value. Not a site code, and deliberately
+ *  not the empty string, so "nothing chosen yet" could never be mistaken for
+ *  it if this ever grows a required-selection mode. */
+const BLANK = "__blank__";
+
 function sizeLabel(bytes: number | null): string {
   if (!bytes) return "";
   const mb = bytes / (1024 * 1024);
   return mb >= 1 ? `${mb.toFixed(1)} MB` : `${Math.max(1, Math.round(bytes / 1024))} KB`;
 }
 
-function Row({ doc, canUpload }: { doc: SafetyDocument; canUpload: boolean }) {
+function Row({
+  doc,
+  canUpload,
+  site
+}: {
+  doc: SafetyDocument;
+  canUpload: boolean;
+  /** Null means the blank master. */
+  site: DocSite | null;
+}) {
   const router = useRouter();
   const fileRef = useRef<HTMLInputElement | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [, startTransition] = useTransition();
-  const href = `/forms/api/sds/safety-documents/${encodeURIComponent(doc.slug)}/file`;
+  const base = `/forms/api/sds/safety-documents/${encodeURIComponent(doc.slug)}/file`;
+  // Upload always targets the document itself, never a site's copy -- there is
+  // one master and replacing it replaces it for everybody.
+  const href = site ? `${base}?location=${encodeURIComponent(site.code)}` : base;
 
   async function upload(file: File) {
     setError(null);
@@ -37,7 +60,7 @@ function Row({ doc, canUpload }: { doc: SafetyDocument; canUpload: boolean }) {
     try {
       const body = new FormData();
       body.set("file", file);
-      const r = await fetch(href, { method: "POST", body, credentials: "include" });
+      const r = await fetch(base, { method: "POST", body, credentials: "include" });
       if (!r.ok) {
         const t = await r.text().catch(() => "");
         setError(
@@ -79,13 +102,16 @@ function Row({ doc, canUpload }: { doc: SafetyDocument; canUpload: boolean }) {
       </div>
       <div className="flex shrink-0 items-center gap-3">
         {doc.r2_key ? (
+          /* The label names what you will GET, not what you are doing. Somebody
+             with ten sites picking the wrong one is the failure this is for,
+             and it is only avoidable if the button says which copy it is. */
           <a
             href={href}
             target="_blank"
             rel="noreferrer"
             className="rounded-splash-sm bg-splash-navy px-3 py-1.5 text-xs font-bold text-white"
           >
-            Download
+            {site ? `Download for ${site.name}` : "Download blank"}
           </a>
         ) : (
           /* Stated plainly rather than as a disabled button. "Not uploaded yet"
@@ -122,11 +148,29 @@ function Row({ doc, canUpload }: { doc: SafetyDocument; canUpload: boolean }) {
 
 export default function SafetyDocuments({
   documents,
-  canUpload
+  canUpload,
+  sites,
+  defaultSite
 }: {
   documents: SafetyDocument[];
   canUpload: boolean;
+  /** Sites the caller may pull a filled copy for. Empty for an admin, whose
+   *  access is "everything, no list" -- see the SDS page. */
+  sites: DocSite[];
+  /** Preselected when the caller has exactly one site, or came in with one in
+   *  the URL. Null elsewhere, so nobody with ten sites is handed one at
+   *  random. */
+  defaultSite: string | null;
 }) {
+  // One site and no choice to make: preselect it. More than one and the
+  // selection starts BLANK rather than on a guess -- a wrong site's emergency
+  // contacts printed on a safety programme is worse than no contacts, because
+  // the blank version visibly needs filling in and the wrong one does not.
+  const [selected, setSelected] = useState<string>(
+    defaultSite && sites.some((s) => s.code === defaultSite) ? defaultSite : BLANK
+  );
+  const site = sites.find((s) => s.code === selected) ?? null;
+
   return (
     <section>
       <p className="mb-3 text-sm text-splash-navy/70">
@@ -134,9 +178,39 @@ export default function SafetyDocuments({
         every site &mdash; download and keep a copy with your binder. The Safety
         Center checklist links to them too, when it finds one missing.
       </p>
+
+      {sites.length > 0 ? (
+        <div className="mb-4 rounded-splash-md border border-gray-light bg-white p-4">
+          <label
+            htmlFor="safety-doc-site"
+            className="block text-xs font-bold uppercase tracking-wide text-splash-navy/60"
+          >
+            Fill in for
+          </label>
+          <select
+            id="safety-doc-site"
+            value={selected}
+            onChange={(e) => setSelected(e.target.value)}
+            className="mt-1.5 w-full max-w-sm rounded-splash-sm border border-gray-light px-3 py-2 text-sm text-splash-navy"
+          >
+            <option value={BLANK}>Blank copy &mdash; fill in by hand</option>
+            {sites.map((s) => (
+              <option key={s.code} value={s.code}>
+                {s.name}
+              </option>
+            ))}
+          </select>
+          <p className="mt-2 text-xs text-splash-navy/60">
+            {site
+              ? `The site name, address and the emergency contacts for ${site.name} are printed onto the copy you download.`
+              : "Choose a site to have its name, address and emergency contacts printed on. Documents without those blanks download the same either way."}
+          </p>
+        </div>
+      ) : null}
+
       <ul className="rounded-splash-md border border-gray-light bg-white">
         {documents.map((d) => (
-          <Row key={d.slug} doc={d} canUpload={canUpload} />
+          <Row key={d.slug} doc={d} canUpload={canUpload} site={site} />
         ))}
       </ul>
       {documents.length === 0 ? (
