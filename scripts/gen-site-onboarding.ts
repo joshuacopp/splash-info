@@ -89,7 +89,14 @@ text("location_name", "Location name", {
 // The CHECK on pricing_simple is `site::text ~ '^\d{3}$'`, and a value that
 // cannot satisfy it is worth catching on the form rather than three steps later
 // when the insert is attempted.
-text("site_number", "Site number", {
+// DELIBERATELY NOT KEYED `site_number`. That key is magic: handlePublish
+// designates a field with it as the form's location scope, and the submit path
+// then HARD-REJECTS any value that is not already a known location. Correct for
+// every other form -- a scoped form must land on a real site -- and exactly
+// inverted here, where the entire point is a site that does not exist yet. The
+// first publish of this form turned that on and refused its own test
+// submission.
+text("new_site_number", "Site number", {
   max: 3,
   help: "Three digits, zero-padded. 069, not 69."
 });
