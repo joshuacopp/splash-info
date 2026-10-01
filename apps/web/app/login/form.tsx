@@ -89,6 +89,33 @@ export function LoginForm({ returnPath, turnstileSiteKey, startInMfaMode = false
   // switch the form to a 6-digit code entry that posts /api/login/mfa. mfaNext
   // is the server-sanitized redirect target to hand back on success.
   const [mfaMode, setMfaMode] = useState(startInMfaMode);
+
+  /**
+   * Put the cursor in the code box when the form flips to the code step.
+   *
+   * `autoFocus` on that input does nothing here and looks like it should.
+   * React applies it when a DOM node is CREATED, and both branches of this
+   * component render section > form > label > input at the same positions --
+   * so switching modes reconciles the existing input rather than mounting a
+   * new one, and the attribute never fires. It works on first page load, when
+   * the email field really is new, which is what makes the gap easy to miss.
+   *
+   * The cost of missing it is small and constant: password accepted, phone out
+   * of pocket, start typing the code, and nothing appears because focus is
+   * still on a button.
+   *
+   * Re-runs when `error` changes so a rejected code lands back in the box, and
+   * selects what is there so the next six digits replace it instead of
+   * appending to a six-digit value that maxLength then silently drops.
+   */
+  const codeRef = useRef<HTMLInputElement | null>(null);
+  useEffect(() => {
+    if (!mfaMode) return;
+    const el = codeRef.current;
+    if (!el) return;
+    el.focus();
+    if (el.value) el.select();
+  }, [mfaMode, error]);
   // True when the caller arrived already half way through a login, by either
   // probe -- as opposed to having just typed a password on this screen.
   const [steppingUp, setSteppingUp] = useState(startInMfaMode);
@@ -336,7 +363,11 @@ export function LoginForm({ returnPath, turnstileSiteKey, startInMfaMode = false
         <form onSubmit={onSubmitMfa}>
           <label className="mb-4 block">
             <span className="mb-1 block text-sm font-semibold">Authentication code</span>
+            {/* autoFocus is kept for the case where this input really is the
+                first thing mounted -- arriving straight on the code step. The
+                effect above covers the mode switch, where it does nothing. */}
             <input
+              ref={codeRef}
               type="text"
               inputMode="numeric"
               autoComplete="one-time-code"
