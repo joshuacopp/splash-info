@@ -243,12 +243,18 @@ const workflow: FormWorkflow = {
         "Safety Center checklist completed - {field.site_name} (site {field.site_number})",
       body_template:
         "{field.manager} completed the Safety Center Compliance Checklist for {field.site_name} (site {field.site_number}) on {field.inspection_date}.\n\n" +
-        "Your full copy is attached. Every answer is below.\n\n" +
-        "{payload.summary}\n\n" +
-        // Emits its own heading and nothing at all when the checklist came back
-        // clean or nothing is mapped, so a fully-stocked site does not get a
-        // shopping list header over empty space.
+        "Your full copy is attached.\n\n" +
+        // ORDERING FIRST, then the full answers. What the site has to DO about
+        // this checklist is order the things it is short of; the complete set
+        // of answers is the record, and a record does not need reading before
+        // the action it prompts. Emits its own headings and NOTHING at all when
+        // the checklist came back clean or nothing is mapped, so a fully-stocked
+        // site does not get a shopping-list header over empty space -- which is
+        // also why the sentence above no longer promises "every answer is
+        // below" immediately before something else.
         "{parts.needed}\n\n" +
+        "Every answer is below.\n\n" +
+        "{payload.summary}\n\n" +
         "Anything answered No is also on your action items page, where it stays until it is closed out.",
       attach_pdf: true,
       transitions: [{ to: "notify_rm", label: "Email the RM" }]

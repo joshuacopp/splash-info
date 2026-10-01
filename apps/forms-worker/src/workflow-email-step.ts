@@ -774,12 +774,19 @@ function questionLabelFor(key: string, fields: Map<string, Field>): string {
  * One array, shared by the plain-text and HTML renderings, because two copies
  * of a procedure is how one of them ends up a version behind.
  */
+// OPERATOR'S WORDING, VERBATIM. Do not tidy it: this is the procedure as the
+// person who runs it describes it, and a paraphrase that reads better can still
+// be a paraphrase that is wrong about a step.
+//
+// The one change is "above" -> "below" in step 4. The steps now print FIRST and
+// the items follow, so "above" points at nothing.
 const ORDERING_STEPS: readonly string[] = [
   "Log in to ProcureDesk.",
   "Create an order.",
   'Choose "Add line items".',
-  "Select the vendor shown against the item above (Amazon or Grainger).",
-  "The items land in your ProcureDesk cart; check out there."
+  "Select the vendor shown against the item below (Amazon or Grainger).",
+  "Click 'Order' on an item from this email to open the link for the vendor where it can be added to cart.",
+  "Once all needed items from that vendor are added to cart, checkout with the standard ProcureDesk process."
 ];
 
 function renderPartsNeeded(
@@ -787,7 +794,12 @@ function renderPartsNeeded(
   fields: Map<string, Field>
 ): string {
   if (!parts || parts.size === 0) return "";
-  const lines: string[] = ["Items to order:"];
+  // Steps BEFORE the items: the list is only actionable once somebody knows an
+  // order has to exist in ProcureDesk first, and instructions underneath a list
+  // of links are read after the links have already been clicked.
+  const lines: string[] = ["How to order:"];
+  ORDERING_STEPS.forEach((step, i) => lines.push(`  ${i + 1}. ${step}`));
+  lines.push("", "Items to order:");
   for (const [key, list] of parts.entries()) {
     lines.push("", questionLabelFor(key, fields));
     for (const part of list) {
@@ -797,8 +809,6 @@ function renderPartsNeeded(
       lines.push(`    Details: ${partsDirectoryUrl(part.part_name)}`);
     }
   }
-  lines.push("", "How to order:");
-  ORDERING_STEPS.forEach((step, i) => lines.push(`  ${i + 1}. ${step}`));
   return lines.join("\n");
 }
 
@@ -833,19 +843,21 @@ function renderPartsNeededHtml(
     }
   }
   if (rows.length === 0) return "";
+  // STEPS FIRST, then the items they refer to. The list is only actionable once
+  // somebody knows an order has to exist in ProcureDesk before any link does
+  // anything, and instructions printed under a table of links get read after
+  // the links have already been clicked.
   return [
-    `<p style="margin: 20px 0 4px 0; font-size: 14px; font-weight: 600; color: #0E2745;">Items to order</p>`,
+    `<p style="margin: 20px 0 4px 0; font-size: 14px; font-weight: 600; color: #0E2745;">How to order</p>`,
+    `<ol style="margin: 4px 0 16px 0; padding-left: 20px; font-size: 13px; color: #4b5563; line-height: 1.6;">`,
+    ORDERING_STEPS.map((step) => `<li>${escapeHtml(step)}</li>`).join(""),
+    `</ol>`,
+    `<p style="margin: 0 0 4px 0; font-size: 14px; font-weight: 600; color: #0E2745;">Items to order</p>`,
     `<table role="presentation" cellpadding="0" cellspacing="0" border="0" style="width: 100%; border-collapse: collapse; margin: 4px 0 20px 0; background-color: #F9FAFB; border-radius: 6px; padding: 4px 12px;">`,
     `<tbody>`,
     rows.join(""),
     `</tbody>`,
-    `</table>`,
-    // Directly under the table, because it is the instruction for the links in
-    // it -- a step further away is a step somebody scrolls past.
-    `<p style="margin: 0 0 4px 0; font-size: 14px; font-weight: 600; color: #0E2745;">How to order</p>`,
-    `<ol style="margin: 0 0 20px 0; padding-left: 20px; font-size: 13px; color: #4b5563; line-height: 1.6;">`,
-    ORDERING_STEPS.map((step) => `<li>${escapeHtml(step)}</li>`).join(""),
-    `</ol>`
+    `</table>`
   ].join("");
 }
 
