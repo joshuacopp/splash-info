@@ -131,6 +131,9 @@ import {
   handleNumberTabs,
   handleDeleteCatalog,
   handleSetHazard,
+  handleListSafetyDocs,
+  handleServeSafetyDoc,
+  handleUploadSafetyDoc,
   handleMergeCatalog
 } from "./sds/handlers.js";
 import { handleEmailQueueClaim } from "./email-queue/claim.js";
@@ -617,6 +620,17 @@ export default {
     }
     if (url.pathname === "/forms/api/sds/print.pdf" && req.method === "GET") {
       return handlePrintSds(env, req);
+    }
+    // Fixed path before the {id} routes above it would otherwise swallow.
+    if (url.pathname === "/forms/api/sds/safety-documents" && req.method === "GET") {
+      return handleListSafetyDocs(env, req);
+    }
+    const sdsDocMatch = url.pathname.match(
+      /^\/forms\/api\/sds\/safety-documents\/([^/]+)\/file$/
+    );
+    if (sdsDocMatch && sdsDocMatch[1]) {
+      if (req.method === "GET") return handleServeSafetyDoc(env, req, sdsDocMatch[1]);
+      if (req.method === "POST") return handleUploadSafetyDoc(env, req, sdsDocMatch[1]);
     }
     if (url.pathname === "/forms/api/sds/candidates" && req.method === "GET") {
       return handleSdsCandidates(env, req);

@@ -50,6 +50,10 @@ import {
   partsDirectoryUrl,
   type PartLink
 } from "./parts-lookup.js";
+import {
+  lookupSafetyDocsForFieldKeys,
+  type SafetyDocRow
+} from "./sds/safety-docs.js";
 import { generateOrReuseCompletedPdf } from "./pdf/cascade-attach.js";
 import { wrapInEmailShell } from "@splash/email-shell";
 
@@ -78,6 +82,11 @@ export interface RuntimeContext {
    *  database read, and only a workflow whose template actually contains the
    *  token pays for it. Absent (or empty) renders the token as nothing. */
   partsNeeded?: Map<string, PartLink[]>;
+  /** Company programmes answering the same flagged questions. Resolved with
+   *  the parts and rendered in the same block: a checklist flags a problem,
+   *  and whether the answer is bought or adopted is not the reader's
+   *  filing concern. */
+  safetyDocs?: SafetyDocRow[];
 }
 
 export interface CascadeResult {
@@ -167,6 +176,10 @@ export async function cascadeThroughEmailSteps(
   // gloves either way. That rule lives in the schema package precisely so this
   // and the PDF cannot end up disagreeing about what a bad answer is.
   const partsNeeded = (await resolvePartsNeeded(env, ctx.schema, ctx.payload)) ?? undefined;
+  // Same trigger, same flagged keys. A question can carry both -- being out
+  // of gloves and having no HazCom programme are different kinds of problem
+  // and nothing here assumes a question has only one.
+  const safetyDocs = (await resolveSafetyDocs(env, ctx.schema, ctx.payload)) ?? undefined;
 
   for (let depth = 0; depth < MAX_CASCADE_DEPTH; depth++) {
     const stage = workflow.stages.find((s) => s.id === currentStageId);
@@ -209,7 +222,8 @@ export async function cascadeThroughEmailSteps(
     const localRuntime: RuntimeContext = {
       ...ctx.runtime,
       outcome: outcomeForRender,
-      partsNeeded
+      partsNeeded,
+      safetyDocs
     };
 
     const recipients = await resolveEmailRecipients(env, ctx.schema, ctx.payload, stage);
@@ -519,7 +533,7 @@ export function renderTemplate(
       case "payload.summary":
         return renderPayloadSummary(payload, fields);
       case "parts.needed":
-        return renderPartsNeeded(runtime.partsNeeded, fields);
+        return renderPartsNeeded(runtime.partsNeeded, fields, runtime.safetyDocs);
     }
     if (token.startsWith("field.")) {
       const key = token.slice("field.".length);
@@ -653,7 +667,7 @@ function renderTokenHtml(
     case "payload.summary":
       return renderPayloadSummaryHtml(payload, fields);
     case "parts.needed":
-      return renderPartsNeededHtml(runtime.partsNeeded, fields);
+      return renderPartsNeededHtml(runtime.partsNeeded, fields, runtime.safetyDocs);
   }
   if (token.startsWith("field.")) {
     const key = token.slice("field.".length);
@@ -721,6 +735,40 @@ function renderPayloadSummaryHtml(
  * Returning null rather than an empty map keeps "nobody asked" distinguishable
  * from "asked, found nothing" in a debugger; both render as nothing.
  */
+/**
+ * Programmes answering the questions this submission flagged.
+ *
+ * Gated on the SAME token as the parts, so no other form pays for the query,
+ * and fed the SAME flagged keys so the two cannot disagree about what counts
+ * as a bad answer. Returns only documents with a file: a row naming one
+ * nobody has uploaded belongs on the admin page where somebody can fix it,
+ * not in a site email as a link that goes nowhere.
+ */
+async function resolveSafetyDocs(
+  env: Env,
+  schema: FormSchema,
+  payload: SubmissionPayload
+): Promise<SafetyDocRow[] | null> {
+  const workflow = schema.workflow;
+  if (!workflow) return null;
+  const wanted = workflow.stages.some(
+    (s) =>
+      isEmailStage(s) &&
+      (`${s.subject_template ?? ""}${s.body_template ?? ""}`).includes("{parts.needed}")
+  );
+  if (!wanted) return null;
+  const flagged = flaggedFieldKeys(schema, payload);
+  if (flagged.length === 0) return null;
+  try {
+    return await lookupSafetyDocsForFieldKeys(env, flagged);
+  } catch (err) {
+    // Fail soft: a missing document block costs a link; throwing costs the
+    // email, which carries the PDF and everything else.
+    console.error("[forms.workflow.email-step] safety docs lookup failed", err);
+    return null;
+  }
+}
+
 async function resolvePartsNeeded(
   env: Env,
   schema: FormSchema,
@@ -807,6 +855,12 @@ const ORDERING_STEPS: readonly string[] = [
  * they cannot be ordered through ProcureDesk at all yet, and burying them in
  * the middle of a vendor run is how they get missed.
  */
+/** Where a safety programme is downloaded from. Mirrors partsDirectoryUrl:
+ *  one place that knows the shape of this link. */
+function safetyDocUrl(slug: string): string {
+  return `https://splashcarwashes.info/forms/api/sds/safety-documents/${encodeURIComponent(slug)}/file`;
+}
+
 function groupPartsByVendor(
   parts: Map<string, PartLink[]>,
   fields: Map<string, Field>
@@ -857,45 +911,70 @@ function vendorHandoverLine(current: string | null, next: string | null): string
 
 function renderPartsNeeded(
   parts: Map<string, PartLink[]> | undefined,
-  fields: Map<string, Field>
+  fields: Map<string, Field>,
+  docs?: SafetyDocRow[]
 ): string {
-  if (!parts || parts.size === 0) return "";
+  const hasParts = Boolean(parts && parts.size > 0);
+  const hasDocs = Boolean(docs && docs.length > 0);
+  // Either half is reason enough to print. A site with its supplies in order
+  // but no written HazCom programme has nothing to buy and something to do.
+  if (!hasParts && !hasDocs) return "";
+  const lines: string[] = [];
+
+  // Ordering steps only when there is something to order. A site whose only gap
+  // is a missing written programme has no cart to fill, and six ProcureDesk
+  // steps above a single document link is noise.
+  //
   // Steps BEFORE the items: the list is only actionable once somebody knows an
   // order has to exist in ProcureDesk first, and instructions underneath a list
   // of links are read after the links have already been clicked.
-  const lines: string[] = ["How to order:"];
-  ORDERING_STEPS.forEach((step, i) => lines.push(`  ${i + 1}. ${step}`));
+  if (hasParts) {
+    lines.push("How to order:");
+    ORDERING_STEPS.forEach((step, i) => lines.push(`  ${i + 1}. ${step}`));
 
-  const groups = groupPartsByVendor(parts, fields);
-  lines.push("", "Items to order:");
-  groups.forEach((group, gi) => {
-    lines.push("", group.vendor ?? "No vendor recorded yet");
-    for (const { part, question } of group.items) {
-      // The question is only worth printing when it says something the part
-      // name does not. "Spill Kit Fully Stocked -> Spill Kit Refill" earns its
-      // line; "Wheel Chocks -> Wheel Chocks" is the same words twice.
-      const asked =
-        question.trim().toLowerCase() === part.part_name.trim().toLowerCase()
-          ? ""
-          : ` (for: ${question})`;
-      const num = part.part_number ? ` part #${part.part_number}` : "";
-      lines.push(`  - ${part.part_name}${num}${asked}`);
-      if (part.vendor_url) lines.push(`    Order: ${part.vendor_url}`);
-      lines.push(`    Details: ${partsDirectoryUrl(part.part_name)}`);
+    const groups = groupPartsByVendor(parts!, fields);
+    lines.push("", "Items to order:");
+    groups.forEach((group, gi) => {
+      lines.push("", group.vendor ?? "No vendor recorded yet");
+      for (const { part, question } of group.items) {
+        // The question is only worth printing when it says something the part
+        // name does not. "Spill Kit Fully Stocked -> Spill Kit Refill" earns
+        // its line; "Wheel Chocks -> Wheel Chocks" is the same words twice.
+        const asked =
+          question.trim().toLowerCase() === part.part_name.trim().toLowerCase()
+            ? ""
+            : ` (for: ${question})`;
+        const num = part.part_number ? ` part #${part.part_number}` : "";
+        lines.push(`  - ${part.part_name}${num}${asked}`);
+        if (part.vendor_url) lines.push(`    Order: ${part.vendor_url}`);
+        lines.push(`    Details: ${partsDirectoryUrl(part.part_name)}`);
+      }
+      const next = groups[gi + 1];
+      if (next) lines.push("", `  ${vendorHandoverLine(group.vendor, next.vendor)}`);
+    });
+  }
+
+  // Programmes are adopted, not bought, so they get their own heading rather
+  // than a row in a table whose other columns are a vendor and a cart.
+  if (hasDocs) {
+    if (lines.length > 0) lines.push("");
+    lines.push("Documents to put in place:");
+    for (const d of docs!) {
+      lines.push(`  - ${d.title}`);
+      lines.push(`    Download: ${safetyDocUrl(d.slug)}`);
     }
-    const next = groups[gi + 1];
-    if (next) lines.push("", `  ${vendorHandoverLine(group.vendor, next.vendor)}`);
-  });
+  }
   return lines.join("\n");
 }
 
 function renderPartsNeededHtml(
   parts: Map<string, PartLink[]> | undefined,
-  fields: Map<string, Field>
+  fields: Map<string, Field>,
+  docs?: SafetyDocRow[]
 ): string {
-  if (!parts || parts.size === 0) return "";
-  const groups = groupPartsByVendor(parts, fields);
-  if (groups.length === 0) return "";
+  const groups = parts ? groupPartsByVendor(parts, fields) : [];
+  const docList = docs ?? [];
+  if (groups.length === 0 && docList.length === 0) return "";
 
   const link = (href: string, label: string) =>
     `<a href="${escapeAttrValue(href)}" style="color: #0B6BCB; text-decoration: underline;">${label}</a>`;
@@ -948,17 +1027,48 @@ function renderPartsNeededHtml(
     }
   });
 
+  const out: string[] = [];
+
   // STEPS FIRST, then the items they refer to. Instructions printed under a
-  // table of links get read after the links have already been clicked.
-  return [
-    `<p style="margin: 20px 0 4px 0; font-size: 14px; font-weight: 600; color: #0E2745;">How to order</p>`,
-    `<ol style="margin: 4px 0 16px 0; padding-left: 20px; font-size: 13px; color: #4b5563; line-height: 1.6;">`,
-    ORDERING_STEPS.map((step) => `<li>${escapeHtml(step)}</li>`).join(""),
-    `</ol>`,
-    `<p style="margin: 0 0 4px 0; font-size: 14px; font-weight: 600; color: #0E2745;">Items to order</p>`,
-    blocks.join(""),
-    `<div style="margin: 0 0 20px 0;"></div>`
-  ].join("");
+  // table of links get read after the links have already been clicked. Omitted
+  // entirely when there is nothing to order: six ProcureDesk steps above a
+  // single document link is noise.
+  if (groups.length > 0) {
+    out.push(
+      `<p style="margin: 20px 0 4px 0; font-size: 14px; font-weight: 600; color: #0E2745;">How to order</p>`,
+      `<ol style="margin: 4px 0 16px 0; padding-left: 20px; font-size: 13px; color: #4b5563; line-height: 1.6;">`,
+      ORDERING_STEPS.map((step) => `<li>${escapeHtml(step)}</li>`).join(""),
+      `</ol>`,
+      `<p style="margin: 0 0 4px 0; font-size: 14px; font-weight: 600; color: #0E2745;">Items to order</p>`,
+      blocks.join(""),
+      `<div style="margin: 0 0 12px 0;"></div>`
+    );
+  }
+
+  // Programmes are adopted, not bought. Own heading, no vendor column, and the
+  // verb is Download rather than Order.
+  if (docList.length > 0) {
+    out.push(
+      `<p style="margin: 14px 0 4px 0; font-size: 14px; font-weight: 600; color: #0E2745;">Documents to put in place</p>`,
+      `<table role="presentation" cellpadding="0" cellspacing="0" border="0" style="width: 100%; border-collapse: collapse; margin: 4px 0 20px 0; background-color: #F9FAFB; border-radius: 6px; padding: 4px 12px;">`,
+      `<tbody>`,
+      docList
+        .map(
+          (d) =>
+            `<tr><td style="padding: 8px 0; vertical-align: top; font-size: 14px; color: #1f2937; border-bottom: 1px solid #E5E7EB;">` +
+            `<span style="font-weight: 600; color: #0E2745;">${escapeHtml(d.title)}</span>` +
+            (d.description
+              ? `<br><span style="color: #6b7280;">${escapeHtml(d.description)}</span>`
+              : "") +
+            `<br>${link(safetyDocUrl(d.slug), "Download")}` +
+            `</td></tr>`
+        )
+        .join(""),
+      `</tbody>`,
+      `</table>`
+    );
+  }
+  return out.join("");
 }
 
 

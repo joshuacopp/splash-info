@@ -171,3 +171,21 @@ export interface SdsInventoryProduct {
    *  match. Worth distinguishing: only the first is somebody's judgement. */
   matched_by: "alias" | "name" | null;
 }
+
+/** A company safety programme offered for download.
+ *
+ *  `r2_key` null means NAMED BUT NOT UPLOADED -- a real state, and the reason
+ *  these are rows rather than a bucket listing. A bucket can only show what is
+ *  already there; the gap is the half worth seeing. */
+export interface SafetyDocument {
+  id: string;
+  slug: string;
+  title: string;
+  description: string | null;
+  r2_key: string | null;
+  file_name: string | null;
+  size_bytes: number | null;
+  uploaded_at: string | null;
+  uploaded_by: string | null;
+  form_field_keys: string[];
+}

@@ -38,7 +38,9 @@ export function sheetKey(catalogId: string): string {
 /** Imported lazily: file-type is ESM-only, and a static import makes this
  *  whole module unloadable outside the worker -- including from a test that
  *  only wants the merge. It is also only needed when somebody uploads. */
-async function isPdf(bytes: Uint8Array): Promise<boolean> {
+/** Exported so the safety-document upload uses the SAME test as the sheet
+ *  upload. Two definitions of "is this a PDF" is one of them being wrong. */
+export async function isPdf(bytes: Uint8Array): Promise<boolean> {
   const { fileTypeFromBuffer } = await import("file-type");
   const sniffed = await fileTypeFromBuffer(bytes.slice(0, 4100));
   return sniffed?.mime === "application/pdf";

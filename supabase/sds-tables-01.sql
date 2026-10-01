@@ -323,3 +323,24 @@ from inventory.products p;
 -- call was a reading of one revision, and the failure mode of keeping it is a
 -- newly-hazardous product silently staying off the list.
 -- ---------------------------------------------------------------------------
+
+-- ---------------------------------------------------------------------------
+-- APPLIED 2026-10-01. public.safety_documents -- HazCom, spill response and
+-- OSHA SDS training, downloadable from /sds?tab=documents and linked from the
+-- Safety Center checklist when the matching question is answered No.
+--
+-- A SEPARATE TABLE FROM parts_directory even though form_field_keys looks the
+-- same. A part is bought and arrives; a programme is adopted and followed. A
+-- vendor, a cart and an order link mean nothing here, and "Order" is the wrong
+-- verb for a document -- which is why Brief 177 declined to seed these four
+-- questions as parts in the first place.
+--
+-- r2_key STARTS NULL AND THAT IS A VALID STATE. The rows exist so the page and
+-- the checklist can NAME the documents before anybody uploads them: a site sees
+-- "not uploaded yet" rather than a link that 404s, and an administrator sees
+-- what is still missing. A listing derived from the bucket could only show what
+-- is already there, which is the wrong half.
+--
+-- Three rows seeded, mapped to prog_hazcom / prog_spill_response /
+-- (prog_sds + prog_sds_binder). Files are uploaded through the page.
+-- ---------------------------------------------------------------------------

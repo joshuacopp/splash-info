@@ -12,6 +12,7 @@ import { getCloudflareContext } from "@opennextjs/cloudflare";
 import type {
   SdsCandidate,
   SdsCatalogSearchRow,
+  SafetyDocument,
   SdsInventoryProduct,
   SdsItem,
   SdsResponse
@@ -362,4 +363,19 @@ export async function setCatalogHazard(
       jsonBody: { not_hazardous: notHazardous, note }
     })
   );
+}
+
+/** The safety programmes, uploaded or not. Fail-soft to an empty list: the
+ *  binder index is the page's job and must not go down with this tab. */
+export async function listSafetyDocuments(): Promise<{
+  documents: SafetyDocument[];
+  canUpload: boolean;
+}> {
+  const resp = await callForms("/forms/api/sds/safety-documents");
+  if (!resp.ok) return { documents: [], canUpload: false };
+  const data = (await resp.json()) as {
+    documents?: SafetyDocument[];
+    can_upload?: boolean;
+  };
+  return { documents: data.documents ?? [], canUpload: data.can_upload === true };
 }

@@ -39,11 +39,18 @@ import {
   handleUploadSheet,
   handleServeSheet,
   handleCatalogUpload,
+  isPdf,
   handleServeCatalogSheet,
   renderBinderPdf
 } from "./sheets.js";
 import { linkAlias, loadAliasMap, unlinkAlias } from "./aliases.js";
 import { assignTabs, nextTabFor, TAB_LIMIT } from "./tabs.js";
+import {
+  listSafetyDocs,
+  readSafetyDoc,
+  serveSafetyDoc,
+  safetyDocKey
+} from "./safety-docs.js";
 import { mergeCatalogEntries } from "./merge.js";
 import { getLocationOptionsFromPricingSimple } from "../db/forms.js";
 
@@ -57,6 +64,9 @@ const NOTES_MAX = 1000;
 /** One bulk seed should not be able to fill a site's list with hundreds of
  *  rows nobody reviewed. */
 const SEED_MAX = 100;
+/** A written programme is text, not scans of a binder. Generous, but not so
+ *  generous that a 40 MB export lands in every site's inbox path. */
+const SAFETY_DOC_MAX_BYTES = 15 * 1024 * 1024;
 
 export interface SdsItemRow {
   id: string;
@@ -1702,4 +1712,111 @@ export async function handleSetHazard(
   }
 
   return json({ catalog: updated });
+}
+
+// =============================================================================
+// GET  /forms/api/sds/safety-documents
+// GET  /forms/api/sds/safety-documents/{slug}/file
+// POST /forms/api/sds/safety-documents/{slug}/file   (admin, multipart)
+// =============================================================================
+
+/** The company safety programmes, uploaded or not. Any authenticated user: the
+ *  list is also how somebody sees which ones are still missing. */
+export async function handleListSafetyDocs(env: Env, req: Request): Promise<Response> {
+  const keyed = requireServiceKey(env);
+  if (keyed) return keyed;
+  const g = await gate(env, req);
+  if (!g.ok) return g.response;
+  try {
+    return json({ documents: await listSafetyDocs(env), can_upload: g.access.isAdmin });
+  } catch (err) {
+    console.error("[forms.safety-docs] list failed", err);
+    return jsonError(502, "safety_documents_failed");
+  }
+}
+
+/** Open one. Any authenticated user -- a safety programme everybody is meant to
+ *  follow is one everybody is meant to be able to read. */
+export async function handleServeSafetyDoc(
+  env: Env,
+  req: Request,
+  slug: string
+): Promise<Response> {
+  const keyed = requireServiceKey(env);
+  if (keyed) return keyed;
+  const g = await gate(env, req);
+  if (!g.ok) return g.response;
+  const doc = await readSafetyDoc(env, slug);
+  if (!doc) return jsonError(404, "not_found");
+  return serveSafetyDoc(env, doc);
+}
+
+/**
+ * Replace the file behind one document.
+ *
+ * Admin-tier: this is the company's programme, identical at every site, and a
+ * site replacing it for everybody is not a thing a site should be able to do.
+ * The row is never created here -- the three exist already -- so an upload can
+ * only ever fill or replace a named slot.
+ */
+export async function handleUploadSafetyDoc(
+  env: Env,
+  req: Request,
+  slug: string
+): Promise<Response> {
+  if (!isOriginAllowed(req)) return jsonError(403, "bad_origin");
+  const keyed = requireServiceKey(env);
+  if (keyed) return keyed;
+  const g = await adminGate(env, req);
+  if (!g.ok) return g.response;
+
+  const doc = await readSafetyDoc(env, slug);
+  if (!doc) return jsonError(404, "not_found");
+
+  let form: FormData;
+  try {
+    form = await req.formData();
+  } catch {
+    return jsonError(400, "invalid_form_data");
+  }
+  const file = form.get("file");
+  if (!(file instanceof File)) return jsonError(400, "no_file");
+  if (file.size > SAFETY_DOC_MAX_BYTES) return jsonError(413, "file_too_large");
+
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  if (!(await isPdf(bytes))) return jsonError(415, "not_a_pdf");
+
+  const key = safetyDocKey(doc.slug);
+  try {
+    await env.FORMS_FILES.put(key, bytes, {
+      httpMetadata: { contentType: "application/pdf" }
+    });
+  } catch (err) {
+    console.error("[forms.safety-docs] r2 put failed", key, err);
+    return jsonError(502, "upload_failed");
+  }
+
+  // R2 first, then the row: the reverse order would leave the row claiming a
+  // file that is not there, which reads to a site as a broken link rather than
+  // as a missing document.
+  const url = new URL("/rest/v1/safety_documents", env.SUPABASE_URL);
+  url.searchParams.set("slug", `eq.${doc.slug}`);
+  const resp = await fetch(url.toString(), {
+    method: "PATCH",
+    headers: sbHeaders(env, { "Content-Type": "application/json" }),
+    body: JSON.stringify({
+      r2_key: key,
+      file_name: file.name || `${doc.slug}.pdf`,
+      size_bytes: bytes.length,
+      uploaded_at: new Date().toISOString(),
+      uploaded_by: g.email,
+      updated_at: new Date().toISOString(),
+      updated_by: g.email
+    })
+  });
+  if (!resp.ok) {
+    console.error("[forms.safety-docs] row update failed", resp.status);
+    return jsonError(502, "upload_recorded_failed");
+  }
+  return json({ ok: true, slug: doc.slug, size_bytes: bytes.length });
 }

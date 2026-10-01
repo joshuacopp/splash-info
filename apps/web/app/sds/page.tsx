@@ -19,11 +19,16 @@
 import Link from "next/link";
 
 import { getMe } from "../_lib/me";
-import { listSds, listSdsCandidates } from "./_lib/worker-fetch";
+import {
+  listSds,
+  listSdsCandidates,
+  listSafetyDocuments
+} from "./_lib/worker-fetch";
 import SdsTable from "./_components/SdsTable";
 import AddChemical from "./_components/AddChemical";
 import ReviewStamp from "./_components/ReviewStamp";
 import NumberTabs from "./_components/NumberTabs";
+import SafetyDocuments from "./_components/SafetyDocuments";
 
 export const dynamic = "force-dynamic";
 
@@ -45,6 +50,9 @@ export default async function SdsPage({ searchParams }: PageProps) {
   const sp = await searchParams;
   const requested = one(sp.location);
   const showRemoved = one(sp.removed) === "1";
+  // A tab, not a route. Somebody reaching for the HazCom programme is already
+  // thinking about chemicals and sheets, and that is where they look.
+  const tab = one(sp.tab) === "documents" ? "documents" : "binder";
 
   const session = await getMe().catch(() => null);
   if (!session) {
@@ -150,10 +158,43 @@ export default async function SdsPage({ searchParams }: PageProps) {
   const canEdit = resp.scope === "all" || resp.locations.includes(activeSite);
   const candidates = canEdit ? await listSdsCandidates(activeSite) : [];
   const removedCount = items.filter((i) => !i.is_active).length;
+  // Fetched only for the tab that shows it: the binder index is this page's
+  // job, and must not wait on a list it is not about to render.
+  const safety =
+    tab === "documents" ? await listSafetyDocuments() : { documents: [], canUpload: false };
+
+  const tabHref = (t: "binder" | "documents") =>
+    `/sds?location=${encodeURIComponent(activeSite)}${t === "documents" ? "&tab=documents" : ""}`;
+  const tabCls = (active: boolean) =>
+    active
+      ? "border-b-2 border-splash-navy px-1 pb-2 text-sm font-bold text-splash-navy"
+      : "border-b-2 border-transparent px-1 pb-2 text-sm font-semibold text-splash-navy/55 hover:text-splash-navy";
+
+  if (tab === "documents") {
+    return (
+      <Shell>
+        <Header />
+        <nav className="mb-5 flex gap-5 border-b border-gray-light">
+          <Link href={tabHref("binder")} className={tabCls(false)}>
+            Binder index
+          </Link>
+          <span className={tabCls(true)}>Safety documents</span>
+        </nav>
+        <SafetyDocuments documents={safety.documents} canUpload={safety.canUpload} />
+      </Shell>
+    );
+  }
 
   return (
     <Shell>
       <Header />
+
+      <nav className="mb-5 flex gap-5 border-b border-gray-light">
+        <span className={tabCls(true)}>Binder index</span>
+        <Link href={tabHref("documents")} className={tabCls(false)}>
+          Safety documents
+        </Link>
+      </nav>
 
       <div className="mb-4 flex flex-wrap items-baseline justify-between gap-3">
         <div>
