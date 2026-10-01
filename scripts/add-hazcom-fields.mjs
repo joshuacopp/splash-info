@@ -22,8 +22,29 @@
 // into the middle of a sentence -- a wrong field on a safety document is worse
 // than no field, because it looks deliberate.
 
-import { PDFDocument } from "pdf-lib";
+import { PDFDocument, PDFDict, PDFName } from "pdf-lib";
 import { readFileSync, writeFileSync } from "node:fs";
+
+/**
+ * Strip the widget's background colour.
+ *
+ * NOT PASSING `backgroundColor` IS NOT ENOUGH -- pdf-lib writes an MK/BG of
+ * white regardless, and a white rectangle over a white page is invisible right
+ * up until you notice the thing it covered. What it covers here is the
+ * document's own "____________" and "(___) ____ - _____", i.e. the lines
+ * somebody writes on, so the blank copy came out with nowhere to write and
+ * looked perfectly fine while doing it.
+ *
+ * The filled copy DOES want the cover, so that values do not print on top of
+ * the underscores -- but it is the fill path that adds it back, at fill time.
+ * The stored master keeps its blanks.
+ */
+function clearWidgetBackground(field) {
+  for (const widget of field.acroField.getWidgets()) {
+    const mk = widget.dict.lookupMaybe(PDFName.of("MK"), PDFDict);
+    if (mk) mk.delete(PDFName.of("BG"));
+  }
+}
 
 const [, , inPath, outPath] = process.argv;
 if (!inPath || !outPath) {
@@ -46,11 +67,10 @@ const form = doc.getForm();
 const p1 = doc.getPage(0);
 const p11 = doc.getPage(10);
 
-// NO BACKGROUND. A tint made the widget visible but PAINTED OVER the blanks
-// underneath -- the "(___) ____ - _____" on the phone lines vanished behind a
-// grey rectangle, so an unfilled copy lost the line somebody writes on by hand.
-// Transparent means a filled field shows the value and an unfilled one shows
-// the document exactly as it was.
+// NO BACKGROUND -- see clearWidgetBackground above, which is what actually
+// achieves it. Omitting `backgroundColor` only LOOKS like it does: pdf-lib
+// defaults the widget to white, and white-on-white hides the blanks instead of
+// the grey tint that made the problem obvious the first time.
 
 const FIELDS = [
   // Page 1, the empty left cell of the Location / Corporate Address table.
@@ -93,6 +113,7 @@ for (const f of FIELDS) {
     borderWidth: 0
   });
   tf.setFontSize(f.size);
+  clearWidgetBackground(tf);
 }
 
 writeFileSync(outPath, await doc.save());

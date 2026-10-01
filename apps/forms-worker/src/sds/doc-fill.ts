@@ -18,7 +18,7 @@
 // -- much worse -- the WRONG site's contacts. So a lookup that cannot be
 // completed produces an empty field, never a guess, and says so in the log.
 
-import { PDFDocument } from "pdf-lib";
+import { PDFDocument, PDFDict, PDFName, type PDFTextField } from "pdf-lib";
 import { sanitizeForWinAnsi } from "@splash/pdf-report";
 
 import type { Env } from "../index.js";
@@ -179,14 +179,39 @@ export async function fillSafetyDocPdf(
 
   for (const name of fillable) {
     const value = values[name];
+    // NO VALUE, NO COVER: a site whose RM has no number on file keeps a
+    // writable "(___) ____ - _____" on that line instead of a blank gap. The
+    // document degrades field by field rather than all or nothing.
     if (!value) continue;
+    const field = form.getTextField(name);
     // sanitizeForWinAnsi: the standard-font encoding cannot represent
     // typographic characters, and setText throws on the first one it cannot
     // encode. A curly apostrophe in a location name would otherwise take down
     // the whole download.
-    form.getTextField(name).setText(sanitizeForWinAnsi(value));
+    field.setText(sanitizeForWinAnsi(value));
+    coverBlankBehind(field);
   }
 
   form.flatten();
   return await doc.save();
+}
+
+/**
+ * Paint the field's background white so the flattened value does not land on
+ * top of the printed blank underneath it.
+ *
+ * The master deliberately has NO background, because those underscores are what
+ * somebody writes on when they want a hand-filled copy (see
+ * scripts/add-hazcom-fields.mjs). A filled copy wants the opposite: without
+ * this, "(607) 768-5674" prints over "(___) ____ - _____" and the result reads
+ * as "((607)___) 768-5674". So the cover is added here, per field, and only for
+ * fields that actually received a value.
+ */
+function coverBlankBehind(field: PDFTextField): void {
+  for (const widget of field.acroField.getWidgets()) {
+    const white = widget.dict.context.obj([1, 1, 1]);
+    const mk = widget.dict.lookupMaybe(PDFName.of("MK"), PDFDict);
+    if (mk) mk.set(PDFName.of("BG"), white);
+    else widget.dict.set(PDFName.of("MK"), widget.dict.context.obj({ BG: [1, 1, 1] }));
+  }
 }
