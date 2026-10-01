@@ -762,6 +762,26 @@ function questionLabelFor(key: string, fields: Map<string, Field>): string {
  * above an empty space, and the template author does not have to write the
  * heading conditionally (which templates cannot express).
  */
+/**
+ * How to actually order the things listed above.
+ *
+ * WITHOUT THIS THE LINKS ARE A DEAD END. A vendor link does not put anything in
+ * a cart by itself -- ordering goes through ProcureDesk, and the vendor is
+ * chosen INSIDE the order rather than by following the link. Somebody who
+ * clicks through and finds no way to check out concludes the feature is broken,
+ * when what they are missing is a step nobody told them about.
+ *
+ * One array, shared by the plain-text and HTML renderings, because two copies
+ * of a procedure is how one of them ends up a version behind.
+ */
+const ORDERING_STEPS: readonly string[] = [
+  "Log in to ProcureDesk.",
+  "Create an order.",
+  'Choose "Add line items".',
+  "Select the vendor shown against the item above (Amazon or Grainger).",
+  "The items land in your ProcureDesk cart; check out there."
+];
+
 function renderPartsNeeded(
   parts: Map<string, PartLink[]> | undefined,
   fields: Map<string, Field>
@@ -777,6 +797,8 @@ function renderPartsNeeded(
       lines.push(`    Details: ${partsDirectoryUrl(part.part_name)}`);
     }
   }
+  lines.push("", "How to order:");
+  ORDERING_STEPS.forEach((step, i) => lines.push(`  ${i + 1}. ${step}`));
   return lines.join("\n");
 }
 
@@ -817,7 +839,13 @@ function renderPartsNeededHtml(
     `<tbody>`,
     rows.join(""),
     `</tbody>`,
-    `</table>`
+    `</table>`,
+    // Directly under the table, because it is the instruction for the links in
+    // it -- a step further away is a step somebody scrolls past.
+    `<p style="margin: 0 0 4px 0; font-size: 14px; font-weight: 600; color: #0E2745;">How to order</p>`,
+    `<ol style="margin: 0 0 20px 0; padding-left: 20px; font-size: 13px; color: #4b5563; line-height: 1.6;">`,
+    ORDERING_STEPS.map((step) => `<li>${escapeHtml(step)}</li>`).join(""),
+    `</ol>`
   ].join("");
 }
 
