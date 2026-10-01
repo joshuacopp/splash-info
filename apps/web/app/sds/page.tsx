@@ -122,10 +122,57 @@ export default async function SdsPage({ searchParams }: PageProps) {
   const countFor = (code: string) =>
     resp.items.filter((i) => i.location_code === code && i.is_active).length;
 
+  // Documents are COMPANY-WIDE, so the tab must work with NO site chosen --
+  // which is exactly where this page starts for anyone who can see more than
+  // one. Putting the tabs only in the per-site view made them unreachable from
+  // the screen people actually land on.
+  const tabHref = (t: "binder" | "documents", site: string | null) => {
+    const qs = new URLSearchParams();
+    if (site) qs.set("location", site);
+    if (t === "documents") qs.set("tab", "documents");
+    const q = qs.toString();
+    return q ? `/sds?${q}` : "/sds";
+  };
+  const tabCls = (active: boolean) =>
+    active
+      ? "border-b-2 border-splash-navy px-1 pb-2 text-sm font-bold text-splash-navy"
+      : "border-b-2 border-transparent px-1 pb-2 text-sm font-semibold text-splash-navy/55 hover:text-splash-navy";
+  const TabNav = ({ active }: { active: "binder" | "documents" }) => (
+    <nav className="mb-5 flex gap-5 border-b border-gray-light">
+      {active === "binder" ? (
+        <span className={tabCls(true)}>Binder index</span>
+      ) : (
+        <Link href={tabHref("binder", activeSite)} className={tabCls(false)}>
+          Binder index
+        </Link>
+      )}
+      {active === "documents" ? (
+        <span className={tabCls(true)}>Safety documents</span>
+      ) : (
+        <Link href={tabHref("documents", activeSite)} className={tabCls(false)}>
+          Safety documents
+        </Link>
+      )}
+    </nav>
+  );
+
+  // BEFORE the site picker, because this tab needs no site.
+  if (tab === "documents") {
+    const safety = await listSafetyDocuments();
+    return (
+      <Shell>
+        <Header />
+        <TabNav active="documents" />
+        <SafetyDocuments documents={safety.documents} canUpload={safety.canUpload} />
+      </Shell>
+    );
+  }
+
   if (!activeSite) {
     return (
       <Shell>
         <Header />
+        <TabNav active="binder" />
         <p className="mb-4 text-sm text-splash-navy/70">
           {resp.scope === "all"
             ? `Pick a site to see its chemical list (${siteCodes.length} sites).`
@@ -158,43 +205,12 @@ export default async function SdsPage({ searchParams }: PageProps) {
   const canEdit = resp.scope === "all" || resp.locations.includes(activeSite);
   const candidates = canEdit ? await listSdsCandidates(activeSite) : [];
   const removedCount = items.filter((i) => !i.is_active).length;
-  // Fetched only for the tab that shows it: the binder index is this page's
-  // job, and must not wait on a list it is not about to render.
-  const safety =
-    tab === "documents" ? await listSafetyDocuments() : { documents: [], canUpload: false };
-
-  const tabHref = (t: "binder" | "documents") =>
-    `/sds?location=${encodeURIComponent(activeSite)}${t === "documents" ? "&tab=documents" : ""}`;
-  const tabCls = (active: boolean) =>
-    active
-      ? "border-b-2 border-splash-navy px-1 pb-2 text-sm font-bold text-splash-navy"
-      : "border-b-2 border-transparent px-1 pb-2 text-sm font-semibold text-splash-navy/55 hover:text-splash-navy";
-
-  if (tab === "documents") {
-    return (
-      <Shell>
-        <Header />
-        <nav className="mb-5 flex gap-5 border-b border-gray-light">
-          <Link href={tabHref("binder")} className={tabCls(false)}>
-            Binder index
-          </Link>
-          <span className={tabCls(true)}>Safety documents</span>
-        </nav>
-        <SafetyDocuments documents={safety.documents} canUpload={safety.canUpload} />
-      </Shell>
-    );
-  }
 
   return (
     <Shell>
       <Header />
 
-      <nav className="mb-5 flex gap-5 border-b border-gray-light">
-        <span className={tabCls(true)}>Binder index</span>
-        <Link href={tabHref("documents")} className={tabCls(false)}>
-          Safety documents
-        </Link>
-      </nav>
+      <TabNav active="binder" />
 
       <div className="mb-4 flex flex-wrap items-baseline justify-between gap-3">
         <div>
