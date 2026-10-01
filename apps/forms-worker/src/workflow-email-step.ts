@@ -784,10 +784,76 @@ const ORDERING_STEPS: readonly string[] = [
   "Log in to ProcureDesk.",
   "Create an order.",
   'Choose "Add line items".',
-  "Select the vendor shown against the item below (Amazon or Grainger).",
+  "Select the vendor for the first group below (Amazon or Grainger).",
   "Click 'Order' on an item from this email to open the link for the vendor where it can be added to cart.",
   "Once all needed items from that vendor are added to cart, checkout with the standard ProcureDesk process."
 ];
+
+/**
+ * The items, grouped by VENDOR rather than by question.
+ *
+ * WHY IT MATTERS, and it is not cosmetic. Ordering runs one vendor at a time:
+ * you pick a vendor inside ProcureDesk, then the "Order" links add to THAT
+ * session's cart. Hit a Grainger link while the Amazon order is open and the
+ * page opens logged out, the add goes nowhere, and nothing says so. Sorted by
+ * question, the list interleaved vendors and invited exactly that.
+ *
+ * There is no link that can reach a logged-in cart directly without API access,
+ * so the ordering of the page IS the mechanism.
+ *
+ * Vendors are ordered by how many items they carry, most first -- the longest
+ * run of uninterrupted clicking comes first -- then by name so the output is
+ * stable. Parts with no vendor recorded sort last under their own heading:
+ * they cannot be ordered through ProcureDesk at all yet, and burying them in
+ * the middle of a vendor run is how they get missed.
+ */
+function groupPartsByVendor(
+  parts: Map<string, PartLink[]>,
+  fields: Map<string, Field>
+): { vendor: string | null; items: { part: PartLink; question: string }[] }[] {
+  const byVendor = new Map<string, { part: PartLink; question: string }[]>();
+  const seen = new Set<string>();
+  for (const [key, list] of parts.entries()) {
+    for (const part of list) {
+      // One row per part, not per question: a part answering two questions is
+      // still one thing to buy, and two rows is two chances to order it twice.
+      if (seen.has(part.id)) continue;
+      seen.add(part.id);
+      const k = part.vendor ?? "";
+      const bucket = byVendor.get(k) ?? [];
+      bucket.push({ part, question: questionLabelFor(key, fields) });
+      byVendor.set(k, bucket);
+    }
+  }
+  return [...byVendor.entries()]
+    .map(([vendor, items]) => ({
+      vendor: vendor === "" ? null : vendor,
+      items: items.sort((a, b) => a.part.part_name.localeCompare(b.part.part_name))
+    }))
+    .sort((a, b) => {
+      if ((a.vendor === null) !== (b.vendor === null)) return a.vendor === null ? 1 : -1;
+      if (a.items.length !== b.items.length) return b.items.length - a.items.length;
+      return (a.vendor ?? "").localeCompare(b.vendor ?? "");
+    });
+}
+
+/** "Amazon - ProcureDesk" reads as a vendor name in a table and as noise in a
+ *  sentence. Strips only that exact suffix, so an unrecognised vendor string is
+ *  left exactly as the operator typed it. */
+function vendorShortName(vendor: string | null): string {
+  if (!vendor) return "this vendor";
+  return vendor.replace(/\s*-\s*ProcureDesk\s*$/i, "").trim() || vendor;
+}
+
+/** What to do between one vendor's items and the next. The whole reason the
+ *  grouping exists, so it is stated rather than left to be inferred. */
+function vendorHandoverLine(current: string | null, next: string | null): string {
+  return (
+    `Once every ${vendorShortName(current)} item above is in your cart, check out. ` +
+    `Back in ProcureDesk choose "Add line items" again, select ` +
+    `${vendorShortName(next)}, and repeat for the items below.`
+  );
+}
 
 function renderPartsNeeded(
   parts: Map<string, PartLink[]> | undefined,
@@ -799,16 +865,27 @@ function renderPartsNeeded(
   // of links are read after the links have already been clicked.
   const lines: string[] = ["How to order:"];
   ORDERING_STEPS.forEach((step, i) => lines.push(`  ${i + 1}. ${step}`));
+
+  const groups = groupPartsByVendor(parts, fields);
   lines.push("", "Items to order:");
-  for (const [key, list] of parts.entries()) {
-    lines.push("", questionLabelFor(key, fields));
-    for (const part of list) {
-      const detail = partDetailLine(part);
-      lines.push(`  - ${part.part_name}${detail ? ` (${detail})` : ""}`);
+  groups.forEach((group, gi) => {
+    lines.push("", group.vendor ?? "No vendor recorded yet");
+    for (const { part, question } of group.items) {
+      // The question is only worth printing when it says something the part
+      // name does not. "Spill Kit Fully Stocked -> Spill Kit Refill" earns its
+      // line; "Wheel Chocks -> Wheel Chocks" is the same words twice.
+      const asked =
+        question.trim().toLowerCase() === part.part_name.trim().toLowerCase()
+          ? ""
+          : ` (for: ${question})`;
+      const num = part.part_number ? ` part #${part.part_number}` : "";
+      lines.push(`  - ${part.part_name}${num}${asked}`);
       if (part.vendor_url) lines.push(`    Order: ${part.vendor_url}`);
       lines.push(`    Details: ${partsDirectoryUrl(part.part_name)}`);
     }
-  }
+    const next = groups[gi + 1];
+    if (next) lines.push("", `  ${vendorHandoverLine(group.vendor, next.vendor)}`);
+  });
   return lines.join("\n");
 }
 
@@ -817,49 +894,73 @@ function renderPartsNeededHtml(
   fields: Map<string, Field>
 ): string {
   if (!parts || parts.size === 0) return "";
-  const rows: string[] = [];
-  for (const [key, list] of parts.entries()) {
-    for (const part of list) {
-      const detail = partDetailLine(part);
+  const groups = groupPartsByVendor(parts, fields);
+  if (groups.length === 0) return "";
+
+  const link = (href: string, label: string) =>
+    `<a href="${escapeAttrValue(href)}" style="color: #0B6BCB; text-decoration: underline;">${label}</a>`;
+
+  const blocks: string[] = [];
+  groups.forEach((group, gi) => {
+    const rows = group.items.map(({ part, question }) => {
       const links: string[] = [];
-      if (part.vendor_url) {
-        links.push(
-          `<a href="${escapeAttrValue(part.vendor_url)}" style="color: #0B6BCB; text-decoration: underline;">Order</a>`
-        );
-      }
-      links.push(
-        `<a href="${escapeAttrValue(partsDirectoryUrl(part.part_name))}" style="color: #0B6BCB; text-decoration: underline;">Details</a>`
-      );
-      rows.push(
+      if (part.vendor_url) links.push(link(part.vendor_url, "Order"));
+      links.push(link(partsDirectoryUrl(part.part_name), "Details"));
+      // Printed only when it adds something: "Spill Kit Fully Stocked ->
+      // Spill Kit Refill" is worth a line, "Wheel Chocks -> Wheel Chocks" is
+      // the same words twice and was appearing in every row.
+      const asked =
+        question.trim().toLowerCase() === part.part_name.trim().toLowerCase()
+          ? ""
+          : `<br><span style="color: #6b7280;">for: ${escapeHtml(question)}</span>`;
+      const num = part.part_number
+        ? `<br><span style="color: #6b7280;">part #${escapeHtml(part.part_number)}</span>`
+        : "";
+      return (
         `<tr>` +
-          `<td style="padding: 8px 12px 8px 0; vertical-align: top; font-size: 14px; font-weight: 600; color: #0E2745; border-bottom: 1px solid #E5E7EB; width: 35%;">${escapeHtml(questionLabelFor(key, fields))}</td>` +
           `<td style="padding: 8px 0; vertical-align: top; font-size: 14px; color: #1f2937; border-bottom: 1px solid #E5E7EB;">` +
-            `${escapeHtml(part.part_name)}` +
-            (detail ? `<br><span style="color: #6b7280;">${escapeHtml(detail)}</span>` : "") +
+            `<span style="font-weight: 600; color: #0E2745;">${escapeHtml(part.part_name)}</span>` +
+            num +
+            asked +
             `<br>${links.join(" &middot; ")}` +
           `</td>` +
         `</tr>`
       );
+    });
+
+    blocks.push(
+      `<p style="margin: 14px 0 2px 0; font-size: 13px; font-weight: 700; color: #0E2745; text-transform: uppercase; letter-spacing: 0.04em;">${escapeHtml(group.vendor ?? "No vendor recorded yet")}</p>`,
+      `<table role="presentation" cellpadding="0" cellspacing="0" border="0" style="width: 100%; border-collapse: collapse; margin: 2px 0 8px 0; background-color: #F9FAFB; border-radius: 6px; padding: 4px 12px;">`,
+      `<tbody>`,
+      rows.join(""),
+      `</tbody>`,
+      `</table>`
+    );
+
+    const next = groups[gi + 1];
+    if (next) {
+      // Tinted, because it is an instruction rather than a row -- and because
+      // clicking straight past it into the next vendor is the exact mistake
+      // the grouping exists to prevent.
+      blocks.push(
+        `<p style="margin: 0 0 16px 0; padding: 10px 12px; background-color: #FEF3C7; border-radius: 6px; font-size: 13px; color: #78350F; line-height: 1.5;">${escapeHtml(vendorHandoverLine(group.vendor, next.vendor))}</p>`
+      );
     }
-  }
-  if (rows.length === 0) return "";
-  // STEPS FIRST, then the items they refer to. The list is only actionable once
-  // somebody knows an order has to exist in ProcureDesk before any link does
-  // anything, and instructions printed under a table of links get read after
-  // the links have already been clicked.
+  });
+
+  // STEPS FIRST, then the items they refer to. Instructions printed under a
+  // table of links get read after the links have already been clicked.
   return [
     `<p style="margin: 20px 0 4px 0; font-size: 14px; font-weight: 600; color: #0E2745;">How to order</p>`,
     `<ol style="margin: 4px 0 16px 0; padding-left: 20px; font-size: 13px; color: #4b5563; line-height: 1.6;">`,
     ORDERING_STEPS.map((step) => `<li>${escapeHtml(step)}</li>`).join(""),
     `</ol>`,
     `<p style="margin: 0 0 4px 0; font-size: 14px; font-weight: 600; color: #0E2745;">Items to order</p>`,
-    `<table role="presentation" cellpadding="0" cellspacing="0" border="0" style="width: 100%; border-collapse: collapse; margin: 4px 0 20px 0; background-color: #F9FAFB; border-radius: 6px; padding: 4px 12px;">`,
-    `<tbody>`,
-    rows.join(""),
-    `</tbody>`,
-    `</table>`
+    blocks.join(""),
+    `<div style="margin: 0 0 20px 0;"></div>`
   ].join("");
 }
+
 
 /** Attribute-position escaping for a URL we are about to drop into `href="..."`.
  *  `escapeHtml` already covers the quote, but going through a named helper
