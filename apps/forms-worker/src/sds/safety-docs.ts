@@ -132,8 +132,16 @@ export async function serveSafetyDoc(
   let safe = base;
 
   if (fill) {
+    // Read the object ONCE, into a buffer, and serve from that buffer whatever
+    // happens next. `obj.arrayBuffer()` consumes `obj.body`; serving the stream
+    // afterwards throws "ReadableStream is disturbed" OUTSIDE every try here,
+    // which is an uncaught exception and a bare Cloudflare 1101 page. That is
+    // exactly what an unfillable programme (the spill plan) hit on every
+    // site-specific download, because "no fields" fell back to `obj.body`.
+    const original = await obj.arrayBuffer();
+    body = original;
     try {
-      const filled = await fillSafetyDocPdf(await obj.arrayBuffer(), fill.values);
+      const filled = await fillSafetyDocPdf(original.slice(0), fill.values);
       if (filled) {
         // Slice to a standalone ArrayBuffer rather than passing the view: the
         // body type will not take a Uint8Array, and reaching for `.buffer`
@@ -160,9 +168,7 @@ export async function serveSafetyDoc(
       // replaces, blank lines and all, and it is a far better outcome than
       // failing a safety programme download outright.
       console.error(`[forms.safety-docs] fill failed for ${doc.slug}`, err);
-      const again = await env.FORMS_FILES.get(doc.r2_key);
-      if (!again) return jsonError(404, "file_missing");
-      body = again.body;
+      body = original;
     }
   }
 
