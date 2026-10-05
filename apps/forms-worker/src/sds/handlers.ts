@@ -484,6 +484,23 @@ export async function handlePatchSds(
     else if (ISO_DATE_RE.test(d)) catalogPatch.sds_revision_date = d;
   }
 
+  // Only fields that actually CHANGE count as a catalogue edit. The row's edit
+  // form posts every field it shows, so a site renumbering one tab also sends
+  // the product name, manufacturer, URL and revision date exactly as they were.
+  // Treating those as edits sent every tab change on a verified chemical into
+  // the admin-only refusal below -- the placement was theirs, and they still
+  // could not touch it.
+  const current =
+    Object.keys(catalogPatch).length > 0
+      ? await readCatalogEntry(env, existing.catalog_id)
+      : null;
+  if (current) {
+    const cur = current as unknown as Record<string, unknown>;
+    for (const key of Object.keys(catalogPatch)) {
+      if ((catalogPatch[key] ?? null) === (cur[key] ?? null)) delete catalogPatch[key];
+    }
+  }
+
   if (Object.keys(catalogPatch).length > 0) {
     // A VERIFIED ENTRY IS READ-ONLY TO EVERYONE BUT AN ADMIN.
     //
@@ -492,7 +509,6 @@ export async function handlePatchSds(
     // would be undone by somebody who was never allowed to grant it. The
     // placement (tab, work area, presence) stays theirs; what the chemical IS
     // does not, once somebody accountable has vouched for it.
-    const current = await readCatalogEntry(env, existing.catalog_id);
     if (current?.verified_at && !g.access.isAdmin) {
       return jsonError(403, "verified_entry_is_admin_only");
     }
