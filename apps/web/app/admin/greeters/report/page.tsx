@@ -39,6 +39,7 @@ import { Fragment, type ReactNode } from "react";
 import Link from "next/link";
 import type {
   GreeterPeriodReportRow,
+  GreeterScanGapRow,
   LocationPeriodRow
 } from "@splash/types/greeter";
 import { performanceGetJson } from "../../performance/_lib/worker-fetch";
@@ -107,6 +108,12 @@ import {
   type TrendPoint,
   type TrendSeries
 } from "./_components/Charts";
+import {
+  likelyAtSite,
+  ScanCrewGrid,
+  ScanGapsView,
+  type CrewDayRow
+} from "./_components/ScanGaps";
 import {
   bySite,
   byDay,
@@ -190,6 +197,14 @@ export default async function GreeterReportPage({ searchParams }: PageProps) {
    * thrown away are three round trips the call waits on.
    */
   const isMorning = preset.kind === "site";
+
+  /**
+   * Scan gaps is its own table too, and skips the dashboard for the same
+   * reason: none of the capture/D.O.B. cards answer "who isn't scanning", and
+   * their three extra reads would only slow the one that does.
+   */
+  const isGaps = preset.kind === "gaps";
+  const hideDashboard = isMorning || isGaps;
 
   // The window. An explicit date beats the preset's default, so a manager can
   // keep the "underperformers" threshold while changing the range — the preset
@@ -279,6 +294,8 @@ export default async function GreeterReportPage({ searchParams }: PageProps) {
   let greeterRows: GreeterPeriodReportRow[] | null = null;
   let missingRows: MissingDayRow[] | null = null;
   let personDays: GreeterDayRow[] | null = null;
+  let gapRows: GreeterScanGapRow[] | null = null;
+  let crewDays: CrewDayRow[] | null = null;
   let rosters: ManagerRosters = EMPTY_ROSTERS;
   let fetchError: string | null = null;
 
@@ -291,24 +308,24 @@ export default async function GreeterReportPage({ searchParams }: PageProps) {
     // same place rather than needing separate handling.
     //
     // The site rows are NOT optional — they are the morning call.
-    [siteRows, priorRows, greeterRows, missingRows, personDays, rosters] =
+    [siteRows, priorRows, greeterRows, missingRows, personDays, rosters, gapRows, crewDays] =
       await Promise.all([
         performanceGetJson<LocationPeriodRow[]>(
           `/pertrack/api/greeter/location-rows?${windowQs}${locQs}${mgrQs}`
         ),
-        isMorning
+        hideDashboard
           ? Promise.resolve(null)
           : performanceGetJson<LocationPeriodRow[]>(
               `/pertrack/api/greeter/location-rows?${priorQs}${locQs}${mgrQs}`
             ),
-        isMorning
+        hideDashboard
           ? Promise.resolve(null)
           : performanceGetJson<GreeterPeriodReportRow[]>(
               `/pertrack/api/greeter/period-report?${windowQs}${locQs}${mgrQs}${
                 greeter ? `&greeter=${encodeURIComponent(greeter)}` : ""
               }`
             ),
-        isMorning
+        hideDashboard
           ? Promise.resolve(null)
           : performanceGetJson<MissingDayRow[]>(
               `/pertrack/api/greeter/missing-days?${windowQs}${locQs}${mgrQs}`
@@ -320,7 +337,23 @@ export default async function GreeterReportPage({ searchParams }: PageProps) {
               )}`
             )
           : Promise.resolve(null),
-        fetchManagerRosters()
+        fetchManagerRosters(),
+        // The gaps table. Caught to null on its own rather than failing the page:
+        // the function ships as a separate SQL file, and a report that went blank
+        // because one view's function was not installed yet would take every
+        // other view down with it. ScanGapsView says what is missing instead.
+        isGaps
+          ? performanceGetJson<GreeterScanGapRow[]>(
+              `/pertrack/api/greeter/scan-gaps?${windowQs}${locQs}${mgrQs}`
+            ).catch(() => null)
+          : Promise.resolve(null),
+        // Who worked each day at the drilled-into site, for the crew grid. One
+        // site, so well inside the row cap even for a long window.
+        isGaps && selectedSite !== null
+          ? performanceGetJson<CrewDayRow[]>(
+              `/pertrack/api/greeter/days?${windowQs}${mgrQs}&location_id=${selectedSite}&limit=1000`
+            ).catch(() => null)
+          : Promise.resolve(null)
       ]);
   } catch (err) {
     fetchError =
@@ -675,7 +708,7 @@ export default async function GreeterReportPage({ searchParams }: PageProps) {
           call deliberately has none of it — see the note beside `isMorning`.
           One conditional wrapping the whole block rather than four separate
           ones, so a chart added later can't accidentally opt itself back in. */}
-      {isMorning ? null : (
+      {hideDashboard ? null : (
         <>
         {/* KPI strip */}
         <div className="mb-6 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
@@ -817,7 +850,7 @@ export default async function GreeterReportPage({ searchParams }: PageProps) {
       {/* Kept on every view, including the morning call. It isn't a chart —
           it's the key to the colours in the table, which mean nothing without
           it, and it costs one line of vertical space. */}
-      <CaptureLegend />
+      {isGaps ? null : <CaptureLegend />}
 
       {/* The view's own table */}
       {isMorning ? (
@@ -826,6 +859,32 @@ export default async function GreeterReportPage({ searchParams }: PageProps) {
           allRows={siteList}
           selectedSite={selectedSite}
         />
+      ) : isGaps ? (
+        <>
+          {/* The drilled-into site's crew grid sits ABOVE the tables in this
+              view: it is what "Day by day" opens, and below forty site tables it
+              would be a long scroll from the link that asked for it. */}
+          {selectedSiteRow ? (
+            <Card
+              title={`${selectedSiteRow.location_code} · day by day`}
+              subtitle="Each day's scan rate and who was on. Names in red are flagged as likely at this site. Weekday tiles sum every day in the window that falls on that weekday."
+              action={{ href: link({ site: "" }), label: "Close" }}
+            >
+              <ScanCrewGrid
+                siteDays={daysForSite(siteList, selectedSiteRow.location_id)}
+                crewDays={crewDays}
+                highlight={likelyAtSite(gapRows, selectedSiteRow.location_id)}
+                link={link}
+              />
+            </Card>
+          ) : null}
+          <ScanGapsView
+            rows={gapRows}
+            greeterNeedle={greeter}
+            selectedSite={selectedSite}
+            link={link}
+          />
+        </>
       ) : (
         <GreeterTable
           rows={ordered}
@@ -838,7 +897,7 @@ export default async function GreeterReportPage({ searchParams }: PageProps) {
 
       {/* Drill-through: one site's days, reachable from the ranking chart even
           when the greeter tables are showing. */}
-      {!isMorning && selectedSiteRow ? (
+      {!isMorning && !isGaps && selectedSiteRow ? (
         <Card
           title={`${selectedSiteRow.location_code} · site ${selectedSiteRow.site_number}`}
           subtitle={`Every day in the window for this site. ${spanDays} days requested, ${selectedSiteRow.days} reported.`}

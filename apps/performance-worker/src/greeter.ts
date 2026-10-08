@@ -16,6 +16,7 @@
 //   GET  /api/greeter/missing-days   dates required  -> location-days not logged
 //   GET  /api/greeter/period-report  dates required  -> per-greeter period grades
 //   GET  /api/greeter/location-rows  dates required  -> site day rows + scanned
+//   GET  /api/greeter/scan-gaps      dates required  -> per-greeter scan-gap leads
 //   GET  /api/greeter/location-days  filters         -> site-wide day rows
 //   POST /api/greeter/location-days                  -> submit/correct a day
 //   POST /api/greeter/location-days/void    { id }   -> strike out a site day
@@ -111,6 +112,7 @@ import {
   listGreeterMissingDays,
   listGreeterPeriodReport,
   listGreeterRollup,
+  listGreeterScanGaps,
   listGreeterScanRates,
   listContactRoster,
   listLocationDays,
@@ -157,6 +159,7 @@ export function isGreeterRoute(pathname: string, method: string): boolean {
     case "/api/greeter/missing-days":
     case "/api/greeter/period-report":
     case "/api/greeter/location-rows":
+    case "/api/greeter/scan-gaps":
     // One GET for the whole digest card — enrollment, suppressions and the
     // logged-code list arrive together because the card's drift panel is a
     // comparison BETWEEN them. Three round trips could each succeed against a
@@ -299,6 +302,9 @@ export async function handleGreeterRoute(
   }
   if (pathname === "/api/greeter/location-rows" && method === "GET") {
     return apiLocationRows(url, env, readScope);
+  }
+  if (pathname === "/api/greeter/scan-gaps" && method === "GET") {
+    return apiScanGaps(url, env, readScope);
   }
   if (pathname === "/api/greeter/location-days" && method === "GET") {
     return apiListLocationDays(url, env, readScope);
@@ -774,6 +780,47 @@ async function apiPeriodReport(
       site_number: toIntOrNull(sp.get("site_number")),
       beekeeper_user_id: sp.get("beekeeper_user_id"),
       greeter: sp.get("greeter"),
+      location_scope: scope ?? null
+    }
+  );
+  return jsonResponse(rows);
+}
+
+/**
+ * Which greeters a site's missed scans follow -- one row per (site, greeter).
+ *
+ * Dates REQUIRED for the same reason as period-report: every number is "over
+ * the window". Takes location_id but no greeter filter; the with/without
+ * comparison needs the whole crew, so narrowing it would change everyone's
+ * numbers. Scope comes from the caller's locations exactly like the other reads.
+ */
+async function apiScanGaps(
+  url: URL,
+  env: Env,
+  scope: string[] | undefined
+): Promise<Response> {
+  const sp = url.searchParams;
+  const dateFrom = isoDateOrNull(sp.get("date_from"));
+  const dateTo = isoDateOrNull(sp.get("date_to"));
+  if (!dateFrom || !dateTo) {
+    return jsonResponse(
+      {
+        error: "date_from and date_to are required",
+        reason: "Every figure here compares days inside a window, so it needs a bounded range."
+      },
+      400
+    );
+  }
+  if (dateTo < dateFrom) {
+    return jsonResponse({ error: "date_to is before date_from" }, 400);
+  }
+
+  const sb = createServiceClient(env);
+  const rows = await listGreeterScanGaps(
+    sb,
+    { date_from: dateFrom, date_to: dateTo },
+    {
+      location_id: toIntOrNull(sp.get("location_id")),
       location_scope: scope ?? null
     }
   );

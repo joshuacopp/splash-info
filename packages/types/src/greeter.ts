@@ -783,6 +783,52 @@ export interface GreeterPeriodReportRow {
 }
 
 /* ============================================================
+ * Scan gaps (greeter_scan_gaps() function)
+ * ============================================================ */
+
+/**
+ * One greeter at one site over a window: how the site's scan rate moves with
+ * them on the crew, and how much of the crew's scanning they carry.
+ *
+ * A LEAD, NOT A FINDING. Scanning is only recorded per site-day, so nothing
+ * here proves who missed a scan -- it shows whose days the missed scans keep
+ * landing on. See supabase/greeter-scan-gaps-16.sql.
+ *
+ * Small samples come back like any other row; the page decides what is enough
+ * to rank on. `gap_points` is pct_with - pct_without (negative = the site scans
+ * worse with them on) and is null when there is no "without" side.
+ * `share_index` is own scans / expected scans: 1.0 is their share, 0.3 is a
+ * third of it. Expected share uses hours only on days the whole crew entered a
+ * shift window (`hours_days`), else an even split.
+ *
+ * Field list must stay in sync with greeter_scan_gaps()'s RETURNS TABLE.
+ */
+export interface GreeterScanGapRow {
+  location_id: number;
+  site_number: number;
+  location_code: string;
+  beekeeper_user_id: string;
+  greeter_name: string;
+  site_days: number;
+  days_with: number;
+  scannable_with: number;
+  scanned_with: number;
+  pct_with: number | null;
+  days_without: number;
+  scannable_without: number;
+  scanned_without: number;
+  pct_without: number | null;
+  gap_points: number | null;
+  own_scans: number;
+  share_pct: number | null;
+  expected_share_pct: number | null;
+  share_index: number | null;
+  missed_share: number | null;
+  avg_crew_size: number | null;
+  hours_days: number;
+}
+
+/* ============================================================
  * Site day rows (location_period_rows() function)
  * ============================================================ */
 

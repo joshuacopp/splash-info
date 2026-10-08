@@ -39,6 +39,7 @@ import type {
   GreeterRollupRow,
   GreeterRoster,
   GreeterRosterMember,
+  GreeterScanGapRow,
   GreeterScanRateRow,
   LocationDailyInsert,
   LocationDailyRow,
@@ -1322,6 +1323,32 @@ export async function listGreeterPeriodReport(
   });
   if (error) throw error;
   return (data ?? []) as unknown as GreeterPeriodReportRow[];
+}
+
+/**
+ * Per (site, greeter) scan-gap evidence for a window -- see GreeterScanGapRow.
+ *
+ * Aggregated in SQL rather than assembled from listGreeterDays(): a month of
+ * every site is thousands of greeter-days, past PostgREST's row cap, and a
+ * truncated input would quietly hand somebody a "without" rate built from half
+ * the days. This returns one row per greeter per site instead.
+ *
+ * Window REQUIRED. No greeter filter: the comparison needs every greeter at
+ * the site, and narrowing the input would change everyone else's numbers.
+ */
+export async function listGreeterScanGaps(
+  client: SupabaseClient,
+  window: { date_from: string; date_to: string },
+  filters: Omit<GreeterDayFilters, "date_from" | "date_to"> = {}
+): Promise<GreeterScanGapRow[]> {
+  const { data, error } = await client.rpc("greeter_scan_gaps", {
+    p_date_from: window.date_from,
+    p_date_to: window.date_to,
+    p_location_id: filters.location_id ?? null,
+    p_location_codes: scopeCodes(filters.location_scope)
+  });
+  if (error) throw error;
+  return (data ?? []) as unknown as GreeterScanGapRow[];
 }
 
 /**

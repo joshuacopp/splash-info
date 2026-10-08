@@ -6,7 +6,7 @@
 // applied in the page. That's why adding a fifth button costs no migration and
 // no endpoint — and why the counts across views always reconcile.
 
-export type ViewKey = "recent" | "top" | "under" | "morning";
+export type ViewKey = "recent" | "top" | "under" | "morning" | "gaps";
 
 export interface Preset {
   key: ViewKey;
@@ -14,7 +14,7 @@ export interface Preset {
   /** Length of the default window in days, inclusive of both ends. */
   days: number;
   /** Which table the view drives. */
-  kind: "greeter" | "site";
+  kind: "greeter" | "site" | "gaps";
   blurb: string;
 }
 
@@ -68,10 +68,20 @@ export const PRESETS: Record<ViewKey, Preset> = {
     kind: "site",
     blurb:
       "Site numbers only, last seven days, worst capture first, every site already opened to its individual days. This view is the table and nothing else — no cards, no charts — because it gets read aloud off a phone."
+  },
+  // Thirty days rather than seven: a with/without comparison needs several
+  // days on BOTH sides for each greeter, and a week gives most people two.
+  gaps: {
+    key: "gaps",
+    label: "Scan gaps by greeter",
+    days: 30,
+    kind: "gaps",
+    blurb:
+      "Thirty days. For each site, how its scan rate moves with each greeter on the crew and how much of the crew's scanning each one carries. Scanning is only recorded per site per day, so these are leads to check on the lot, not proof of who skipped a scan."
   }
 };
 
-export const VIEW_ORDER: ViewKey[] = ["recent", "under", "top", "morning"];
+export const VIEW_ORDER: ViewKey[] = ["recent", "under", "top", "morning", "gaps"];
 
 export function normalizeView(raw: string): ViewKey {
   return (VIEW_ORDER as string[]).includes(raw) ? (raw as ViewKey) : "recent";
