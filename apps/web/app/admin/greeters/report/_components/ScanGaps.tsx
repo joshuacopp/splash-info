@@ -62,15 +62,15 @@ const VERDICT: Record<Verdict, { label: string; cls: string; rank: number; hint:
   },
   crew: {
     label: "Check their crew",
-    cls: "bg-yellow-100 text-yellow-900",
+    cls: "bg-amber-100 text-amber-900",
     rank: 1,
     hint: "The site scans worse on their days, but they log about their share. The missed cars may belong to whoever they usually work with."
   },
   share: {
     label: "Scans less",
-    cls: "bg-yellow-100 text-yellow-900",
+    cls: "bg-amber-100 text-amber-900",
     rank: 2,
-    hint: "Logs well under their share of the crew's scans, but the site's rate does not drop on their days. Could be their position on the lot; worth a look."
+    hint: "Logs well under their share of the crew's scans and the site does no better on their days, though not 5 points worse either. Could be their position on the lot; worth a look."
   },
   none: {
     label: "No signal",
@@ -100,7 +100,11 @@ function verdictFor(r: GreeterScanGapRow): Verdict {
   if (worse && idx !== null && idx < LOW_SHARE_INDEX) return "likely";
   if (gap <= -GAP_POINTS_STRONG && idx !== null && idx < FAIR_SHARE_INDEX) return "likely";
   if (worse) return "crew";
-  if (idx !== null && idx < LOW_SHARE_INDEX) return "share";
+  // Only when the site does no BETTER on their days. Shares across a crew sum to
+  // 100%, so one person doing most of the scanning (whoever works the pay
+  // station) makes everyone else look low. If the site scans as well or better
+  // with them on, nothing is being lost -- they just are not the one logging it.
+  if (gap <= 0 && idx !== null && idx < LOW_SHARE_INDEX) return "share";
   return "none";
 }
 
@@ -274,7 +278,7 @@ export function ScanGapsView({
               </div>
             </div>
             {s.overReported ? (
-              <p className="border-b border-gray-light bg-yellow-50 px-5 py-3 text-xs text-yellow-900">
+              <p className="border-b border-gray-light bg-amber-50 px-5 py-3 text-xs text-amber-900">
                 Greeters here logged <strong>more</strong> scans than the site sold
                 scannable cars ({pct(s.scan_pct)}). That is a counting problem --
                 members, rewashes or the same car twice -- not missed scans, so no one
@@ -492,6 +496,9 @@ function HowToRead() {
           <strong>Share carried</strong> is their scans against what they would be
           expected to log. 100% is their share; 40% is well under it. Where the whole
           crew entered shift times it uses hours worked, otherwise an even split.
+          Shares add up to 100% across a crew, so one heavy scanner makes the rest
+          look low; a low share only counts when the site does no better on their
+          days.
         </li>
         <li>
           <strong>≈ Missed cars</strong> is the site&rsquo;s unscanned cars on their
@@ -533,7 +540,7 @@ function ShareCell({ r }: { r: GreeterScanGapRow }) {
     idx < LOW_SHARE_INDEX
       ? "text-splash-deny font-semibold"
       : idx < FAIR_SHARE_INDEX
-        ? "text-yellow-900"
+        ? "text-amber-900"
         : "text-splash-navy/80";
   return (
     <span
