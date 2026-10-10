@@ -31,6 +31,8 @@
 //                                                            pointing at OOB-uploaded R2 keys.)
 //   POST /claims-api/upload                                 — Brief 146 OOB per-photo upload
 //                                                            (multipart, returns r2_key)
+//   GET  /claims/vehicles/{token}[/media/{id}]              — Vehicle Guide public page;
+//                                                            token-gated (VEHICLE_GUIDE_TOKEN)
 //   GET  /claims-api/photo/{r2-key-suffix...}               — serve R2 photo (handles both
 //                                                            legacy `claims/...` keys and
 //                                                            Brief 146 `claim-uploads/...` keys)
@@ -202,6 +204,15 @@ import { handleCheckRequestSeed } from "./seed-check-requests.js";
 import { handlePaperClaimSeed } from "./seed-paper-claims.js";
 import { handleGeneratedReceiptSeed } from "./seed-generated-receipts.js";
 import { expandGrantedCodes, loadOverlay } from "./overlay.js";
+import {
+  handleDeleteVehicleIssue,
+  handleDeleteVehicleMedia,
+  handleListVehicleIssues,
+  handleUploadVehicleMedia,
+  handleUpsertVehicleIssue,
+  handleVehicleGuidePublic,
+  serveVehicleMedia
+} from "./vehicle-guide.js";
 
 interface Env extends SupabaseEnv {
   DB: D1Database;
@@ -274,6 +285,11 @@ interface Env extends SupabaseEnv {
    *  drops out of `recipients[]` and PA emails only the location's
    *  three contact addresses. */
   INCIDENTS_EMAIL?: string;
+  /** Vehicle Guide public page token — the secret path segment in
+   *  /claims/vehicles/{token}. Unbound or under 16 characters = the page
+   *  404s. Rotate with `wrangler secret put VEHICLE_GUIDE_TOKEN` to kill a
+   *  leaked link. See src/vehicle-guide.ts. */
+  VEHICLE_GUIDE_TOKEN?: string;
 }
 
 /** R2 key for the brand logo embedded in the claim summary PDF header band
@@ -396,6 +412,17 @@ export default {
         method === "GET"
       ) {
         return handleServeClaimSummary(env, decodeURIComponent(parts[2]));
+      }
+
+      // Vehicle Guide public page: /claims/vehicles/{token}[/media/{id}].
+      // Matched BEFORE the claim-form routes; a wrong token returns null and
+      // falls through to the same responses any unknown path gets, so the
+      // page cannot be discovered by probing. "vehicles" is not a location
+      // code, so /claims/{slug} bookmarks are unaffected.
+      if (parts[0] === "claims" && parts[1] === "vehicles" && parts.length >= 3) {
+        const resp = await handleVehicleGuidePublic(request, env, parts.slice(2));
+        if (resp) return resp;
+        return new Response("Not found", { status: 404 });
       }
 
       // GET /claims/{slug} — render the public customer claim form.
@@ -597,6 +624,41 @@ async function dispatchManageApi(
     method === "POST"
   ) {
     return handleDeleteCarCount(request, env, session);
+  }
+
+  // Vehicle Guide admin (src/vehicle-guide.ts). Reads: any damage role.
+  // Writes: damage RM and above, re-gated inside each handler.
+  //
+  // GET  /manage/api/vehicle-issues                       — list + media
+  // POST /manage/api/vehicle-issues                       — create / update
+  // POST /manage/api/vehicle-issues/delete                — delete (+ media)
+  // POST /manage/api/vehicle-issues/{id}/media            — upload one file
+  // GET  /manage/api/vehicle-issues/media/{mediaId}       — serve (admin preview)
+  // POST /manage/api/vehicle-issues/media/{mediaId}/delete
+  if (subParts[0] === "vehicle-issues") {
+    const vt = subParts.slice(1);
+    if (vt.length === 0 && method === "GET") return handleListVehicleIssues(env, session);
+    if (vt.length === 0 && method === "POST") return handleUpsertVehicleIssue(request, env, session);
+    if (vt.length === 1 && vt[0] === "delete" && method === "POST") {
+      return handleDeleteVehicleIssue(request, env, session);
+    }
+    if (vt.length === 2 && vt[1] === "media" && method === "POST") {
+      const issueId = Number(vt[0]);
+      if (!Number.isInteger(issueId) || issueId <= 0) return jsonError(404, "not found");
+      return handleUploadVehicleMedia(request, env, session, issueId);
+    }
+    if (vt[0] === "media" && vt[1]) {
+      const mediaId = Number(vt[1]);
+      if (!Number.isInteger(mediaId) || mediaId <= 0) return jsonError(404, "not found");
+      if (vt.length === 2 && (method === "GET" || method === "HEAD")) {
+        if (session.dcRole === null) return jsonError(403, "no damage role assigned");
+        return serveVehicleMedia(request, env, mediaId, "private, max-age=300");
+      }
+      if (vt.length === 3 && vt[2] === "delete" && method === "POST") {
+        return handleDeleteVehicleMedia(request, env, session, mediaId);
+      }
+    }
+    return new Response("Not found", { status: 404 });
   }
 
   // /manage/api/claim/{id}/...

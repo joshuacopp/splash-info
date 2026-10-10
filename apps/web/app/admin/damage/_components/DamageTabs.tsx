@@ -13,12 +13,12 @@
 import Link from "next/link";
 
 interface DamageTabsProps {
-  active: "claims" | "reporting" | "car-counts";
+  active: "claims" | "reporting" | "car-counts" | "vehicles";
 }
 
 export function DamageTabs({ active }: DamageTabsProps) {
   return (
-    <nav aria-label="Damage sections" className="mb-5 flex gap-2">
+    <nav aria-label="Damage sections" className="mb-5 flex flex-wrap gap-2">
       <Tab href="/admin/damage" label="Claims" active={active === "claims"} />
       <Tab
         href="/admin/damage/reporting"
@@ -29,6 +29,11 @@ export function DamageTabs({ active }: DamageTabsProps) {
         href="/admin/damage/car-counts"
         label="Car Counts"
         active={active === "car-counts"}
+      />
+      <Tab
+        href="/admin/damage/vehicles"
+        label="Vehicle Guide"
+        active={active === "vehicles"}
       />
     </nav>
   );

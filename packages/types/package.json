@@ -17,7 +17,8 @@
     "./expense": "./src/expense.ts",
     "./session": "./src/session.ts",
     "./email-validate": "./src/email-validate.ts",
-    "./promo": "./src/promo.ts"
+    "./promo": "./src/promo.ts",
+    "./vehicle-guide": "./src/vehicle-guide.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
