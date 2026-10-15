@@ -40,6 +40,7 @@
 // AUTH-GATED (checkToolAccess "claims" — super-admin bypasses):
 //   POST /manage/api/claim/{id}/note                        — add note
 //   POST /manage/api/claim/{id}/transition                  — status change
+//   POST /manage/api/claim/{id}/customer                    — correct customer contact info
 //   POST /manage/api/claim/{id}/document                    — upload Quote/Receipt
 //   POST /manage/api/claim/{id}/document/{docId}/delete     — soft-delete doc
 //   POST /manage/api/claim/{id}/document/{docId}/edit       — edit doc metadata
@@ -687,6 +688,11 @@ async function dispatchManageApi(
       // D1 column being absent during the post-deploy migration window.
       if (action === "fault-category" && method === "POST") {
         return handleSetFaultCategory(request, env, session, claimId);
+      }
+      // Correct the customer's contact details (name spelling, phone,
+      // email, mailing address). Same gate as fault-category.
+      if (action === "customer" && method === "POST") {
+        return handleUpdateCustomer(request, env, session, claimId);
       }
       // Super-admin hard delete. `purge-preview` (GET) reports the blast
       // radius — every D1 row and R2 object the purge would remove — so
@@ -2791,6 +2797,121 @@ async function handleSetFaultCategory(
   }
 
   return json({ ok: true, fault_category: next });
+}
+
+/* ============================================================
+ * POST /manage/api/claim/{id}/customer
+ *
+ * Body: form-encoded customer_name, customer_phone, customer_email,
+ * customer_mailing_address. All four are sent every time; the handler
+ * writes only the ones that changed and logs each change old -> new, so
+ * the activity timeline shows what the customer originally typed.
+ *
+ * Normalised exactly as at submission: phone to bare digits, email
+ * through isValidEmail. Name is required (the column is NOT NULL);
+ * phone, email and address may be cleared to NULL. Email is not forced
+ * here even though the public form requires it -- pre-Brief-32 claims
+ * have none, and refusing to save a name fix because of that would be
+ * worse than leaving the email blank.
+ *
+ * Gate: same as fault-category -- any damage role with the claim in
+ * scope. The PDF and emails already sent keep the old values; this
+ * changes the record, not history.
+ * ============================================================ */
+
+const CUSTOMER_FIELD_LABELS = {
+  customer_name: "name",
+  customer_phone: "phone",
+  customer_email: "email",
+  customer_mailing_address: "address"
+} as const;
+type CustomerField = keyof typeof CUSTOMER_FIELD_LABELS;
+
+async function handleUpdateCustomer(
+  request: Request,
+  env: Env,
+  session: Session,
+  claimId: string
+): Promise<Response> {
+  if (!isOriginAllowed(request)) return jsonError(403, "bad origin");
+
+  const guard = await loadAndScopeCheck(env, session, claimId);
+  if (!guard.ok) return guard.response;
+  if (!session.dcRole) return jsonError(403, "no damage role assigned");
+
+  const form = await readForm(request);
+  const str = (k: string) => (form.get(k) ?? "").toString().trim();
+  const claim = guard.claim as ClaimRow;
+
+  // Phone and email are validated only when they actually change. The
+  // form resends every field, and an older claim can hold a phone that
+  // isn't 10 digits or an email the Brief 152 validator rejects -- fixing
+  // the NAME on that claim must not be refused over a field nobody touched.
+  const name = str("customer_name").replace(/\s+/g, " ");
+  if (!name) return jsonError(400, "Customer name can't be blank.");
+  if (name.length > 200) return jsonError(400, "Customer name is too long (200 characters max).");
+
+  let phone: string | null = str("customer_phone").replace(/\D/g, "") || null;
+  // A pasted "+1 (607) 555-0100" is 11 digits; keep the 10 the list formats.
+  if (phone && phone.length === 11 && phone.startsWith("1")) phone = phone.slice(1);
+  if (phone && phone !== (claim.customer_phone ?? null) && phone.length !== 10) {
+    return jsonError(400, "Phone must be a 10-digit number (or blank).");
+  }
+
+  const email = str("customer_email") || null;
+  if (email && email !== (claim.customer_email ?? null) && !isValidEmail(email)) {
+    return jsonError(400, "That email address isn't valid.");
+  }
+  if (email && email.length > 254) return jsonError(400, "Email is too long.");
+
+  const address = str("customer_mailing_address") || null;
+  if (address && address.length > 500) {
+    return jsonError(400, "Address is too long (500 characters max).");
+  }
+
+  const next: Record<CustomerField, string | null> = {
+    customer_name: name,
+    customer_phone: phone,
+    customer_email: email,
+    customer_mailing_address: address
+  };
+  const changed = (Object.keys(next) as CustomerField[]).filter(
+    (k) => (claim[k] ?? null) !== next[k]
+  );
+  if (changed.length === 0) return json({ ok: true, unchanged: true });
+
+  try {
+    // Column names come from the fixed CUSTOMER_FIELD_LABELS keys, never
+    // from the request, so interpolating them is safe.
+    await env.DB.prepare(
+      `UPDATE claims SET ${changed.map((k) => `${k} = ?`).join(", ")}, updated_at = datetime('now') WHERE claim_id = ?`
+    )
+      .bind(...changed.map((k) => next[k]), claimId)
+      .run();
+  } catch (err) {
+    console.error("handleUpdateCustomer UPDATE failed:", err);
+    return jsonError(500, "Failed to update customer info.");
+  }
+
+  const show = (v: string | null) => (v === null || v === "" ? "(blank)" : `"${v}"`);
+  const notes =
+    `[customer] ${session.email} updated ` +
+    changed
+      .map((k) => `${CUSTOMER_FIELD_LABELS[k]} ${show(claim[k] ?? null)} -> ${show(next[k])}`)
+      .join("; ");
+  try {
+    await logActivity(env.DB, {
+      claimId,
+      activityType: "note",
+      notes,
+      actorEmail: session.email,
+      actorName: session.email
+    });
+  } catch (logErr) {
+    console.error("[claim.customer] activity log failed:", logErr);
+  }
+
+  return json({ ok: true, changed: changed.map((k) => CUSTOMER_FIELD_LABELS[k]) });
 }
 
 /* ============================================================

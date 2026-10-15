@@ -74,7 +74,8 @@ import {
   addNoteAction,
   deleteDocumentAction,
   setFaultCategoryAction,
-  transitionAction
+  transitionAction,
+  updateCustomerAction
 } from "./actions";
 import { ActionForm } from "../../_components/ActionForm";
 import { getMe } from "../../../_lib/me";
@@ -375,6 +376,7 @@ export default async function DamageClaimDetailPage({ params, searchParams }: Pa
         claim={claim}
         checkRequestHref={checkRequestHref}
         activity={activity}
+        canEditCustomer={dcRole !== null}
       />
       {/* Brief 172 — Cause / fault attribution. Render for any caller with
        *  a damage role; worker re-validates dc_role on POST. Pre-migration
@@ -490,6 +492,86 @@ function CauseCard({
 }
 
 /* ============================================================
+ * Edit customer info — collapsed under the Customer block. Fixes typos
+ * from the customer form (name spelling, address, email, phone). The
+ * worker logs every change old -> new on the activity timeline, so the
+ * original values stay on record. resetOnSuccess={false} keeps what was
+ * typed on screen until the refresh brings the saved values back.
+ * ============================================================ */
+
+function EditCustomerDetails({ claim }: { claim: ClaimRow }) {
+  const input =
+    "w-full rounded-splash-sm border border-gray-light bg-white px-3 py-2 text-sm text-splash-navy focus:border-splash-blue focus:outline-none";
+  const label = "text-xs font-semibold uppercase tracking-wider text-splash-navy/70";
+  return (
+    <details className="mt-3">
+      <summary className="cursor-pointer text-sm font-semibold text-splash-blue hover:text-splash-blue-dark">
+        Edit customer info
+      </summary>
+      <ActionForm
+        action={updateCustomerAction}
+        resetOnSuccess={false}
+        className="mt-3 flex flex-col gap-3"
+      >
+        <input type="hidden" name="claim_id" value={claim.claim_id} />
+        <label className="flex flex-col gap-1">
+          <span className={label}>Name</span>
+          <input
+            name="customer_name"
+            required
+            maxLength={200}
+            defaultValue={claim.customer_name ?? ""}
+            className={input}
+          />
+        </label>
+        <label className="flex flex-col gap-1">
+          <span className={label}>Phone</span>
+          <input
+            name="customer_phone"
+            type="tel"
+            inputMode="tel"
+            defaultValue={claim.customer_phone ? formatPhone(claim.customer_phone) : ""}
+            className={input}
+          />
+        </label>
+        <label className="flex flex-col gap-1">
+          <span className={label}>Email</span>
+          <input
+            name="customer_email"
+            type="email"
+            maxLength={254}
+            defaultValue={claim.customer_email ?? ""}
+            className={input}
+          />
+        </label>
+        <label className="flex flex-col gap-1">
+          <span className={label}>Mailing address</span>
+          <textarea
+            name="customer_mailing_address"
+            rows={3}
+            maxLength={500}
+            defaultValue={claim.customer_mailing_address ?? ""}
+            className={input}
+          />
+        </label>
+        <p className="text-xs text-splash-navy/60">
+          Changes are recorded in the activity log with the old value. Emails and PDFs
+          already sent are not resent.
+        </p>
+        <div>
+          <button
+            type="submit"
+            className="inline-flex items-center gap-1.5 rounded-splash-sm bg-splash-blue px-5 py-2.5 text-sm font-bold text-white shadow-splash-btn transition-colors hover:bg-splash-blue-dark"
+          >
+            Save customer info
+          </button>
+        </div>
+      </ActionForm>
+    </details>
+  );
+}
+
+/* ============================================================
  * Header pieces
  * ============================================================ */
 
@@ -533,11 +615,13 @@ function PageBanner({
 function SummaryCard({
   claim,
   checkRequestHref,
-  activity
+  activity,
+  canEditCustomer
 }: {
   claim: ClaimRow;
   checkRequestHref: string | null;
   activity: ClaimActivityRow[];
+  canEditCustomer: boolean;
 }) {
   return (
     <div className="mb-6 rounded-splash-lg border border-gray-light bg-white p-6 shadow-splash-card">
@@ -586,6 +670,7 @@ function SummaryCard({
               {valueOrDash(claim.customer_mailing_address)}
             </div>
           </div>
+          {canEditCustomer ? <EditCustomerDetails claim={claim} /> : null}
         </Field>
 
         <Field label="Damage">

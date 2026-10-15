@@ -265,6 +265,36 @@ export async function setFaultCategoryAction(
 }
 
 /* ============================================================
+ * Correct the customer's contact details — POST
+ * /manage/api/claim/{id}/customer. The worker validates, writes only the
+ * fields that changed, and logs old -> new to the activity timeline.
+ * ============================================================ */
+export async function updateCustomerAction(
+  _prevState: ActionResult | null,
+  formData: FormData
+): Promise<ActionResult> {
+  const claimId = String(formData.get("claim_id") ?? "").trim();
+  if (!claimId) {
+    return { ok: false, error: "Missing claim id on customer update." };
+  }
+
+  const result = await damagePostForm(
+    `/manage/api/claim/${encodeURIComponent(claimId)}/customer`,
+    formData
+  );
+  if (!result.ok) {
+    return { ok: false, error: result.error };
+  }
+
+  revalidatePath(detailPath(claimId));
+
+  const body = (result.body ?? {}) as { unchanged?: boolean; changed?: string[] };
+  if (body.unchanged) return { ok: true, message: "No changes to save." };
+  const changed = Array.isArray(body.changed) ? body.changed.join(", ") : "";
+  return { ok: true, message: changed ? `Updated ${changed}.` : "Customer info updated." };
+}
+
+/* ============================================================
  * Super-admin hard delete ("purge")
  *
  * Two actions consumed by the client DangerZoneCard island (not the shared
