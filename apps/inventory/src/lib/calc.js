@@ -72,8 +72,7 @@ export function buildIndex(ds) {
   //
   // Rows written before visit_kind existed have no field; they are all
   // inspections, hence the `!== 'delivery'` test rather than `=== 'visit'`.
-  const byDateDesc = (a, b) =>
-    a.visit_date < b.visit_date ? 1 : a.visit_date > b.visit_date ? -1 : 0
+  const byDateDesc = ledgerOrderDesc
 
   const visitsByLocation = {}
   const ledgerByLocation = {}
@@ -413,7 +412,24 @@ export function visitsForLocation(ds, locationId) {
   return (ds.site_visits || [])
     .filter((v) => v.location_id === locationId)
     .slice()
-    .sort((a, b) => (a.visit_date < b.visit_date ? 1 : a.visit_date > b.visit_date ? -1 : 0))
+    .sort(ledgerOrderDesc)
+}
+
+// Newest first: visit_date, then created_at, then id. A site can hold a visit
+// AND a delivery on the same date (supabase/inventory-same-day-delivery.sql),
+// and the date alone cannot say which came second — the order they were FILED
+// can. This decides which row the next form carries its starting levels from,
+// so it must agree with lastKnownEndingQuantities in worker/db.ts, which breaks
+// the tie the same way. The id tail only makes the sort deterministic; the
+// natural key means it never separates two rows that matter.
+export function ledgerOrderDesc(a, b) {
+  for (const k of ['visit_date', 'created_at', 'id']) {
+    const x = a[k] ?? ''
+    const y = b[k] ?? ''
+    if (x < y) return 1
+    if (x > y) return -1
+  }
+  return 0
 }
 
 /**

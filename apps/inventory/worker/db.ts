@@ -531,12 +531,13 @@ async function saveVisit(
   // and rethrowing it bare made every one of these a red 500 on a mistake the
   // person filing the visit can actually correct.
   if (error) {
+    const sameDay = sameDayConflictMessage(error, "visit", payload.visit_date);
+    if (sameDay) throw new ApiError(sameDay);
     const known: Record<string, string> = {
-      // Safe to name the cause: site_visits has no unique constraint beyond its
-      // primary key (a fresh randomUUID), so the only 23505 reachable from here
-      // is unique (site_visit_id, product_id) or unique (site_visit_id,
-      // package_id) — i.e. the payload listed the same chemical or package
-      // twice. Add a unique on site_visits and this message stops being true.
+      // The site_visits natural key is handled above by name, so any OTHER
+      // 23505 here is unique (site_visit_id, product_id) or unique
+      // (site_visit_id, package_id) — the payload listed the same chemical or
+      // package twice.
       "23505": "The same chemical or wash package was submitted twice on this visit",
       // on-delete-restrict FKs: names a product or package that no longer exists.
       "23503": "This visit refers to a chemical or package that no longer exists",
@@ -549,6 +550,31 @@ async function saveVisit(
     throw new Error(error.message);
   }
   return { visitId };
+}
+
+// The site_visits natural key: one visit and one delivery per site per day.
+// Keep in step with supabase/inventory-same-day-delivery.sql. Matched by NAME
+// because site_visits' children carry their own unique keys, and a 23505 from
+// one of those means something else entirely (a chemical listed twice).
+const SAME_DAY_CONSTRAINT = "site_visits_location_date_kind_key";
+
+/**
+ * A readable message when a save collides with the one-per-day key, else null.
+ *
+ * Without this the collision surfaced as "the same chemical was submitted
+ * twice", which sent people hunting for a duplicate row that did not exist.
+ */
+function sameDayConflictMessage(
+  error: { code?: string; message?: string; details?: string },
+  kind: "visit" | "delivery",
+  visitDate: unknown
+): string | null {
+  if (error.code !== "23505") return null;
+  const text = `${error.message || ""} ${error.details || ""}`;
+  if (!text.includes(SAME_DAY_CONSTRAINT)) return null;
+  const date = String(visitDate || "").slice(0, 10);
+  const when = date ? ` on ${date}` : " on that date";
+  return `A ${kind} for this site${when} has already been recorded. Open it from History and edit it instead. Nothing was saved.`;
 }
 
 // Water readings arrive as strings from the form. `|| 0` is deliberately NOT
@@ -662,6 +688,8 @@ export async function createDelivery(sb: SupabaseClient, payload: Record<string,
   });
 
   if (error) {
+    const sameDay = sameDayConflictMessage(error, "delivery", visitDate);
+    if (sameDay) throw new ApiError(sameDay);
     const known: Record<string, string> = {
       "23505": "The same chemical was submitted twice on this delivery",
       "23503": "This delivery refers to a chemical that no longer exists",
@@ -723,7 +751,7 @@ export async function updateDelivery(
   // Basis for chemicals newly added by this edit: the level as of the row
   // before this delivery. Ignored by the RPC for chemicals already present.
   const priorLevels = await lastKnownEndingQuantities(sb, existing.location_code, {
-    beforeDate: existing.visit_date,
+    before: { date: existing.visit_date, createdAt: existing.created_at },
     excludeId: deliveryId
   });
 
@@ -753,6 +781,8 @@ export async function updateDelivery(
   });
 
   if (error) {
+    const sameDay = sameDayConflictMessage(error, "delivery", visitDate);
+    if (sameDay) throw new ApiError(sameDay);
     const known: Record<string, string> = {
       "23505": "The same chemical was submitted twice on this delivery",
       "23503": "This delivery refers to a chemical that no longer exists",
@@ -779,17 +809,18 @@ export async function updateDelivery(
 export async function getDelivery(
   sb: SupabaseClient,
   deliveryId: string
-): Promise<{ location_code: string; visit_date: string } | null> {
+): Promise<{ location_code: string; visit_date: string; created_at: string } | null> {
   const { data, error } = await inv(sb)
     .from("site_visits")
-    .select("location_code,visit_date,visit_kind")
+    .select("location_code,visit_date,visit_kind,created_at")
     .eq("id", deliveryId)
     .maybeSingle();
   if (error) throw new Error(error.message);
   if (!data || (data as Record<string, unknown>).visit_kind !== "delivery") return null;
   return {
     location_code: String((data as Record<string, unknown>).location_code),
-    visit_date: String((data as Record<string, unknown>).visit_date)
+    visit_date: String((data as Record<string, unknown>).visit_date),
+    created_at: String((data as Record<string, unknown>).created_at)
   };
 }
 
@@ -827,26 +858,58 @@ async function configuredProductIds(
  * accumulate rather than the second one resetting to the level at the last
  * inspection.
  *
- * `beforeDate` / `excludeId` narrow it to "the row before this one", which an
- * edit needs: the latest row would be the delivery being edited, making a
+ * "Most recent" is visit_date, then created_at. A site can hold a visit AND a
+ * delivery on one date (supabase/inventory-same-day-delivery.sql), and the date
+ * alone cannot say which came second; the order they were filed can. The SPA's
+ * ledger sort in calc.js breaks the tie the same way — if the two disagree, the
+ * form shows one starting level and the server saves another.
+ *
+ * `before` / `excludeId` narrow it to "the row before this one", which an edit
+ * needs: the latest row would be the delivery being edited, making a
  * newly-added chemical start from a level that already includes itself.
+ * `before` is the edited row's own (date, created_at), so a same-day row filed
+ * AFTER it is skipped rather than treated as its predecessor.
  */
 async function lastKnownEndingQuantities(
   sb: SupabaseClient,
   locationCode: string,
-  opts: { beforeDate?: string; excludeId?: string } = {}
+  opts: { before?: { date: string; createdAt: string }; excludeId?: string } = {}
 ): Promise<Map<string, number>> {
   let q = inv(sb)
     .from("site_visits")
-    .select("id,visit_date")
+    .select("id,visit_date,created_at")
     .eq("location_code", locationCode);
-  if (opts.beforeDate) q = q.lte("visit_date", opts.beforeDate);
+  if (opts.before) q = q.lte("visit_date", opts.before.date);
   if (opts.excludeId) q = q.neq("id", opts.excludeId);
 
-  const { data: rows, error } = await q.order("visit_date", { ascending: false }).limit(1);
+  // Three rows, not one: with `before` set, the first row may share the edited
+  // row's date but have been filed after it. The natural key allows at most one
+  // other row per kind on that date, so the predecessor is within the first
+  // three. The tie-break on created_at is done here rather than in an or()
+  // filter because a timestamp literal inside PostgREST's or() needs quoting
+  // that fails silently (fewer rows) when wrong.
+  const { data: rows, error } = await q
+    .order("visit_date", { ascending: false })
+    .order("created_at", { ascending: false })
+    .order("id", { ascending: false })
+    .limit(3);
   if (error) throw new Error(`Failed reading last known levels: ${error.message}`);
 
-  const latestId = (rows || [])[0]?.id as string | undefined;
+  const before = opts.before;
+  const beforeMs = before ? Date.parse(before.createdAt) : NaN;
+  const latest = (rows || []).find((raw) => {
+    if (!before) return true;
+    const r = raw as Record<string, unknown>;
+    const date = String(r.visit_date).slice(0, 10);
+    if (date < before.date.slice(0, 10)) return true;
+    // Same date: only a row filed earlier precedes it. An unparseable
+    // timestamp on either side falls back to "not before", which errs toward
+    // the older day's level rather than one that may include this delivery.
+    const ms = Date.parse(String(r.created_at));
+    return Number.isFinite(ms) && Number.isFinite(beforeMs) && ms < beforeMs;
+  }) as Record<string, unknown> | undefined;
+
+  const latestId = latest?.id as string | undefined;
   const out = new Map<string, number>();
   if (!latestId) return out;
 
