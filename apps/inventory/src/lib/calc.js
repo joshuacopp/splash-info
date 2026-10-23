@@ -39,6 +39,24 @@ export function injectorLabel(entry) {
   return parts.join(' · ')
 }
 
+/**
+ * Comparator for chemical rows at one site, in the order set by dragging on
+ * Package setup (location_products.sort_order). Rows are anything carrying
+ * `productId` and `name`. No order (NULL, or a product no longer stocked here)
+ * sorts after placed rows; ties and unplaced rows fall back to A-Z, which is
+ * what every screen used before the order existed.
+ *
+ * Used by the screens worked top to bottom (visit form, delivery form, Package
+ * setup, Usage trends). Analysis views keep their own sort.
+ */
+export function bySiteChemicalOrder(idx, locationId) {
+  const rank = (pid) => {
+    const v = idx.locationProduct[`${locationId}|${pid}`]?.sort_order
+    return v == null ? Infinity : Number(v)
+  }
+  return (a, b) => rank(a.productId) - rank(b.productId) || a.name.localeCompare(b.name)
+}
+
 export function buildIndex(ds) {
   const locationById = Object.fromEntries((ds.locations || []).map((l) => [l.id, l]))
   const productById = Object.fromEntries((ds.products || []).map((p) => [p.id, p]))
@@ -492,7 +510,7 @@ export function usageTrends(ds, idx, locationId, lastN = 8) {
     }
   })
 
-  rows.sort((a, b) => a.name.localeCompare(b.name))
+  rows.sort(bySiteChemicalOrder(idx, locationId))
   return { visits, computed, rows }
 }
 

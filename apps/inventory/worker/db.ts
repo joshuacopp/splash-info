@@ -1595,10 +1595,14 @@ export async function savePackageConfig(
       target_cpc: null
     });
   }
+  // The payload's array order IS the site's chemical order (dragged on
+  // Package setup), so position becomes sort_order. Numbered after dropping
+  // deleted rows so the run stays 1..N.
   const lpRows: Array<Record<string, unknown>> = [];
   for (const lp of (payload.locationProducts as Array<Record<string, unknown>>) || []) {
     if (lp.deleted) continue;
     lpRows.push({
+      sort_order: lpRows.length + 1,
       id: lp.id || newId(),
       location_code: locationCode,
       product_id: lp.product_id,

@@ -16,7 +16,7 @@ import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useData } from '../context/DataContext'
 import { useAuth } from '../context/AuthContext'
 import { apiPost, apiPut } from '../lib/api'
-import { computeVisit, latestLedgerRowForLocation } from '../lib/calc'
+import { bySiteChemicalOrder, computeVisit, latestLedgerRowForLocation } from '../lib/calc'
 import { Banner, EmptyState, PageHeader, Toast } from '../components/ui'
 import { fmtCurrency, fmtDate, todayIso } from '../lib/format'
 
@@ -83,7 +83,7 @@ export default function NewDelivery() {
           starting: lastEnding[lp.product_id] ?? 0,
         }
       })
-      .sort((a, b) => a.name.localeCompare(b.name))
+      .sort(bySiteChemicalOrder(idx, locationId))
 
     return { rows, lastRow }
   }, [dataset, idx, locationId, isEdit, editing])

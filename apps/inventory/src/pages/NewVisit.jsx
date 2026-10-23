@@ -8,6 +8,7 @@ import {
   applicationsByProduct,
   GAL_TO_ML,
   OVER_TARGET_FACTOR,
+  bySiteChemicalOrder,
 } from '../lib/calc'
 import { createVisit, updateVisit, sendVisitReport } from '../lib/data'
 import { draftKey, loadDraft, saveDraft, clearDraft, formatAge, SAVE_DEBOUNCE_MS } from '../lib/draft'
@@ -109,7 +110,7 @@ export default function NewVisit() {
           equipment: lastEquipment[lp.product_id] || {},
         }
       })
-      .sort((a, b) => a.name.localeCompare(b.name))
+      .sort(bySiteChemicalOrder(idx, locationId))
     // Washes first, add-ons last — not one alphabetical run. Add-ons are à la
     // carte (Hot Wax, Cer. Ala, Tire Shine…) and calc.js excludes them from
     // total_wash_count and from every CPC denominator, so they are a different

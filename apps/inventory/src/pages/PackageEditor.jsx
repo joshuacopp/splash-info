@@ -1,5 +1,20 @@
 import { useMemo, useState } from 'react'
 import { useParams } from 'react-router-dom'
+import {
+  DndContext,
+  KeyboardSensor,
+  PointerSensor,
+  closestCenter,
+  useSensor,
+  useSensors,
+} from '@dnd-kit/core'
+import {
+  SortableContext,
+  arrayMove,
+  sortableKeyboardCoordinates,
+  useSortable,
+  verticalListSortingStrategy,
+} from '@dnd-kit/sortable'
 import { useData } from '../context/DataContext'
 import { useAuth } from '../context/AuthContext'
 import { savePackageConfig } from '../lib/data'
@@ -35,7 +50,16 @@ export default function PackageEditor() {
         target_ml_per_car: lp.target_ml_per_car ?? '',
         discount: lp.discount ?? 0,
         deleted: false,
+        sort_order: lp.sort_order,
+        name: ds.products?.find((p) => p.id === lp.product_id)?.name || '',
       }))
+      // The site's chemical order (location_products.sort_order); A-Z for
+      // anything unplaced. Saving sends this array in order, and the worker
+      // numbers sort_order from its position.
+      .sort(
+        (a, b) =>
+          (a.sort_order ?? Infinity) - (b.sort_order ?? Infinity) || a.name.localeCompare(b.name)
+      )
     const pkgIds = new Set(packages.map((p) => p.id))
     const matrix = {}
     for (const pp of ds.package_products || []) {
@@ -56,6 +80,23 @@ export default function PackageEditor() {
 
   const activePkgs = state.packages.filter((p) => !p.deleted)
   const activeLps = state.locationProducts.filter((lp) => !lp.deleted)
+
+  // Drag to set the site's chemical order, which the visit and delivery forms
+  // follow. Pointer covers mouse and touch (the handle sets touch-action: none
+  // so a drag isn't read as a scroll); the small distance keeps a tap on the
+  // handle from starting one. Keyboard: focus the handle, Space, arrows, Space.
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates })
+  )
+  function onDragEnd({ active, over }) {
+    if (!over || active.id === over.id) return
+    mutate((s) => {
+      const from = s.locationProducts.findIndex((x) => x.product_id === active.id && !x.deleted)
+      const to = s.locationProducts.findIndex((x) => x.product_id === over.id && !x.deleted)
+      if (from >= 0 && to >= 0) s.locationProducts = arrayMove(s.locationProducts, from, to)
+    })
+  }
 
   // live computed footer: total ml + target CPC per package
   const footers = useMemo(() => {
@@ -208,83 +249,104 @@ export default function PackageEditor() {
                 <th className="th" />
               </tr>
             </thead>
-            <tbody className="divide-y divide-slate-100">
-              {activeLps.map((lp) => {
-                const product = idx.productById[lp.product_id]
-                return (
-                  <tr key={lp.product_id} className="hover:bg-slate-50/60">
-                    <td className="td sticky left-0 z-10 bg-white">
-                      <div className="font-semibold text-slate-900">{product ? product.name : '?'}</div>
-                      {product?.description && (
-                        <div className="max-w-[200px] truncate text-[11px] font-medium text-slate-400">
-                          {product.description}
-                        </div>
-                      )}
-                    </td>
-                    <td className="td text-right">
-                      <input
-                        type="number"
-                        step="any"
-                        value={lp.target_ml_per_car}
-                        onChange={(e) =>
-                          mutate((s) => {
-                            s.locationProducts.find((x) => x.product_id === lp.product_id && !x.deleted).target_ml_per_car = e.target.value
-                          })
-                        }
-                        className="cell-input w-20"
-                        placeholder="—"
-                      />
-                    </td>
-                    <td className="td text-right text-xs font-semibold text-slate-400">
-                      {num(lp.discount) > 0 ? fmtPct(num(lp.discount), 0) : '—'}
-                    </td>
-                    {activePkgs.map((pkg) => {
-                      const uses = state.matrix[pkg.id]?.[lp.product_id] || ''
-                      return (
-                        <td key={pkg.id} className="td text-center">
-                          <input
-                            type="number"
-                            step="any"
-                            min="0"
-                            value={uses}
-                            onChange={(e) =>
-                              mutate((s) => {
-                                const v = e.target.value
-                                s.matrix[pkg.id] ||= {}
-                                if (v === '' || Number(v) <= 0) delete s.matrix[pkg.id][lp.product_id]
-                                else s.matrix[pkg.id][lp.product_id] = Number(v)
-                              })
-                            }
-                            className={`cell-input w-14 text-center ${uses ? 'border-splash-200 bg-splash-50 font-bold text-splash-700' : 'text-slate-400'}`}
-                            placeholder="·"
-                          />
-                        </td>
-                      )
-                    })}
-                    <td className="td text-right">
-                      <button
-                        title="Remove product from this location"
-                        onClick={() =>
-                          mutate((s) => {
-                            s.locationProducts.find((x) => x.product_id === lp.product_id && !x.deleted).deleted = true
-                          })
-                        }
-                        className="text-slate-300 hover:text-rose-500"
-                      >
-                        ✕
-                      </button>
-                    </td>
-                  </tr>
-                )
-              })}
-              {!activeLps.length && (
-                <tr>
-                  <td className="td py-8 text-center text-slate-400" colSpan={4 + activePkgs.length}>
-                    No products configured — add one above.
-                  </td>
-                </tr>
-              )}
-            </tbody>
+            <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={onDragEnd}>
+              <SortableContext items={activeLps.map((lp) => lp.product_id)} strategy={verticalListSortingStrategy}>
+                <tbody className="divide-y divide-slate-100">
+                  {activeLps.map((lp) => {
+                    const product = idx.productById[lp.product_id]
+                    return (
+                      <SortableRow key={lp.product_id} id={lp.product_id}>
+                        {(handle) => (
+                          <>
+                            <td className="td sticky left-0 z-10 bg-white">
+                              <div className="flex items-center gap-2">
+                                <button
+                                  type="button"
+                                  {...handle}
+                                  title="Drag to reorder"
+                                  aria-label={`Reorder ${product ? product.name : 'product'}`}
+                                  className="cursor-grab touch-none select-none rounded px-1 text-base leading-none text-slate-300 hover:text-slate-500 active:cursor-grabbing"
+                                >
+                                  ⋮⋮
+                                </button>
+                                <div>
+                                  <div className="font-semibold text-slate-900">{product ? product.name : '?'}</div>
+                                  {product?.description && (
+                                    <div className="max-w-[200px] truncate text-[11px] font-medium text-slate-400">
+                                      {product.description}
+                                    </div>
+                                  )}
+                                </div>
+                              </div>
+                            </td>
+                            <td className="td text-right">
+                              <input
+                                type="number"
+                                step="any"
+                                value={lp.target_ml_per_car}
+                                onChange={(e) =>
+                                  mutate((s) => {
+                                    s.locationProducts.find((x) => x.product_id === lp.product_id && !x.deleted).target_ml_per_car = e.target.value
+                                  })
+                                }
+                                className="cell-input w-20"
+                                placeholder="—"
+                              />
+                            </td>
+                            <td className="td text-right text-xs font-semibold text-slate-400">
+                              {num(lp.discount) > 0 ? fmtPct(num(lp.discount), 0) : '—'}
+                            </td>
+                            {activePkgs.map((pkg) => {
+                              const uses = state.matrix[pkg.id]?.[lp.product_id] || ''
+                              return (
+                                <td key={pkg.id} className="td text-center">
+                                  <input
+                                    type="number"
+                                    step="any"
+                                    min="0"
+                                    value={uses}
+                                    onChange={(e) =>
+                                      mutate((s) => {
+                                        const v = e.target.value
+                                        s.matrix[pkg.id] ||= {}
+                                        if (v === '' || Number(v) <= 0) delete s.matrix[pkg.id][lp.product_id]
+                                        else s.matrix[pkg.id][lp.product_id] = Number(v)
+                                      })
+                                    }
+                                    className={`cell-input w-14 text-center ${uses ? 'border-splash-200 bg-splash-50 font-bold text-splash-700' : 'text-slate-400'}`}
+                                    placeholder="·"
+                                  />
+                                </td>
+                              )
+                            })}
+                            <td className="td text-right">
+                              <button
+                                title="Remove product from this location"
+                                onClick={() =>
+                                  mutate((s) => {
+                                    s.locationProducts.find((x) => x.product_id === lp.product_id && !x.deleted).deleted = true
+                                  })
+                                }
+                                className="text-slate-300 hover:text-rose-500"
+                              >
+                                ✕
+                              </button>
+                            </td>
+                          </>
+                        )}
+                      </SortableRow>
+                    )
+                  })}
+                  {!activeLps.length && (
+                    <tr>
+                      <td className="td py-8 text-center text-slate-400" colSpan={4 + activePkgs.length}>
+                        No products configured — add one above.
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </SortableContext>
+            </DndContext>
             <tfoot className="border-t-2 border-slate-200 bg-slate-50/70">
               <tr>
                 <td className="td sticky left-0 z-10 bg-slate-50/95 font-bold text-slate-900">Total ml in package</td>
@@ -347,5 +409,27 @@ function AddProductPicker({ addable, onAdd }) {
         </option>
       ))}
     </select>
+  )
+}
+
+// One draggable chemical row. Only the handle (passed to children) starts a
+// drag, so the number inputs in the row keep working normally. Vertical-only
+// transform: rows never move sideways.
+function SortableRow({ id, children }) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id })
+  const style = {
+    transform: transform ? `translate3d(0, ${transform.y}px, 0)` : undefined,
+    transition,
+    position: 'relative',
+    zIndex: isDragging ? 20 : undefined,
+  }
+  return (
+    <tr
+      ref={setNodeRef}
+      style={style}
+      className={isDragging ? 'bg-white shadow-lg' : 'hover:bg-slate-50/60'}
+    >
+      {children({ ...attributes, ...listeners })}
+    </tr>
   )
 }
