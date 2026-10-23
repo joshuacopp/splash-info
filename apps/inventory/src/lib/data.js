@@ -71,6 +71,16 @@ export async function saveRecipients(list) {
 }
 
 // ---------------------------------------------------------------------------
+// Inventory-only sites (inventory.locations). super_admin only, server-side.
+// site: { code, name, parent_code: string | null, active, create: boolean }
+export async function listSites() {
+  return apiGet('/sites') // -> { sites, parents, managers, registry_ready }
+}
+export async function saveSite(site) {
+  return apiPost('/sites', site) // -> saved row + grants
+}
+
+// ---------------------------------------------------------------------------
 // Visit report email.
 //
 // The request is the visit id and nothing else. The worker re-reads the visit,

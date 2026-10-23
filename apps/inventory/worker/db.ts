@@ -22,11 +22,11 @@
 // parent_code.
 
 import type { SupabaseClient } from "@splash/db-supabase";
-import { enqueueOutboundEmail } from "@splash/db-supabase";
+import { enqueueOutboundEmail, logSysadminAudit } from "@splash/db-supabase";
 import type { Session } from "@splash/types/session";
 // (userCanAccessLocation used to be imported here and never called — dropped
 // with the overlay change so the module graph is db -> overlay only.)
-import { loadOverlay } from "./overlay.js";
+import { invalidateOverlayCache, loadOverlay } from "./overlay.js";
 import { renderVisitReport } from "./report-email.js";
 import type { ComputedVisitLike } from "./report-email.js";
 import { renderDeliveryReceipt } from "./delivery-email.js";
@@ -189,14 +189,22 @@ function regionLabel(row: Record<string, unknown>): string | null {
 }
 
 async function getLocations(sb: SupabaseClient, allowed: Set<string> | null) {
-  const [pricing, registry, overlay] = await Promise.all([
+  const [pricing, registry, overlay, coded] = await Promise.all([
     sb
       .from("pricing_simple")
       .select("location_code,location_pretty,site,area_manager,regional_manager"),
     sb
       .from("locations")
       .select("site_number,area_manager,regional_manager,rm_group,maintainx_id"),
-    loadOverlay(sb)
+    loadOverlay(sb),
+    // Registry rows that carry their own code: standalone sites registered
+    // before they have pricing rows (Admin > Sites). Separate query so that, if
+    // locations.location_code doesn't exist yet, only these sites lose their
+    // manager/region and the main registry read above is unaffected.
+    sb
+      .from("locations")
+      .select("location_code,area_manager,regional_manager,rm_group,maintainx_id")
+      .not("location_code", "is", null)
   ]);
   if (pricing.error) throw new Error(`Failed loading locations: ${pricing.error.message}`);
 
@@ -229,6 +237,23 @@ async function getLocations(sb: SupabaseClient, allowed: Set<string> | null) {
         // takes whichever MaintainX id sorts first out of PostgREST. Both rows
         // sit at one physical address, which is what a MaintainX location is,
         // so the pair share an id in practice.
+        maintainx_id: int(row, "maintainx_id")
+      });
+    }
+  }
+
+  const byCode = new Map<string, Omit<LocationMeta, "name">>();
+  if (coded.error) {
+    console.error("[inventory.locations] coded registry read failed", coded.error.message);
+  } else {
+    for (const raw of coded.data || []) {
+      const row = raw as Record<string, unknown>;
+      const code = str(row, "location_code")?.toLowerCase();
+      if (!code) continue;
+      byCode.set(code, {
+        manager: str(row, "area_manager"),
+        region: regionLabel(row),
+        region_group: rmGroup(row),
         maintainx_id: int(row, "maintainx_id")
       });
     }
@@ -271,19 +296,23 @@ async function getLocations(sb: SupabaseClient, allowed: Set<string> | null) {
     if (seen.has(row.code)) continue;
     if (!inScope(allowed, row.code)) continue;
     seen.add(row.code);
-    const parent = row.parent_code ? meta.get(row.parent_code.trim().toLowerCase()) : undefined;
+    // A child inherits from its parent. A standalone site (no parent) reads its
+    // own registry row, matched on code.
+    const src = row.parent_code
+      ? meta.get(row.parent_code.trim().toLowerCase())
+      : byCode.get(row.code.trim().toLowerCase());
     out.push(
       locationRow(
         row.code,
         {
           name: row.name || row.code,
-          manager: parent?.manager ?? null,
-          region: parent?.region ?? null,
-          region_group: parent?.region_group ?? null,
-          // An overlay code is a reporting split of its parent site, not a
+          manager: src?.manager ?? null,
+          region: src?.region ?? null,
+          region_group: src?.region_group ?? null,
+          // An overlay child is a reporting split of its parent site, not a
           // separate physical place, so it files against the parent's
-          // MaintainX location — same inheritance as manager/region above.
-          maintainx_id: parent?.maintainx_id ?? null
+          // MaintainX location. A standalone site has its own.
+          maintainx_id: src?.maintainx_id ?? null
         },
         row.active !== false
       )
@@ -978,6 +1007,467 @@ export async function upsertProduct(sb: SupabaseClient, product: Record<string, 
   return row;
 }
 
+// ---------------------------------------------------------------------------
+// Sites admin — inventory.locations (the profit-centre overlay)
+//
+// Until 2026-10-22 these rows were SQL-only. The Admin page's Sites tab now
+// creates, renames and deactivates them. super_admin only (enforced in
+// index.ts): the list is global, and a parent_code decides who else can see a
+// site, so assigning one is an access grant.
+//
+// Two kinds of site:
+//
+//   PART OF A LOCATION — `parent_code` is a pricing_simple code. An in-bay or
+//   lube counted apart from its tunnel. Inherits the parent's managers,
+//   region, MaintainX id, report emails and access.
+//
+//   STANDALONE — no parent. A real location that takes chemicals (and maybe
+//   visits) BEFORE it moves onto the signup system: a new build stocking up
+//   before opening, or an acquisition still on its old system. It gets a
+//   public.locations registry row carrying `location_code` = this code, with
+//   the same details sysadmin's Add Location asks for minus the packages. So
+//   it has its own managers, region, MaintainX id and report emails from day
+//   one, and no customer signup page. When it later moves onto the signup
+//   system, sysadmin's Add Location finds the registry row by this code and
+//   attaches the pricing rows to it; getLocations then prefers the pricing
+//   code, and the visit history carries straight on because the code matches.
+//
+//   Creating one also grants its site, RD and RM emails location_admin on the
+//   code — what trg_sync_user_permissions does for a pricing_simple row, which
+//   this site doesn't have yet. Additive only, same as that trigger.
+//
+// The rules overlay.ts depends on but the database cannot enforce (see
+// inventory-locations-overlay.sql) are enforced here:
+//   1. parent_code, when set, must be a pricing_simple code — never another
+//      overlay code. Grant expansion is one level and does not follow chains.
+//   2. a new code must not collide with a pricing_simple code, or getLocations
+//      would silently drop the overlay row in favour of the pricing one.
+//
+// `code` cannot be changed after creation: site_visits, location_products and
+// packages all key on it as plain text with no FK, so a rename would orphan
+// that history. Rename changes `name` only. There is no delete, matching the
+// table's own rule that inactive means sold or closed, not gone.
+// ---------------------------------------------------------------------------
+
+const SITE_CODE_RE = /^[a-z0-9_]+$/;
+const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
+const REGISTRY_COLS =
+  "id,location_code,site_number,location,area_manager,am_email,regional_manager,rm_email,site_email,rm_group,maintainx_id";
+
+type Actor = { id: string; email: string };
+
+/** The registry fields a standalone site carries, as the Sites tab sends them. */
+interface SiteRegistry {
+  site_number: number;
+  address: string | null;
+  area_manager: string | null;
+  am_email: string | null;
+  regional_manager: string | null;
+  rm_email: string | null;
+  site_email: string | null;
+  rm_group: number | null;
+  maintainx_id: number | null;
+}
+
+async function pricingCodes(sb: SupabaseClient): Promise<Map<string, string>> {
+  const { data, error } = await sb.from("pricing_simple").select("location_code,location_pretty");
+  if (error) throw new Error(`Failed loading pricing locations: ${error.message}`);
+  const out = new Map<string, string>();
+  for (const raw of data || []) {
+    const row = raw as Record<string, unknown>;
+    const code = str(row, "location_code")?.toLowerCase();
+    if (!code || out.has(code)) continue;
+    out.set(code, str(row, "location_pretty") || code);
+  }
+  return out;
+}
+
+function registryOut(row: Record<string, unknown>): SiteRegistry & { id: unknown } {
+  return {
+    id: row.id,
+    site_number: Number(row.site_number),
+    address: str(row, "location"),
+    area_manager: str(row, "area_manager"),
+    am_email: str(row, "am_email"),
+    regional_manager: str(row, "regional_manager"),
+    rm_email: str(row, "rm_email"),
+    site_email: str(row, "site_email"),
+    rm_group: int(row, "rm_group"),
+    maintainx_id: int(row, "maintainx_id")
+  };
+}
+
+/**
+ * Every overlay row (active or not), each with its registry row when it is a
+ * standalone site, plus the parent choices and the known managers for the
+ * pickers.
+ *
+ * `registry_ready` is false until supabase/locations-location-code.sql is
+ * applied; the tab then refuses to create standalone sites rather than
+ * failing on save.
+ */
+export async function listSites(sb: SupabaseClient) {
+  const [{ data, error }, parents, coded, people] = await Promise.all([
+    inv(sb).from("locations").select("code,name,parent_code,active,created_at").order("name"),
+    pricingCodes(sb),
+    sb.from("locations").select(REGISTRY_COLS).not("location_code", "is", null),
+    sb.from("locations").select("area_manager,am_email,regional_manager,rm_email,rm_group")
+  ]);
+  if (error) throw new Error(`Failed loading sites: ${error.message}`);
+  if (coded.error) console.error("[inventory.sites] coded registry read failed", coded.error.message);
+
+  const byCode = new Map<string, Record<string, unknown>>();
+  for (const raw of coded.data || []) {
+    const row = raw as unknown as Record<string, unknown>;
+    const code = str(row, "location_code")?.toLowerCase();
+    if (code) byCode.set(code, row);
+  }
+
+  // Distinct people already in the registry, so the form can offer them and
+  // fill the email in rather than have it retyped (and mistyped).
+  const directors = new Map<string, { name: string; email: string | null }>();
+  const regionals = new Map<string, { name: string; email: string | null; rm_group: number | null }>();
+  for (const raw of people.data || []) {
+    const row = raw as Record<string, unknown>;
+    const am = str(row, "area_manager");
+    if (am && !directors.has(am)) directors.set(am, { name: am, email: str(row, "am_email") });
+    const rm = str(row, "regional_manager");
+    if (rm && !regionals.has(rm)) {
+      regionals.set(rm, { name: rm, email: str(row, "rm_email"), rm_group: int(row, "rm_group") });
+    }
+  }
+  const byName = (a: { name: string }, b: { name: string }) => a.name.localeCompare(b.name);
+
+  return {
+    registry_ready: !coded.error,
+    sites: (data || []).map((raw) => {
+      const site = raw as Record<string, unknown>;
+      const code = String(site.code);
+      const reg = byCode.get(code);
+      return {
+        ...site,
+        registry: reg ? registryOut(reg) : null,
+        // Moved onto the signup system: a pricing row now owns this code, and
+        // its details are edited in sysadmin from here on.
+        on_signup: parents.has(code)
+      };
+    }),
+    parents: [...parents.entries()]
+      .map(([code, name]) => ({ code, name }))
+      .sort((a, b) => a.name.localeCompare(b.name)),
+    managers: {
+      directors: [...directors.values()].sort(byName),
+      regionals: [...regionals.values()].sort(byName)
+    }
+  };
+}
+
+function optText(v: unknown, field: string, max = 200): string | null {
+  if (v == null) return null;
+  const s = String(v).trim();
+  if (!s) return null;
+  if (s.length > max) throw new ApiError(`${field} is too long`);
+  return s;
+}
+
+function optEmail(v: unknown, field: string): string | null {
+  const s = optText(v, field)?.toLowerCase() ?? null;
+  if (s && !EMAIL_RE.test(s)) throw new ApiError(`${field} is not a valid email address`);
+  return s;
+}
+
+function optPositiveInt(v: unknown, field: string): number | null {
+  if (v == null || v === "") return null;
+  const n = Number(v);
+  if (!Number.isInteger(n) || n <= 0) throw new ApiError(`${field} must be a positive whole number`);
+  return n;
+}
+
+function parseRegistry(raw: unknown): SiteRegistry {
+  const r = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
+  const site_number = optPositiveInt(r.site_number, "Site number");
+  if (site_number == null) throw new ApiError("Site number is required for a standalone location");
+  return {
+    site_number,
+    address: optText(r.address, "Address", 500),
+    area_manager: optText(r.area_manager, "Regional director"),
+    am_email: optEmail(r.am_email, "Regional director email"),
+    regional_manager: optText(r.regional_manager, "Regional manager"),
+    rm_email: optEmail(r.rm_email, "Regional manager email"),
+    site_email: optEmail(r.site_email, "Site email"),
+    rm_group: optPositiveInt(r.rm_group, "Region group"),
+    maintainx_id: optPositiveInt(r.maintainx_id, "MaintainX ID")
+  };
+}
+
+/**
+ * The registry row for a standalone code, or null. Throws if the column is
+ * missing, unless `tolerant` — the part-of-a-location path only uses this as a
+ * guard and must keep working before the SQL is applied.
+ */
+async function registryByCode(sb: SupabaseClient, code: string, tolerant = false) {
+  const { data, error } = await sb
+    .from("locations")
+    .select(REGISTRY_COLS)
+    .eq("location_code", code)
+    .maybeSingle();
+  if (error) {
+    if (tolerant) return null;
+    throw new Error(
+      `Location registry not ready (${error.message}). Apply supabase/locations-location-code.sql.`
+    );
+  }
+  return (data as unknown as Record<string, unknown> | null) ?? null;
+}
+
+/**
+ * A site number already in the registry belongs to another location. Sites
+ * 19/40/68 legitimately share one, but those were set up by hand; a new site
+ * colliding is almost always a typo, and sysadmin's Add Location would 409 on
+ * it at hand-off anyway.
+ */
+async function assertSiteNumberFree(sb: SupabaseClient, siteNumber: number, exceptId: unknown) {
+  const { data, error } = await sb
+    .from("locations")
+    .select("id,site")
+    .eq("site_number", siteNumber);
+  if (error) throw new Error(error.message);
+  const clash = (data || []).find((r) => String((r as { id: unknown }).id) !== String(exceptId));
+  if (clash) {
+    const name = (clash as { site?: string | null }).site || "another location";
+    throw new ApiError(`Site number ${siteNumber} is already used by ${name}.`, 409);
+  }
+}
+
+function registryRow(code: string, name: string, reg: SiteRegistry) {
+  return {
+    location_code: code,
+    site: name,
+    site_number: reg.site_number,
+    location: reg.address,
+    area_manager: reg.area_manager,
+    am_email: reg.am_email,
+    regional_manager: reg.regional_manager,
+    rm_email: reg.rm_email,
+    site_email: reg.site_email,
+    rm_group: reg.rm_group,
+    maintainx_id: reg.maintainx_id
+  };
+}
+
+/**
+ * Give the site, RD and RM emails location_admin on `code`, for those that
+ * have an account. Additive and idempotent (unique on user_id+location_code).
+ * Never throws: the site already exists by now, so a failure here is reported
+ * back for the toast rather than failing the save.
+ */
+async function grantSiteContacts(
+  sb: SupabaseClient,
+  code: string,
+  emails: Array<string | null>,
+  actor: Actor
+): Promise<{ granted: string[]; no_account: string[]; error: string | null }> {
+  const wanted = [...new Set(emails.filter((e): e is string => !!e).map((e) => e.toLowerCase()))];
+  if (wanted.length === 0) return { granted: [], no_account: [], error: null };
+  try {
+    const { data, error } = await sb.from("auth_unified").select("user_id,email").in("email", wanted);
+    if (error) throw new Error(error.message);
+    const users = new Map<string, string>();
+    for (const raw of data || []) {
+      const row = raw as Record<string, unknown>;
+      const email = str(row, "email")?.toLowerCase();
+      if (email && row.user_id) users.set(email, String(row.user_id));
+    }
+    const rows = wanted
+      .filter((e) => users.has(e))
+      .map((email) => ({
+        user_id: users.get(email)!,
+        email,
+        role: "location_admin",
+        location_code: code,
+        must_change_password: false
+      }));
+    if (rows.length) {
+      const { error: insErr } = await sb
+        .from("user_permissions")
+        .upsert(rows, { onConflict: "user_id,location_code", ignoreDuplicates: true });
+      if (insErr) throw new Error(insErr.message);
+      for (const r of rows) {
+        await logSysadminAudit(sb, {
+          actor,
+          action: "set_role_location_admin",
+          target_type: "user_permissions",
+          target_id: r.user_id,
+          before: null,
+          after: { email: r.email, location_code: code },
+          notes: "Granted by inventory Admin > Sites as a contact on a standalone location"
+        });
+      }
+    }
+    return {
+      granted: rows.map((r) => r.email),
+      no_account: wanted.filter((e) => !users.has(e)),
+      error: null
+    };
+  } catch (err) {
+    console.error("[inventory.sites] contact grant failed", err);
+    return { granted: [], no_account: [], error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+/**
+ * Create (`create: true`) or update one site. Body:
+ *   { code, name, parent_code: string | null, active: boolean, create: boolean,
+ *     registry?: { site_number, address, area_manager, am_email,
+ *                  regional_manager, rm_email, site_email, rm_group, maintainx_id } }
+ * `registry` present with no parent = standalone. `create` is explicit, like
+ * save_visit's p_create, so a typo'd code on an edit is a 404 rather than a
+ * brand-new site.
+ */
+export async function saveSite(sb: SupabaseClient, body: Record<string, unknown>, actor: Actor) {
+  const create = body.create === true;
+  const code = String(body.code ?? "").trim().toLowerCase();
+  const name = String(body.name ?? "").trim();
+  const parentRaw = body.parent_code == null ? "" : String(body.parent_code).trim().toLowerCase();
+  const parent = parentRaw || null;
+  const active = body.active !== false;
+  const hasRegistry = body.registry != null;
+
+  if (!SITE_CODE_RE.test(code)) {
+    throw new ApiError("Site code must be lowercase letters, numbers and underscores only");
+  }
+  if (!name) throw new ApiError("Site name is required");
+  if (name.length > 200) throw new ApiError("Site name is too long");
+  if (parent === code) throw new ApiError("A site cannot be its own parent");
+  if (parent && hasRegistry) {
+    throw new ApiError("A site is either part of a location or standalone, not both");
+  }
+  if (create && !parent && !hasRegistry) {
+    throw new ApiError("Choose the location this site belongs to, or fill in its standalone details");
+  }
+
+  const pricing = await pricingCodes(sb);
+  if (parent && !pricing.has(parent)) {
+    throw new ApiError("Parent must be a main Splash location, not another inventory-only site");
+  }
+  const onSignup = pricing.has(code);
+  // Once a site has moved onto the signup system its registry row is shared
+  // with pricing_simple, and sysadmin's Update Location owns it.
+  const reg = hasRegistry && !onSignup ? parseRegistry(body.registry) : null;
+
+  const { data: existing, error: readErr } = await inv(sb)
+    .from("locations")
+    .select("code")
+    .eq("code", code)
+    .maybeSingle();
+  if (readErr) throw new Error(readErr.message);
+
+  const regRow = reg ? await registryByCode(sb, code) : parent ? await registryByCode(sb, code, true) : null;
+  if (parent && regRow) {
+    throw new ApiError("This site has its own location record, so it cannot belong to another location");
+  }
+
+  let grants: Awaited<ReturnType<typeof grantSiteContacts>> | null = null;
+
+  if (create) {
+    if (onSignup) {
+      throw new ApiError(`"${code}" is already a Splash location code. Pick a different code.`, 409);
+    }
+    if (existing) throw new ApiError(`A site with code "${code}" already exists.`, 409);
+    if (regRow) throw new ApiError(`"${code}" is already used by another location record.`, 409);
+
+    let insertedId: unknown = null;
+    if (reg) {
+      await assertSiteNumberFree(sb, reg.site_number, null);
+      const { data, error } = await sb
+        .from("locations")
+        .insert(registryRow(code, name, reg))
+        .select("id")
+        .single();
+      if (error) throw new Error(`Location record insert failed: ${error.message}`);
+      insertedId = (data as { id: unknown }).id;
+    }
+
+    const { error } = await inv(sb)
+      .from("locations")
+      .insert({ code, name, parent_code: parent, active });
+    if (error) {
+      if (insertedId != null) {
+        // Best-effort: without the inventory row the registry row is an orphan
+        // that would block reusing the code and site number.
+        const del = await sb.from("locations").delete().eq("id", insertedId);
+        if (del.error) {
+          console.error("[inventory.sites] rollback of locations row failed", insertedId, del.error.message);
+        }
+      }
+      throw new Error(error.message);
+    }
+
+    if (reg) {
+      await logSysadminAudit(sb, {
+        actor,
+        action: "create_location",
+        target_type: "locations",
+        target_id: String(insertedId),
+        before: null,
+        after: { ...registryRow(code, name, reg), source: "inventory_sites", pricing_rows: 0 },
+        notes: "Standalone location registered from inventory Admin > Sites (not on the signup system yet)"
+      });
+      grants = await grantSiteContacts(sb, code, [reg.site_email, reg.am_email, reg.rm_email], actor);
+    }
+  } else {
+    if (!existing) throw new ApiError("Site not found", 404);
+    const { error } = await inv(sb)
+      .from("locations")
+      .update({ name, parent_code: parent, active })
+      .eq("code", code);
+    if (error) throw new Error(error.message);
+
+    if (reg) {
+      if (regRow) {
+        await assertSiteNumberFree(sb, reg.site_number, regRow.id);
+        const after = registryRow(code, name, reg);
+        const { error: upErr } = await sb.from("locations").update(after).eq("id", regRow.id);
+        if (upErr) throw new Error(`Location record update failed: ${upErr.message}`);
+        await logSysadminAudit(sb, {
+          actor,
+          action: "update_location",
+          target_type: "locations",
+          target_id: String(regRow.id),
+          before: registryOut(regRow),
+          after: { ...after, source: "inventory_sites" },
+          notes: "Edited from inventory Admin > Sites"
+        });
+      } else {
+        // An older site with no parent and no record (only super admins could
+        // see it) being given its details now.
+        await assertSiteNumberFree(sb, reg.site_number, null);
+        const { data, error: insErr } = await sb
+          .from("locations")
+          .insert(registryRow(code, name, reg))
+          .select("id")
+          .single();
+        if (insErr) throw new Error(`Location record insert failed: ${insErr.message}`);
+        await logSysadminAudit(sb, {
+          actor,
+          action: "create_location",
+          target_type: "locations",
+          target_id: String((data as { id: unknown }).id),
+          before: null,
+          after: { ...registryRow(code, name, reg), source: "inventory_sites", pricing_rows: 0 },
+          notes: "Standalone location registered from inventory Admin > Sites (existing inventory site)"
+        });
+      }
+      grants = await grantSiteContacts(sb, code, [reg.site_email, reg.am_email, reg.rm_email], actor);
+    }
+  }
+
+  // Only this isolate's cache. Others pick the change up within overlay.ts's
+  // 60s TTL, which the Sites tab tells the admin.
+  invalidateOverlayCache();
+  return { code, name, parent_code: parent, active, grants };
+}
+
 /**
  * Bulk price update — one read, one write.
  *
@@ -1270,7 +1760,9 @@ export interface ReportRecipient {
  *
  * Overlay locations (IBAs, lubes) have no pricing_simple row of their own, so
  * they resolve through `parent_code` exactly as manager/region already do in
- * getLocations. An IBA's report goes to the tunnel's site mailbox and RM.
+ * getLocations. An IBA's report goes to the tunnel's site mailbox and RM. A
+ * standalone overlay site has no parent and falls back to its own registry row
+ * by `locations.location_code`.
  *
  * Fail-soft throughout. A registry read that errors costs the derived
  * addresses; it must not cost the configured ones, and it must not 500 a
@@ -1306,7 +1798,22 @@ async function resolveDerivedEmails(
     return [];
   }
 
-  const row = (data || {}) as Record<string, unknown>;
+  let row = (data || {}) as Record<string, unknown>;
+  // No pricing row: a standalone site registered before it moved onto the
+  // signup system (Admin > Sites). Its addresses live on its own locations row.
+  if (!data) {
+    const reg = await sb
+      .from("locations")
+      .select("site_email,rm_email")
+      .eq("location_code", effective)
+      .limit(1)
+      .maybeSingle();
+    if (reg.error) {
+      console.error("[inventory.report] coded registry email read failed", reg.error.message);
+      return [];
+    }
+    row = (reg.data || {}) as Record<string, unknown>;
+  }
   const out: ReportRecipient[] = [];
   const site = String(row.site_email || "").trim().toLowerCase();
   const rm = String(row.rm_email || "").trim().toLowerCase();

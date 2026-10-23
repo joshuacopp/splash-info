@@ -1,6 +1,8 @@
 -- ============================================================================
 -- inventory.site_visits — allow a visit AND a delivery on the same day.
 --
+-- APPLIED 2026-10-22 to rewokyofschtvqgxrxwl (verified via the VERIFY query).
+--
 -- WHY
 --
 -- inventory-visit-natural-key.sql made (location_code, visit_date) unique. That

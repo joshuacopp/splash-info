@@ -1,7 +1,7 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useData } from '../context/DataContext'
 import { useAuth } from '../context/AuthContext'
-import { upsertProduct, saveRecipients, bulkUpdateProductPrices } from '../lib/data'
+import { upsertProduct, saveRecipients, bulkUpdateProductPrices, listSites, saveSite } from '../lib/data'
 import {
   PageHeader, SectionTitle, Banner, Toast, Pill, SortHeader, LocationPicker, EmptyState,
   ConfirmDialog,
@@ -29,26 +29,30 @@ export default function AdminProducts() {
   return <AdminPanel />
 }
 
+// `superOnly` tabs are hidden from inventory_admin. The worker enforces it too.
 const ADMIN_TABS = [
   { key: 'products', label: 'Products & pricing' },
   { key: 'bulk', label: 'Bulk price update' },
   { key: 'recipients', label: 'Email recipients' },
+  { key: 'sites', label: 'Sites', superOnly: true },
 ]
 
 function AdminPanel() {
   const { dataset, refresh } = useData()
+  const { role } = useAuth()
   const [toast, setToast] = useState(null)
   const [tab, setTab] = useState('products')
+  const tabs = ADMIN_TABS.filter((t) => !t.superOnly || role === 'super_admin')
 
   return (
     <div className="space-y-6">
       <PageHeader
         eyebrow="Admin"
         title="Admin"
-        sub="Master price list and visit report emails"
+        sub="Master price list, visit report emails and sites"
       />
       <div className="flex gap-1 rounded-2xl border border-slate-200 bg-white p-1 shadow-sm">
-        {ADMIN_TABS.map((t) => (
+        {tabs.map((t) => (
           <button
             key={t.key}
             onClick={() => setTab(t.key)}
@@ -64,6 +68,7 @@ function AdminPanel() {
       {tab === 'products' && <ProductsSection dataset={dataset} refresh={refresh} setToast={setToast} />}
       {tab === 'bulk' && <BulkPricesSection dataset={dataset} refresh={refresh} setToast={setToast} />}
       {tab === 'recipients' && <RecipientsSection dataset={dataset} refresh={refresh} setToast={setToast} />}
+      {tab === 'sites' && role === 'super_admin' && <SitesSection refresh={refresh} setToast={setToast} />}
       <Toast toast={toast} onDismiss={() => setToast(null)} />
     </div>
   )
@@ -766,5 +771,506 @@ function RecipientsSection({ dataset, refresh, setToast }) {
         </div>
       </div>
     </div>
+  )
+}
+
+// --------------------------------------------------------------------------
+// Sites — locations the inventory app tracks that are not on the signup system.
+//
+// Two kinds, chosen when the site is created and fixed after:
+//
+//   Part of a location — an in-bay or lube counted apart from its tunnel. It
+//   inherits the tunnel's managers, region, MaintainX location, report emails
+//   and access.
+//
+//   Standalone — a new build taking chemicals before it opens, or an acquired
+//   site still on its own systems. It gets its own location record (the same
+//   details sysadmin's Add Location asks for, minus the packages), so it has
+//   managers, a region and report emails from day one without a customer
+//   signup page. Moving it onto the signup system later is sysadmin's Add
+//   Location with the SAME code, which picks this record up.
+//
+// super_admin only: the worker 403s anyone else, and the tab is hidden for them.
+//
+// The code is fixed once created, because visits and the package setup key
+// on it with no foreign key, so changing it would orphan the history. There
+// is no delete either: deactivating hides the site from the sidebar and the
+// company rollups but keeps its history readable.
+function SitesSection({ refresh, setToast }) {
+  const [state, setState] = useState({
+    loading: true,
+    error: null,
+    sites: [],
+    parents: [],
+    managers: { directors: [], regionals: [] },
+    registryReady: true,
+  })
+  const [editing, setEditing] = useState(null) // { ...site, create }
+  const [busy, setBusy] = useState(false)
+
+  async function load() {
+    try {
+      const r = await listSites()
+      setState({
+        loading: false,
+        error: null,
+        sites: r.sites || [],
+        parents: r.parents || [],
+        managers: r.managers || { directors: [], regionals: [] },
+        registryReady: r.registry_ready !== false,
+      })
+    } catch (e) {
+      setState((s) => ({ ...s, loading: false, error: e.message || String(e) }))
+    }
+  }
+  useEffect(() => {
+    load()
+  }, [])
+
+  const parentName = useMemo(() => {
+    const m = {}
+    for (const p of state.parents) m[p.code] = p.name
+    return m
+  }, [state.parents])
+
+  async function save(site) {
+    setBusy(true)
+    try {
+      const res = await saveSite(site)
+      await Promise.all([load(), refresh()])
+      setEditing(null)
+      setToast({
+        tone: res?.grants?.error ? 'error' : 'success',
+        title: site.create ? 'Site added' : 'Site saved',
+        message: [
+          `${site.name} saved. It can take up to a minute to show for everyone.`,
+          grantSummary(res?.grants),
+        ]
+          .filter(Boolean)
+          .join(' '),
+      })
+    } catch (e) {
+      setToast({ tone: 'error', title: 'Could not save', message: e.message || String(e) })
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  if (state.loading) return <div className="card p-6 text-sm text-slate-500">Loading sites…</div>
+  if (state.error) return <Banner tone="rose" title="Could not load sites">{state.error}</Banner>
+
+  return (
+    <div className="card overflow-hidden">
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 px-5 py-4">
+        <div>
+          <SectionTitle>Sites not on the signup system ({fmtInt(state.sites.length)})</SectionTitle>
+          <p className="mt-1 text-xs text-slate-500">
+            New or acquired locations that take chemicals before they move onto the signup system, and
+            in-bays counted apart from their tunnel. Main Splash locations come from the pricing list and
+            are not edited here.
+          </p>
+        </div>
+        <button
+          className="btn-primary py-1.5 text-xs"
+          onClick={() =>
+            setEditing({
+              code: '',
+              name: '',
+              parent_code: null,
+              active: true,
+              create: true,
+              kind: 'standalone',
+              registry: null,
+            })
+          }
+        >
+          + New site
+        </button>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="min-w-full divide-y divide-slate-100">
+          <thead>
+            <tr>
+              <th className="th">Name</th>
+              <th className="th">Code</th>
+              <th className="th">Kind</th>
+              <th className="th">Status</th>
+              <th className="th" />
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-slate-100">
+            {state.sites.map((s) => (
+              <tr key={s.code}>
+                <td className="td font-semibold text-slate-800">{s.name}</td>
+                <td className="td font-mono text-xs text-slate-500">{s.code}</td>
+                <td className="td">
+                  {s.parent_code ? (
+                    <>Part of {parentName[s.parent_code] || s.parent_code}</>
+                  ) : s.on_signup ? (
+                    <Pill tone="blue">Now on the signup system</Pill>
+                  ) : s.registry ? (
+                    <>Standalone · site {s.registry.site_number}</>
+                  ) : (
+                    <span className="text-amber-700">Standalone · details missing</span>
+                  )}
+                </td>
+                <td className="td">
+                  {s.active !== false ? <Pill tone="emerald">Active</Pill> : <Pill>Inactive</Pill>}
+                </td>
+                <td className="td text-right">
+                  <button
+                    className="btn-ghost py-1 text-xs"
+                    onClick={() =>
+                      setEditing({
+                        ...s,
+                        active: s.active !== false,
+                        create: false,
+                        kind: s.parent_code ? 'part' : 'standalone',
+                      })
+                    }
+                  >
+                    Edit
+                  </button>
+                </td>
+              </tr>
+            ))}
+            {state.sites.length === 0 && (
+              <tr>
+                <td className="td text-slate-400" colSpan={5}>
+                  No sites yet.
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+
+      {editing && (
+        <EditSiteModal
+          site={editing}
+          parents={state.parents}
+          managers={state.managers}
+          registryReady={state.registryReady}
+          busy={busy}
+          onCancel={() => setEditing(null)}
+          onSave={save}
+        />
+      )}
+    </div>
+  )
+}
+
+function grantSummary(g) {
+  if (!g) return ''
+  if (g.error) return `The site saved, but giving its contacts access failed (${g.error}). Grant them in Sysadmin.`
+  const parts = []
+  if (g.granted?.length) parts.push(`Gave access to ${g.granted.join(', ')}.`)
+  if (g.no_account?.length) parts.push(`No account yet for ${g.no_account.join(', ')}.`)
+  return parts.join(' ')
+}
+
+// Suggest a code from the name on create: "Liverpool IBA" -> "liverpool_iba".
+function codeFromName(name) {
+  return name
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+}
+
+const EMPTY_REGISTRY = {
+  site_number: '',
+  address: '',
+  area_manager: '',
+  am_email: '',
+  regional_manager: '',
+  rm_email: '',
+  site_email: '',
+  rm_group: '',
+  maintainx_id: '',
+}
+
+function registryForm(reg) {
+  if (!reg) return { ...EMPTY_REGISTRY }
+  const out = {}
+  for (const k of Object.keys(EMPTY_REGISTRY)) out[k] = reg[k] == null ? '' : String(reg[k])
+  return out
+}
+
+function Field({ label, hint, children }) {
+  return (
+    <div>
+      <label className="mb-1 block text-xs font-bold text-slate-500">{label}</label>
+      {children}
+      {hint && <p className="mt-1 text-[11px] font-medium text-slate-400">{hint}</p>}
+    </div>
+  )
+}
+
+function EditSiteModal({ site, parents, managers, registryReady, busy, onCancel, onSave }) {
+  const [s, setS] = useState(site)
+  const [reg, setReg] = useState(() => registryForm(site.registry))
+  // On create the code follows the name until the admin types in it.
+  const [codeTouched, setCodeTouched] = useState(!site.create)
+  const codeOk = /^[a-z0-9_]+$/.test(s.code)
+  const standalone = s.kind === 'standalone'
+  // Once a pricing row owns the code, sysadmin owns the details.
+  const detailsHere = standalone && !s.on_signup
+  const siteNumOk = /^\d+$/.test(reg.site_number) && Number(reg.site_number) > 0
+  const blocked = detailsHere && !registryReady
+
+  const setR = (patch) => setReg((cur) => ({ ...cur, ...patch }))
+
+  // Picking a known person fills in their email (and region, for an RM) so it
+  // isn't retyped. Only fills; never clears what the admin typed.
+  function pickDirector(name) {
+    const hit = managers.directors.find((d) => d.name === name)
+    setR({ area_manager: name, ...(hit?.email ? { am_email: hit.email } : {}) })
+  }
+  function pickRegional(name) {
+    const hit = managers.regionals.find((r) => r.name === name)
+    setR({
+      regional_manager: name,
+      ...(hit?.email ? { rm_email: hit.email } : {}),
+      ...(hit?.rm_group != null ? { rm_group: String(hit.rm_group) } : {}),
+    })
+  }
+
+  const canSave =
+    !busy &&
+    !blocked &&
+    s.name.trim() &&
+    codeOk &&
+    (standalone ? !detailsHere || siteNumOk : !!s.parent_code)
+
+  function submit() {
+    const out = {
+      code: s.code,
+      name: s.name.trim(),
+      active: s.active,
+      create: s.create,
+      parent_code: standalone ? null : s.parent_code,
+    }
+    if (detailsHere) out.registry = reg
+    onSave(out)
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      <div className="absolute inset-0 bg-slate-900/50" onClick={onCancel} />
+      <div className="card fade-in relative max-h-[90vh] w-full max-w-lg overflow-y-auto p-6">
+        <h3 className="mb-4 text-lg font-extrabold text-slate-900">{s.create ? 'New site' : 'Edit site'}</h3>
+        <div className="space-y-3">
+          {s.create && (
+            <div className="space-y-2">
+              <KindOption
+                checked={standalone}
+                onChange={() => setS({ ...s, kind: 'standalone', parent_code: null })}
+                title="Standalone location"
+                text="A new or acquired location that isn't on the signup system yet. It gets its own managers, region, MaintainX location and report emails."
+              />
+              <KindOption
+                checked={!standalone}
+                onChange={() => setS({ ...s, kind: 'part' })}
+                title="Part of an existing location"
+                text="An in-bay or lube counted separately from its tunnel. Uses the tunnel's managers, access and report emails."
+              />
+            </div>
+          )}
+
+          <Field label="Name">
+            <input
+              className="input"
+              value={s.name}
+              placeholder={standalone ? 'e.g. "Rochester"' : 'e.g. "Liverpool IBA"'}
+              onChange={(e) => {
+                const name = e.target.value
+                setS((cur) => ({ ...cur, name, code: codeTouched ? cur.code : codeFromName(name) }))
+              }}
+            />
+          </Field>
+
+          <div>
+            <label className="mb-1 block text-xs font-bold text-slate-500">Code</label>
+            <input
+              className="input font-mono"
+              value={s.code}
+              disabled={!s.create}
+              onChange={(e) => {
+                setCodeTouched(true)
+                setS({ ...s, code: e.target.value.toLowerCase() })
+              }}
+            />
+            <p className={`mt-1 text-[11px] font-medium ${s.code && !codeOk ? 'text-rose-600' : 'text-slate-400'}`}>
+              {s.create ? (
+                <>
+                  Should be the site name, all lowercase, and must not match another site's code. Use an
+                  underscore "_" for spaces. Cannot be changed later
+                  {standalone && ', and it must be the code the site uses when it moves onto the signup system'}.
+                </>
+              ) : (
+                'Fixed once a site is created, because its history is filed under it.'
+              )}
+            </p>
+          </div>
+
+          {!standalone && (
+            <Field
+              label="Belongs to"
+              hint="Anyone with access to the location chosen here also gets access to this site."
+            >
+              <select
+                className="input"
+                value={s.parent_code || ''}
+                onChange={(e) => setS({ ...s, parent_code: e.target.value || null })}
+              >
+                <option value="">Choose a location…</option>
+                {parents.map((p) => (
+                  <option key={p.code} value={p.code}>
+                    {p.name}
+                  </option>
+                ))}
+              </select>
+            </Field>
+          )}
+
+          {standalone && s.on_signup && (
+            <Banner tone="blue" title="On the signup system">
+              This site has moved onto the signup system. Edit its managers, emails and address in Sysadmin
+              &gt; Update Location.
+            </Banner>
+          )}
+
+          {blocked && (
+            <Banner tone="amber" title="Database update needed">
+              Standalone locations need supabase/locations-location-code.sql applied first.
+            </Banner>
+          )}
+
+          {detailsHere && (
+            <div className="space-y-3 rounded-lg border border-slate-200 p-3">
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <Field label="Site number">
+                  <input
+                    className="input"
+                    inputMode="numeric"
+                    value={reg.site_number}
+                    onChange={(e) => setR({ site_number: e.target.value.replace(/\D/g, '') })}
+                  />
+                </Field>
+                <Field label="MaintainX ID" hint="Optional. Needed for work requests.">
+                  <input
+                    className="input"
+                    inputMode="numeric"
+                    value={reg.maintainx_id}
+                    onChange={(e) => setR({ maintainx_id: e.target.value.replace(/\D/g, '') })}
+                  />
+                </Field>
+              </div>
+              <Field label="Address">
+                <input className="input" value={reg.address} onChange={(e) => setR({ address: e.target.value })} />
+              </Field>
+              <Field label="Site email">
+                <input
+                  className="input"
+                  type="email"
+                  value={reg.site_email}
+                  onChange={(e) => setR({ site_email: e.target.value })}
+                />
+              </Field>
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <Field label="Regional director">
+                  <input
+                    className="input"
+                    list="site-directors"
+                    value={reg.area_manager}
+                    onChange={(e) => pickDirector(e.target.value)}
+                  />
+                  <datalist id="site-directors">
+                    {managers.directors.map((d) => (
+                      <option key={d.name} value={d.name} />
+                    ))}
+                  </datalist>
+                </Field>
+                <Field label="Regional director email">
+                  <input
+                    className="input"
+                    type="email"
+                    value={reg.am_email}
+                    onChange={(e) => setR({ am_email: e.target.value })}
+                  />
+                </Field>
+                <Field label="Regional manager">
+                  <input
+                    className="input"
+                    list="site-regionals"
+                    value={reg.regional_manager}
+                    onChange={(e) => pickRegional(e.target.value)}
+                  />
+                  <datalist id="site-regionals">
+                    {managers.regionals.map((r) => (
+                      <option key={r.name} value={r.name} />
+                    ))}
+                  </datalist>
+                </Field>
+                <Field label="Regional manager email">
+                  <input
+                    className="input"
+                    type="email"
+                    value={reg.rm_email}
+                    onChange={(e) => setR({ rm_email: e.target.value })}
+                  />
+                </Field>
+              </div>
+              <Field label="Region group" hint="Groups the site in the sidebar. Fills in when you pick a known regional manager.">
+                <input
+                  className="input"
+                  inputMode="numeric"
+                  value={reg.rm_group}
+                  onChange={(e) => setR({ rm_group: e.target.value.replace(/\D/g, '') })}
+                />
+              </Field>
+              <p className="text-[11px] font-medium text-slate-500">
+                The site, regional director and regional manager emails get access to this site in the
+                inventory app if they have an account, and receive its visit reports.
+              </p>
+            </div>
+          )}
+
+          <label className="flex items-center gap-2 text-sm font-semibold text-slate-700">
+            <input type="checkbox" checked={s.active} onChange={(e) => setS({ ...s, active: e.target.checked })} />
+            Active
+          </label>
+          {!s.active && (
+            <p className="text-[11px] font-medium text-slate-500">
+              Inactive sites drop out of the sidebar and company totals. Their history stays.
+            </p>
+          )}
+        </div>
+        <div className="mt-5 flex justify-end gap-2">
+          <button className="btn-ghost" onClick={onCancel}>
+            Cancel
+          </button>
+          <button className="btn-primary" disabled={!canSave} onClick={submit}>
+            {busy ? 'Saving…' : 'Save'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function KindOption({ checked, onChange, title, text }) {
+  return (
+    <label
+      className={`flex cursor-pointer gap-3 rounded-lg border p-3 ${
+        checked ? 'border-splash-300 bg-splash-50' : 'border-slate-200'
+      }`}
+    >
+      <input type="radio" className="mt-1" checked={checked} onChange={onChange} />
+      <span>
+        <span className="block text-sm font-bold text-slate-800">{title}</span>
+        <span className="block text-xs text-slate-500">{text}</span>
+      </span>
+    </label>
   )
 }

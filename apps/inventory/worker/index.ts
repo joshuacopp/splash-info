@@ -37,11 +37,13 @@ import {
   deleteVisit,
   getDelivery,
   getVisitLocationCode,
+  listSites,
   loadInventoryData,
   loadMaintainXLocations,
   resolveFlag,
   savePackageConfig,
   saveRecipients,
+  saveSite,
   sendDeliveryReceipt,
   sendVisitReport,
   unresolveFlag,
@@ -466,6 +468,24 @@ export default {
           await deleteVisit(sb, visitId);
           return json({ ok: true });
         }
+      }
+
+      // /api/sites — inventory-only sites (inventory.locations). GET lists
+      // them with the parent picker's options; POST creates or updates one.
+      //
+      // super_admin, NOT isInventoryAdmin. The list is global, and setting a
+      // parent_code grants that site to everyone who holds the parent, so
+      // creating a site is an access decision. A location-scoped
+      // inventory_admin making one would also never see it unless they held
+      // the parent. See saveSite in db.ts for the validation.
+      if (sub === "sites" && segments.length === 2) {
+        if (session.role !== "super_admin") return jsonError(403, "super_admin only");
+        if (method === "GET") return json(await listSites(sb));
+        if (method === "POST") {
+          const actor = { id: session.userId, email: session.email };
+          return json(await saveSite(sb, (await readJson(request)) || {}, actor));
+        }
+        return jsonError(405, "method not allowed");
       }
 
       // POST /api/products — upsert (admin only)
