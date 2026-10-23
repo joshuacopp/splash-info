@@ -1791,68 +1791,123 @@ async function handleCreateLocation(
     return jsonError(409, "Location code already in use");
   }
 
-  // Brief 29 — pre-check uniqueness on locations.site_number. The locations
-  // table doesn't carry a location_code column (only site_number is the
-  // unique business key), so site_number is the only collision key here.
-  const locExistsResp = await fetch(
-    `${env.SUPABASE_URL}/rest/v1/locations?site_number=eq.${siteNumber}&select=id&limit=1`,
-    {
-      headers: {
-        apikey: env.SUPABASE_SERVICE_KEY,
-        Authorization: `Bearer ${env.SUPABASE_SERVICE_KEY}`
-      }
-    }
+  const svcHeaders = {
+    apikey: env.SUPABASE_SERVICE_KEY,
+    Authorization: `Bearer ${env.SUPABASE_SERVICE_KEY}`
+  };
+
+  // 2026-10-23 — ATTACH. A location can be registered before it sells
+  // memberships: inventory's Admin > Sites writes a locations row carrying
+  // `location_code` so the site can take chemicals before it opens (or while
+  // an acquired site is still on its old systems). Moving that site onto the
+  // signup system is this endpoint with the SAME code, so find that row and
+  // hang the pricing rows off it instead of inserting a second one and 409ing
+  // on the site number. Inventory history is filed under the code, which is
+  // why the code has to match rather than merely the site number.
+  //
+  // A failed lookup (e.g. supabase/locations-location-code.sql not applied,
+  // so the column doesn't exist) falls through to the original create path.
+  let attached: Record<string, unknown> | null = null;
+  const byCodeResp = await fetch(
+    `${env.SUPABASE_URL}/rest/v1/locations?location_code=eq.${encodeURIComponent(
+      locationCode
+    )}&select=*&limit=1`,
+    { headers: svcHeaders }
   );
-  if (!locExistsResp.ok) {
-    const errText = await locExistsResp.text().catch(() => "");
-    return jsonError(500, `Locations pre-check failed: ${locExistsResp.status} ${errText}`);
+  if (byCodeResp.ok) {
+    const found = (await byCodeResp.json().catch(() => [])) as Array<Record<string, unknown>>;
+    attached = Array.isArray(found) && found.length > 0 ? found[0]! : null;
+  } else {
+    console.warn(
+      `[sysadmin.create-location] location_code lookup failed (${byCodeResp.status}); creating a new locations row`
+    );
   }
-  const locExisting = (await locExistsResp.json().catch(() => [])) as unknown[];
-  if (Array.isArray(locExisting) && locExisting.length > 0) {
-    return jsonError(409, "Location already exists in locations table");
+  if (attached && Number(attached.site_number) !== siteNumber) {
+    const registered = String(attached.site_number);
+    return jsonError(
+      409,
+      `Location code "${locationCode}" is already registered to site ${registered}, not ${siteNumber}. ` +
+        `Use site ${registered}, or correct it in Update Location first.`
+    );
   }
 
-  // Brief 29 — INSERT locations row FIRST. The trg_sync_pricing_simple
-  // trigger fires `ON locations AFTER UPDATE` (not INSERT), so we don't
-  // rely on the trigger to populate pricing_simple's denormalized columns
-  // here — the pricing_simple INSERT below carries them directly.
-  const locInsertRow: LocationsInsertRow = {
-    site_number: siteNumber,
-    site: locationPretty,
-    location: address,
-    area_manager: areaManager,
-    regional_manager: regionalManager,
-    am_email: amEmail,
-    rm_email: rmEmail,
-    site_email: siteEmail
-  };
-  const locInsertResp = await fetch(
-    `${env.SUPABASE_URL}/rest/v1/locations`,
-    {
+  let insertedLocationId: number | string | null = null;
+  if (attached) {
+    insertedLocationId = (attached.id as number | string | undefined) ?? null;
+  } else {
+    // Brief 29 — pre-check uniqueness on locations.site_number. Older rows
+    // carry no location_code, so site_number is the collision key there.
+    const locExistsResp = await fetch(
+      `${env.SUPABASE_URL}/rest/v1/locations?site_number=eq.${siteNumber}&select=*&limit=1`,
+      { headers: svcHeaders }
+    );
+    if (!locExistsResp.ok) {
+      const errText = await locExistsResp.text().catch(() => "");
+      return jsonError(500, `Locations pre-check failed: ${locExistsResp.status} ${errText}`);
+    }
+    const locExisting = (await locExistsResp.json().catch(() => [])) as Array<
+      Record<string, unknown>
+    >;
+    if (Array.isArray(locExisting) && locExisting.length > 0) {
+      // Point at the right code when the clash is a site set up in Inventory
+      // first under a different code than the one typed here.
+      const otherCode = stringOrNull(locExisting[0]!.location_code);
+      return jsonError(
+        409,
+        otherCode
+          ? `Site ${siteNumber} is already registered with location code "${otherCode}" (set up in ` +
+              `Inventory before it moved to the signup system). Use that code to move it onto the signup system.`
+          : "Location already exists in locations table"
+      );
+    }
+
+    // Brief 29 — INSERT locations row FIRST. The trg_sync_pricing_simple
+    // trigger fires `ON locations AFTER UPDATE` (not INSERT), so we don't
+    // rely on the trigger to populate pricing_simple's denormalized columns
+    // here — the pricing_simple INSERT below carries them directly.
+    const locInsertRow: LocationsInsertRow = {
+      site_number: siteNumber,
+      site: locationPretty,
+      location: address,
+      area_manager: areaManager,
+      regional_manager: regionalManager,
+      am_email: amEmail,
+      rm_email: rmEmail,
+      site_email: siteEmail
+    };
+    const locInsertResp = await fetch(`${env.SUPABASE_URL}/rest/v1/locations`, {
       method: "POST",
       headers: {
-        apikey: env.SUPABASE_SERVICE_KEY,
-        Authorization: `Bearer ${env.SUPABASE_SERVICE_KEY}`,
+        ...svcHeaders,
         "Content-Type": "application/json",
         Prefer: "return=representation"
       },
       body: JSON.stringify(locInsertRow)
+    });
+    if (!locInsertResp.ok) {
+      const errText = await locInsertResp.text().catch(() => "");
+      return jsonError(500, `Locations insert failed: ${locInsertResp.status} ${errText}`);
     }
-  );
-  if (!locInsertResp.ok) {
-    const errText = await locInsertResp.text().catch(() => "");
-    return jsonError(
-      500,
-      `Locations insert failed: ${locInsertResp.status} ${errText}`
-    );
+    const locInsertedRows = (await locInsertResp.json().catch(() => [])) as Array<{
+      id?: number | string;
+    }>;
+    insertedLocationId =
+      Array.isArray(locInsertedRows) && locInsertedRows.length > 0
+        ? locInsertedRows[0]!.id ?? null
+        : null;
   }
-  const locInsertedRows = (await locInsertResp.json().catch(() => [])) as Array<{
-    id?: number | string;
-  }>;
-  const insertedLocationId =
-    Array.isArray(locInsertedRows) && locInsertedRows.length > 0
-      ? locInsertedRows[0]!.id ?? null
-      : null;
+
+  // On attach the registry row is authoritative for the denormalized columns
+  // (trg_sync_pricing_simple keeps pricing_simple in step with it from here
+  // on), so prefer what is already on it and fall back to the form.
+  const fromRegistry = (k: string, fallback: string | null) =>
+    attached ? stringOrNull(attached[k]) ?? fallback : fallback;
+  const pAreaManager = fromRegistry("area_manager", areaManager);
+  const pRegionalManager = fromRegistry("regional_manager", regionalManager);
+  const pSiteEmail = fromRegistry("site_email", siteEmail);
+  const pAmEmail = fromRegistry("am_email", amEmail);
+  const pRmEmail = fromRegistry("rm_email", rmEmail);
+  const pAddress = fromRegistry("location", address);
 
   // Build the pricing_simple row array and POST atomically.
   const rows: PricingSimpleInsertRow[] = packages.map((p) => ({
@@ -1866,12 +1921,12 @@ async function handleCreateLocation(
     sort: p.sort ?? null,
     pricing: "full",
     site,
-    area_manager: areaManager,
-    regional_manager: regionalManager,
-    site_email: siteEmail,
-    am_email: amEmail,
-    rm_email: rmEmail,
-    address
+    area_manager: pAreaManager,
+    regional_manager: pRegionalManager,
+    site_email: pSiteEmail,
+    am_email: pAmEmail,
+    rm_email: pRmEmail,
+    address: pAddress
   }));
 
   const insertResp = await fetch(
@@ -1893,10 +1948,11 @@ async function handleCreateLocation(
 
     // Brief 29 — best-effort rollback of the just-inserted locations row.
     // If the DELETE fails, surface BOTH errors and flag the audit log so
-    // the operator knows manual cleanup is required.
+    // the operator knows manual cleanup is required. Never on attach: that
+    // row predates this request and still belongs to the inventory site.
     let cleanupNote = "";
     let needsManualCleanup = false;
-    if (insertedLocationId !== null) {
+    if (insertedLocationId !== null && !attached) {
       const cleanupResp = await fetch(
         `${env.SUPABASE_URL}/rest/v1/locations?id=eq.${encodeURIComponent(
           String(insertedLocationId)
@@ -1963,9 +2019,13 @@ async function handleCreateLocation(
       location_pretty: locationPretty,
       location_id: insertedLocationId,
       site_number: siteNumber,
-      address,
-      package_count: packages.length
-    }
+      address: pAddress,
+      package_count: packages.length,
+      attached_to_existing_location: attached !== null
+    },
+    notes: attached
+      ? "Attached to a locations row registered before the site moved to the signup system"
+      : undefined
   });
 
   return json({
@@ -1973,7 +2033,8 @@ async function handleCreateLocation(
     location_code: locationCode,
     location_id: insertedLocationId,
     site_number: siteNumber,
-    package_count: packages.length
+    package_count: packages.length,
+    attached_to_existing_location: attached !== null
   });
 }
 

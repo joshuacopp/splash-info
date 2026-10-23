@@ -967,16 +967,20 @@ export async function createLocationAction(
     return { ok: false, error: result.error };
   }
 
-  // Worker returns { ok, location_code, location_id, site_number, package_count }.
+  // Worker returns { ok, location_code, location_id, site_number, package_count,
+  // attached_to_existing_location }.
   let respLocationCode = locationCode;
   let respPackageCount = packages.length;
   let respSiteNumber: number | null = null;
+  let attached = false;
   if (result.body && typeof result.body === "object") {
     const r = result.body as {
       location_code?: unknown;
       package_count?: unknown;
       site_number?: unknown;
+      attached_to_existing_location?: unknown;
     };
+    attached = r.attached_to_existing_location === true;
     if (typeof r.location_code === "string" && r.location_code.length > 0) {
       respLocationCode = r.location_code;
     }
@@ -992,7 +996,12 @@ export async function createLocationAction(
   const sitePart = respSiteNumber !== null ? `#${respSiteNumber}, ` : "";
   return {
     ok: true,
-    message: `Location created: ${respLocationCode} (${sitePart}${respPackageCount} packages)`
+    // Attached = the site was registered in Inventory first; its existing
+    // location record (managers, emails, history) was reused.
+    message: attached
+      ? `Location moved onto the signup system: ${respLocationCode} (${sitePart}${respPackageCount} packages). ` +
+        "Used its existing location record from Inventory; managers and emails come from that record."
+      : `Location created: ${respLocationCode} (${sitePart}${respPackageCount} packages)`
   };
 }
 
