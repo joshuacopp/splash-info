@@ -57,6 +57,13 @@ const REWRITE_TARGETS = [
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  // REACT 19 IS PINNED IN THE ROOT package.json, not just here. Installs are
+  // hoisted (node-linker=hoisted), and Next's styled-jsx lives only at the
+  // root, so whichever React wins the root slot is the one the build renders
+  // /404 with. When apps/inventory (React 18) gained a root-hoisted dependency
+  // the slot flipped to 18 and every build died with "Cannot read properties
+  // of null (reading 'useContext')". Keep the root pin matching this app.
+  //
   // Workspace packages we author in this monorepo. Next.js needs to transpile
   // their TS sources because they ship as .ts files (no prebuild step).
   transpilePackages: ["@splash/storage-r2", "@splash/types", "@splash/ui"],
