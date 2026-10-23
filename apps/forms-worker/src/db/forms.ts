@@ -490,6 +490,49 @@ export async function siteToLocationCode(
   return typeof code === "string" && code.trim() ? code.trim().toLowerCase() : null;
 }
 
+/**
+ * Package names at one site, in the site's own display order -- the rows a
+ * package price grid offers. Names only: prices are typed by the submitter,
+ * because pricing_simple's prices are not always current.
+ *
+ * Returns null when the read FAILED, [] when the site simply has no packages.
+ * The submit path must tell those apart: a failed read is "try again", an
+ * unknown site is a bad answer.
+ */
+export async function listPackagesForSite(
+  env: SupabaseEnv,
+  keyColumn: "pricing_simple.location_code" | "pricing_simple.site",
+  keyValue: string
+): Promise<string[] | null> {
+  const column = keyColumn === "pricing_simple.site" ? "site" : "location_code";
+  const value =
+    column === "site" ? normalizeSiteKey(keyValue) : keyValue.trim().toLowerCase();
+  if (!value) return [];
+  const url = new URL("/rest/v1/pricing_simple", env.SUPABASE_URL);
+  url.searchParams.set("select", "pkg,sort");
+  url.searchParams.set(column, `eq.${value}`);
+  url.searchParams.set("order", "sort.asc,pkg.asc");
+  url.searchParams.set("limit", "100");
+
+  let response: Response;
+  try {
+    response = await fetch(url.toString(), { headers: headers(env) });
+  } catch (err) {
+    console.error("[forms] listPackagesForSite: fetch threw", err);
+    return null;
+  }
+  if (!response.ok) {
+    console.error("[forms] listPackagesForSite: returned", response.status);
+    return null;
+  }
+  const rows = (await response.json().catch(() => [])) as Array<{ pkg: string | null }>;
+  const out: string[] = [];
+  for (const r of rows) {
+    if (typeof r.pkg === "string" && r.pkg.trim() && !out.includes(r.pkg)) out.push(r.pkg);
+  }
+  return out;
+}
+
 /** Outcome of resolving a submission's scope field to a location_code. */
 export type SubmissionLocationResolution =
   | { status: "resolved"; locationCode: string }

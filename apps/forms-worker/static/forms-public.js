@@ -31,6 +31,7 @@
         wireFile(wrap, slug, formEl);
       });
       wireLookups(formEl, slug);
+      wirePriceGrids(formEl, slug);
       wireMultiMax(formEl);
       wireConditionals(formEl);
 
@@ -397,6 +398,222 @@
       .catch(function () {
         setDisplay(resolutionMode === "display_only" ? "(error)" : "", false);
       });
+  }
+
+  // Package price grid. Rows depend on the site, so they are fetched when the
+  // site field changes and drawn here. The submitted value is the hidden JSON
+  // input; the visible boxes are unnamed (see render/fields/package-price-grid.ts).
+  //
+  // Prices go up as typed. The server normalises them, fills a blank new price
+  // from the current one, and rejects any package the site does not sell --
+  // this script only has to collect what was entered.
+  function wirePriceGrids(formEl, slug) {
+    var grids = formEl.querySelectorAll('[data-field-type="package_price_grid"]');
+    Array.prototype.forEach.call(grids, function (wrap) {
+      var fieldKey = wrap.getAttribute("data-field-key");
+      var keyName = wrap.getAttribute("data-grid-key-field");
+      var hidden = wrap.querySelector('[data-grid-value="1"]');
+      var rowsEl = wrap.querySelector('[data-grid-rows="1"]');
+      if (!fieldKey || !keyName || !hidden || !rowsEl) return;
+
+      var packages = null; // null = not loaded for the current site
+      var loadedFor = "";
+      var seq = 0;
+      var debounce;
+
+      function keyEls() {
+        return formEl.querySelectorAll('[name="' + cssAttrEscape(keyName) + '"]');
+      }
+      function keyValue() {
+        var els = keyEls();
+        for (var i = 0; i < els.length; i++) {
+          var el = els[i];
+          if ((el.type === "radio" || el.type === "checkbox") && !el.checked) continue;
+          return (el.value || "").trim();
+        }
+        return "";
+      }
+      function saved() {
+        try {
+          var v = JSON.parse(hidden.value || "[]");
+          return Array.isArray(v) ? v : [];
+        } catch (e) {
+          return [];
+        }
+      }
+      function message(text) {
+        rowsEl.innerHTML = "";
+        var p = document.createElement("p");
+        p.className = "price-grid-empty";
+        p.textContent = text;
+        rowsEl.appendChild(p);
+      }
+
+      function serialize() {
+        var out = [];
+        var rows = rowsEl.querySelectorAll(".price-grid-row.is-on");
+        Array.prototype.forEach.call(rows, function (row) {
+          var get = function (k) {
+            var el = row.querySelector('[data-price="' + k + '"]');
+            return el ? el.value.trim() : "";
+          };
+          out.push({
+            pkg: row.getAttribute("data-pkg"),
+            current_single: get("cs"),
+            current_monthly: get("cm"),
+            new_single: get("ns"),
+            new_monthly: get("nm")
+          });
+        });
+        hidden.value = out.length ? JSON.stringify(out) : "";
+      }
+
+      function priceInput(code, isCurrent, value) {
+        var input = document.createElement("input");
+        input.type = "text";
+        input.inputMode = "decimal";
+        input.autocomplete = "off";
+        input.setAttribute("data-price", code);
+        input.setAttribute("pattern", "\\$?[0-9,]{1,9}(\\.[0-9]{1,2})?");
+        input.title = "A price, e.g. 24.99";
+        input.value = value || "";
+        if (isCurrent) input.placeholder = "0.00";
+        return input;
+      }
+
+      // The new-price box shows the current price as its placeholder: blank
+      // MEANS "same as current", and showing the number says so without the
+      // submitter having to retype it.
+      function syncPlaceholders(row) {
+        [["cs", "ns"], ["cm", "nm"]].forEach(function (pair) {
+          var cur = row.querySelector('[data-price="' + pair[0] + '"]');
+          var next = row.querySelector('[data-price="' + pair[1] + '"]');
+          if (cur && next) next.placeholder = cur.value.trim() || "Same as current";
+        });
+      }
+
+      function setOn(row, on) {
+        row.classList.toggle("is-on", on);
+        var inputs = row.querySelectorAll('[data-price="cs"], [data-price="cm"]');
+        Array.prototype.forEach.call(inputs, function (el) { el.required = on; });
+      }
+
+      function render() {
+        rowsEl.innerHTML = "";
+        if (!packages || packages.length === 0) {
+          message("No packages found for that site. Check the site number.");
+          serialize();
+          return;
+        }
+        var prior = {};
+        saved().forEach(function (r) { if (r && typeof r.pkg === "string") prior[r.pkg] = r; });
+
+        packages.forEach(function (pkg, i) {
+          var p = prior[pkg];
+          var row = document.createElement("div");
+          row.className = "price-grid-row";
+          row.setAttribute("data-pkg", pkg);
+
+          var id = fieldKey + "__pkg_" + i;
+          var pick = document.createElement("label");
+          pick.className = "price-grid-pick";
+          pick.htmlFor = id;
+          var box = document.createElement("input");
+          box.type = "checkbox";
+          box.id = id;
+          box.checked = !!p;
+          var name = document.createElement("span");
+          name.textContent = pkg; // textContent: package names are data, not markup
+          pick.appendChild(box);
+          pick.appendChild(name);
+          row.appendChild(pick);
+
+          var grid = document.createElement("div");
+          grid.className = "price-grid-prices";
+          var cell = function (cls, text) {
+            var d = document.createElement("div");
+            d.className = cls;
+            d.textContent = text;
+            return d;
+          };
+          grid.appendChild(cell("", ""));
+          grid.appendChild(cell("col-head", "Current price"));
+          grid.appendChild(cell("col-head", "New price"));
+          grid.appendChild(cell("row-head", "Single"));
+          grid.appendChild(priceInput("cs", true, p && p.current_single));
+          grid.appendChild(priceInput("ns", false, p && p.new_single));
+          grid.appendChild(cell("row-head", "Monthly"));
+          grid.appendChild(priceInput("cm", true, p && p.current_monthly));
+          grid.appendChild(priceInput("nm", false, p && p.new_monthly));
+          row.appendChild(grid);
+
+          box.addEventListener("change", function () {
+            setOn(row, box.checked);
+            serialize();
+          });
+          grid.addEventListener("input", function () {
+            syncPlaceholders(row);
+            serialize();
+          });
+          setOn(row, box.checked);
+          syncPlaceholders(row);
+          rowsEl.appendChild(row);
+        });
+        serialize();
+      }
+
+      function load() {
+        var kv = keyValue();
+        if (kv === loadedFor && packages !== null) return;
+        // Prices typed for one site are not prices for another. A CHANGE of
+        // site clears them; the first load (and a draft resume, which arrives
+        // as a change from blank) keeps whatever the hidden input holds.
+        if (loadedFor && kv !== loadedFor) hidden.value = "";
+        loadedFor = kv;
+        packages = null;
+        if (!kv) {
+          message("Choose a site above to list its packages.");
+          return;
+        }
+        var mySeq = ++seq;
+        message("Loading packages…");
+        fetch("/forms/api/packages/" + encodeURIComponent(slug), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ field_key: fieldKey, key_value: kv })
+        })
+          .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, body: j }; }); })
+          .then(function (res) {
+            if (mySeq !== seq) return; // a newer site was picked meanwhile
+            if (!res.ok || !res.body || !Array.isArray(res.body.packages)) {
+              loadedFor = "";
+              message("Couldn't load packages. Re-select the site to try again.");
+              return;
+            }
+            packages = res.body.packages;
+            render();
+          })
+          .catch(function () {
+            if (mySeq !== seq) return;
+            loadedFor = "";
+            message("Couldn't load packages. Re-select the site to try again.");
+          });
+      }
+
+      Array.prototype.forEach.call(keyEls(), function (el) {
+        el.addEventListener("change", load);
+        el.addEventListener("input", function () {
+          clearTimeout(debounce);
+          debounce = setTimeout(load, 400);
+        });
+      });
+      // A draft resume rewrites the hidden value and fires `change` on it;
+      // redraw so the restored ticks and prices appear.
+      hidden.addEventListener("change", function () {
+        if (packages) render();
+      });
+      load();
+    });
   }
 
   function cssAttrEscape(s) {

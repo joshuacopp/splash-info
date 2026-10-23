@@ -28,6 +28,7 @@ import { renderFile } from "./file.js";
 import { renderSignature } from "./signature.js";
 import { renderLocation } from "./location.js";
 import { renderLookup } from "./lookup.js";
+import { renderPackagePriceGrid } from "./package-price-grid.js";
 
 /**
  * Brief 176 — the "Create action item" checkbox.
@@ -109,5 +110,6 @@ function renderFieldBody(field: Field, ctx: RenderBodyArgs): string {
     case "signature":   return renderSignature(field, ctx);
     case "location":    return renderLocation(field, ctx);
     case "lookup":      return renderLookup(field, ctx);
+    case "package_price_grid": return renderPackagePriceGrid(field, ctx);
   }
 }

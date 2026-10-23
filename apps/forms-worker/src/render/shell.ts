@@ -168,6 +168,23 @@ const SHELL_CSS = `
   .field-radio-option input { margin-right: 8px; }
   .field-radio-inline .field-radio-options { display: flex; flex-wrap: wrap; gap: 4px 20px; }
   .field-radio-inline .field-radio-option { margin-bottom: 0; }
+  /* Package price grid. Each package is a tickable card; its four price boxes
+     only appear once it is ticked, so a site with twelve packages and one
+     change reads as one card of inputs, not forty-eight boxes. Two columns
+     (current | new) by two rows (single | monthly) -- the comparison a reader
+     makes is current-vs-new, so those sit side by side. */
+  .field-price-grid { border: 0; padding: 0; }
+  .price-grid-empty { color: #666; font-style: italic; margin: 4px 0; }
+  .price-grid-hint { font-size: 13px; color: #666; margin-top: 6px; }
+  .price-grid-row { border: 1px solid #dfe5ee; border-radius: 6px; padding: 8px 12px; margin-bottom: 8px; background: #fff; }
+  .price-grid-row.is-on { border-color: var(--splash-cyan); background: #f5fbfe; }
+  .price-grid-pick { display: flex; align-items: center; gap: 8px; min-height: 40px; font-weight: 600; color: var(--splash-navy); cursor: pointer; }
+  .price-grid-prices { display: none; grid-template-columns: 80px 1fr 1fr; gap: 6px 10px; align-items: center; margin: 6px 0 4px; }
+  .price-grid-row.is-on .price-grid-prices { display: grid; }
+  .price-grid-prices .col-head { font-size: 12px; font-weight: 600; text-transform: uppercase; color: #666; }
+  .price-grid-prices .row-head { font-size: 14px; color: var(--splash-navy); }
+  .price-grid-prices input { width: 100%; padding: 8px 10px; border: 1px solid #ccc; border-radius: 4px; font-size: 16px; }
+  .price-grid-prices input::placeholder { color: #9aa3ad; }
   /* Action item tick. Deliberately set apart from the answer above it -- it is
      a different question ("does this need follow-up?") from the one the field
      asks, and reading as part of the answer would get it ticked by accident. */

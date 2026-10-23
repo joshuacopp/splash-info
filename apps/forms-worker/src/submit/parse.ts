@@ -86,6 +86,21 @@ export function parseSubmitFormData(
       continue;
     }
 
+    if (field.type === "package_price_grid") {
+      // One hidden input of JSON, written by forms-public.js. Carried forward
+      // RAW: the submit handler normalises prices, fills blank new prices and
+      // checks each package against the site (resolvePriceGrids), because all
+      // three need the site's package list, which parse has no way to read.
+      const raw = formData.get(field.key);
+      if (typeof raw !== "string" || raw.trim() === "") continue;
+      try {
+        payload[field.key] = JSON.parse(raw);
+      } catch {
+        payload[field.key] = "__unparseable__";
+      }
+      continue;
+    }
+
     const entries = formData.getAll(field.key);
 
     if (field.type === "multi") {

@@ -402,11 +402,16 @@ export async function transitionSubmission(
   env: SupabaseEnv,
   formId: string,
   subId: string,
-  patch: TransitionPatch
+  patch: TransitionPatch,
+  /** When set, only write if the row is still at this stage -- a
+   *  compare-and-set, so two decisions racing each other cannot both land.
+   *  A miss returns null. */
+  expectedStage?: string
 ): Promise<{ id: string } | null> {
   const url = new URL("/rest/v1/form_submissions", env.SUPABASE_URL);
   url.searchParams.set("id", `eq.${subId}`);
   url.searchParams.set("form_id", `eq.${formId}`);
+  if (expectedStage) url.searchParams.set("workflow_stage", `eq.${expectedStage}`);
   url.searchParams.set("select", "id");
 
   const resp = await fetch(url.toString(), {

@@ -3205,6 +3205,38 @@ URL-based — service bindings don't apply to those.
   dark-mode CSS targeting, VML rounded-corner buttons for older
   Outlook, embedded images other than the logo, email open/click
   tracking pixels.
+- **Emailed approval links** (2026-10-23) - `{approval.link}` in a
+  workflow email step that leads into an approval stage mints, PER
+  RECIPIENT, a no-sign-in link `/forms/approve/{token}` (forms-worker
+  `src/approval-links/`; table `form_approval_links`, SHA-256 of the token
+  only). OPENING THE LINK MUST NOT SPEND IT -- only an approve/deny does.
+  That was the operator's explicit requirement, and Outlook Safe Links
+  pre-fetches GETs, so a spend-on-open link could die before the approver
+  saw it. A link ends on 7-day expiry, use, the submission leaving the
+  stage it was minted for, or the recipient leaving the approver list.
+  The decision runs through `applyTransition` in `admin/submissions.ts`,
+  the SAME function the dashboard transition uses -- never fork it, or the
+  two paths drift on authority / `requires` / cascade. Both the link claim
+  and the submission write are compare-and-sets (`used_at=is.null`,
+  `workflow_stage=eq.{stage}`). History entries carry
+  `via: "email_link"` + `actor_ip` + `actor_user_agent`; `actor_email` is
+  the address the link was sent to, a weaker claim than a session.
+  Companion tokens `{decision.note}` / `{decision.by}` let an outcome
+  email carry the approver's reason. The raw link also exists in the
+  queued email body in `outbound_emails` (admin email-queue viewer).
+- **package_price_grid field** (2026-10-23) - Lists the packages at the
+  site named by another field (`keyFieldKey` + `keyColumn`), fetched via
+  `POST /forms/api/packages/{slug}`; each ticked package carries typed
+  current + new single/monthly prices. PRICES ARE NEVER PRE-FILLED from
+  `pricing_simple` (operator: not always current). Submit
+  (`submit/price-grids.ts`) re-checks packages against the site, normalises
+  prices to two-decimal strings and stores a blank new price AS the current
+  price. Payload `PackagePriceRow[]`; render it only via the formatter in
+  `packages/forms-schema/src/package-price.ts`. apps/web must import that
+  from the SUBPATH `@splash/forms-schema/package-price`: the package root
+  uses `.js` specifiers that Next's webpack cannot resolve, so root imports
+  from `@splash/forms-schema` in apps/web must stay `import type`. First
+  consumer: the Price change approval form (`scripts/gen-price-change.ts`).
 - **outbound_emails table** (Brief 127) - Shared queue of fully-rendered
   outbound emails. Single Power Automate flow polls every 5 minutes
   and drains the queue regardless of which worker enqueued the row.

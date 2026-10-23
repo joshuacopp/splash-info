@@ -197,6 +197,13 @@ export const lookupFieldSchema = z.object({
   nullBehavior: z.enum(["allow_empty", "block_submit"])
 });
 
+export const packagePriceGridFieldSchema = z.object({
+  ...fieldBaseSchema,
+  type: z.literal("package_price_grid"),
+  keyFieldKey: z.string().min(1),
+  keyColumn: z.enum(["pricing_simple.location_code", "pricing_simple.site"])
+});
+
 // -----------------------------------------------------------------------------
 // Discriminated union + form schema
 // -----------------------------------------------------------------------------
@@ -218,7 +225,8 @@ export const fieldSchema = z.discriminatedUnion("type", [
   fileFieldSchema,
   signatureFieldSchema,
   locationFieldSchema,
-  lookupFieldSchema
+  lookupFieldSchema,
+  packagePriceGridFieldSchema
 ]);
 
 // -----------------------------------------------------------------------------
@@ -383,6 +391,20 @@ export const formSchemaSchema = z
           code: z.ZodIssueCode.custom,
           path: ["fields", i, "visible_if", "field_key"],
           message: "a field cannot control its own visibility"
+        });
+      }
+    }
+
+    // A price grid with no site to read can never list a package, so it would
+    // render as a permanently empty box.
+    for (let i = 0; i < data.fields.length; i++) {
+      const f = data.fields[i];
+      if (!f || f.type !== "package_price_grid") continue;
+      if (!visibilityKeys.has(f.keyFieldKey) || f.keyFieldKey === f.key) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["fields", i, "keyFieldKey"],
+          message: `price grid "${f.key}" must name the site field it reads packages from`
         });
       }
     }
@@ -713,6 +735,14 @@ const lookupFieldSchemaDraft = z.object({
   nullBehavior: z.enum(["allow_empty", "block_submit"])
 });
 
+const packagePriceGridFieldSchemaDraft = z.object({
+  ...fieldBaseSchemaDraft,
+  type: z.literal("package_price_grid"),
+  // Empty until the operator picks which field names the site.
+  keyFieldKey: z.string(),
+  keyColumn: z.enum(["pricing_simple.location_code", "pricing_simple.site"])
+});
+
 export const fieldSchemaDraft = z.discriminatedUnion("type", [
   headingFieldSchemaDraft,
   imageFieldSchemaDraft,
@@ -730,7 +760,8 @@ export const fieldSchemaDraft = z.discriminatedUnion("type", [
   fileFieldSchemaDraft,
   signatureFieldSchemaDraft,
   locationFieldSchemaDraft,
-  lookupFieldSchemaDraft
+  lookupFieldSchemaDraft,
+  packagePriceGridFieldSchemaDraft
 ]);
 
 // Brief 120 — draft variant accepts a partial workflow (operator may save

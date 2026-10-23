@@ -107,7 +107,8 @@ async function drawHistoryEntry(
   // same WinAnsi reason; actor_email is sanitized defensively.
   const actorText = isSystem
     ? `System  *  ${formatEst(entry.at)}`
-    : `${sanitizeForWinAnsi(entry.actor_email)}  *  ${formatEst(entry.at)}`;
+    : `${sanitizeForWinAnsi(entry.actor_email)}  *  ${formatEst(entry.at)}` +
+      (entry.via === "email_link" ? "  *  via emailed approval link" : "");
   cursor.page.drawText(actorText, {
     x: MARGIN,
     y: cursor.y,

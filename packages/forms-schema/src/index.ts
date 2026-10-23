@@ -20,4 +20,5 @@
 
 export * from "./types.js";
 export * from "./lookup-sources.js";
+export * from "./package-price.js";
 export * from "./validators/index.js";

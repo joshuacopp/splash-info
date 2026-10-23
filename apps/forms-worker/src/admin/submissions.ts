@@ -29,6 +29,11 @@ import type {
   WorkflowStage
 } from "@splash/forms-schema";
 import {
+  formatPackagePriceRow,
+  formatPackagePriceRows,
+  isPackagePriceRows
+} from "@splash/forms-schema";
+import {
   adminGateResponse,
   authenticate,
   requireServiceKey,
@@ -701,6 +706,8 @@ function displayText(field: Field, value: unknown): string {
       }
       return "";
     }
+    case "package_price_grid":
+      return isPackagePriceRows(value) ? formatPackagePriceRows(value) : "";
     default:
       return String(value);
   }
@@ -982,6 +989,7 @@ function stringifyPayloadValue(
   if (v == null) return "";
   if (typeof v === "string") return options?.get(v) ?? v;
   if (typeof v === "number" || typeof v === "boolean") return String(v);
+  if (isPackagePriceRows(v)) return v.map(formatPackagePriceRow).join("; ");
   if (Array.isArray(v))
     return v.map((x) => stringifyPayloadValue(x, options)).join("; ");
   if (typeof v === "object") {
@@ -1107,6 +1115,71 @@ export async function handleTransition(
   }
   if (!submission) return jsonError(404, "not_found");
 
+  // Mark `ctx` as intentionally unused now that Brief 125's notification
+  // fires (which were the only reason transition needed `ctx`) have
+  // been removed in Brief 127. Future executors adding new
+  // ctx.waitUntil-driven side effects can re-read the param at the
+  // call site — it's still threaded through.
+  void ctx;
+
+  return applyTransition(env, {
+    formId,
+    subId,
+    submission,
+    actor: {
+      email: session.email,
+      role: session.role ?? null,
+      isAdminTier
+    },
+    toStageId,
+    note,
+    typedName,
+    signatureR2Key
+  });
+}
+
+/**
+ * Who is acting on a transition. A signed-in session supplies email + role;
+ * an emailed approval link supplies the address the link was sent to, flagged
+ * `via: "email_link"` with the device details that stand in for a login.
+ */
+export interface TransitionActor {
+  email: string;
+  role: string | null;
+  isAdminTier: boolean;
+  via?: "email_link";
+  ip?: string | null;
+  userAgent?: string | null;
+}
+
+/**
+ * The transition itself, after the caller has authenticated the actor and
+ * loaded the submission. Shared by the signed-in endpoint above and the
+ * emailed-link page (approval-links/handlers.ts) so the two can never apply
+ * different rules -- the authority check, the `requires` check, the email
+ * cascade and the auto-close all live here once.
+ *
+ * `expectedStage`, when set, makes the write conditional on the submission
+ * still being at that stage, so two decisions racing each other cannot both
+ * land. Returns 409 `stage_moved` when it was not.
+ */
+export async function applyTransition(
+  env: Env,
+  args: {
+    formId: string;
+    subId: string;
+    submission: NonNullable<Awaited<ReturnType<typeof getSubmission>>>;
+    actor: TransitionActor;
+    toStageId: string;
+    note: string | null;
+    typedName: string | null;
+    signatureR2Key: string | null;
+    expectedStage?: string;
+  }
+): Promise<Response> {
+  const { formId, subId, submission, actor, toStageId, note, typedName, signatureR2Key } = args;
+  const isAdminTier = actor.isAdminTier;
+
   const schema: FormSchema = submission.version.schema;
   const workflow = schema.workflow;
   if (!workflow) {
@@ -1151,7 +1224,7 @@ export async function handleTransition(
   // stamped before this existed and the Brief 131 "approver resolution failed"
   // case, where re-resolving may now succeed.
   if (!isAdminTier) {
-    const callerEmail = session.email.trim().toLowerCase();
+    const callerEmail = actor.email.trim().toLowerCase();
     const stamped = (submission.current_approver_emails ?? [])
       .map((e) => (typeof e === "string" ? e.trim().toLowerCase() : ""))
       .filter((e) => e !== "");
@@ -1213,12 +1286,19 @@ export async function handleTransition(
   const historyEntry: WorkflowHistoryEntry = {
     from: currentStageId,
     to: toStageId,
-    actor_email: session.email,
-    actor_session_role: session.role ?? null,
+    actor_email: actor.email,
+    actor_session_role: actor.role,
     note,
     signature_r2_key: signatureR2Key,
     typed_name: typedName,
-    at: new Date().toISOString()
+    at: new Date().toISOString(),
+    ...(actor.via
+      ? {
+          via: actor.via,
+          actor_ip: actor.ip ?? null,
+          actor_user_agent: actor.userAgent ?? null
+        }
+      : {})
   };
 
   // Brief 127 — if the destination is an email step, cascade through
@@ -1295,13 +1375,6 @@ export async function handleTransition(
       finalApproverEmails = [];
     }
   }
-  // Mark `ctx` as intentionally unused now that Brief 125's notification
-  // fires (which were the only reason transition needed `ctx`) have
-  // been removed in Brief 127. Future executors adding new
-  // ctx.waitUntil-driven side effects can re-read the param at the
-  // call site — it's still threaded through.
-  void ctx;
-
   // Brief 131 — when the post-cascade resting stage is a terminal
   // outcome and the submission's Brief 96 `status` column is still
   // `new` or `in_progress`, auto-flip it to `closed`. Don't override
@@ -1332,13 +1405,23 @@ export async function handleTransition(
   }
 
   try {
-    const updated = await transitionSubmission(env, formId, subId, {
-      workflow_stage: finalStageId,
-      workflow_history: finalHistory,
-      current_approver_emails: finalApproverEmails,
-      ...(statusPatch ?? {})
-    });
-    if (!updated) return jsonError(404, "not_found");
+    const updated = await transitionSubmission(
+      env,
+      formId,
+      subId,
+      {
+        workflow_stage: finalStageId,
+        workflow_history: finalHistory,
+        current_approver_emails: finalApproverEmails,
+        ...(statusPatch ?? {})
+      },
+      args.expectedStage
+    );
+    if (!updated) {
+      return args.expectedStage
+        ? jsonError(409, "stage_moved")
+        : jsonError(404, "not_found");
+    }
 
     return new Response(
       JSON.stringify({

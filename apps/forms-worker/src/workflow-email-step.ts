@@ -35,7 +35,11 @@ import type {
   WorkflowHistoryEntry,
   WorkflowStage
 } from "@splash/forms-schema";
-import { flaggedFieldKeys } from "@splash/forms-schema";
+import {
+  flaggedFieldKeys,
+  formatPackagePriceRows,
+  isPackagePriceRows
+} from "@splash/forms-schema";
 import {
   enqueueOutboundEmail,
   type EnqueueOutboundEmailResult,
@@ -55,6 +59,7 @@ import {
   type SafetyDocRow
 } from "./sds/safety-docs.js";
 import { generateOrReuseCompletedPdf } from "./pdf/cascade-attach.js";
+import { mintApprovalLink } from "./approval-links/tokens.js";
 import { wrapInEmailShell } from "@splash/email-shell";
 
 const MAX_CASCADE_DEPTH = 10;
@@ -87,6 +92,15 @@ export interface RuntimeContext {
    *  and whether the answer is bought or adopted is not the reader's
    *  filing concern. */
   safetyDocs?: SafetyDocRow[];
+  /** Backs `{approval.link}`. Set per RECIPIENT inside the cascade (each
+   *  recipient gets their own link); null when minting failed, in which case
+   *  the token falls back to the signed-in submission URL. */
+  approvalLinkUrl?: string | null;
+  /** Backs `{decision.note}` / `{decision.by}`: the most recent PERSON's
+   *  transition (system email-step entries skipped). Lets an outcome email
+   *  carry the approver's reason -- a denial with no reason attached sends
+   *  the submitter off to ask for one. Populated inside the cascade. */
+  decision?: { note: string | null; by: string | null };
 }
 
 export interface CascadeResult {
@@ -181,6 +195,17 @@ export async function cascadeThroughEmailSteps(
   // and nothing here assumes a question has only one.
   const safetyDocs = (await resolveSafetyDocs(env, ctx.schema, ctx.payload)) ?? undefined;
 
+  // The transition that started this cascade is the last entry of the prior
+  // history (the transition handler appends it before cascading). Skip the
+  // system entries earlier email steps wrote.
+  const lastHuman = [...(ctx.priorWorkflowHistory ?? [])]
+    .reverse()
+    .find((h) => h.actor_email !== "system@forms");
+  const decision = {
+    note: lastHuman?.note ?? null,
+    by: lastHuman?.actor_email ?? null
+  };
+
   for (let depth = 0; depth < MAX_CASCADE_DEPTH; depth++) {
     const stage = workflow.stages.find((s) => s.id === currentStageId);
     if (!stage) {
@@ -223,7 +248,8 @@ export async function cascadeThroughEmailSteps(
       ...ctx.runtime,
       outcome: outcomeForRender,
       partsNeeded,
-      safetyDocs
+      safetyDocs,
+      decision
     };
 
     const recipients = await resolveEmailRecipients(env, ctx.schema, ctx.payload, stage);
@@ -263,18 +289,37 @@ export async function cascadeThroughEmailSteps(
       }
     }
 
+    // `{approval.link}` — a per-recipient no-sign-in link for the approval
+    // stage this email step leads into. Minted only when the template asks
+    // for it AND the next stage is one somebody approves; it is bound to that
+    // stage, so it dies the moment the submission moves on.
+    const wantsApprovalLink =
+      Boolean(nextStage?.approver_source) &&
+      `${stage.subject_template ?? ""}${stage.body_template ?? ""}`.includes("{approval.link}");
+
     for (const recipient of recipients) {
+      const recipientRuntime: RuntimeContext = wantsApprovalLink
+        ? {
+            ...localRuntime,
+            approvalLinkUrl: await mintApprovalLink(env, {
+              formId: ctx.form.id,
+              submissionId: ctx.runtime.submissionId,
+              stageId: nextStageId,
+              recipient
+            })
+          }
+        : localRuntime;
       const subject = renderTemplate(
         stage.subject_template ?? "",
         ctx.schema,
         ctx.payload,
-        localRuntime
+        recipientRuntime
       );
       const body = renderTemplate(
         stage.body_template ?? "",
         ctx.schema,
         ctx.payload,
-        localRuntime
+        recipientRuntime
       );
       // Brief 134 — auto-derive an HTML body from the same operator-
       // authored plain-text template. Wrap the rendered fragment in
@@ -284,7 +329,7 @@ export async function cascadeThroughEmailSteps(
         stage.body_template ?? "",
         ctx.schema,
         ctx.payload,
-        localRuntime
+        recipientRuntime
       );
       const bodyHtml = wrapInEmailShell(bodyHtmlFragment, {
         title: subject,
@@ -488,6 +533,11 @@ function normaliseSubmitterEmailSource(
  *                              (HTML renders a labeled CTA button)
  *   {my_requests.url}       — Brief 134: "my requests" dashboard URL
  *                              (HTML renders a labeled CTA button)
+ *   {approval.link}         — per-recipient no-sign-in approve/deny link for
+ *                              the approval stage this email step leads into
+ *                              (approval-links/). Falls back to {submission.url}.
+ *   {decision.note}         — note on the most recent person's transition
+ *   {decision.by}           — who made it (email)
  *   {submitter.email}       — form_submissions.submitter_email (or "")
  *   {submitter.name}        — best-effort name; falls back to local part
  *   {outcome.label}         — outcome stage's label (when applicable)
@@ -520,6 +570,12 @@ export function renderTemplate(
         return `https://splashcarwashes.info/admin/forms/${encodeURIComponent(runtime.formId)}/submissions/${encodeURIComponent(runtime.submissionId)}`;
       case "approvals.url":
         return "Pending Approvals: https://splashcarwashes.info/admin/approvals";
+      case "approval.link":
+        return `Approve or deny (no sign-in needed): ${approvalLinkOrFallback(runtime)}`;
+      case "decision.note":
+        return runtime.decision?.note ?? "";
+      case "decision.by":
+        return runtime.decision?.by ?? "";
       case "my_requests.url":
         return "Your Submissions: https://splashcarwashes.info/admin/my-requests";
       case "submitter.email":
@@ -644,6 +700,16 @@ function renderTokenHtml(
         "View All Open Approvals",
         "secondary"
       );
+    case "decision.note":
+      return escapeHtml(runtime.decision?.note ?? "").replace(/\n/g, "<br>");
+    case "decision.by":
+      return escapeHtml(runtime.decision?.by ?? "");
+    case "approval.link":
+      return renderCtaButton(
+        approvalLinkOrFallback(runtime),
+        runtime.approvalLinkUrl ? "Review & Approve or Deny" : "View Submission",
+        "primary"
+      );
     case "my_requests.url":
       return renderCtaButton(
         "https://splashcarwashes.info/admin/my-requests",
@@ -677,6 +743,16 @@ function renderTokenHtml(
     return escapeHtml(formatted).replace(/\n/g, "<br>");
   }
   return null;
+}
+
+/** The recipient's emailed link, or -- when minting failed or the template is
+ *  rendered outside a cascade -- the signed-in submission page, so the email
+ *  still gets the approver somewhere they can act. */
+function approvalLinkOrFallback(runtime: RuntimeContext): string {
+  return (
+    runtime.approvalLinkUrl ??
+    `https://splashcarwashes.info/admin/forms/${encodeURIComponent(runtime.formId)}/submissions/${encodeURIComponent(runtime.submissionId)}`
+  );
 }
 
 function renderInlineLink(url: string, label: string): string {
@@ -1148,9 +1224,12 @@ function renderPayloadSummary(
  * `formatScalar` for text / number / file / signature fields (and for any
  * option code that no longer exists on the field).
  */
-function resolveDisplayValue(field: Field | undefined, value: unknown): string {
+export function resolveDisplayValue(field: Field | undefined, value: unknown): string {
   if (value == null || value === "") return "";
-  if (field && field.type === "dropdown") {
+  if (isPackagePriceRows(value)) return formatPackagePriceRows(value);
+  // radio stores a dropdown-shaped payload; without it here, emails printed
+  // radio option CODES ("option_2") where every other surface shows labels.
+  if (field && (field.type === "dropdown" || field.type === "radio")) {
     const opt = field.options.find((o) => o.value === String(value));
     return opt?.label ?? formatScalar(value);
   }

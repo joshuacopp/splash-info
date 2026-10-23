@@ -272,6 +272,18 @@ function HistoryTimeline(p: HistoryProps) {
                 <p>
                   <strong>{h.actor_email}</strong> · {fromLabel} → {toLabel}
                 </p>
+                {h.via === "email_link" && (
+                  // Not a signed-in action: the address is who the link was
+                  // emailed to, so say so rather than letting it read as a
+                  // login.
+                  <p
+                    className="mt-0.5 text-splash-navy/60"
+                    title={h.actor_user_agent ?? undefined}
+                  >
+                    Via emailed approval link
+                    {h.actor_ip ? ` · from ${h.actor_ip}` : ""}
+                  </p>
+                )}
                 <p className="mt-0.5 text-splash-navy/60">
                   {new Date(h.at).toLocaleString("en-US", {
                     month: "short",

@@ -14,6 +14,11 @@ import type {
   SignatureField,
   FileField
 } from "@splash/forms-schema";
+import {
+  formatPackagePriceRow,
+  formatPackagePriceRows,
+  isPackagePriceRows
+} from "@splash/forms-schema/package-price";
 
 const TRUNCATE_AT = 80;
 
@@ -66,6 +71,19 @@ export default function AnswerCell({ field, value }: Props) {
 
     case "signature":
       return <SignatureCell field={field} value={value} />;
+
+    case "package_price_grid":
+      return isPackagePriceRows(value) ? (
+        <span title={formatPackagePriceRows(value)} className="block max-w-[28rem]">
+          {value.map((r) => (
+            <span key={r.pkg} className="block whitespace-nowrap">
+              {formatPackagePriceRow(r)}
+            </span>
+          ))}
+        </span>
+      ) : (
+        <Em />
+      );
   }
 }
 

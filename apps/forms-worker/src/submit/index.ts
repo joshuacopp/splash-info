@@ -49,6 +49,7 @@ import {
   type SubmissionRow
 } from "../db/forms.js";
 import { parseSubmitFormData } from "./parse.js";
+import { resolvePriceGrids } from "./price-grids.js";
 import { verifyTurnstile } from "./turnstile.js";
 import { renderSuccessPage } from "./success.js";
 import { fireSubmissionWebhook, type WebhookFile } from "./webhook.js";
@@ -326,6 +327,18 @@ export async function handleSubmit(
         status: 422,
         headers: { "Content-Type": "application/json" }
       }
+    );
+  }
+
+  // -----------------------------------------------------------------
+  // Package price grids — re-check packages against the site, normalise
+  // prices, fill blank new prices. Rewrites the payload in place.
+  // -----------------------------------------------------------------
+  const grids = await resolvePriceGrids(env, version.schema, payload);
+  if (!grids.ok) {
+    return new Response(
+      JSON.stringify({ error: "validation_failed", fields: grids.fields }),
+      { status: grids.status, headers: { "Content-Type": "application/json" } }
     );
   }
 

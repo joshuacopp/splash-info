@@ -7,7 +7,8 @@
 // JSONB, or schema evolved) render in a "Other payload entries" appendix
 // at the bottom so nothing silently disappears.
 
-import type { DropdownField, Field, FormSchema, LookupField, MultiField, RadioField } from "@splash/forms-schema";
+import type { DropdownField, Field, FormSchema, LookupField, MultiField, PackagePriceRow, RadioField } from "@splash/forms-schema";
+import { isPackagePriceRows } from "@splash/forms-schema/package-price";
 import type { SubmissionFile } from "../../../../_lib/worker-fetch";
 
 interface Props {
@@ -143,7 +144,42 @@ function FieldValue({
 
     case "signature":
       return <SignatureValue files={files} value={value} />;
+
+    case "package_price_grid":
+      return isPackagePriceRows(value) ? <PriceGridTable rows={value} /> : em();
   }
+}
+
+function PriceGridTable({ rows }: { rows: PackagePriceRow[] }) {
+  const cell = (current: string, next: string) =>
+    current === next ? (
+      <span className="text-splash-navy/60">${current} (no change)</span>
+    ) : (
+      <span>
+        <span className="text-splash-navy/60">${current}</span> →{" "}
+        <strong>${next}</strong>
+      </span>
+    );
+  return (
+    <table className="text-sm">
+      <thead>
+        <tr className="text-left text-xs uppercase tracking-wide text-splash-navy/60">
+          <th className="pr-6 font-semibold">Package</th>
+          <th className="pr-6 font-semibold">Single</th>
+          <th className="font-semibold">Monthly</th>
+        </tr>
+      </thead>
+      <tbody>
+        {rows.map((r) => (
+          <tr key={r.pkg} className="border-t border-gray-light">
+            <td className="py-1 pr-6 font-semibold">{r.pkg}</td>
+            <td className="py-1 pr-6">{cell(r.current_single, r.new_single)}</td>
+            <td className="py-1">{cell(r.current_monthly, r.new_monthly)}</td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
 }
 
 function PlainText({ value }: { value: string }) {

@@ -17,6 +17,9 @@
 //   GET    /forms/admin/api/pending-approvals         — Brief 121: cross-form "pending for me"
 //   GET    /forms/admin/api/my-requests               — Brief 126: cross-form "submitted by me"
 //   GET    /forms/admin/api/users/search?q=           — Brief 125: org-directory autosuggest
+//   POST   /forms/api/packages/{slug}                 — package names for a price grid
+//   GET    /forms/approve/{token}                     — emailed no-sign-in approval page
+//   POST   /forms/approve/{token}                     — record an emailed approval/denial
 //   GET    /forms/admin/api/forms                     — Brief 94: list forms
 //   POST   /forms/admin/api/forms                     — Brief 94: create form
 //   GET    /forms/admin/api/forms/{id}                — Brief 94: get form detail
@@ -68,6 +71,11 @@ import { handleFileServe } from "./uploads/serve.js";
 import { handlePublicAssetServe } from "./uploads/asset-serve.js";
 import { handleStaticAsset } from "./uploads/static.js";
 import { handleLookupResolve } from "./lookup/resolve.js";
+import { handlePackagesForSite } from "./lookup/packages.js";
+import {
+  handleApprovalLinkPage,
+  handleApprovalLinkSubmit
+} from "./approval-links/handlers.js";
 import { handleVisibleToMe } from "./visible-to-me.js";
 import {
   handleListForms,
@@ -223,6 +231,19 @@ export default {
     const lookupMatch = url.pathname.match(/^\/forms\/api\/lookup\/([^/]+)$/);
     if (lookupMatch && lookupMatch[1] && req.method === "POST") {
       return handleLookupResolve(env, req, lookupMatch[1]);
+    }
+
+    // POST /forms/api/packages/{slug} — package names for a price grid.
+    const packagesMatch = url.pathname.match(/^\/forms\/api\/packages\/([^/]+)$/);
+    if (packagesMatch && packagesMatch[1] && req.method === "POST") {
+      return handlePackagesForSite(env, req, packagesMatch[1]);
+    }
+
+    // GET|POST /forms/approve/{token} — emailed no-sign-in approval page.
+    const approveMatch = url.pathname.match(/^\/forms\/approve\/([A-Za-z0-9_-]{20,100})$/);
+    if (approveMatch && approveMatch[1]) {
+      if (req.method === "GET") return handleApprovalLinkPage(env, req, approveMatch[1]);
+      if (req.method === "POST") return handleApprovalLinkSubmit(env, req, approveMatch[1], ctx);
     }
 
     // GET /forms/api/visible-to-me — credentialed-user index endpoint

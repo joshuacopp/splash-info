@@ -30,6 +30,7 @@ import type {
   LookupField,
   SubmissionPayload
 } from "@splash/forms-schema";
+import { formatPackagePriceRows, isPackagePriceRows } from "@splash/forms-schema";
 
 import {
   CONTENT_WIDTH,
@@ -158,6 +159,18 @@ export async function drawPayload(
     }
     if (field.type === "dropdown" || field.type === "radio" || field.type === "multi") {
       renderChoice(doc, cursor, fonts, field, value);
+      continue;
+    }
+    if (field.type === "package_price_grid") {
+      // One line per package. drawLabelValue wraps and sanitizes, which turns
+      // the formatter's arrow into "->" for Helvetica's WinAnsi encoding.
+      drawLabelValue(
+        doc,
+        cursor,
+        fonts,
+        field.label,
+        isPackagePriceRows(value) ? formatPackagePriceRows(value) : "-"
+      );
       continue;
     }
 

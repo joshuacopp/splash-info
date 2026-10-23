@@ -138,6 +138,25 @@ export function payloadValidatorFor(field: Field): z.ZodTypeAny | null {
       return field.required ? sigSchema : sigSchema.nullable().optional();
     }
 
+    case "package_price_grid": {
+      // The submit handler has already normalised prices, filled blank new
+      // prices from current, and checked every package exists at the site --
+      // this is the shape check that runs after that.
+      const price = z.string().regex(/^\d{1,6}\.\d{2}$/, "Enter a price");
+      const rows = z.array(
+        z.object({
+          pkg: z.string().min(1).max(200),
+          current_single: price,
+          current_monthly: price,
+          new_single: price,
+          new_monthly: price
+        })
+      );
+      return field.required
+        ? rows.min(1, "Select at least one package")
+        : rows.optional();
+    }
+
     case "lookup": {
       // Brief 93 — payload value comes from the submit handler's
       // server-side re-resolve, NOT the client. display_only mode

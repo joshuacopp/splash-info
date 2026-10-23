@@ -16,6 +16,7 @@ export type FieldType =
   | "signature"
   | "lookup"
   | "location"
+  | "package_price_grid"
   | "hidden"
   | "heading"      // display-only, no payload
   | "image";       // display-only, no payload
@@ -294,6 +295,34 @@ export interface LookupField extends FieldBase {
 }
 
 // -----------------------------------------------------------------------------
+// Package price grid — one row per package at the chosen site
+// -----------------------------------------------------------------------------
+
+/**
+ * Lists the packages at whichever site another field names, each with a
+ * checkbox; ticking one opens current-price and new-price inputs for single
+ * and monthly. Built for marketing's price-change request.
+ *
+ * The package NAMES come from `pricing_simple` but the PRICES deliberately do
+ * not: that table is not always current after a price change, and a request
+ * built on a stale "current price" misstates what is being changed. The
+ * submitter types the current price they actually see.
+ *
+ * Payload is `PackagePriceRow[]` (see package-price.ts), one entry per ticked
+ * package. A blank new price is stored as the current price, so a reader never
+ * has to know that blank meant "unchanged".
+ */
+export interface PackagePriceGridField extends FieldBase {
+  type: "package_price_grid";
+  /** KEY of the field that names the site -- payload key, matching every
+   *  cross-field reference except lookup's `keyFieldId`. */
+  keyFieldKey: string;
+  /** How to read that field's value: a 3-digit site number
+   *  (`pricing_simple.site`) or a location slug (`pricing_simple.location_code`). */
+  keyColumn: LookupKeyColumn;
+}
+
+// -----------------------------------------------------------------------------
 // The full discriminated union.
 // -----------------------------------------------------------------------------
 
@@ -314,7 +343,8 @@ export type Field =
   | FileField
   | SignatureField
   | LocationField
-  | LookupField;
+  | LookupField
+  | PackagePriceGridField;
 
 // Form schema = ordered list of fields. Order is implicit (array index).
 // Brief 120 adds an optional `workflow` block — forms without a workflow
@@ -479,6 +509,16 @@ export interface WorkflowHistoryEntry {
   signature_r2_key: string | null;
   typed_name: string | null;
   at: string;
+  /** How the actor reached this transition. Absent = signed in, which is
+   *  every entry written before emailed approval links existed. "email_link"
+   *  means nobody signed in: `actor_email` is the address the link was SENT
+   *  to, which is a weaker claim than a session, so it is recorded as such
+   *  rather than looking identical to a signed-in approval. */
+  via?: "email_link";
+  /** Present on `via: "email_link"` entries only -- the device evidence that
+   *  stands in for a session. */
+  actor_ip?: string | null;
+  actor_user_agent?: string | null;
 }
 
 export interface FormVersion {
