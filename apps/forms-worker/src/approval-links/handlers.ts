@@ -306,8 +306,12 @@ function htmlResponse(status: number, html: string): Response {
     headers: {
       "Content-Type": "text/html; charset=utf-8",
       "Cache-Control": "no-store",
-      // The URL is the credential; don't leak it to anything this page links to.
-      "Referrer-Policy": "no-referrer",
+      // The URL is the credential; don't leak it to anything this page links
+      // to. SAME-ORIGIN, NOT no-referrer: under no-referrer the browser sends
+      // `Origin: null` on this page's own form POST, isOriginAllowed refuses
+      // it, and every approve/deny fails with "Couldn't verify the page".
+      // same-origin still sends nothing to other sites.
+      "Referrer-Policy": "same-origin",
       "X-Robots-Tag": "noindex"
     }
   });

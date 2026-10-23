@@ -185,6 +185,15 @@ describe("GET /forms/approve/{token}", () => {
     expect(calls.some((c) => c.params.get("used_at") === "is.null")).toBe(false);
   });
 
+  it("lets its own form POST carry an Origin (Referrer-Policy is not no-referrer)", async () => {
+    // Under `no-referrer` a browser sends `Origin: null` on the page's own
+    // form submit, the CSRF gate refuses it, and no decision can ever land.
+    // That shipped once; these tests set Origin by hand and could not see it.
+    stub();
+    const res = await page();
+    expect(res.headers.get("Referrer-Policy")).toBe("same-origin");
+  });
+
   it("refuses a link whose stage the submission has left", async () => {
     stub({ stage: "approved" });
     const res = await page();
