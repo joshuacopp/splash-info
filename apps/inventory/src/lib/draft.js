@@ -1,4 +1,4 @@
-// Local draft persistence for the New Visit form.
+// Device copy of a visit or delivery draft.
 //
 // Mirrors the damage claim form (apps/damage-worker/src/render/claim-form.ts,
 // ~line 1134): debounced save to localStorage, a "resume or discard" banner on
@@ -6,12 +6,16 @@
 // filled in on a phone in a wash bay — a dropped connection, a phone call, or
 // a backgrounded tab should not cost twenty minutes of counting.
 //
+// Since 2026-10-23 the draft of record is SHARED, one per site per kind, in
+// inventory.drafts (see useSharedDraft.js). This module is the device copy
+// kept alongside it, so going offline mid-count still loses nothing; the hook
+// offers whichever copy is newer.
+//
 // Drafts are NEVER auto-applied. Restoring silently would overwrite the values
 // the form seeds from the previous visit (starting quantities, carried-forward
 // equipment) with numbers the user cannot see the provenance of. The banner
 // makes it a choice.
 
-const PREFIX = 'inventory.visit.draft.'
 // 30 days, matching the claim form's DRAFT_TTL_MS.
 const TTL_MS = 30 * 24 * 60 * 60 * 1000
 export const SAVE_DEBOUNCE_MS = 500
@@ -21,13 +25,13 @@ export const SAVE_DEBOUNCE_MS = 500
 // seed), repurposing one is not.
 const VERSION = 1
 
-// Keyed by user AND location. localStorage is per-browser, not per-account, so
-// on a shared site tablet an unkeyed draft would let one tech resume another's
-// half-finished count — and submit it under their own name, since the restored
-// values include the submitter field.
-export function draftKey(email, locationId) {
+// Keyed by kind, user AND location. localStorage is per-browser, not
+// per-account, so on a shared site tablet an unkeyed copy would be offered to
+// whoever signs in next. The visit key is unchanged from before kinds existed,
+// so device drafts saved by the old form are still found.
+export function draftKey(email, locationId, kind = 'visit') {
   if (!locationId) return ''
-  return `${PREFIX}${email || 'anon'}.${locationId}`
+  return `inventory.${kind}.draft.${email || 'anon'}.${locationId}`
 }
 
 export function loadDraft(key) {

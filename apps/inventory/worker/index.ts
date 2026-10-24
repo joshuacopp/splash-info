@@ -33,8 +33,12 @@ import {
   ApiError,
   bulkUpdateProductPrices,
   createDelivery,
+  DRAFT_KINDS,
+  clearDraftAfterSubmit,
   createVisit,
+  deleteDraft,
   deleteVisit,
+  getDraft,
   getDelivery,
   getVisitLocationCode,
   listSites,
@@ -42,6 +46,7 @@ import {
   loadMaintainXLocations,
   resolveFlag,
   savePackageConfig,
+  saveDraftRow,
   saveRecipients,
   saveSite,
   sendDeliveryReceipt,
@@ -352,6 +357,8 @@ export default {
           // Attribution comes from the session, not the payload.
           submitter: body.submitter || session.email
         });
+        // Filed, so the shared delivery draft it came from is done.
+        await clearDraftAfterSubmit(sb, code, "delivery");
 
         // The delivery is saved at this point. A failing receipt must not fail
         // the request and make the operator re-file a delivery that already
@@ -424,6 +431,30 @@ export default {
       }
 
       // /api/visits (create) and /api/visits/{id} (edit | delete)
+      // /api/drafts/{location}/{kind} — the one shared unfinished visit or
+      // delivery for a site (inventory.drafts; see saveDraftRow in db.ts).
+      // Writers only, GET included: a viewer has no form to resume into. Scope
+      // is the location in the path, same as every per-site write.
+      if (sub === "drafts" && segments.length === 4) {
+        const code = decodeURIComponent(segments[2]!).toLowerCase();
+        const kind = decodeURIComponent(segments[3]!);
+        if (!DRAFT_KINDS.has(kind)) return jsonError(404, "unknown draft kind");
+        if (!canWriteInventory(session)) return jsonError(403, "read-only access");
+        if (!userCanAccessLocation(session, code)) {
+          return jsonError(403, "forbidden for that location");
+        }
+        if (method === "GET") return json(await getDraft(sb, code, kind));
+        if (method === "PUT") {
+          const body = (await readJson(request)) || {};
+          return json(await saveDraftRow(sb, code, kind, body, session.email));
+        }
+        if (method === "DELETE") {
+          await deleteDraft(sb, code, kind);
+          return json({ ok: true });
+        }
+        return jsonError(405, "method not allowed");
+      }
+
       if (sub === "visits") {
         if (segments.length === 2) {
           if (method !== "POST") return jsonError(405, "method not allowed");
@@ -432,7 +463,10 @@ export default {
           if (!code || !userCanAccessLocation(session, code)) {
             return jsonError(403, "forbidden for that location");
           }
-          return json(await createVisit(sb, body));
+          const created = await createVisit(sb, body);
+          // The count is filed, so the shared draft it came from is done.
+          await clearDraftAfterSubmit(sb, code, "visit");
+          return json(created);
         }
         if (segments.length === 3) {
           const visitId = decodeURIComponent(segments[2]!);

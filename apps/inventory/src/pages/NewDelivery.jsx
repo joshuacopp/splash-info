@@ -11,13 +11,15 @@
 // worker re-resolves them server-side when saving — what is displayed here is
 // information, not input. See createDelivery() in worker/db.ts.
 
-import { useMemo, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useData } from '../context/DataContext'
 import { useAuth } from '../context/AuthContext'
 import { apiPost, apiPut } from '../lib/api'
 import { bySiteChemicalOrder, computeVisit, latestLedgerRowForLocation } from '../lib/calc'
 import { Banner, EmptyState, PageHeader, Toast } from '../components/ui'
+import DraftBanners, { DraftStatus } from '../components/DraftBanners'
+import { useSharedDraft } from '../lib/useSharedDraft'
 import { fmtCurrency, fmtDate, todayIso } from '../lib/format'
 
 const GAL_TO_ML = 3785.41
@@ -54,6 +56,31 @@ export default function NewDelivery() {
   const [toast, setToast] = useState(null)
 
   const location = idx.locationById[locationId] || null
+
+  // Shared draft, one per site (lib/useSharedDraft.js), new deliveries only.
+  // Same rules as the visit form: offered not applied, last save wins with a
+  // warning, and the submitter is whoever presses Record — not part of it.
+  const draftValues = { deliveryDate, notes, qty }
+  const pristine = useRef(JSON.stringify(draftValues))
+  const draft = useSharedDraft({
+    locationId,
+    kind: 'delivery',
+    email,
+    enabled: !isEdit && canSubmit,
+    values: draftValues,
+    dirty: JSON.stringify(draftValues) !== pristine.current,
+    apply: (v) => {
+      if (typeof v.deliveryDate === 'string') setDeliveryDate(v.deliveryDate)
+      if (typeof v.notes === 'string') setNotes(v.notes)
+      if (v.qty && typeof v.qty === 'object') {
+        // Only chemicals still stocked here; anything removed since is dropped.
+        const stocked = new Set(
+          (dataset.location_products || []).filter((lp) => lp.location_id === locationId).map((lp) => lp.product_id)
+        )
+        setQty(Object.fromEntries(Object.entries(v.qty).filter(([id, q]) => stocked.has(id) && typeof q === 'string')))
+      }
+    },
+  })
 
   const { rows, lastRow } = useMemo(() => {
     // Last known levels come from the LEDGER, so a second delivery stacks on
@@ -118,6 +145,8 @@ export default function NewDelivery() {
       const res = isEdit
         ? await apiPut(`/deliveries/${encodeURIComponent(deliveryId)}`, { ...body, resend })
         : await apiPost('/deliveries', body)
+      // The worker removed the shared draft once the delivery saved.
+      if (!isEdit) draft.cleared()
       await refresh()
       // The receipt is best-effort on the worker: the delivery is saved either
       // way, so a failed email is a note on the way out, never a lost record.
@@ -162,6 +191,9 @@ export default function NewDelivery() {
           starting levels are captured.
         </Banner>
       )}
+
+      {!isEdit && <DraftStatus draft={draft} />}
+      <DraftBanners draft={draft} noun="delivery" email={email} />
 
       {error && (
         <div className="rounded-2xl border border-rose-200 bg-rose-50 px-5 py-4 text-sm font-semibold text-rose-700">

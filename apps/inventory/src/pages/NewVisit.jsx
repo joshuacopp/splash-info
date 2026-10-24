@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useData } from '../context/DataContext'
 import { useAuth } from '../context/AuthContext'
@@ -11,7 +11,8 @@ import {
   bySiteChemicalOrder,
 } from '../lib/calc'
 import { createVisit, updateVisit, sendVisitReport } from '../lib/data'
-import { draftKey, loadDraft, saveDraft, clearDraft, formatAge, SAVE_DEBOUNCE_MS } from '../lib/draft'
+import { useSharedDraft } from '../lib/useSharedDraft'
+import DraftBanners, { DraftStatus } from '../components/DraftBanners'
 import { Banner, EmptyState, SectionTitle, Toast, Pill } from '../components/ui'
 import { LocationHeader } from './LocationDashboard'
 import { fmtCurrency, fmtGal, fmtNumber, fmtDate, todayIso, num } from '../lib/format'
@@ -192,53 +193,39 @@ export default function NewVisit() {
     setRows((prev) => ({ ...prev, [pid]: { ...prev[pid], ...patch } }))
   }
 
-  // ---- Local draft --------------------------------------------------------
-  // New visits only. Editing a past visit already has a saved record to fall
-  // back on, and a stale edit draft resurfacing weeks later would offer to
-  // re-apply changes against a row that may have moved on since.
-  const dKey = isEdit ? '' : draftKey(email, locationId)
-  const values = { visitDate, submitter, notes, hardness, tds, rows, washes }
+  // ---- Shared draft -------------------------------------------------------
+  // One per site, shared by everyone who can file here (lib/useSharedDraft.js),
+  // with a copy kept on this device. New visits only: editing a past visit
+  // already has a saved record to fall back on, and a stale edit draft
+  // resurfacing weeks later would re-apply changes to a row that has moved on.
+  //
+  // The submitter is NOT in the draft. Whoever presses Submit is the one
+  // recorded, so resuming someone else's count leaves your own email in the
+  // field.
+  const values = { visitDate, notes, hardness, tds, rows, washes }
   const serialized = JSON.stringify(values)
 
   // The pristine form is not a draft. Every field here arrives pre-seeded —
-  // today's date, the signed-in email, equipment and starting quantities
-  // carried from the last visit — so saving on mount would leave a draft at
-  // every location the user merely opened and greet them with a resume banner
-  // for a form they never touched. Diffing against the initial snapshot also
-  // means someone who types a number and then deletes it ends up clean again
-  // rather than permanently dirty.
+  // today's date, equipment and starting quantities carried from the last
+  // visit — so saving on mount would leave a draft at every location someone
+  // merely opened and greet the next person with a resume banner for a form
+  // nobody touched. Diffing against the initial snapshot also means typing a
+  // number and deleting it ends up clean again rather than permanently dirty.
   const pristine = useRef(serialized)
   const dirty = serialized !== pristine.current
 
-  // Read once, in the initialiser, so it is captured before any edit in this
-  // session can overwrite the stored copy.
-  const [pending, setPending] = useState(() => (isEdit ? null : loadDraft(draftKey(email, locationId))))
+  const draft = useSharedDraft({
+    locationId,
+    kind: 'visit',
+    email,
+    enabled: !isEdit && canSubmit,
+    values,
+    dirty,
+    apply: applyDraft,
+  })
 
-  useEffect(() => {
-    if (!dKey) return undefined
-    if (!dirty) {
-      // Nothing typed yet, so there is nothing worth keeping — except a draft
-      // still being offered. Clearing that one here would mean a reload while
-      // the banner sits unanswered silently destroys it.
-      if (!pending) clearDraft(dKey)
-      return undefined
-    }
-    // Deliberately saves even while the banner is up. Typing with an
-    // unanswered banner is the exact moment the user is unprotected, and
-    // overwriting the stored copy costs nothing: Resume applies
-    // `pending.values`, which was read into memory at mount and is unaffected.
-    // Worst case the user abandons the page and keeps the newer work instead
-    // of the older — which is the right trade.
-    const t = setTimeout(() => saveDraft(dKey, values), SAVE_DEBOUNCE_MS)
-    return () => clearTimeout(t)
-    // `serialized` stands in for `values`, a fresh object every render.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dKey, pending, dirty, serialized])
-
-  function resumeDraft() {
-    const v = pending?.values || {}
+  function applyDraft(v) {
     if (typeof v.visitDate === 'string') setVisitDate(v.visitDate)
-    if (typeof v.submitter === 'string') setSubmitter(v.submitter)
     if (typeof v.notes === 'string') setNotes(v.notes)
     if (typeof v.hardness === 'string') setHardness(v.hardness)
     if (typeof v.tds === 'string') setTds(v.tds)
@@ -265,12 +252,6 @@ export default function NewVisit() {
         return next
       })
     }
-    setPending(null)
-  }
-
-  function discardDraft() {
-    clearDraft(dKey)
-    setPending(null)
   }
 
   // Washes only — add-ons are excluded, matching calc.js totalWashCount. These
@@ -388,8 +369,9 @@ export default function NewVisit() {
       const { visitId } = await createVisit(payload)
       // Cleared the moment the visit is persisted, before the email step —
       // that step is allowed to fail, and a draft surviving a saved visit
-      // would invite the user to submit the whole count a second time.
-      clearDraft(dKey)
+      // would invite the user to submit the whole count a second time. The
+      // worker has already removed the shared copy; this drops the device one.
+      draft.cleared()
       await refresh()
 
       // Queue the report email — new visits only; editing a past visit doesn't
@@ -482,27 +464,8 @@ export default function NewVisit() {
         </Banner>
       )}
 
-      {/* Offered, never applied automatically — restoring silently would
-          replace the starting quantities and carried-forward equipment the
-          form just seeded with numbers the user has no way to trace. */}
-      {pending && (
-        <Banner tone="blue" title="Unfinished visit found">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <span>
-              We saved your progress from <strong>{formatAge(pending.age)}</strong>. Pick up where
-              you left off?
-            </span>
-            <span className="flex gap-2">
-              <button type="button" className="btn-primary py-1.5 text-xs" onClick={resumeDraft}>
-                Resume
-              </button>
-              <button type="button" className="btn-ghost py-1.5 text-xs" onClick={discardDraft}>
-                Start over
-              </button>
-            </span>
-          </div>
-        </Banner>
-      )}
+      {!isEdit && <DraftStatus draft={draft} />}
+      <DraftBanners draft={draft} noun="visit" email={email} />
 
       <div className="card grid grid-cols-1 gap-4 p-5 sm:grid-cols-3">
         <div>

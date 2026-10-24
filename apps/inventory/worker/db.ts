@@ -2132,3 +2132,138 @@ export async function unresolveFlag(sb: SupabaseClient, flagKey: string) {
   const { error } = await inv(sb).from("flag_resolutions").delete().eq("flag_key", flagKey);
   if (error) throw new Error(error.message);
 }
+
+// ---------------------------------------------------------------------------
+// Shared drafts — inventory.drafts, one unfinished visit or delivery per site.
+//
+// See supabase/inventory-shared-drafts.sql for the why. In short: last save
+// wins, and a save that replaced someone else's newer work says so and hands
+// it back, so the form can warn and offer to restore it. The submitter is not
+// part of a draft; whoever presses Submit is recorded.
+// ---------------------------------------------------------------------------
+
+export const DRAFT_KINDS = new Set(["visit", "delivery"]);
+// A visit draft is a few dozen short strings per chemical. Anything near this
+// is not a draft.
+const DRAFT_MAX_BYTES = 256 * 1024;
+
+interface DraftRow {
+  location_code: string;
+  kind: string;
+  values: unknown;
+  version: number;
+  updated_by: string;
+  updated_at: string;
+}
+
+function draftOut(row: DraftRow) {
+  return {
+    values: row.values,
+    version: row.version,
+    updated_by: row.updated_by,
+    updated_at: row.updated_at
+  };
+}
+
+async function readDraft(sb: SupabaseClient, code: string, kind: string) {
+  const { data, error } = await inv(sb)
+    .from("drafts")
+    .select('location_code,kind,"values",version,updated_by,updated_at')
+    .eq("location_code", code)
+    .eq("kind", kind)
+    .maybeSingle();
+  if (error) throw new Error(error.message);
+  return (data as unknown as DraftRow | null) ?? null;
+}
+
+export async function getDraft(sb: SupabaseClient, code: string, kind: string) {
+  const row = await readDraft(sb, code, kind);
+  return { draft: row ? draftOut(row) : null };
+}
+
+/**
+ * Save the draft. `base_version` is the version this client last loaded or
+ * saved, or null when it started from a blank form.
+ *
+ * Always accepted (last save wins), with two exceptions:
+ *   - base_version set but no row: the draft was submitted or discarded since
+ *     this client loaded it. Recreating it would resurrect a count that is
+ *     already filed, so the save is refused with `gone: true`.
+ *   - the version moved between our read and our write: re-read and try again,
+ *     so `replaced` always describes what was actually overwritten.
+ *
+ * `replaced` is set when the stored draft was saved by someone else after
+ * base_version. A save over your own newer copy (a second tab) is not a
+ * warning.
+ */
+export async function saveDraftRow(
+  sb: SupabaseClient,
+  code: string,
+  kind: string,
+  body: Record<string, unknown>,
+  email: string
+) {
+  const values = body.values;
+  if (!values || typeof values !== "object") throw new ApiError("values must be an object");
+  if (JSON.stringify(values).length > DRAFT_MAX_BYTES) throw new ApiError("Draft is too large", 413);
+  const base =
+    body.base_version == null || body.base_version === "" ? null : Number(body.base_version);
+  if (base !== null && !Number.isInteger(base)) throw new ApiError("base_version must be an integer");
+  const me = email.toLowerCase();
+
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const current = await readDraft(sb, code, kind);
+    if (!current && base !== null) return { gone: true };
+
+    const replaced =
+      current && current.version !== base && current.updated_by.toLowerCase() !== me
+        ? draftOut(current)
+        : null;
+    const now = new Date().toISOString();
+
+    if (!current) {
+      const { error } = await inv(sb)
+        .from("drafts")
+        .insert({ location_code: code, kind, values, version: 1, updated_by: me, updated_at: now });
+      if (!error) return { version: 1, updated_at: now, replaced: null };
+      if (error.code === "23505") continue; // someone created it first; re-read
+      throw new Error(error.message);
+    }
+
+    const next = current.version + 1;
+    const { data, error } = await inv(sb)
+      .from("drafts")
+      .update({ values, version: next, updated_by: me, updated_at: now })
+      .eq("location_code", code)
+      .eq("kind", kind)
+      .eq("version", current.version)
+      .select("version");
+    if (error) throw new Error(error.message);
+    if (data && data.length) return { version: next, updated_at: now, replaced };
+    // Version moved under us — loop and re-read.
+  }
+  throw new ApiError("The draft is being saved by someone else right now. Try again.", 409);
+}
+
+/** Discard, or clear after a submit. Deleting a draft that isn't there is fine. */
+export async function deleteDraft(sb: SupabaseClient, code: string, kind: string) {
+  const { error } = await inv(sb)
+    .from("drafts")
+    .delete()
+    .eq("location_code", code)
+    .eq("kind", kind);
+  if (error) throw new Error(error.message);
+}
+
+/**
+ * After a visit or delivery is saved. Fail-soft: the record is filed, and a
+ * draft that survives is only an offer someone can discard, so a failure here
+ * must not turn a successful submit into an error.
+ */
+export async function clearDraftAfterSubmit(sb: SupabaseClient, code: string, kind: string) {
+  try {
+    await deleteDraft(sb, code, kind);
+  } catch (err) {
+    console.error("[inventory.drafts] clear after submit failed", code, kind, err);
+  }
+}
