@@ -41,6 +41,20 @@ export function isPackagePriceRows(v: unknown): v is PackagePriceRow[] {
   );
 }
 
+/**
+ * "college_bubble_bath" -> "College Bubble Bath". pricing_simple has no
+ * display name for a package, only its code, and the code is what the
+ * payload stores (it is how the package is matched back to the site). This is
+ * display only. forms-public.js carries a copy, since it cannot import this.
+ */
+export function packageLabel(code: string): string {
+  return code
+    .split(/[_\s]+/)
+    .filter(Boolean)
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+    .join(" ");
+}
+
 function priceChange(current: string, next: string): string {
   return current === next ? `$${current} (no change)` : `$${current} → $${next}`;
 }
@@ -48,7 +62,7 @@ function priceChange(current: string, next: string): string {
 /** "Ultimate: Single $12.00 → $14.00 · Monthly $29.99 (no change)" */
 export function formatPackagePriceRow(r: PackagePriceRow): string {
   return (
-    `${r.pkg}: Single ${priceChange(r.current_single, r.new_single)}` +
+    `${packageLabel(r.pkg)}: Single ${priceChange(r.current_single, r.new_single)}` +
     ` · Monthly ${priceChange(r.current_monthly, r.new_monthly)}`
   );
 }

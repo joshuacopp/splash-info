@@ -8,7 +8,7 @@
 // at the bottom so nothing silently disappears.
 
 import type { DropdownField, Field, FormSchema, LookupField, MultiField, PackagePriceRow, RadioField } from "@splash/forms-schema";
-import { isPackagePriceRows } from "@splash/forms-schema/package-price";
+import { isPackagePriceRows, packageLabel } from "@splash/forms-schema/package-price";
 import type { SubmissionFile } from "../../../../_lib/worker-fetch";
 
 interface Props {
@@ -172,7 +172,7 @@ function PriceGridTable({ rows }: { rows: PackagePriceRow[] }) {
       <tbody>
         {rows.map((r) => (
           <tr key={r.pkg} className="border-t border-gray-light">
-            <td className="py-1 pr-6 font-semibold">{r.pkg}</td>
+            <td className="py-1 pr-6 font-semibold">{packageLabel(r.pkg)}</td>
             <td className="py-1 pr-6">{cell(r.current_single, r.new_single)}</td>
             <td className="py-1">{cell(r.current_monthly, r.new_monthly)}</td>
           </tr>

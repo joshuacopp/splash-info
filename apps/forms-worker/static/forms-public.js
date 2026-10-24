@@ -523,7 +523,9 @@
           box.id = id;
           box.checked = !!p;
           var name = document.createElement("span");
-          name.textContent = pkg; // textContent: package names are data, not markup
+          // textContent: package names are data, not markup. Display label only;
+          // data-pkg keeps the code, which is what the server matches on.
+          name.textContent = packageLabel(pkg);
           pick.appendChild(box);
           pick.appendChild(name);
           row.appendChild(pick);
@@ -614,6 +616,14 @@
       });
       load();
     });
+  }
+
+  // Mirror of packageLabel in packages/forms-schema/src/package-price.ts --
+  // this file cannot import it. "college_bubble_bath" -> "College Bubble Bath".
+  function packageLabel(code) {
+    return String(code).split(/[_s]+/).filter(Boolean).map(function (w) {
+      return w.charAt(0).toUpperCase() + w.slice(1);
+    }).join(" ");
   }
 
   function cssAttrEscape(s) {

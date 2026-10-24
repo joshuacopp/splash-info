@@ -16,6 +16,7 @@
 import { isOriginAllowed } from "@splash/http";
 import {
   isPackagePriceRows,
+  packageLabel,
   type Field,
   type FormMeta,
   type FormSchema,
@@ -426,7 +427,7 @@ function priceTable(rows: PackagePriceRow[]): string {
     <tbody>${rows
       .map(
         (r) =>
-          `<tr><td><strong>${escapeHtml(r.pkg)}</strong></td><td>${cell(r.current_single, r.new_single)}</td><td>${cell(r.current_monthly, r.new_monthly)}</td></tr>`
+          `<tr><td><strong>${escapeHtml(packageLabel(r.pkg))}</strong></td><td>${cell(r.current_single, r.new_single)}</td><td>${cell(r.current_monthly, r.new_monthly)}</td></tr>`
       )
       .join("")}</tbody>
   </table>`;

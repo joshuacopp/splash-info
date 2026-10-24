@@ -32,6 +32,11 @@ import { drawPayload, type LocationPrettyResolver } from "./layout-payload.js";
 import { drawCorrectiveActions, ownerLabelFor } from "./layout-checklist.js";
 import { drawWorkflowHistory } from "./layout-workflow-history.js";
 import {
+  drawPriceChange,
+  hasPriceGrid,
+  priceChangeSubtitle
+} from "./layout-price-change.js";
+import {
   PAGE_HEIGHT,
   PAGE_WIDTH,
   loadFonts,
@@ -76,11 +81,33 @@ export async function generateCompletedFormPdf(
 
   // Page 1.
   const page1 = doc.addPage([PAGE_WIDTH, PAGE_HEIGHT]);
+  const priceChange = hasPriceGrid(ctx.schema);
   const cursor = await drawHeader(doc, bucket, fonts, page1, {
     formTitle: ctx.formTitle,
     submissionId: ctx.submission.id,
-    submittedAt: ctx.submission.submittedAt
+    submittedAt: ctx.submission.submittedAt,
+    ...(priceChange
+      ? { subtitle: priceChangeSubtitle(ctx.schema, ctx.payload) ?? undefined }
+      : {})
   });
+
+  // A price change request reads as a decision document, not an audit dump:
+  // see layout-price-change.ts. Every other form keeps the layout below.
+  if (priceChange) {
+    await drawPriceChange(doc, cursor, fonts, {
+      schema: ctx.schema,
+      payload: ctx.payload,
+      submittedAt: ctx.submission.submittedAt,
+      submissionId: ctx.submission.id,
+      submitterEmail: ctx.submission.submitterEmail,
+      workflowHistory: ctx.workflowHistory,
+      outcomeLabel: ctx.outcomeLabel ?? null,
+      outcomeReachedAt: ctx.outcomeReachedAt ?? null,
+      bucket
+    });
+    drawFooters(doc, fonts);
+    return doc.save();
+  }
 
   drawMetadata(doc, cursor, fonts, {
     submission: ctx.submission,
