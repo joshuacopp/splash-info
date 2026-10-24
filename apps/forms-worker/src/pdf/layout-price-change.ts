@@ -30,7 +30,15 @@ import type {
   SubmissionPayload,
   WorkflowHistoryEntry
 } from "@splash/forms-schema";
-import { isPackagePriceRows, packageLabel, type PackagePriceRow } from "@splash/forms-schema";
+import {
+  isPackagePriceRows,
+  isPackagePriceSites,
+  packageLabel,
+  priceDiff,
+  siteLabel,
+  type PackagePriceRow,
+  type PackagePriceSite
+} from "@splash/forms-schema";
 
 import {
   CONTENT_WIDTH,
@@ -77,11 +85,24 @@ export function hasPriceGrid(schema: FormSchema): boolean {
   return schema.fields.some((f) => f.type === "package_price_grid");
 }
 
-/** Site line for the header subtitle, e.g. "Binghamton (122)". */
+/** Site line for the header subtitle: "Binghamton (122)", or "3 sites" for a
+ *  multi-site request (each site is named over its own table below). */
 export function priceChangeSubtitle(schema: FormSchema, payload: SubmissionPayload): string | null {
+  const sites = multiSiteValue(schema, payload);
+  if (sites) return sites.length === 1 ? siteLabel(sites[0]!) : `${sites.length} sites`;
   const { name, number } = siteOf(schema, payload);
   if (name && number) return `${name} (${number})`;
   return name || number || null;
+}
+
+/** The sites of the first multi-site grid, when there is one with a value. */
+function multiSiteValue(schema: FormSchema, payload: SubmissionPayload): PackagePriceSite[] | null {
+  for (const f of schema.fields) {
+    if (f.type !== "package_price_grid" || !f.multiSite) continue;
+    const v = payload[f.key];
+    if (isPackagePriceSites(v)) return v;
+  }
+  return null;
 }
 
 export async function drawPriceChange(
@@ -99,8 +120,9 @@ export async function drawPriceChange(
   drawSectionHeading(doc, cursor, fonts, "Request");
   // Four cells = two rows. A fifth cell costs a whole row, and that row is the
   // difference between the signature landing on page 1 or alone on page 2.
+  const multi = multiSiteValue(input.schema, input.payload);
   drawKeyValueGrid(doc, cursor, fonts, [
-    ["Site", priceChangeSubtitle(input.schema, input.payload) ?? "-"],
+    [multi && multi.length > 1 ? "Sites" : "Site", priceChangeSubtitle(input.schema, input.payload) ?? "-"],
     ["Requested by", input.submitterEmail ?? "-"],
     ["Submitted", formatEst(input.submittedAt)],
     ["Request ID", shortId(input.submissionId)]
@@ -112,6 +134,15 @@ export async function drawPriceChange(
     if (field.type !== "package_price_grid") continue;
     const rows = input.payload[field.key];
     drawSectionHeading(doc, cursor, fonts, field.label || "Price changes");
+    if (isPackagePriceSites(rows)) {
+      for (const s of rows) {
+        drawSiteHeading(doc, cursor, fonts, siteLabel(s));
+        drawPriceTable(doc, cursor, fonts, s.rows);
+        drawSpacer(cursor, 12);
+      }
+      drawSpacer(cursor, 4);
+      continue;
+    }
     if (isPackagePriceRows(rows)) drawPriceTable(doc, cursor, fonts, rows);
     else drawMuted(doc, cursor, fonts, "No packages selected.");
     drawSpacer(cursor, 16);
@@ -331,21 +362,15 @@ function drawPriceCell(cursor: Cursor, fonts: Fonts, x: number, current: string,
   cx += fonts.regular.widthOfTextAtSize("->", 11) + 6;
   cursor.page.drawText(`$${next}`, { x: cx, y, size: 11, font: fonts.bold, color: COLORS.navy });
 
-  // Cents arithmetic on the normalised two-decimal strings: never floats.
-  const cents = (s: string) => Math.round(Number(s) * 100);
-  const diff = cents(next) - cents(current);
-  const pct = cents(current) > 0 ? Math.round((diff / cents(current)) * 1000) / 10 : null;
-  const sign = diff > 0 ? "+" : "-";
-  // A one-cent change on $27 rounds to 0%, which reads as "no change" and
-  // contradicts the dollar figure right beside it.
-  const pctText = pct === null ? "" : Math.abs(pct) < 0.1 ? "  (<0.1%)" : `  (${sign}${Math.abs(pct)}%)`;
-  const label = `${sign}$${(Math.abs(diff) / 100).toFixed(2)}${pctText}`;
-  cursor.page.drawText(label, {
+  // Shared with the approval page and emails (priceDiff), so the numbers an
+  // approver saw on screen are the numbers on the PDF.
+  const d = priceDiff(current, next);
+  cursor.page.drawText(d.text, {
     x,
     y: y - 12,
     size: 8,
     font: fonts.bold,
-    color: diff > 0 ? GREEN_TEXT : RED_TEXT
+    color: d.direction === "up" ? GREEN_TEXT : RED_TEXT
   });
 }
 
@@ -455,6 +480,21 @@ async function drawSignatureBox(
     color: COLORS.muted
   });
   cursor.y = top - boxH - 14;
+}
+
+/** Site name over its table in a multi-site request. Reserves room for the
+ *  heading AND a first row, so a site heading is never stranded at the foot
+ *  of a page with its table on the next. */
+function drawSiteHeading(doc: PDFDocument, cursor: Cursor, fonts: Fonts, label: string): void {
+  addPageIfNeeded(doc, cursor, 18 + 20 + 34);
+  cursor.page.drawText(truncateToWidth(label, fonts.bold, 12, CONTENT_WIDTH), {
+    x: MARGIN,
+    y: cursor.y,
+    size: 12,
+    font: fonts.bold,
+    color: COLORS.navy
+  });
+  cursor.y -= 10;
 }
 
 function drawLabel(cursor: Cursor, fonts: Fonts, label: string): void {

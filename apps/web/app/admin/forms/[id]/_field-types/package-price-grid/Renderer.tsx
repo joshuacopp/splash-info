@@ -1,4 +1,4 @@
-import type { Field } from "@splash/forms-schema";
+import type { Field, PackagePriceGridField } from "@splash/forms-schema";
 
 // Canvas preview. The real rows depend on the site picked at fill time, so
 // the builder shows one illustrative package rather than pretending to know.
@@ -27,7 +27,9 @@ export default function PackagePriceGridRenderer({ field }: { field: Field }) {
         </div>
       </div>
       <p className="mt-1 text-xs text-splash-navy/60">
-        Lists the packages at the chosen site when the form is filled in.
+        {(field as PackagePriceGridField).multiSite
+          ? "Submitter adds sites by number (+ Add site); each site lists its own packages."
+          : "Lists the packages at the chosen site when the form is filled in."}
       </p>
       {field.helpText && <p className="mt-1 text-xs text-splash-navy/60">{field.helpText}</p>}
     </div>

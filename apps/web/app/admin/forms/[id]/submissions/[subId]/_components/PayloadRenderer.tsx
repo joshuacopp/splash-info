@@ -8,7 +8,13 @@
 // at the bottom so nothing silently disappears.
 
 import type { DropdownField, Field, FormSchema, LookupField, MultiField, PackagePriceRow, RadioField } from "@splash/forms-schema";
-import { isPackagePriceRows, packageLabel } from "@splash/forms-schema/package-price";
+import {
+  isPackagePriceRows,
+  isPackagePriceSites,
+  packageLabel,
+  priceDiff,
+  siteLabel
+} from "@splash/forms-schema/package-price";
 import type { SubmissionFile } from "../../../../_lib/worker-fetch";
 
 interface Props {
@@ -146,20 +152,43 @@ function FieldValue({
       return <SignatureValue files={files} value={value} />;
 
     case "package_price_grid":
+      if (isPackagePriceSites(value)) {
+        return (
+          <div className="space-y-3">
+            {value.map((s) => (
+              <div key={s.site}>
+                <p className="mb-1 font-semibold text-splash-navy">{siteLabel(s)}</p>
+                <PriceGridTable rows={s.rows} />
+              </div>
+            ))}
+          </div>
+        );
+      }
       return isPackagePriceRows(value) ? <PriceGridTable rows={value} /> : em();
   }
 }
 
 function PriceGridTable({ rows }: { rows: PackagePriceRow[] }) {
-  const cell = (current: string, next: string) =>
-    current === next ? (
-      <span className="text-splash-navy/60">${current} (no change)</span>
-    ) : (
+  const cell = (current: string, next: string) => {
+    if (current === next) {
+      return <span className="text-splash-navy/60">${current} (no change)</span>;
+    }
+    // Shared with the PDF and Dan's approval page, so all three agree.
+    const d = priceDiff(current, next);
+    return (
       <span>
         <span className="text-splash-navy/60">${current}</span> →{" "}
         <strong>${next}</strong>
+        <span
+          className={`block text-xs font-semibold ${
+            d.direction === "up" ? "text-emerald-700" : "text-red-700"
+          }`}
+        >
+          {d.text}
+        </span>
       </span>
     );
+  };
   return (
     <table className="text-sm">
       <thead>

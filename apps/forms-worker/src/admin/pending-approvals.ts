@@ -22,6 +22,7 @@
 import { authenticate } from "@splash/auth";
 import { jsonError } from "@splash/http";
 import type { FormSchema } from "@splash/forms-schema";
+import { priceGridSitesSummary } from "@splash/forms-schema";
 import { requireServiceKey } from "./auth.js";
 import type { Env } from "../index.js";
 
@@ -364,6 +365,10 @@ const DISPLAY_ONLY_TYPES = new Set(["heading", "image"]);
  */
 function queueCellValue(field: unknown, raw: unknown): string | null {
   if (raw === null || raw === undefined) return null;
+  // A multi-site price grid's queue cell is its site list -- which request is
+  // this -- not its prices, which belong on the ticket.
+  const sites = priceGridSitesSummary(raw);
+  if (sites) return sites;
 
   const options = (field as { options?: { value: string; label: string }[] }).options;
   const label = (v: unknown): string => {

@@ -3237,6 +3237,20 @@ URL-based — service bindings don't apply to those.
   uses `.js` specifiers that Next's webpack cannot resolve, so root imports
   from `@splash/forms-schema` in apps/web must stay `import type`. First
   consumer: the Price change approval form (`scripts/gen-price-change.ts`).
+  `multiSite: true` (2026-10-24) makes the grid collect its own sites
+  ("+ Add site" by 3-digit number, "Copy from {first site}"); payload becomes
+  `PackagePriceSite[]` (`{site, site_name, rows}`), with `site_name` read and
+  STORED at submit. Both shapes stay readable forever; render via
+  `isPriceGridValue` / `formatPriceGridValue` / `priceDiff`, never by hand --
+  `priceDiff` is the one source of the "+$2.00 (+8.3%)" text shared by the
+  PDF, Dan's approval page, emails and the admin views. Email token
+  `{field.<grid>.sites}` gives "Binghamton (122), Vestal (127)". The price
+  change form has NO `site_number` field, so its submissions are unscoped
+  (site staff can't see them, by operator decision); its forms row keeps
+  `scope_location_field_key = 'site_number'` -- do NOT clear it, or the next
+  publish re-injects a site_number field. `forms-public.js` carries a copy of
+  `packageLabel`; edit it with the Edit tool, not sed -- a shell edit once
+  dropped the regex backslash and split names on the letter "s".
 - **outbound_emails table** (Brief 127) - Shared queue of fully-rendered
   outbound emails. Single Power Automate flow polls every 5 minutes
   and drains the queue regardless of which worker enqueued the row.

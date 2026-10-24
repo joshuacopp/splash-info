@@ -11,7 +11,7 @@ import { useMemo, useState } from "react";
 import Link from "next/link";
 
 import type { Field } from "@splash/forms-schema";
-import { formatPackagePriceRows, isPackagePriceRows } from "@splash/forms-schema/package-price";
+import { formatPriceGridValue, isPriceGridValue } from "@splash/forms-schema/package-price";
 import type { SubmissionListItem } from "../../../_lib/worker-fetch";
 import StatusPill from "./StatusPill";
 import AnswerCell from "./AnswerCell";
@@ -51,7 +51,7 @@ function toSearchText(field: Field, value: unknown): string {
       return "";
     }
     case "package_price_grid":
-      return isPackagePriceRows(value) ? formatPackagePriceRows(value) : "";
+      return isPriceGridValue(value) ? formatPriceGridValue(value) : "";
     default:
       return String(value);
   }

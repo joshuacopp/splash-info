@@ -29,9 +29,8 @@ import type {
   WorkflowStage
 } from "@splash/forms-schema";
 import {
-  formatPackagePriceRow,
-  formatPackagePriceRows,
-  isPackagePriceRows
+  formatPriceGridValue,
+  isPriceGridValue
 } from "@splash/forms-schema";
 import {
   adminGateResponse,
@@ -707,7 +706,7 @@ function displayText(field: Field, value: unknown): string {
       return "";
     }
     case "package_price_grid":
-      return isPackagePriceRows(value) ? formatPackagePriceRows(value) : "";
+      return isPriceGridValue(value) ? formatPriceGridValue(value) : "";
     default:
       return String(value);
   }
@@ -989,7 +988,13 @@ function stringifyPayloadValue(
   if (v == null) return "";
   if (typeof v === "string") return options?.get(v) ?? v;
   if (typeof v === "number" || typeof v === "boolean") return String(v);
-  if (isPackagePriceRows(v)) return v.map(formatPackagePriceRow).join("; ");
+  // One CSV cell: the multi-line rendering flattened to "; "-separated.
+  if (isPriceGridValue(v)) {
+    return formatPriceGridValue(v)
+      .split("\n")
+      .map((l) => l.trim())
+      .join("; ");
+  }
   if (Array.isArray(v))
     return v.map((x) => stringifyPayloadValue(x, options)).join("; ");
   if (typeof v === "object") {

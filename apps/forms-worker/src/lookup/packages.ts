@@ -14,7 +14,7 @@
 import { isOriginAllowed, jsonError } from "@splash/http";
 import type { PackagePriceGridField } from "@splash/forms-schema";
 import type { Env } from "../index.js";
-import { getFormBySlug, getCurrentVersion, listPackagesForSite } from "../db/forms.js";
+import { getFormBySlug, getCurrentVersion, readSitePackages } from "../db/forms.js";
 
 export async function handlePackagesForSite(
   env: Env,
@@ -43,13 +43,20 @@ export async function handlePackagesForSite(
   if (!field) return jsonError(400, "unknown_field");
 
   const keyValue = typeof body.key_value === "string" ? body.key_value : "";
-  const packages = keyValue
-    ? await listPackagesForSite(env, field.keyColumn, keyValue)
-    : [];
-  if (packages === null) return jsonError(502, "packages_unavailable");
+  // A multi-site grid's sites are always typed 3-digit site numbers.
+  const keyColumn = field.multiSite ? "pricing_simple.site" : field.keyColumn;
+  const found = keyValue
+    ? await readSitePackages(env, keyColumn, keyValue)
+    : { packages: [], siteName: null, site: "" };
+  if (found === null) return jsonError(502, "packages_unavailable");
 
-  return new Response(JSON.stringify({ packages }), {
-    status: 200,
-    headers: { "Content-Type": "application/json", "Cache-Control": "no-store" }
-  });
+  // site_name / site let the page label a multi-site section "Binghamton (122)"
+  // and use the canonical 3-digit number; single-site grids ignore them.
+  return new Response(
+    JSON.stringify({ packages: found.packages, site_name: found.siteName, site: found.site }),
+    {
+      status: 200,
+      headers: { "Content-Type": "application/json", "Cache-Control": "no-store" }
+    }
+  );
 }

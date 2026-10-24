@@ -152,6 +152,18 @@ export function payloadValidatorFor(field: Field): z.ZodTypeAny | null {
           new_monthly: price
         })
       );
+      if (field.multiSite) {
+        const sites = z.array(
+          z.object({
+            site: z.string().regex(/^\d{3}$/, "Site number must be 3 digits"),
+            site_name: z.string().max(200),
+            rows: rows.min(1, "Select at least one package at each site")
+          })
+        );
+        return field.required
+          ? sites.min(1, "Add at least one site")
+          : sites.optional();
+      }
       return field.required
         ? rows.min(1, "Select at least one package")
         : rows.optional();

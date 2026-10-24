@@ -15,9 +15,8 @@ import type {
   FileField
 } from "@splash/forms-schema";
 import {
-  formatPackagePriceRow,
-  formatPackagePriceRows,
-  isPackagePriceRows
+  formatPriceGridValue,
+  isPriceGridValue
 } from "@splash/forms-schema/package-price";
 
 const TRUNCATE_AT = 80;
@@ -73,13 +72,24 @@ export default function AnswerCell({ field, value }: Props) {
       return <SignatureCell field={field} value={value} />;
 
     case "package_price_grid":
-      return isPackagePriceRows(value) ? (
-        <span title={formatPackagePriceRows(value)} className="block max-w-[28rem]">
-          {value.map((r) => (
-            <span key={r.pkg} className="block whitespace-nowrap">
-              {formatPackagePriceRow(r)}
-            </span>
-          ))}
+      return isPriceGridValue(value) ? (
+        <span title={formatPriceGridValue(value)} className="block max-w-[28rem]">
+          {/* One line per package; multi-site values put each site's name on
+              its own (unindented) line above its packages. */}
+          {formatPriceGridValue(value)
+            .split("\n")
+            .map((line, i) => (
+              <span
+                key={i}
+                className={
+                  line.startsWith("  ")
+                    ? "block whitespace-nowrap pl-3"
+                    : "block whitespace-nowrap"
+                }
+              >
+                {line.trim()}
+              </span>
+            ))}
         </span>
       ) : (
         <Em />

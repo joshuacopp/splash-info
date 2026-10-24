@@ -30,7 +30,7 @@ import type {
   LookupField,
   SubmissionPayload
 } from "@splash/forms-schema";
-import { formatPackagePriceRows, isPackagePriceRows } from "@splash/forms-schema";
+import { formatPriceGridValue, isPriceGridValue } from "@splash/forms-schema";
 
 import {
   CONTENT_WIDTH,
@@ -169,7 +169,7 @@ export async function drawPayload(
         cursor,
         fonts,
         field.label,
-        isPackagePriceRows(value) ? formatPackagePriceRows(value) : "-"
+        isPriceGridValue(value) ? formatPriceGridValue(value) : "-"
       );
       continue;
     }

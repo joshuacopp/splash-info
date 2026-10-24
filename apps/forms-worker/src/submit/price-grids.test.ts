@@ -147,3 +147,110 @@ describe("resolvePriceGrids", () => {
     if (!result.ok) expect(result.status).toBe(502);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Multi-site grids
+// ---------------------------------------------------------------------------
+
+const MULTI: FormSchema = {
+  fields: [
+    {
+      id: "g",
+      key: "packages",
+      type: "package_price_grid",
+      label: "Packages",
+      required: true,
+      keyFieldKey: "",
+      keyColumn: "pricing_simple.site",
+      multiSite: true
+    }
+  ]
+};
+
+/** pricing_simple by site number. Anything not listed has no rows. */
+function stubSites(sites: Record<string, { name: string; pkgs: string[] }>) {
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const url = new URL(typeof input === "string" ? input : input.toString());
+    const site = (url.searchParams.get("site") ?? "").replace(/^eq\./, "");
+    const s = sites[site];
+    const rows = s ? s.pkgs.map((pkg) => ({ pkg, location_pretty: s.name, site })) : [];
+    return new Response(JSON.stringify(rows), { status: 200 });
+  }) as typeof fetch;
+}
+
+const row = (pkg: string, cs: string, cm: string, ns = "", nm = "") => ({
+  pkg,
+  current_single: cs,
+  current_monthly: cm,
+  new_single: ns,
+  new_monthly: nm
+});
+
+describe("resolvePriceGrids (multi-site)", () => {
+  it("resolves each site, stores its name, and pads typed site numbers", async () => {
+    stubSites({
+      "122": { name: "Binghamton", pkgs: ["ultra_bath", "express"] },
+      "019": { name: "Milford", pkgs: ["ultra_bath"] }
+    });
+    const payload: Record<string, unknown> = {
+      packages: [
+        { site: "122", rows: [row("ultra_bath", "24", "39.99", "26")] },
+        { site: "19", rows: [row("ultra_bath", "22", "35", "24")] }
+      ]
+    };
+    expect(await resolvePriceGrids(ENV, MULTI, payload)).toEqual({ ok: true });
+    expect(payload.packages).toEqual([
+      {
+        site: "122",
+        site_name: "Binghamton",
+        rows: [row("ultra_bath", "24.00", "39.99", "26.00", "39.99")]
+      },
+      {
+        site: "019",
+        site_name: "Milford",
+        rows: [row("ultra_bath", "22.00", "35.00", "24.00", "35.00")]
+      }
+    ]);
+  });
+
+  it("refuses an unknown site number", async () => {
+    stubSites({ "122": { name: "Binghamton", pkgs: ["express"] } });
+    const payload: Record<string, unknown> = {
+      packages: [{ site: "999", rows: [row("express", "10", "20")] }]
+    };
+    const r = await resolvePriceGrids(ENV, MULTI, payload);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.fields.packages).toContain("999 isn't a known site");
+  });
+
+  it("refuses the same site twice, however it was typed", async () => {
+    stubSites({ "019": { name: "Milford", pkgs: ["express"] } });
+    const payload: Record<string, unknown> = {
+      packages: [
+        { site: "19", rows: [row("express", "10", "20")] },
+        { site: "019", rows: [row("express", "10", "20")] }
+      ]
+    };
+    const r = await resolvePriceGrids(ENV, MULTI, payload);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.fields.packages).toContain("listed twice");
+  });
+
+  it("refuses a site added with nothing ticked instead of dropping it", async () => {
+    stubSites({ "122": { name: "Binghamton", pkgs: ["express"] } });
+    const payload: Record<string, unknown> = { packages: [{ site: "122", rows: [] }] };
+    const r = await resolvePriceGrids(ENV, MULTI, payload);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.fields.packages).toContain("tick at least one package");
+  });
+
+  it("names the site in a row error", async () => {
+    stubSites({ "122": { name: "Binghamton", pkgs: ["express"] } });
+    const payload: Record<string, unknown> = {
+      packages: [{ site: "122", rows: [row("express", "", "20")] }]
+    };
+    const r = await resolvePriceGrids(ENV, MULTI, payload);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.fields.packages).toBe("Binghamton (122): Express: enter both current prices");
+  });
+});

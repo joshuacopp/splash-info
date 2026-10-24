@@ -400,228 +400,464 @@
       });
   }
 
-  // Package price grid. Rows depend on the site, so they are fetched when the
-  // site field changes and drawn here. The submitted value is the hidden JSON
-  // input; the visible boxes are unnamed (see render/fields/package-price-grid.ts).
+  // Package price grid. Rows depend on the site, so they are fetched from
+  // /forms/api/packages/{slug} and drawn here. The submitted value is the
+  // hidden JSON input; the visible boxes are unnamed (see
+  // render/fields/package-price-grid.ts).
+  //
+  // Two modes:
+  //   single-site -- reads the site from another field (data-grid-key-field);
+  //                  value is an array of rows.
+  //   multi-site  -- the grid adds its own sites ("+ Add site"); value is an
+  //                  array of { site, rows }, one section per site.
   //
   // Prices go up as typed. The server normalises them, fills a blank new price
-  // from the current one, and rejects any package the site does not sell --
+  // from the current one, and rejects any package or site that is not real --
   // this script only has to collect what was entered.
   function wirePriceGrids(formEl, slug) {
     var grids = formEl.querySelectorAll('[data-field-type="package_price_grid"]');
     Array.prototype.forEach.call(grids, function (wrap) {
-      var fieldKey = wrap.getAttribute("data-field-key");
-      var keyName = wrap.getAttribute("data-grid-key-field");
-      var hidden = wrap.querySelector('[data-grid-value="1"]');
-      var rowsEl = wrap.querySelector('[data-grid-rows="1"]');
-      if (!fieldKey || !keyName || !hidden || !rowsEl) return;
-
-      var packages = null; // null = not loaded for the current site
-      var loadedFor = "";
-      var seq = 0;
-      var debounce;
-
-      function keyEls() {
-        return formEl.querySelectorAll('[name="' + cssAttrEscape(keyName) + '"]');
-      }
-      function keyValue() {
-        var els = keyEls();
-        for (var i = 0; i < els.length; i++) {
-          var el = els[i];
-          if ((el.type === "radio" || el.type === "checkbox") && !el.checked) continue;
-          return (el.value || "").trim();
-        }
-        return "";
-      }
-      function saved() {
-        try {
-          var v = JSON.parse(hidden.value || "[]");
-          return Array.isArray(v) ? v : [];
-        } catch (e) {
-          return [];
-        }
-      }
-      function message(text) {
-        rowsEl.innerHTML = "";
-        var p = document.createElement("p");
-        p.className = "price-grid-empty";
-        p.textContent = text;
-        rowsEl.appendChild(p);
-      }
-
-      function serialize() {
-        var out = [];
-        var rows = rowsEl.querySelectorAll(".price-grid-row.is-on");
-        Array.prototype.forEach.call(rows, function (row) {
-          var get = function (k) {
-            var el = row.querySelector('[data-price="' + k + '"]');
-            return el ? el.value.trim() : "";
-          };
-          out.push({
-            pkg: row.getAttribute("data-pkg"),
-            current_single: get("cs"),
-            current_monthly: get("cm"),
-            new_single: get("ns"),
-            new_monthly: get("nm")
-          });
-        });
-        hidden.value = out.length ? JSON.stringify(out) : "";
-      }
-
-      function priceInput(code, isCurrent, value) {
-        var input = document.createElement("input");
-        input.type = "text";
-        input.inputMode = "decimal";
-        input.autocomplete = "off";
-        input.setAttribute("data-price", code);
-        input.setAttribute("pattern", "\\$?[0-9,]{1,9}(\\.[0-9]{1,2})?");
-        input.title = "A price, e.g. 24.99";
-        input.value = value || "";
-        if (isCurrent) input.placeholder = "0.00";
-        return input;
-      }
-
-      // The new-price box shows the current price as its placeholder: blank
-      // MEANS "same as current", and showing the number says so without the
-      // submitter having to retype it.
-      function syncPlaceholders(row) {
-        [["cs", "ns"], ["cm", "nm"]].forEach(function (pair) {
-          var cur = row.querySelector('[data-price="' + pair[0] + '"]');
-          var next = row.querySelector('[data-price="' + pair[1] + '"]');
-          if (cur && next) next.placeholder = cur.value.trim() || "Same as current";
-        });
-      }
-
-      function setOn(row, on) {
-        row.classList.toggle("is-on", on);
-        var inputs = row.querySelectorAll('[data-price="cs"], [data-price="cm"]');
-        Array.prototype.forEach.call(inputs, function (el) { el.required = on; });
-      }
-
-      function render() {
-        rowsEl.innerHTML = "";
-        if (!packages || packages.length === 0) {
-          message("No packages found for that site. Check the site number.");
-          serialize();
-          return;
-        }
-        var prior = {};
-        saved().forEach(function (r) { if (r && typeof r.pkg === "string") prior[r.pkg] = r; });
-
-        packages.forEach(function (pkg, i) {
-          var p = prior[pkg];
-          var row = document.createElement("div");
-          row.className = "price-grid-row";
-          row.setAttribute("data-pkg", pkg);
-
-          var id = fieldKey + "__pkg_" + i;
-          var pick = document.createElement("label");
-          pick.className = "price-grid-pick";
-          pick.htmlFor = id;
-          var box = document.createElement("input");
-          box.type = "checkbox";
-          box.id = id;
-          box.checked = !!p;
-          var name = document.createElement("span");
-          // textContent: package names are data, not markup. Display label only;
-          // data-pkg keeps the code, which is what the server matches on.
-          name.textContent = packageLabel(pkg);
-          pick.appendChild(box);
-          pick.appendChild(name);
-          row.appendChild(pick);
-
-          var grid = document.createElement("div");
-          grid.className = "price-grid-prices";
-          var cell = function (cls, text) {
-            var d = document.createElement("div");
-            d.className = cls;
-            d.textContent = text;
-            return d;
-          };
-          grid.appendChild(cell("", ""));
-          grid.appendChild(cell("col-head", "Current price"));
-          grid.appendChild(cell("col-head", "New price"));
-          grid.appendChild(cell("row-head", "Single"));
-          grid.appendChild(priceInput("cs", true, p && p.current_single));
-          grid.appendChild(priceInput("ns", false, p && p.new_single));
-          grid.appendChild(cell("row-head", "Monthly"));
-          grid.appendChild(priceInput("cm", true, p && p.current_monthly));
-          grid.appendChild(priceInput("nm", false, p && p.new_monthly));
-          row.appendChild(grid);
-
-          box.addEventListener("change", function () {
-            setOn(row, box.checked);
-            serialize();
-          });
-          grid.addEventListener("input", function () {
-            syncPlaceholders(row);
-            serialize();
-          });
-          setOn(row, box.checked);
-          syncPlaceholders(row);
-          rowsEl.appendChild(row);
-        });
-        serialize();
-      }
-
-      function load() {
-        var kv = keyValue();
-        if (kv === loadedFor && packages !== null) return;
-        // Prices typed for one site are not prices for another. A CHANGE of
-        // site clears them; the first load (and a draft resume, which arrives
-        // as a change from blank) keeps whatever the hidden input holds.
-        if (loadedFor && kv !== loadedFor) hidden.value = "";
-        loadedFor = kv;
-        packages = null;
-        if (!kv) {
-          message("Choose a site above to list its packages.");
-          return;
-        }
-        var mySeq = ++seq;
-        message("Loading packages…");
-        fetch("/forms/api/packages/" + encodeURIComponent(slug), {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ field_key: fieldKey, key_value: kv })
-        })
-          .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, body: j }; }); })
-          .then(function (res) {
-            if (mySeq !== seq) return; // a newer site was picked meanwhile
-            if (!res.ok || !res.body || !Array.isArray(res.body.packages)) {
-              loadedFor = "";
-              message("Couldn't load packages. Re-select the site to try again.");
-              return;
-            }
-            packages = res.body.packages;
-            render();
-          })
-          .catch(function () {
-            if (mySeq !== seq) return;
-            loadedFor = "";
-            message("Couldn't load packages. Re-select the site to try again.");
-          });
-      }
-
-      Array.prototype.forEach.call(keyEls(), function (el) {
-        el.addEventListener("change", load);
-        el.addEventListener("input", function () {
-          clearTimeout(debounce);
-          debounce = setTimeout(load, 400);
-        });
-      });
-      // A draft resume rewrites the hidden value and fires `change` on it;
-      // redraw so the restored ticks and prices appear.
-      hidden.addEventListener("change", function () {
-        if (packages) render();
-      });
-      load();
+      if (wrap.getAttribute("data-grid-multi") === "1") wireMultiSiteGrid(formEl, slug, wrap);
+      else wireSingleSiteGrid(formEl, slug, wrap);
     });
+  }
+
+  function fetchSitePackages(slug, fieldKey, keyValue) {
+    return fetch("/forms/api/packages/" + encodeURIComponent(slug), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ field_key: fieldKey, key_value: keyValue })
+    }).then(function (r) {
+      return r.json().then(function (j) {
+        if (!r.ok || !j || !Array.isArray(j.packages)) throw new Error("packages");
+        return j;
+      });
+    });
+  }
+
+  function gridMessage(container, text) {
+    container.innerHTML = "";
+    var p = document.createElement("p");
+    p.className = "price-grid-empty";
+    p.textContent = text;
+    container.appendChild(p);
+  }
+
+  function priceInput(code, isCurrent, value) {
+    var input = document.createElement("input");
+    input.type = "text";
+    input.inputMode = "decimal";
+    input.autocomplete = "off";
+    input.setAttribute("data-price", code);
+    input.setAttribute("pattern", "\\$?[0-9,]{1,9}(\\.[0-9]{1,2})?");
+    input.title = "A price, e.g. 24.99";
+    input.value = value || "";
+    if (isCurrent) input.placeholder = "0.00";
+    return input;
+  }
+
+  // The new-price box shows the current price as its placeholder: blank MEANS
+  // "same as current", and showing the number says so without retyping it.
+  function syncPlaceholders(row) {
+    [["cs", "ns"], ["cm", "nm"]].forEach(function (pair) {
+      var cur = row.querySelector('[data-price="' + pair[0] + '"]');
+      var next = row.querySelector('[data-price="' + pair[1] + '"]');
+      if (cur && next) next.placeholder = cur.value.trim() || "Same as current";
+    });
+  }
+
+  function setRowOn(row, on) {
+    row.classList.toggle("is-on", on);
+    var box = row.querySelector('input[type="checkbox"]');
+    if (box) box.checked = on;
+    var inputs = row.querySelectorAll('[data-price="cs"], [data-price="cm"]');
+    Array.prototype.forEach.call(inputs, function (el) { el.required = on; });
+  }
+
+  /** One tickable package row. `onChange` runs after any edit. */
+  function buildPriceRow(idPrefix, i, pkg, prior, onChange) {
+    var row = document.createElement("div");
+    row.className = "price-grid-row";
+    row.setAttribute("data-pkg", pkg);
+
+    var id = idPrefix + "_" + i;
+    var pick = document.createElement("label");
+    pick.className = "price-grid-pick";
+    pick.htmlFor = id;
+    var box = document.createElement("input");
+    box.type = "checkbox";
+    box.id = id;
+    var name = document.createElement("span");
+    // textContent: package names are data, not markup. Display label only;
+    // data-pkg keeps the code, which is what the server matches on.
+    name.textContent = packageLabel(pkg);
+    pick.appendChild(box);
+    pick.appendChild(name);
+    row.appendChild(pick);
+
+    var grid = document.createElement("div");
+    grid.className = "price-grid-prices";
+    var cell = function (cls, text) {
+      var d = document.createElement("div");
+      d.className = cls;
+      d.textContent = text;
+      return d;
+    };
+    grid.appendChild(cell("", ""));
+    grid.appendChild(cell("col-head", "Current price"));
+    grid.appendChild(cell("col-head", "New price"));
+    grid.appendChild(cell("row-head", "Single"));
+    grid.appendChild(priceInput("cs", true, prior && prior.current_single));
+    grid.appendChild(priceInput("ns", false, prior && prior.new_single));
+    grid.appendChild(cell("row-head", "Monthly"));
+    grid.appendChild(priceInput("cm", true, prior && prior.current_monthly));
+    grid.appendChild(priceInput("nm", false, prior && prior.new_monthly));
+    row.appendChild(grid);
+
+    box.addEventListener("change", function () {
+      setRowOn(row, box.checked);
+      onChange();
+    });
+    grid.addEventListener("input", function () {
+      syncPlaceholders(row);
+      onChange();
+    });
+    setRowOn(row, !!prior);
+    syncPlaceholders(row);
+    return row;
+  }
+
+  /** Ticked rows in a container, as typed. */
+  function readPriceRows(container) {
+    var out = [];
+    var rows = container.querySelectorAll(".price-grid-row.is-on");
+    Array.prototype.forEach.call(rows, function (row) {
+      var get = function (k) {
+        var el = row.querySelector('[data-price="' + k + '"]');
+        return el ? el.value.trim() : "";
+      };
+      out.push({
+        pkg: row.getAttribute("data-pkg"),
+        current_single: get("cs"),
+        current_monthly: get("cm"),
+        new_single: get("ns"),
+        new_monthly: get("nm")
+      });
+    });
+    return out;
+  }
+
+  function parseJsonArray(s) {
+    try {
+      var v = JSON.parse(s || "[]");
+      return Array.isArray(v) ? v : [];
+    } catch (e) {
+      return [];
+    }
+  }
+
+  // ---- single-site --------------------------------------------------------
+  function wireSingleSiteGrid(formEl, slug, wrap) {
+    var fieldKey = wrap.getAttribute("data-field-key");
+    var keyName = wrap.getAttribute("data-grid-key-field");
+    var hidden = wrap.querySelector('[data-grid-value="1"]');
+    var rowsEl = wrap.querySelector('[data-grid-rows="1"]');
+    if (!fieldKey || !keyName || !hidden || !rowsEl) return;
+
+    var packages = null; // null = not loaded for the current site
+    var loadedFor = "";
+    var seq = 0;
+    var debounce;
+
+    function keyEls() {
+      return formEl.querySelectorAll('[name="' + cssAttrEscape(keyName) + '"]');
+    }
+    function keyValue() {
+      var els = keyEls();
+      for (var i = 0; i < els.length; i++) {
+        var el = els[i];
+        if ((el.type === "radio" || el.type === "checkbox") && !el.checked) continue;
+        return (el.value || "").trim();
+      }
+      return "";
+    }
+    function serialize() {
+      var out = readPriceRows(rowsEl);
+      hidden.value = out.length ? JSON.stringify(out) : "";
+    }
+    function render() {
+      if (!packages || packages.length === 0) {
+        gridMessage(rowsEl, "No packages found for that site. Check the site number.");
+        serialize();
+        return;
+      }
+      var prior = {};
+      parseJsonArray(hidden.value).forEach(function (r) {
+        if (r && typeof r.pkg === "string") prior[r.pkg] = r;
+      });
+      rowsEl.innerHTML = "";
+      packages.forEach(function (pkg, i) {
+        rowsEl.appendChild(buildPriceRow(fieldKey + "__pkg", i, pkg, prior[pkg], serialize));
+      });
+      serialize();
+    }
+    function load() {
+      var kv = keyValue();
+      if (kv === loadedFor && packages !== null) return;
+      // Prices typed for one site are not prices for another. A CHANGE of
+      // site clears them; the first load (and a draft resume, which arrives
+      // as a change from blank) keeps whatever the hidden input holds.
+      if (loadedFor && kv !== loadedFor) hidden.value = "";
+      loadedFor = kv;
+      packages = null;
+      if (!kv) {
+        gridMessage(rowsEl, "Choose a site above to list its packages.");
+        return;
+      }
+      var mySeq = ++seq;
+      gridMessage(rowsEl, "Loading packages…");
+      fetchSitePackages(slug, fieldKey, kv)
+        .then(function (j) {
+          if (mySeq !== seq) return; // a newer site was picked meanwhile
+          packages = j.packages;
+          render();
+        })
+        .catch(function () {
+          if (mySeq !== seq) return;
+          loadedFor = "";
+          gridMessage(rowsEl, "Couldn't load packages. Re-select the site to try again.");
+        });
+    }
+
+    Array.prototype.forEach.call(keyEls(), function (el) {
+      el.addEventListener("change", load);
+      el.addEventListener("input", function () {
+        clearTimeout(debounce);
+        debounce = setTimeout(load, 400);
+      });
+    });
+    // A draft resume rewrites the hidden value and fires `change` on it;
+    // redraw so the restored ticks and prices appear.
+    hidden.addEventListener("change", function () {
+      if (packages) render();
+    });
+    load();
+  }
+
+  // ---- multi-site ---------------------------------------------------------
+  // Each added site is a section with its own rows, a Remove button, and --
+  // on every site after the first -- "Copy from {first site}", because a
+  // regional rollout is usually the same change everywhere. Copying fills
+  // ticks and all four prices; every box stays editable, and current prices
+  // in particular should be checked, since they differ by site.
+  function wireMultiSiteGrid(formEl, slug, wrap) {
+    var fieldKey = wrap.getAttribute("data-field-key");
+    var hidden = wrap.querySelector('[data-grid-value="1"]');
+    var sitesEl = wrap.querySelector('[data-grid-sites="1"]');
+    var addInput = wrap.querySelector("[data-grid-add-input]");
+    var addBtn = wrap.querySelector("[data-grid-add-btn]");
+    var addMsg = wrap.querySelector("[data-grid-add-msg]");
+    if (!fieldKey || !hidden || !sitesEl || !addInput || !addBtn || !addMsg) return;
+
+    var sections = []; // { site, siteName, label, el, rowsEl }
+    var restoring = false;
+
+    function serialize() {
+      if (restoring) return; // don't overwrite a draft while it is rebuilt
+      var out = sections.map(function (s) {
+        return { site: s.site, rows: readPriceRows(s.rowsEl) };
+      });
+      hidden.value = out.length ? JSON.stringify(out) : "";
+      // A Remove or Copy click fires no input event of its own, so autosave
+      // (which listens on the form) would miss it. Nudge it.
+      try { hidden.dispatchEvent(new Event("input", { bubbles: true })); } catch (_) {}
+    }
+
+    function refreshCopyButtons() {
+      sections.forEach(function (s, i) {
+        var btn = s.el.querySelector("[data-grid-copy]");
+        if (!btn) return;
+        btn.hidden = i === 0;
+        if (i > 0) btn.textContent = "Copy from " + sections[0].label;
+      });
+      if (sections.length === 0) gridMessage(sitesEl, "No sites added yet.");
+    }
+
+    function copyFromFirst(target) {
+      var first = sections[0];
+      if (!first || first === target) return;
+      var source = {};
+      readPriceRows(first.rowsEl).forEach(function (r) { source[r.pkg] = r; });
+      var rows = target.rowsEl.querySelectorAll(".price-grid-row");
+      var missing = 0;
+      Object.keys(source).forEach(function (pkg) {
+        var hit = false;
+        Array.prototype.forEach.call(rows, function (row) {
+          if (row.getAttribute("data-pkg") !== pkg) return;
+          hit = true;
+          var r = source[pkg];
+          [["cs", r.current_single], ["cm", r.current_monthly], ["ns", r.new_single], ["nm", r.new_monthly]]
+            .forEach(function (pair) {
+              var el = row.querySelector('[data-price="' + pair[0] + '"]');
+              if (el) el.value = pair[1];
+            });
+          setRowOn(row, true);
+          syncPlaceholders(row);
+        });
+        if (!hit) missing += 1;
+      });
+      var note = target.el.querySelector("[data-grid-copy-note]");
+      if (note) {
+        note.textContent = missing
+          ? missing + " package(s) from " + first.label + " aren't sold here and were skipped. Check the current prices for this site."
+          : "Copied. Check the current prices for this site.";
+      }
+      serialize();
+    }
+
+    function addSection(site, siteName, packages, priorRows) {
+      if (sections.length === 0) sitesEl.innerHTML = "";
+      var label = siteName ? siteName + " (" + site + ")" : site;
+      var el = document.createElement("div");
+      el.className = "price-grid-site";
+
+      var head = document.createElement("div");
+      head.className = "price-grid-site-head";
+      var title = document.createElement("strong");
+      title.textContent = label;
+      var copy = document.createElement("button");
+      copy.type = "button";
+      copy.className = "price-grid-link";
+      copy.setAttribute("data-grid-copy", "1");
+      var remove = document.createElement("button");
+      remove.type = "button";
+      remove.className = "price-grid-link";
+      remove.textContent = "Remove site";
+      head.appendChild(title);
+      head.appendChild(copy);
+      head.appendChild(remove);
+      el.appendChild(head);
+
+      var note = document.createElement("p");
+      note.className = "price-grid-hint";
+      note.setAttribute("data-grid-copy-note", "1");
+      el.appendChild(note);
+
+      var rowsEl = document.createElement("div");
+      el.appendChild(rowsEl);
+      var prior = {};
+      (priorRows || []).forEach(function (r) {
+        if (r && typeof r.pkg === "string") prior[r.pkg] = r;
+      });
+      packages.forEach(function (pkg, i) {
+        rowsEl.appendChild(
+          buildPriceRow(fieldKey + "__" + site + "_pkg", i, pkg, prior[pkg], serialize)
+        );
+      });
+
+      var section = { site: site, siteName: siteName, label: label, el: el, rowsEl: rowsEl };
+      copy.addEventListener("click", function () { copyFromFirst(section); });
+      remove.addEventListener("click", function () {
+        sections = sections.filter(function (s) { return s !== section; });
+        if (el.parentNode) el.parentNode.removeChild(el);
+        refreshCopyButtons();
+        serialize();
+      });
+      sections.push(section);
+      sitesEl.appendChild(el);
+      refreshCopyButtons();
+    }
+
+    function setAddMsg(text) {
+      addMsg.textContent = text || "";
+      addMsg.hidden = !text;
+    }
+
+    function addTyped() {
+      var typed = (addInput.value || "").trim();
+      if (!typed) return;
+      setAddMsg("Looking up site " + typed + "…");
+      addBtn.disabled = true;
+      fetchSitePackages(slug, fieldKey, typed)
+        .then(function (j) {
+          if (!j.packages.length || !j.site_name) {
+            setAddMsg("Site " + typed + " isn't a known site. Check the number.");
+            return;
+          }
+          var site = j.site || typed;
+          var dup = sections.some(function (s) { return s.site === site; });
+          if (dup) {
+            setAddMsg(j.site_name + " (" + site + ") is already added.");
+            return;
+          }
+          addSection(site, j.site_name, j.packages, null);
+          addInput.value = "";
+          setAddMsg("");
+          serialize();
+        })
+        .catch(function () {
+          setAddMsg("Couldn't look that site up. Please try again.");
+        })
+        .then(function () {
+          addBtn.disabled = false;
+        });
+    }
+
+    addBtn.addEventListener("click", addTyped);
+    addInput.addEventListener("keydown", function (e) {
+      // Enter would submit the whole form; here it means "add this site".
+      if (e.key === "Enter") {
+        e.preventDefault();
+        addTyped();
+      }
+    });
+
+    // Rebuild from the hidden value -- draft resume. Sites are looked up
+    // again because the package list lives on the server, not in the draft.
+    function rebuildFromHidden() {
+      if (restoring) return;
+      var saved = parseJsonArray(hidden.value).filter(function (s) {
+        return s && typeof s.site === "string" && s.site;
+      });
+      if (!saved.length) return;
+      restoring = true;
+      sections.forEach(function (s) { if (s.el.parentNode) s.el.parentNode.removeChild(s.el); });
+      sections = [];
+      gridMessage(sitesEl, "Restoring sites…");
+      var results = saved.map(function () { return null; });
+      Promise.all(
+        saved.map(function (s, i) {
+          return fetchSitePackages(slug, fieldKey, s.site).then(
+            function (j) { results[i] = j; },
+            function () { results[i] = null; }
+          );
+        })
+      ).then(function () {
+        sitesEl.innerHTML = "";
+        saved.forEach(function (s, i) {
+          var j = results[i];
+          // A site that no longer resolves is dropped rather than shown
+          // empty; the rest of the draft still comes back.
+          if (j && j.packages.length && j.site_name) {
+            addSection(j.site || s.site, j.site_name, j.packages, s.rows);
+          }
+        });
+        restoring = false;
+        refreshCopyButtons();
+        serialize();
+      });
+    }
+    hidden.addEventListener("change", rebuildFromHidden);
+
+    setAddMsg("");
+    if (hidden.value) rebuildFromHidden();
+    else refreshCopyButtons();
   }
 
   // Mirror of packageLabel in packages/forms-schema/src/package-price.ts --
   // this file cannot import it. "college_bubble_bath" -> "College Bubble Bath".
   function packageLabel(code) {
-    return String(code).split(/[_s]+/).filter(Boolean).map(function (w) {
+    return String(code).split(/[_\s]+/).filter(Boolean).map(function (w) {
       return w.charAt(0).toUpperCase() + w.slice(1);
     }).join(" ");
   }

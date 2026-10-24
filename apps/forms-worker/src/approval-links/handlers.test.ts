@@ -181,6 +181,8 @@ describe("GET /forms/approve/{token}", () => {
     expect(html).toContain("Ultimate");
     expect(html).toContain("$26.00");
     expect(html).toContain("(no change)");
+    // The same difference the PDF prints (shared priceDiff).
+    expect(html).toContain("+$2.00 (+8.3%)");
     // Neither open was a claim.
     expect(calls.some((c) => c.params.get("used_at") === "is.null")).toBe(false);
   });

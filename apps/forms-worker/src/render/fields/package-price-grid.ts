@@ -24,6 +24,29 @@ export function renderPackagePriceGrid(
   field: PackagePriceGridField,
   _ctx: RenderBodyArgs
 ): string {
+  if (field.multiSite) {
+    // Sites are added by number inside the grid; forms-public.js draws one
+    // section per site. The add box is a plain text input WITHOUT a name, so
+    // a half-typed site number is never submitted as an answer.
+    return `
+<fieldset class="field field-price-grid" data-field-key="${escapeHtml(field.key)}" data-field-type="package_price_grid"
+          data-grid-multi="1">
+  <legend class="field-label">${escapeHtml(field.label)}${field.required ? '<span class="field-required" aria-label="required">*</span>' : ""}</legend>
+  ${fieldHelp(field)}
+  <input type="hidden" name="${escapeHtml(field.key)}" value="" data-grid-value="1" />
+  <div class="price-grid-sites" data-grid-sites="1">
+    <p class="price-grid-empty">No sites added yet.</p>
+  </div>
+  <div class="price-grid-add">
+    <input type="text" inputmode="numeric" maxlength="3" autocomplete="off"
+           class="field-input" placeholder="Site # (e.g. 019)" aria-label="Site number to add"
+           data-grid-add-input="1" />
+    <button type="button" class="price-grid-add-btn" data-grid-add-btn="1">+ Add site</button>
+  </div>
+  <p class="price-grid-add-msg" data-grid-add-msg="1" hidden></p>
+  <p class="price-grid-hint">Add each site that is changing, then tick its packages. Leave a new price blank to keep it at the current price. "Copy from" fills a site from the first one; check its current prices afterwards.</p>
+</fieldset>`;
+  }
   return `
 <fieldset class="field field-price-grid" data-field-key="${escapeHtml(field.key)}" data-field-type="package_price_grid"
           data-grid-key-field="${escapeHtml(field.keyFieldKey)}">

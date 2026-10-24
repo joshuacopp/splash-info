@@ -16,7 +16,10 @@
 import { isOriginAllowed } from "@splash/http";
 import {
   isPackagePriceRows,
+  isPackagePriceSites,
   packageLabel,
+  priceDiff,
+  siteLabel,
   type Field,
   type FormMeta,
   type FormSchema,
@@ -405,7 +408,14 @@ function actionOption(t: WorkflowTransition, i: number): string {
 function answerRow(field: Field, value: unknown): string {
   if (value == null || value === "" || (Array.isArray(value) && value.length === 0)) return "";
   let html: string;
-  if (isPackagePriceRows(value)) {
+  if (isPackagePriceSites(value)) {
+    html = value
+      .map(
+        (s) =>
+          `<p class="ap-site">${escapeHtml(siteLabel(s))}</p>${priceTable(s.rows)}`
+      )
+      .join("");
+  } else if (isPackagePriceRows(value)) {
     html = priceTable(value);
   } else if (field.type === "file" || field.type === "signature") {
     // Uploads are served from the admin-gated file route, which a link holder
@@ -418,10 +428,16 @@ function answerRow(field: Field, value: unknown): string {
 }
 
 function priceTable(rows: PackagePriceRow[]): string {
-  const cell = (cur: string, next: string) =>
-    cur === next
-      ? `<span class="ap-muted">$${escapeHtml(cur)} (no change)</span>`
-      : `<span class="ap-muted">$${escapeHtml(cur)}</span> &rarr; <strong>$${escapeHtml(next)}</strong>`;
+  // Same difference text as the PDF (priceDiff), so what Dan approves on
+  // screen is exactly what the signed PDF says.
+  const cell = (cur: string, next: string) => {
+    if (cur === next) return `<span class="ap-muted">$${escapeHtml(cur)} (no change)</span>`;
+    const d = priceDiff(cur, next);
+    return (
+      `<span class="ap-muted">$${escapeHtml(cur)}</span> &rarr; <strong>$${escapeHtml(next)}</strong>` +
+      `<br><span class="ap-diff ap-diff-${d.direction}">${escapeHtml(d.text)}</span>`
+    );
+  };
   return `<table class="ap-prices">
     <thead><tr><th>Package</th><th>Single</th><th>Monthly</th></tr></thead>
     <tbody>${rows
@@ -458,6 +474,11 @@ const PAGE_CSS = `
   .ap-prices th { text-align: left; font-size: 12px; text-transform: uppercase; color: #666; padding: 0 12px 4px 0; }
   .ap-prices td { padding: 6px 12px 6px 0; border-top: 1px solid #eef1f5; vertical-align: top; }
   .ap-muted { color: #666; }
+  .ap-diff { font-size: 12px; font-weight: 700; }
+  .ap-diff-up { color: #047857; }
+  .ap-diff-down { color: #b91c1c; }
+  .ap-site { margin: 14px 0 4px; font-weight: 700; color: var(--splash-navy); }
+  .ap-site:first-child { margin-top: 0; }
   .ap-hint { color: #666; font-size: 13px; }
   .ap-error { background: #fdecea; border: 1px solid #f5c6cb; color: #8a1c1c; border-radius: 6px; padding: 12px 14px; margin-bottom: 20px; }
   .ap-sig { display: block; width: 100%; max-width: 600px; height: 180px; border: 1px solid #ccc; border-radius: 4px; background: #fff; touch-action: none; }

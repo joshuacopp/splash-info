@@ -320,6 +320,13 @@ export interface PackagePriceGridField extends FieldBase {
   /** How to read that field's value: a 3-digit site number
    *  (`pricing_simple.site`) or a location slug (`pricing_simple.location_code`). */
   keyColumn: LookupKeyColumn;
+  /**
+   * The grid collects its OWN sites ("+ Add site", by 3-digit site number)
+   * instead of reading one from another field; payload becomes
+   * PackagePriceSite[]. `keyFieldKey` / `keyColumn` are ignored. Lets one
+   * request -- and one approval -- cover a regional rollout.
+   */
+  multiSite?: boolean;
 }
 
 // -----------------------------------------------------------------------------

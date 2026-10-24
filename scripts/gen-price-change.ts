@@ -1,6 +1,7 @@
 // Generator for the "Price change approval" form (slug: price-change).
 //
-// WHAT IT IS FOR. Marketing requests a package price change at one site; Dan
+// WHAT IT IS FOR. Marketing requests a package price change at one or more
+// sites in a single request; Dan
 // Petrelle approves (with a signature) or denies (with a note); the requester
 // is emailed the result either way.
 //
@@ -10,11 +11,17 @@
 // are typed by the requester, because that table is not always current after
 // a change.
 //
-// THE SITE FIELD IS KEYED `site_number` ON PURPOSE. Publishing an internal
-// form designates that key as the form's location scope (admin/forms.ts
-// handlePublish) and the submit path then rejects any site number that is not
-// a real location -- exactly right here. Any other key would make the first
-// publish APPEND a second, duplicate "Site number" field.
+// MULTI-SITE, ONE DECISION. The grid collects its own sites (multiSite), so a
+// regional rollout is one request and one signature. All or nothing: Dan
+// approves or denies the whole request (operator decision, 2026-10-24).
+//
+// SITE STAFF CANNOT SEE THESE REQUESTS, on purpose -- they are not part of the
+// process. There is no `site_number` field any more, so submissions are not
+// location-scoped: only admins and the workflow's own people (requester,
+// approver) see them. The forms row keeps scope_location_field_key =
+// 'site_number' from the single-site version; LEAVE IT. Clearing it to NULL
+// would make the next publish re-inject a site_number field (admin/forms.ts
+// handlePublish) and put requests back in front of location admins.
 //
 // DAN NEEDS NO LOGIN. His email carries {approval.link}, a no-sign-in link
 // bound to this submission at the "dan_review" stage (approval-links/). He can
@@ -25,7 +32,9 @@ import { createHash } from "node:crypto";
 import type { Field, FormSchema, FormWorkflow } from "@splash/forms-schema";
 import { formSchemaSchema, draftFormSchemaSchema } from "@splash/forms-schema";
 
-const APPROVER = "dpetrelle@splashcarwashes.com";
+// Overridable for testing: APPROVER=me@example.com npx tsx ... so a test run
+// never emails the real approver. The committed SQL is generated without it.
+const APPROVER = process.env.APPROVER || "dpetrelle@splashcarwashes.com";
 
 const fields: Field[] = [];
 const push = (f: Field) => fields.push(f);
@@ -36,41 +45,18 @@ function idFor(key: string): string {
 }
 
 push({
-  key: "site_number",
-  id: idFor("site_number"),
-  type: "short_text",
-  label: "Site number",
-  required: true,
-  maxLength: 3,
-  helpText: "The 3-digit site number, e.g. 019.",
-  show_in_queue: true
-} as Field);
-
-push({
-  key: "site_name",
-  id: idFor("site_name"),
-  type: "lookup",
-  label: "Site",
-  required: true,
-  keyFieldId: idFor("site_number"),
-  keyColumn: "pricing_simple.site",
-  sourceTable: "pricing_simple",
-  sourceColumn: "location_pretty",
-  resolutionMode: "prefill_visible",
-  nullBehavior: "block_submit",
-  show_in_queue: true
-} as Field);
-
-push({
   key: "packages",
   id: idFor("packages"),
   type: "package_price_grid",
-  label: "Packages affected",
+  label: "Sites and packages",
   required: true,
-  keyFieldKey: "site_number",
+  multiSite: true,
+  keyFieldKey: "",
   keyColumn: "pricing_simple.site",
+  // The site list is what tells one queued request from another.
+  show_in_queue: true,
   helpText:
-    "Enter the current single and monthly price as they are today. Leave a new price blank if it isn't changing."
+    "Add each site by its 3-digit number, then tick the packages changing there. Enter current prices as they are today; leave a new price blank if it isn't changing."
 } as Field);
 
 push({
@@ -97,9 +83,9 @@ const workflow: FormWorkflow = {
       label: "Email Dan",
       kind: "email",
       recipients: [{ type: "static_emails", emails: [APPROVER] }],
-      subject_template: "Price change approval needed: {field.site_name} ({field.site_number})",
+      subject_template: "Price change approval needed: {field.packages.sites}",
       body_template: [
-        "{submitter.email} has requested a price change at {field.site_name} (site {field.site_number}).",
+        "{submitter.email} has requested a price change at {field.packages.sites}.",
         "{payload.summary}",
         "{approval.link}",
         "The link works without signing in and expires in 7 days. Approving needs your signature; denying needs a short note."
@@ -122,9 +108,9 @@ const workflow: FormWorkflow = {
       kind: "email",
       recipients: toSubmitter,
       attach_pdf: true,
-      subject_template: "Approved: price change at {field.site_name} ({field.site_number})",
+      subject_template: "Approved: price change at {field.packages.sites}",
       body_template: [
-        "Your price change request for {field.site_name} (site {field.site_number}) was {outcome.label} by {decision.by}.",
+        "Your price change request for {field.packages.sites} was {outcome.label} by {decision.by}.",
         "{payload.summary}",
         "The signed approval is attached. Prices have not been changed yet; this records the approval only.",
         "{submission.url}"
@@ -137,9 +123,9 @@ const workflow: FormWorkflow = {
       kind: "email",
       recipients: toSubmitter,
       attach_pdf: true,
-      subject_template: "Denied: price change at {field.site_name} ({field.site_number})",
+      subject_template: "Denied: price change at {field.packages.sites}",
       body_template: [
-        "Your price change request for {field.site_name} (site {field.site_number}) was {outcome.label} by {decision.by}.",
+        "Your price change request for {field.packages.sites} was {outcome.label} by {decision.by}.",
         "Reason: {decision.note}",
         "{payload.summary}",
         "{submission.url}"

@@ -200,8 +200,11 @@ export const lookupFieldSchema = z.object({
 export const packagePriceGridFieldSchema = z.object({
   ...fieldBaseSchema,
   type: z.literal("package_price_grid"),
-  keyFieldKey: z.string().min(1),
-  keyColumn: z.enum(["pricing_simple.location_code", "pricing_simple.site"])
+  // Required only for single-site grids; enforced in formSchemaSchema's
+  // superRefine, which can see multiSite.
+  keyFieldKey: z.string(),
+  keyColumn: z.enum(["pricing_simple.location_code", "pricing_simple.site"]),
+  multiSite: z.boolean().optional()
 });
 
 // -----------------------------------------------------------------------------
@@ -400,6 +403,7 @@ export const formSchemaSchema = z
     for (let i = 0; i < data.fields.length; i++) {
       const f = data.fields[i];
       if (!f || f.type !== "package_price_grid") continue;
+      if (f.multiSite) continue; // collects its own sites
       if (!visibilityKeys.has(f.keyFieldKey) || f.keyFieldKey === f.key) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
@@ -740,7 +744,8 @@ const packagePriceGridFieldSchemaDraft = z.object({
   type: z.literal("package_price_grid"),
   // Empty until the operator picks which field names the site.
   keyFieldKey: z.string(),
-  keyColumn: z.enum(["pricing_simple.location_code", "pricing_simple.site"])
+  keyColumn: z.enum(["pricing_simple.location_code", "pricing_simple.site"]),
+  multiSite: z.boolean().optional()
 });
 
 export const fieldSchemaDraft = z.discriminatedUnion("type", [

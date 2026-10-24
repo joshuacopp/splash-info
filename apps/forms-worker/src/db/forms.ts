@@ -504,12 +504,27 @@ export async function listPackagesForSite(
   keyColumn: "pricing_simple.location_code" | "pricing_simple.site",
   keyValue: string
 ): Promise<string[] | null> {
+  const r = await readSitePackages(env, keyColumn, keyValue);
+  return r ? r.packages : null;
+}
+
+/**
+ * The same read, plus the site's display name -- for multi-site grids, where
+ * each added site is shown and stored as "Binghamton (122)". `siteName` is
+ * null when the site has no pricing_simple rows (an unknown site number).
+ * Returns null only when the read FAILED.
+ */
+export async function readSitePackages(
+  env: SupabaseEnv,
+  keyColumn: "pricing_simple.location_code" | "pricing_simple.site",
+  keyValue: string
+): Promise<{ packages: string[]; siteName: string | null; site: string } | null> {
   const column = keyColumn === "pricing_simple.site" ? "site" : "location_code";
   const value =
     column === "site" ? normalizeSiteKey(keyValue) : keyValue.trim().toLowerCase();
-  if (!value) return [];
+  if (!value) return { packages: [], siteName: null, site: "" };
   const url = new URL("/rest/v1/pricing_simple", env.SUPABASE_URL);
-  url.searchParams.set("select", "pkg,sort");
+  url.searchParams.set("select", "pkg,sort,location_pretty,site");
   url.searchParams.set(column, `eq.${value}`);
   url.searchParams.set("order", "sort.asc,pkg.asc");
   url.searchParams.set("limit", "100");
@@ -518,19 +533,28 @@ export async function listPackagesForSite(
   try {
     response = await fetch(url.toString(), { headers: headers(env) });
   } catch (err) {
-    console.error("[forms] listPackagesForSite: fetch threw", err);
+    console.error("[forms] readSitePackages: fetch threw", err);
     return null;
   }
   if (!response.ok) {
-    console.error("[forms] listPackagesForSite: returned", response.status);
+    console.error("[forms] readSitePackages: returned", response.status);
     return null;
   }
-  const rows = (await response.json().catch(() => [])) as Array<{ pkg: string | null }>;
+  const rows = (await response.json().catch(() => [])) as Array<{
+    pkg: string | null;
+    location_pretty: string | null;
+    site: string | null;
+  }>;
   const out: string[] = [];
   for (const r of rows) {
     if (typeof r.pkg === "string" && r.pkg.trim() && !out.includes(r.pkg)) out.push(r.pkg);
   }
-  return out;
+  const first = rows[0];
+  return {
+    packages: out,
+    siteName: first?.location_pretty?.trim() || null,
+    site: first?.site ?? (column === "site" ? value : "")
+  };
 }
 
 /** Outcome of resolving a submission's scope field to a location_code. */

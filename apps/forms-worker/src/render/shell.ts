@@ -185,6 +185,17 @@ const SHELL_CSS = `
   .price-grid-prices .row-head { font-size: 14px; color: var(--splash-navy); }
   .price-grid-prices input { width: 100%; padding: 8px 10px; border: 1px solid #ccc; border-radius: 4px; font-size: 16px; }
   .price-grid-prices input::placeholder { color: #9aa3ad; }
+  /* Multi-site: one bordered section per site, the add box beneath them. */
+  .price-grid-site { border: 1px solid #dfe5ee; border-radius: 8px; padding: 10px 12px; margin-bottom: 12px; background: var(--splash-gray-light); }
+  .price-grid-site-head { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 16px; margin-bottom: 4px; }
+  .price-grid-site-head strong { color: var(--splash-navy); font-size: 17px; margin-right: auto; }
+  .price-grid-link { background: none; border: 0; padding: 4px 0; color: var(--splash-blue); font-size: 14px; cursor: pointer; text-decoration: underline; }
+  .price-grid-site .price-grid-hint:empty { display: none; }
+  .price-grid-add { display: flex; gap: 8px; align-items: stretch; max-width: 360px; }
+  .price-grid-add .field-input { flex: 1; }
+  .price-grid-add-btn { white-space: nowrap; background: var(--splash-navy); color: #fff; border: 0; border-radius: 4px; padding: 0 16px; font-size: 15px; cursor: pointer; }
+  .price-grid-add-btn[disabled] { opacity: 0.6; cursor: wait; }
+  .price-grid-add-msg { font-size: 13px; color: #8a1c1c; margin: 6px 0 0; }
   /* Action item tick. Deliberately set apart from the answer above it -- it is
      a different question ("does this need follow-up?") from the one the field
      asks, and reading as part of the answer would get it ticked by accident. */

@@ -31,6 +31,19 @@ export default function PackagePriceGridInspector({
       />
       <LabeledInput label="Help text" value={f.helpText ?? ""} onChange={(v) => onUpdate({ helpText: v || undefined } as Partial<Field>)} />
 
+      <LabeledCheckbox
+        label="Multiple sites"
+        checked={!!f.multiSite}
+        onChange={(v) => onUpdate({ multiSite: v || undefined } as Partial<Field>)}
+      />
+      <p className="-mt-1 text-xs text-splash-navy/60">
+        The submitter adds each site by number inside the grid, so one request
+        (and one approval) covers a regional change. No separate site field is
+        needed.
+      </p>
+
+      {!f.multiSite && (
+      <>
       <LabeledSelect
         label="Site field"
         value={f.keyFieldKey}
@@ -62,6 +75,8 @@ export default function PackagePriceGridInspector({
           { value: "pricing_simple.location_code", label: "A location (dropdown slug)" }
         ]}
       />
+      </>
+      )}
     </div>
   );
 }

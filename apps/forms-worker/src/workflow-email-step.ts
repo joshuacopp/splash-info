@@ -37,8 +37,9 @@ import type {
 } from "@splash/forms-schema";
 import {
   flaggedFieldKeys,
-  formatPackagePriceRows,
-  isPackagePriceRows
+  formatPriceGridValue,
+  isPriceGridValue,
+  priceGridSitesSummary
 } from "@splash/forms-schema";
 import {
   enqueueOutboundEmail,
@@ -545,6 +546,7 @@ function normaliseSubmitterEmailSource(
  *   {payload.summary}       — multi-line "key: value" rendering of every
  *                              non-empty payload field
  *   {field.<key>}           — value of the payload field with that key
+ *   {field.<grid>.sites}    — a multi-site price grid's sites, comma-joined
  *
  * Brief 127 — template syntax is intentionally simple. No conditionals,
  * no markdown — just placeholder substitution. Operators can write raw
@@ -590,6 +592,12 @@ export function renderTemplate(
         return renderPayloadSummary(payload, fields);
       case "parts.needed":
         return renderPartsNeeded(runtime.partsNeeded, fields, runtime.safetyDocs);
+    }
+    // {field.<grid>.sites} -- "Binghamton (122), Vestal (127)" for a
+    // multi-site price grid. Checked before the general field lookup, which
+    // would treat "packages.sites" as a key that does not exist.
+    if (token.startsWith("field.") && token.endsWith(".sites")) {
+      return priceGridSitesSummary(payload[token.slice("field.".length, -".sites".length)]);
     }
     if (token.startsWith("field.")) {
       const key = token.slice("field.".length);
@@ -734,6 +742,11 @@ function renderTokenHtml(
       return renderPayloadSummaryHtml(payload, fields);
     case "parts.needed":
       return renderPartsNeededHtml(runtime.partsNeeded, fields, runtime.safetyDocs);
+  }
+  if (token.startsWith("field.") && token.endsWith(".sites")) {
+    return escapeHtml(
+      priceGridSitesSummary(payload[token.slice("field.".length, -".sites".length)])
+    );
   }
   if (token.startsWith("field.")) {
     const key = token.slice("field.".length);
@@ -1226,7 +1239,7 @@ function renderPayloadSummary(
  */
 export function resolveDisplayValue(field: Field | undefined, value: unknown): string {
   if (value == null || value === "") return "";
-  if (isPackagePriceRows(value)) return formatPackagePriceRows(value);
+  if (isPriceGridValue(value)) return formatPriceGridValue(value);
   // radio stores a dropdown-shaped payload; without it here, emails printed
   // radio option CODES ("option_2") where every other surface shows labels.
   if (field && (field.type === "dropdown" || field.type === "radio")) {
