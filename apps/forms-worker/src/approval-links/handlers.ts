@@ -293,11 +293,37 @@ export async function handleApprovalLinkSubmit(
     return htmlResponse(500, renderDecisionPage(check, token, "We couldn't record your decision. Please try again."));
   }
 
+  // Say what HAPPENED ("Request denied"), not which button was pressed
+  // ("Recorded: Deny"). The outcome's own label is the operator's word for it.
+  const outcome = outcomeLabelAfter(submission.version.schema, to);
   return messagePage(
     200,
-    `Recorded: ${transition.label}`,
+    outcome ? `Request ${outcome.toLowerCase()}` : "Decision recorded",
     "Thanks. The person who submitted the request will be emailed the result. You can close this page."
   );
+}
+
+/**
+ * The outcome a transition ends at: follow its destination through any email
+ * steps (which auto-advance) to the first stage nobody acts on. Null when the
+ * path ends somewhere else -- e.g. another approval step -- so the caller
+ * falls back to neutral wording rather than announcing a result that isn't
+ * final yet.
+ */
+function outcomeLabelAfter(schema: FormSchema, stageId: string): string | null {
+  const stages = schema.workflow?.stages ?? [];
+  let id: string | undefined = stageId;
+  for (let hop = 0; hop < 10 && id; hop++) {
+    const stage = stages.find((s) => s.id === id);
+    if (!stage) return null;
+    if (stage.kind === "email") {
+      id = stage.transitions[0]?.to;
+      continue;
+    }
+    const terminal = !stage.approver_source && stage.transitions.length === 0;
+    return terminal ? stage.label || stage.id : null;
+  }
+  return null;
 }
 
 // =============================================================================

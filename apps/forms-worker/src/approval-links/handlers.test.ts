@@ -238,7 +238,8 @@ describe("POST /forms/approve/{token}", () => {
       ctx
     );
     expect(res.status).toBe(200);
-    expect(await res.text()).toContain("Recorded: Approve");
+    // The result, not the button: "Request approved", never "Recorded: Approve".
+    expect(await res.text()).toContain("Request approved");
 
     const write = calls.find((c) => c.method === "PATCH" && c.path === "/rest/v1/form_submissions");
     expect(write).toBeDefined();
@@ -268,6 +269,7 @@ describe("POST /forms/approve/{token}", () => {
       ctx
     );
     expect(res.status).toBe(200);
+    expect(await res.text()).toContain("Request denied");
     const write = calls.find((c) => c.method === "PATCH" && c.path === "/rest/v1/form_submissions");
     const body = write!.body as { workflow_history: Array<Record<string, unknown>> };
     expect(body.workflow_history.at(-1)!.note).toBe("Too soon after the last increase");
