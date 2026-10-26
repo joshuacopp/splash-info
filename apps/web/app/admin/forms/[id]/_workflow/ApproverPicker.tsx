@@ -187,6 +187,17 @@ function sourceToAutoKey(
 const SPECIFIC_KEY = "__specific__";
 const MULTIPLE_KEY = "__multiple__";
 const UNSET_KEY = "__unset__";
+const SUBMITTER_KEY = "__submitter__";
+
+/**
+ * The person who filled the form in. Not a form field -- the worker resolves
+ * this synthetic key from form_submissions.submitter_email
+ * (normaliseSubmitterEmailSource in workflow-email-step.ts) -- which is why it
+ * needs its own option: matched only against fields, it rendered as "Saved
+ * recipient no longer matches a form field" on every "email the submitter"
+ * step, including the ones the Quick patterns create.
+ */
+const SUBMITTER_FIELD_KEY = "submitter.email";
 
 export default function ApproverPicker({
   source,
@@ -234,7 +245,9 @@ export default function ApproverPicker({
   // <select> value, not the picker's contextual wording.
   let derivedMode: string;
   if (autoKey) derivedMode = autoKey;
-  else if (source?.type === "static_emails") {
+  else if (source?.type === "payload_field" && source.field_key === SUBMITTER_FIELD_KEY) {
+    derivedMode = SUBMITTER_KEY;
+  } else if (source?.type === "static_emails") {
     derivedMode = source.emails.length > 1 ? MULTIPLE_KEY : SPECIFIC_KEY;
   } else if (!source) {
     derivedMode = UNSET_KEY;
@@ -294,6 +307,11 @@ export default function ApproverPicker({
       onChange({ type: "static_emails", emails: existing });
       return;
     }
+    if (value === SUBMITTER_KEY) {
+      setModeOverride(null);
+      onChange({ type: "payload_field", field_key: SUBMITTER_FIELD_KEY });
+      return;
+    }
     const opt = options.find((o) => o.key === value);
     if (!opt) return;
     // A field-backed option: the data decides the mode from here on.
@@ -338,6 +356,14 @@ export default function ApproverPicker({
           className="mt-1 w-full rounded-splash-sm border border-gray-light bg-white px-2 py-2 text-sm font-normal text-splash-navy"
         >
           <option value={UNSET_KEY}>{unsetLabel}</option>
+          {/* Offered on email steps, where "send the result to whoever asked"
+              is the common case. Also shown anywhere it is already saved, so a
+              stored value is never displayed as a broken one. */}
+          {(isRecipient || selectMode === SUBMITTER_KEY) && (
+            <optgroup label="Person who submitted">
+              <option value={SUBMITTER_KEY}>Form submitter (the person who filled it in)</option>
+            </optgroup>
+          )}
           {options.length > 0 && (
             <optgroup label="From your form">
               {options.map((o) => (
