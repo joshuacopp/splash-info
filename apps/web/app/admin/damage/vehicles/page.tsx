@@ -17,11 +17,8 @@ import Link from "next/link";
 import {
   MAX_YOUTUBE_LINKS,
   VEHICLE_ISSUE_TYPES,
-  formatVehicleYears,
   parseYouTubeUrl,
   youTubeEmbedUrl,
-  vehicleIssueTypeLabel,
-  type VehicleIssue,
   type VehicleIssuesResponse
 } from "@splash/types/vehicle-guide";
 import { damageGetJsonOrStatus } from "../_lib/worker-fetch";
@@ -31,8 +28,8 @@ import { SaveCarCountButton as SaveButton } from "../car-counts/_components/Save
 import { ConfirmDeleteButton } from "./_components/ConfirmDeleteButton";
 import { MediaUploader } from "./_components/MediaUploader";
 import { PublicLinkCard } from "./_components/PublicLinkCard";
+import { VehicleList } from "./_components/VehicleList";
 import {
-  deleteVehicleIssueAction,
   deleteVehicleMediaAction,
   saveVehicleIssueAction
 } from "./actions";
@@ -53,13 +50,6 @@ const SUCCESS_COPY: Record<string, string> = {
   saved: "Entry saved.",
   deleted: "Entry deleted.",
   media_deleted: "File removed."
-};
-
-const TYPE_PILL: Record<string, string> = {
-  neutral: "bg-sudsy-blue-soft text-splash-navy",
-  park: "bg-amber-100 text-amber-900",
-  safety: "bg-splash-deny/10 text-splash-deny",
-  other: "bg-splash-navy/10 text-splash-navy/80"
 };
 
 const LABEL_CLS = "text-xs font-semibold uppercase tracking-wider text-splash-navy/70";
@@ -102,17 +92,8 @@ export default async function VehicleGuideAdminPage({ searchParams }: PageProps)
   const { issues, can_edit: canEdit, public_path: publicPath } = res.data;
   const editing = editId ? issues.find((i) => i.id === editId) ?? null : null;
 
-  // Group by make, then model. The worker stores one spelling per make/model
-  // (it reuses whatever is on file), so plain string keys are safe here.
-  const byMake = new Map<string, Map<string, VehicleIssue[]>>();
-  for (const i of issues) {
-    const models = byMake.get(i.make) ?? new Map<string, VehicleIssue[]>();
-    const list = models.get(i.model) ?? [];
-    list.push(i);
-    models.set(i.model, list);
-    byMake.set(i.make, models);
-  }
-  const makes = Array.from(byMake.keys()).sort((a, b) => a.localeCompare(b));
+  // For the make / model datalists on the form.
+  const makes = Array.from(new Set(issues.map((i) => i.make))).sort((a, b) => a.localeCompare(b));
   const allModels = Array.from(new Set(issues.map((i) => i.model))).sort((a, b) => a.localeCompare(b));
 
   return (
@@ -355,75 +336,7 @@ export default async function VehicleGuideAdminPage({ searchParams }: PageProps)
         </p>
       )}
 
-      {issues.length === 0 ? (
-        <div className={CARD_CLS}>
-          <p className="text-splash-navy/80">No vehicles yet.{canEdit ? " Add the first one above." : ""}</p>
-        </div>
-      ) : (
-        <div className="flex flex-col gap-5">
-          {makes.map((make) => {
-            const models = byMake.get(make)!;
-            return (
-              <section key={make} className={CARD_CLS}>
-                <h2 className="mb-3 text-lg font-bold text-splash-navy">{make}</h2>
-                <div className="flex flex-col divide-y divide-gray-light">
-                  {Array.from(models.keys())
-                    .sort((a, b) => a.localeCompare(b))
-                    .flatMap((model) =>
-                      models.get(model)!.map((i) => (
-                        <div key={i.id} className="flex flex-col gap-2 py-3 sm:flex-row sm:items-start sm:gap-4">
-                          <div className="sm:w-48 sm:flex-none">
-                            <div className="font-bold text-splash-navy">{model}</div>
-                            <div className="text-sm text-splash-navy/70">
-                              {formatVehicleYears(i.year_from, i.year_to)}
-                            </div>
-                            <span
-                              className={`mt-1 inline-block rounded-full px-2 py-0.5 text-[11px] font-bold ${TYPE_PILL[i.issue_type] ?? TYPE_PILL.other}`}
-                            >
-                              {vehicleIssueTypeLabel(i.issue_type)}
-                            </span>
-                          </div>
-                          <div className="min-w-0 flex-1 text-sm">
-                            <p className="whitespace-pre-wrap text-splash-navy">{i.issue}</p>
-                            <p className="mt-1.5 whitespace-pre-wrap border-l-4 border-splash-success/60 pl-3 text-splash-navy/80">
-                              {i.solution}
-                            </p>
-                            <p className="mt-1.5 text-xs text-splash-navy/50">
-                              {i.media.length
-                                ? `${i.media.length} photo${i.media.length === 1 ? "" : "s"}/video${i.media.length === 1 ? "" : "s"} · `
-                                : ""}
-                              {i.youtube_links.length
-                                ? `${i.youtube_links.length} YouTube link${i.youtube_links.length === 1 ? "" : "s"} · `
-                                : ""}
-                              Updated {i.updated_at.slice(0, 10)}
-                              {i.updated_by ? ` by ${i.updated_by}` : ""}
-                            </p>
-                          </div>
-                          {canEdit ? (
-                            <div className="flex flex-none items-center gap-2">
-                              <Link
-                                href={`${LIST_PATH}?edit=${i.id}#editor`}
-                                className="rounded-splash-sm border border-splash-blue/40 px-2.5 py-1 text-[11px] font-bold uppercase tracking-wide text-splash-blue hover:bg-splash-blue/5"
-                              >
-                                Edit
-                              </Link>
-                              <RedirectForm action={deleteVehicleIssueAction}>
-                                <input type="hidden" name="id" value={i.id} />
-                                <ConfirmDeleteButton
-                                  confirmText={`Delete ${i.make} ${i.model} (${formatVehicleYears(i.year_from, i.year_to)}) and its photos and videos? This can't be undone.`}
-                                />
-                              </RedirectForm>
-                            </div>
-                          ) : null}
-                        </div>
-                      ))
-                    )}
-                </div>
-              </section>
-            );
-          })}
-        </div>
-      )}
+      <VehicleList issues={issues} canEdit={canEdit} />
     </Shell>
   );
 }
