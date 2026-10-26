@@ -15,8 +15,11 @@
 
 import Link from "next/link";
 import {
+  MAX_YOUTUBE_LINKS,
   VEHICLE_ISSUE_TYPES,
   formatVehicleYears,
+  parseYouTubeUrl,
+  youTubeEmbedUrl,
   vehicleIssueTypeLabel,
   type VehicleIssue,
   type VehicleIssuesResponse
@@ -244,6 +247,21 @@ export default async function VehicleGuideAdminPage({ searchParams }: PageProps)
                   className={INPUT_CLS}
                 />
               </label>
+              <label className="flex flex-col gap-1 sm:col-span-2 lg:col-span-4">
+                <span className={LABEL_CLS}>YouTube videos</span>
+                <textarea
+                  name="youtube_links"
+                  rows={2}
+                  defaultValue={editing?.youtube_links.join("\n") ?? ""}
+                  placeholder={"https://youtu.be/…  (one link per line)"}
+                  className={INPUT_CLS}
+                />
+                <span className="text-xs text-splash-navy/60">
+                  Optional, up to {MAX_YOUTUBE_LINKS}. Paste the link from the video&rsquo;s Share
+                  button; it plays right on the staff page. A start time in the link (&amp;t=90s)
+                  is kept.
+                </span>
+              </label>
             </div>
             <datalist id="vg-makes">
               {makes.map((m) => (
@@ -259,6 +277,31 @@ export default async function VehicleGuideAdminPage({ searchParams }: PageProps)
               <SaveButton>{editing ? "Save changes" : "Add vehicle"}</SaveButton>
             </div>
           </RedirectForm>
+
+          {editing && editing.youtube_links.length ? (
+            <div className="mt-6 border-t border-gray-light pt-5">
+              <h3 className="mb-3 text-sm font-bold uppercase tracking-wider text-splash-navy/70">
+                YouTube preview
+              </h3>
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                {editing.youtube_links.map((u) => {
+                  const ref = parseYouTubeUrl(u);
+                  return ref ? (
+                    <iframe
+                      key={u}
+                      src={youTubeEmbedUrl(ref)}
+                      title={`Video: ${editing.make} ${editing.model}`}
+                      loading="lazy"
+                      referrerPolicy="strict-origin-when-cross-origin"
+                      allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+                      allowFullScreen
+                      className="aspect-video w-full rounded-splash-sm bg-black"
+                    />
+                  ) : null;
+                })}
+              </div>
+            </div>
+          ) : null}
 
           {editing ? (
             <div id="media" className="mt-6 border-t border-gray-light pt-5">
@@ -348,6 +391,9 @@ export default async function VehicleGuideAdminPage({ searchParams }: PageProps)
                             <p className="mt-1.5 text-xs text-splash-navy/50">
                               {i.media.length
                                 ? `${i.media.length} photo${i.media.length === 1 ? "" : "s"}/video${i.media.length === 1 ? "" : "s"} · `
+                                : ""}
+                              {i.youtube_links.length
+                                ? `${i.youtube_links.length} YouTube link${i.youtube_links.length === 1 ? "" : "s"} · `
                                 : ""}
                               Updated {i.updated_at.slice(0, 10)}
                               {i.updated_by ? ` by ${i.updated_by}` : ""}

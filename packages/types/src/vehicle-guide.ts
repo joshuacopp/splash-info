@@ -48,6 +48,9 @@ export interface VehicleIssue {
   issue_type: VehicleIssueType;
   issue: string;
   solution: string;
+  /** Canonical YouTube watch URLs (see parseYouTubeUrl), in display order.
+   *  Empty when none. Stored as a JSON array in vehicle_issues.youtube_links. */
+  youtube_links: string[];
   created_by: string | null;
   created_at: string;
   updated_by: string | null;
@@ -70,4 +73,78 @@ export function formatVehicleYears(from: number, to: number | null): string {
   if (to === null) return `${from}+`;
   if (to === from) return String(from);
   return `${from}–${to}`;
+}
+
+/* ============================================================
+ * YouTube links
+ * ============================================================ */
+
+/** Per entry. A few walkthroughs is useful; more turns the card into a feed. */
+export const MAX_YOUTUBE_LINKS = 4;
+
+export interface YouTubeRef {
+  /** The 11-character video id. */
+  id: string;
+  /** Start offset in seconds, 0 when none. */
+  start: number;
+}
+
+const YT_ID = /^[A-Za-z0-9_-]{11}$/;
+const YT_HOSTS = new Set([
+  "youtube.com",
+  "www.youtube.com",
+  "m.youtube.com",
+  "music.youtube.com",
+  "youtube-nocookie.com",
+  "www.youtube-nocookie.com",
+  "youtu.be"
+]);
+
+/** "90", "90s", "1m30s", "1h2m3s" -> seconds. Anything else -> 0. */
+function parseStart(raw: string | null): number {
+  if (!raw) return 0;
+  if (/^\d+$/.test(raw)) return Number(raw);
+  const m = /^(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?$/.exec(raw);
+  if (!m || (!m[1] && !m[2] && !m[3])) return 0;
+  return Number(m[1] ?? 0) * 3600 + Number(m[2] ?? 0) * 60 + Number(m[3] ?? 0);
+}
+
+/**
+ * Accepts every link shape people actually paste -- watch?v=, youtu.be/,
+ * /shorts/, /embed/, /live/, with or without "https://" -- and returns the
+ * video id plus any start time. Null for anything that is not a YouTube
+ * video, so the worker can refuse it with a clear message instead of
+ * embedding an arbitrary URL.
+ */
+export function parseYouTubeUrl(input: string): YouTubeRef | null {
+  const raw = input.trim();
+  if (!raw) return null;
+  let url: URL;
+  try {
+    url = new URL(/^[a-z][a-z0-9+.-]*:\/\//i.test(raw) ? raw : `https://${raw}`);
+  } catch {
+    return null;
+  }
+  if (url.protocol !== "https:" && url.protocol !== "http:") return null;
+  const host = url.hostname.toLowerCase();
+  if (!YT_HOSTS.has(host)) return null;
+
+  const parts = url.pathname.split("/").filter(Boolean);
+  let id: string | null = null;
+  if (host === "youtu.be") id = parts[0] ?? null;
+  else if (parts[0] === "watch") id = url.searchParams.get("v");
+  else if (parts[0] && ["shorts", "embed", "live", "v"].includes(parts[0])) id = parts[1] ?? null;
+  if (!id || !YT_ID.test(id)) return null;
+
+  return { id, start: parseStart(url.searchParams.get("t") ?? url.searchParams.get("start")) };
+}
+
+/** The one stored form: https://www.youtube.com/watch?v={id}[&t={n}s]. */
+export function canonicalYouTubeUrl(ref: YouTubeRef): string {
+  return `https://www.youtube.com/watch?v=${ref.id}${ref.start ? `&t=${ref.start}s` : ""}`;
+}
+
+/** Privacy-enhanced embed (no YouTube cookies until the video is played). */
+export function youTubeEmbedUrl(ref: YouTubeRef): string {
+  return `https://www.youtube-nocookie.com/embed/${ref.id}?rel=0&playsinline=1${ref.start ? `&start=${ref.start}` : ""}`;
 }
