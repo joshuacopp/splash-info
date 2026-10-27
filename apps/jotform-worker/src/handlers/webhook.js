@@ -28,6 +28,7 @@ import { jsonError } from "@splash/http";
 import { fetchSubmissionById } from "../jotform.js";
 import { normalizeSubmission } from "../normalize.js";
 import { loadFormById } from "../db.js";
+import { maybeNotifyGoldenTicket } from "../golden-ticket/notify.js";
 
 export async function handleWebhook(request, env, ctx, token, formId) {
   if (request.method !== "POST") {
@@ -136,6 +137,12 @@ export async function handleWebhook(request, env, ctx, token, formId) {
       `[jotform.webhook] supabase upsert non-2xx (${resp.status}): ${body.slice(0, 200)}`
     );
     return jsonError(500, `supabase upsert ${resp.status}`);
+  }
+
+  // Golden Ticket wins email the covering CRD agent. After the store, never
+  // blocking JotForm's 200, and fail-soft (see golden-ticket/notify.js).
+  if (ctx && typeof ctx.waitUntil === "function") {
+    ctx.waitUntil(maybeNotifyGoldenTicket(env, formId, row.id));
   }
 
   return new Response(JSON.stringify({ ok: true, id: row.id }), {
