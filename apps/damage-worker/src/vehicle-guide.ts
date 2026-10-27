@@ -21,7 +21,10 @@ import type { Session } from "@splash/auth";
 import { isOriginAllowed, json, jsonError, readForm } from "@splash/http";
 import { type ImagesBinding, isHeicContentType } from "@splash/storage-r2";
 import {
+  canonicalYouTubeUrl,
   isVehicleIssueType,
+  MAX_YOUTUBE_LINKS,
+  parseYouTubeUrl,
   type VehicleIssue,
   type VehicleIssueMedia,
   type VehicleIssuesResponse
@@ -95,16 +98,28 @@ export function vehicleGuidePublicPath(env: VehicleGuideEnv): string | null {
  * Reads
  * ============================================================ */
 
+/** vehicle_issues.youtube_links -> string[]. A bad value reads as no links
+ *  rather than taking the whole page down. */
+function readYouTubeLinks(raw: string | null): string[] {
+  if (!raw) return [];
+  try {
+    const v: unknown = JSON.parse(raw);
+    return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
 async function listIssues(db: D1Database): Promise<VehicleIssue[]> {
   const [issuesRes, mediaRes] = await Promise.all([
     db
       .prepare(
         `SELECT id, make, model, year_from, year_to, issue_type, issue, solution,
-                created_by, created_at, updated_by, updated_at
+                youtube_links, created_by, created_at, updated_by, updated_at
            FROM vehicle_issues
           ORDER BY make COLLATE NOCASE, model COLLATE NOCASE, year_from DESC, id`
       )
-      .all<Omit<VehicleIssue, "media">>(),
+      .all<Omit<VehicleIssue, "media" | "youtube_links"> & { youtube_links: string | null }>(),
     db
       .prepare(
         `SELECT id, issue_id, kind, mime, size_bytes, original_filename, created_by, created_at
@@ -119,7 +134,11 @@ async function listIssues(db: D1Database): Promise<VehicleIssue[]> {
     list.push(m);
     byIssue.set(m.issue_id, list);
   }
-  return (issuesRes.results ?? []).map((r) => ({ ...r, media: byIssue.get(r.id) ?? [] }));
+  return (issuesRes.results ?? []).map((r) => ({
+    ...r,
+    youtube_links: readYouTubeLinks(r.youtube_links),
+    media: byIssue.get(r.id) ?? []
+  }));
 }
 
 /** GET /manage/api/vehicle-issues */
@@ -183,7 +202,7 @@ async function canonicalMakeModel(
 /**
  * POST /manage/api/vehicle-issues — create (no id) or update (id given).
  * Fields: make, model, year_from, year_to (blank = "and newer"), issue_type,
- * issue, solution.
+ * issue, solution, youtube_links (optional; one link per line).
  */
 export async function handleUpsertVehicleIssue(
   request: Request,
@@ -233,17 +252,35 @@ export async function handleUpsertVehicleIssue(
   if (!issue || issue.length > 2000) return jsonError(400, "Describe the issue (up to 2,000 characters).");
   if (!solution || solution.length > 4000) return jsonError(400, "Describe the solution (up to 4,000 characters).");
 
+  // YouTube links: one per line (commas and spaces tolerated too). Each must
+  // be a YouTube video -- the public page embeds them, so an arbitrary URL is
+  // refused rather than framed. Stored canonical and de-duplicated.
+  const links: string[] = [];
+  for (const piece of (form.get("youtube_links") ?? "").split(/[\s,]+/)) {
+    if (!piece) continue;
+    const ref = parseYouTubeUrl(piece);
+    if (!ref) {
+      return jsonError(400, `"${piece.slice(0, 80)}" is not a YouTube video link. Paste the link from the video's Share button.`);
+    }
+    const url = canonicalYouTubeUrl(ref);
+    if (!links.includes(url)) links.push(url);
+  }
+  if (links.length > MAX_YOUTUBE_LINKS) {
+    return jsonError(400, `An entry can have at most ${MAX_YOUTUBE_LINKS} YouTube links.`);
+  }
+  const linksJson = links.length ? JSON.stringify(links) : null;
+
   const canon = await canonicalMakeModel(env.DB, make, model);
   const actor = session.email || null;
 
   if (id === null) {
     const row = await env.DB.prepare(
       `INSERT INTO vehicle_issues
-         (make, model, year_from, year_to, issue_type, issue, solution, created_by, updated_by)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+         (make, model, year_from, year_to, issue_type, issue, solution, youtube_links, created_by, updated_by)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        RETURNING id`
     )
-      .bind(canon.make, canon.model, yearFrom, yearTo, issueType, issue, solution, actor, actor)
+      .bind(canon.make, canon.model, yearFrom, yearTo, issueType, issue, solution, linksJson, actor, actor)
       .first<{ id: number }>();
     return json({ ok: true, id: row?.id ?? null }, 201);
   }
@@ -251,10 +288,10 @@ export async function handleUpsertVehicleIssue(
   const res = await env.DB.prepare(
     `UPDATE vehicle_issues
         SET make = ?, model = ?, year_from = ?, year_to = ?, issue_type = ?,
-            issue = ?, solution = ?, updated_by = ?, updated_at = datetime('now')
+            issue = ?, solution = ?, youtube_links = ?, updated_by = ?, updated_at = datetime('now')
       WHERE id = ?`
   )
-    .bind(canon.make, canon.model, yearFrom, yearTo, issueType, issue, solution, actor, id)
+    .bind(canon.make, canon.model, yearFrom, yearTo, issueType, issue, solution, linksJson, actor, id)
     .run();
   if ((res.meta?.changes ?? 0) === 0) return jsonError(404, "That entry no longer exists. Reload the page.");
   return json({ ok: true, id });

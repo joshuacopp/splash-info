@@ -14,7 +14,12 @@
 // would want a server-side search instead.
 
 import { ASSETS } from "@splash/storage-r2";
-import { type VehicleIssue, vehicleIssueTypeLabel } from "@splash/types/vehicle-guide";
+import {
+  parseYouTubeUrl,
+  type VehicleIssue,
+  vehicleIssueTypeLabel,
+  youTubeEmbedUrl
+} from "@splash/types/vehicle-guide";
 
 export interface VehicleGuidePageInput {
   issues: VehicleIssue[];
@@ -44,7 +49,13 @@ export function renderVehicleGuidePage(input: VehicleGuidePageInput): string {
       typeLabel: vehicleIssueTypeLabel(i.issue_type),
       issue: i.issue,
       solution: i.solution,
-      media: i.media.map((m) => ({ id: m.id, kind: m.kind }))
+      media: i.media.map((m) => ({ id: m.id, kind: m.kind })),
+      // Embed URLs are built here, from the parsed id, so the browser never
+      // frames a stored string directly.
+      videos: i.youtube_links.flatMap((u) => {
+        const ref = parseYouTubeUrl(u);
+        return ref ? [{ embed: youTubeEmbedUrl(ref), url: u }] : [];
+      })
     }))
   };
   // `<` escaped so no entry text can close the <script> block early.
@@ -121,6 +132,9 @@ h2.view{font-size:20px;margin:6px 2px 12px}
 .media{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px;margin-top:12px}
 .media img{width:100%;aspect-ratio:4/3;object-fit:cover;border-radius:8px;display:block;background:#eee}
 .media video{width:100%;border-radius:8px;background:#000;grid-column:1/-1;max-height:70vh}
+.yt{display:grid;grid-template-columns:1fr;gap:10px;margin-top:12px}
+.yt iframe{width:100%;aspect-ratio:16/9;border:0;border-radius:8px;background:#000;display:block}
+.yt a{display:inline-block;margin-top:4px;font-size:14px;font-weight:600;color:#2b3491}
 .empty{background:#fff;border:1px dashed #c5c7d4;border-radius:12px;padding:22px;text-align:center;color:#1c164ebb}
 /* Tablets (an Android tablet at the entrance is an expected setup): wider
    tap grids and issue cards two-up so a landscape screen isn't one long strip. */
@@ -186,12 +200,25 @@ const CLIENT_JS = `
         ? '<video controls playsinline preload="metadata" src="' + url + '"></video>'
         : '<a href="' + url + '" target="_blank" rel="noopener noreferrer"><img loading="lazy" alt="" src="' + url + '"></a>';
     }).join('');
+    // The page itself sends no Referer (the token is in its URL), but YouTube
+    // refuses to play embeds that arrive without one (player error 153). So
+    // each frame overrides the policy to send the ORIGIN only -- the token in
+    // the path still never leaves. "Open in YouTube" covers videos whose
+    // owners have turned embedding off.
+    var vids = (i.videos || []).map(function(v){
+      return '<div><iframe loading="lazy" src="' + esc(v.embed) + '" title="Video: ' + esc(i.make) + ' ' + esc(i.model) + '"' +
+        ' referrerpolicy="strict-origin-when-cross-origin"' +
+        ' allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"' +
+        ' allowfullscreen></iframe>' +
+        '<a href="' + esc(v.url) + '" target="_blank" rel="noopener noreferrer">Open in YouTube \\u203a</a></div>';
+    }).join('');
     return '<article class="card"><div class="card-head">' +
       (withVehicle ? '<div class="vehicle">' + esc(i.make) + ' ' + esc(i.model) + '</div>' : '') +
       '<span class="pill t-' + esc(i.type) + '">' + esc(i.typeLabel) + '</span>' +
       '<span class="yrs">' + esc(yrLabel(i)) + '</span></div>' +
       '<h3>The problem</h3><p class="txt">' + esc(i.issue) + '</p>' +
       '<h3>What to do</h3><p class="txt sol">' + esc(i.solution) + '</p>' +
+      (vids ? '<div class="yt">' + vids + '</div>' : '') +
       (media ? '<div class="media">' + media + '</div>' : '') +
       '</article>';
   }
