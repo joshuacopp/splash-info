@@ -65,6 +65,7 @@ import { fetchFormSubmissions, JOTFORM_BACKFILL_PAGE_SIZE } from "../jotform.js"
 import { normalizeSubmission } from "../normalize.js";
 import { resolveLocationFilters } from "../filters.js";
 import { handleRoster } from "./roster.js";
+import { handleGoldenTicketAdmin } from "../golden-ticket/admin.js";
 
 const DEFAULT_LIST_LIMIT = 200;
 const MAX_LIST_LIMIT = 500;
@@ -97,6 +98,11 @@ export async function handleAdminApi(request, env, ctx) {
 
   if (!isOriginAllowed(request)) {
     return jsonError(403, "bad origin");
+  }
+
+  // Golden Ticket CRD queue -- own gate (admin tier or golden_ticket tag).
+  if (path.startsWith("/admin/jotform/api/golden-ticket/")) {
+    return handleGoldenTicketAdmin(request, env, path);
   }
 
   if (path === "/admin/jotform/api/forms") {
@@ -204,7 +210,7 @@ async function handleListForms(request, env) {
 // widget asset URLs against the public jotform.com host even on
 // Enterprise accounts (per operator screenshots). Anything outside this
 // set is rejected.
-function buildAssetHostAllowList(env) {
+export function buildAssetHostAllowList(env) {
   const set = new Set();
   try {
     set.add(new URL(env.JOTFORM_BASE_URL).host);
@@ -220,7 +226,7 @@ function buildAssetHostAllowList(env) {
 // `/widget-uploads/`, and server-rendered submission images use
 // `/server.php`. Extending the allow-list closes the bug where some
 // signatures 400'd at the path check before ever reaching JotForm.
-const ASSET_PATH_PREFIXES = ["/uploads/", "/widget-uploads/", "/server.php"];
+export const ASSET_PATH_PREFIXES = ["/uploads/", "/widget-uploads/", "/server.php"];
 
 async function handleAssetProxy(request, env) {
   const gate = await authenticateForAdminApi(request, env);
@@ -295,7 +301,7 @@ async function handleAssetProxy(request, env) {
 // 302-redirecting from `/uploads/...` to a CDN URL on the same host or to
 // `www.jotform.com`; the Brief 113 `redirect: "manual"` + reject-3xx posture
 // dropped those responses on the floor and surfaced as broken-img icons.
-async function fetchJotformAssetFollowingRedirects(initialUrl, apiKey, allowedHosts) {
+export async function fetchJotformAssetFollowingRedirects(initialUrl, apiKey, allowedHosts) {
   let current = initialUrl;
   for (let hop = 0; hop < 4; hop++) {
     let resp;

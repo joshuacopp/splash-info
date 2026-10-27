@@ -9,12 +9,15 @@
 //   GET  /admin/jotform/api/{form_id}/submissions/{id}       — single-row detail
 //   GET  /admin/jotform/api/{form_id}/submissions.csv        — CSV export (schema-union)
 //   POST /admin/jotform/api/{form_id}/backfill?after_id=...  — super_admin backfill
+//   /admin/jotform/api/golden-ticket/*                       — CRD work queue (golden-ticket/admin.js)
+//   GET  /jotform/golden-ticket/{token}[/check|/photo/{id}]  — no-login plate lookup (golden-ticket/public.js)
 //
 // See ./handlers/admin.js and ./handlers/webhook.js for handler shape.
 
 import { jsonError } from "@splash/http";
 import { handleAdminApi } from "./handlers/admin.js";
 import { handleWebhook } from "./handlers/webhook.js";
+import { handleGoldenTicketPublic } from "./golden-ticket/public.js";
 
 const WEBHOOK_RE = /^\/jotform\/webhook\/([^/]+)\/([A-Za-z0-9_-]+)$/;
 
@@ -39,6 +42,15 @@ async function handle(request, env, ctx) {
   const wh = path.match(WEBHOOK_RE);
   if (wh) {
     return handleWebhook(request, env, ctx, wh[1], wh[2]);
+  }
+
+  // Golden Ticket site lookup. A wrong token returns null and falls through
+  // to the plain 404 below, indistinguishable from any unknown path.
+  if (path.startsWith("/jotform/golden-ticket/")) {
+    const rest = path.slice("/jotform/golden-ticket/".length).split("/").filter(Boolean);
+    const out = await handleGoldenTicketPublic(request, env, rest);
+    if (out) return out;
+    return jsonError(404, "not found");
   }
 
   if (path.startsWith("/admin/jotform/api/")) {

@@ -3267,6 +3267,22 @@ URL-based — service bindings don't apply to those.
   `/forms/approve/{token}/file/{n}` -- addressed by POSITION in the
   submission's payload, never by R2 key, under the same link checks as the
   page.
+- **Golden Ticket** (2026-10-27) - Free-unlimited wins from JotForm
+  262925137546968, ingested by the normal jotform-worker pipeline, read
+  through the `golden_ticket_wins` view (`supabase/golden-ticket-01.sql`).
+  The view reads answers by JotForm field NAME (`licensePlatenumber`,
+  `prize`, `takePicture`, ...); renaming a field in the JotForm builder
+  blanks that column. CRD's work lives in `golden_ticket_crd`, NEVER in
+  `jotform_submissions` (a backfill would overwrite it). One win per vehicle
+  per promo: vehicle = `gt_plate_norm(plate)` (keep it identical to
+  `normalizePlate` in `apps/jotform-worker/src/golden-ticket/shared.js`);
+  promo = the `golden_ticket_promos` date range covering the REDEMPTION day.
+  Queue `/admin/golden-ticket` is admin tier OR the `golden_ticket` form
+  access tag (`jotform_forms.access_tag` -- same `form_access_grants` table
+  as custom forms). Site lookup `/jotform/golden-ticket/{token}`: token in
+  `golden_ticket_settings`, rotated from the page; plate must be typed, and
+  the photo route re-checks the plate because JotForm submission ids are
+  guessable.
 - **outbound_emails table** (Brief 127) - Shared queue of fully-rendered
   outbound emails. Single Power Automate flow polls every 5 minutes
   and drains the queue regardless of which worker enqueued the row.

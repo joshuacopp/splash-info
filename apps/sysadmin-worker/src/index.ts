@@ -3330,21 +3330,36 @@ async function fetchFormAccessTags(
   return rows.map((r) => r.tag).filter((t) => typeof t === "string").sort();
 }
 
-/** Distinct tags in use on forms — what the operator may grant. Sourced from
- *  the forms themselves so tagging a form is the ONLY step needed to make a
- *  new tag grantable: no migration, no code change. */
+/** Distinct tags in use on forms AND JotForms — what the operator may grant.
+ *  Sourced from the forms themselves so tagging a form is the ONLY step needed
+ *  to make a new tag grantable: no migration, no code change.
+ *
+ *  jotform_forms joined the list for the Golden Ticket queue
+ *  (golden-ticket-01.sql): one tag table, one checkbox list. That read is
+ *  fail-soft on its own -- before that migration the column does not exist,
+ *  and a missing JotForm tag must not hide the custom-form ones. */
 async function fetchGrantableFormAccessTags(env: Env): Promise<string[]> {
-  const url = new URL("/rest/v1/forms", env.SUPABASE_URL);
-  url.searchParams.set("access_tag", "not.is.null");
-  url.searchParams.set("select", "access_tag");
-  const resp = await fetch(url.toString(), {
-    headers: {
-      apikey: env.SUPABASE_SERVICE_KEY,
-      Authorization: `Bearer ${env.SUPABASE_SERVICE_KEY}`
-    }
-  });
+  const headers = {
+    apikey: env.SUPABASE_SERVICE_KEY,
+    Authorization: `Bearer ${env.SUPABASE_SERVICE_KEY}`
+  };
+  const tagUrl = (table: string) => {
+    const url = new URL(`/rest/v1/${table}`, env.SUPABASE_URL);
+    url.searchParams.set("access_tag", "not.is.null");
+    url.searchParams.set("select", "access_tag");
+    return url.toString();
+  };
+  const [resp, jotResp] = await Promise.all([
+    fetch(tagUrl("forms"), { headers }),
+    fetch(tagUrl("jotform_forms"), { headers }).catch(() => null)
+  ]);
   if (!resp.ok) throw new Error(`fetchGrantableFormAccessTags: ${resp.status}`);
   const rows = (await resp.json()) as { access_tag: string | null }[];
+  if (jotResp && jotResp.ok) {
+    rows.push(...((await jotResp.json()) as { access_tag: string | null }[]));
+  } else {
+    console.warn("[sysadmin] jotform_forms access_tag read failed", jotResp?.status);
+  }
   const set = new Set<string>();
   for (const r of rows) if (r.access_tag) set.add(r.access_tag);
   return [...set].sort();

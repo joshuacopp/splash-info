@@ -515,6 +515,20 @@ export const TILES: ReadonlyArray<Tile> = [
     visibleTo: allStaff
   },
   {
+    id: "golden-ticket",
+    group: "operations",
+    subgroup: "other-tools",
+    eyebrow: "CRD",
+    title: "Golden Ticket",
+    description: "Free unlimited winners to set up in Micrologic, and the site lookup link.",
+    href: "/admin/golden-ticket",
+    icon: ticketIcon,
+    // Admin tier only, though CRD reach the page too: their access is the
+    // golden_ticket form access tag, which the session does not carry, so a
+    // tile predicate cannot see it. CRD bookmark the page; the worker decides.
+    visibleTo: isAdminTier
+  },
+  {
     id: "pending-approvals",
     group: "operations",
     subgroup: "other-tools",
