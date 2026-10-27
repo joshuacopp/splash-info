@@ -35,9 +35,12 @@ import {
   isPackagePriceSites,
   packageLabel,
   priceDiff,
+  serviceCategoryLabel,
   siteLabel,
+  type NewPackage,
   type PackagePriceRow,
-  type PackagePriceSite
+  type PackagePriceSite,
+  type ServicePrice
 } from "@splash/forms-schema";
 
 import {
@@ -137,7 +140,8 @@ export async function drawPriceChange(
     if (isPackagePriceSites(rows)) {
       for (const s of rows) {
         drawSiteHeading(doc, cursor, fonts, siteLabel(s));
-        drawPriceTable(doc, cursor, fonts, s.rows);
+        drawPriceTable(doc, cursor, fonts, s.rows, s.new_packages ?? []);
+        drawServicesTable(doc, cursor, fonts, s.services ?? []);
         drawSpacer(cursor, 12);
       }
       drawSpacer(cursor, 4);
@@ -161,6 +165,24 @@ export async function drawPriceChange(
     if (field.type === "heading" || field.type === "image") continue;
     if ((field as { exclude_from_pdf?: boolean }).exclude_from_pdf) continue;
     const v = input.payload[field.key];
+    if (field.type === "file") {
+      // Signage / graphics: thumbnails, so the signed record shows what was
+      // approved, not just that something was attached.
+      const list = Array.isArray(v) ? v : v ? [v] : [];
+      const entries = list
+        .map((e) => (e ?? {}) as Record<string, unknown>)
+        .filter((o) => typeof o.r2_key === "string")
+        .map((o) => ({
+          r2_key: o.r2_key as string,
+          name:
+            typeof o.original_filename === "string" && o.original_filename
+              ? o.original_filename
+              : String(o.r2_key).split("/").pop() ?? "file",
+          mime: typeof o.mime === "string" ? o.mime : ""
+        }));
+      await drawAttachments(doc, cursor, fonts, field.label, entries, input.bucket);
+      continue;
+    }
     if (typeof v !== "string" || !v.trim()) continue;
     drawSectionHeading(doc, cursor, fonts, field.label);
     drawBox(doc, cursor, fonts, v, { fill: rgb(248 / 255, 250 / 255, 252 / 255), border: COLORS.subtle, text: COLORS.text });
@@ -283,19 +305,25 @@ function drawStatusBanner(
  * the difference beneath. A custom table rather than drawTable: the new price
  * and the difference carry colour, which is the whole point of the table.
  */
-function drawPriceTable(
+const COL_NAME = 164;
+const COL_PRICE = (CONTENT_WIDTH - COL_NAME) / 2;
+const TABLE_ROW_H = 34;
+
+/**
+ * Header band + zebra rows that break across pages with the header repeated.
+ * `paint(i)` draws row i's contents at the current cursor.
+ */
+function drawTableShell(
   doc: PDFDocument,
   cursor: Cursor,
   fonts: Fonts,
-  rows: PackagePriceRow[]
+  headers: { text: string; x: number }[],
+  count: number,
+  paint: (i: number) => void
 ): void {
-  const colPkg = 164;
-  const colPrice = (CONTENT_WIDTH - colPkg) / 2;
   const headerH = 20;
-  const rowH = 34;
-
   const header = () => {
-    addPageIfNeeded(doc, cursor, headerH + rowH);
+    addPageIfNeeded(doc, cursor, headerH + TABLE_ROW_H);
     cursor.page.drawRectangle({
       x: MARGIN,
       y: cursor.y - headerH + 4,
@@ -304,17 +332,14 @@ function drawPriceTable(
       color: COLORS.navy
     });
     const hy = cursor.y - headerH + 10;
-    const t = (s: string, x: number) =>
-      cursor.page.drawText(s, { x, y: hy, size: 9, font: fonts.bold, color: COLORS.white });
-    t("PACKAGE", MARGIN + 8);
-    t("SINGLE  (current -> new)", MARGIN + colPkg + 8);
-    t("MONTHLY  (current -> new)", MARGIN + colPkg + colPrice + 8);
+    for (const h of headers) {
+      cursor.page.drawText(h.text, { x: h.x, y: hy, size: 9, font: fonts.bold, color: COLORS.white });
+    }
     cursor.y -= headerH;
   };
-
   header();
-  rows.forEach((r, i) => {
-    if (cursor.y - rowH < 60) {
+  for (let i = 0; i < count; i++) {
+    if (cursor.y - TABLE_ROW_H < 60) {
       cursor.page = doc.addPage([cursor.page.getWidth(), cursor.page.getHeight()]);
       cursor.y = cursor.page.getHeight() - MARGIN;
       header();
@@ -322,30 +347,195 @@ function drawPriceTable(
     if (i % 2 === 1) {
       cursor.page.drawRectangle({
         x: MARGIN,
-        y: cursor.y - rowH + 4,
+        y: cursor.y - TABLE_ROW_H + 4,
         width: CONTENT_WIDTH,
-        height: rowH,
+        height: TABLE_ROW_H,
         color: rgb(248 / 255, 250 / 255, 252 / 255)
       });
     }
-    cursor.page.drawText(truncateToWidth(packageLabel(r.pkg), fonts.bold, 11, colPkg - 16), {
-      x: MARGIN + 8,
-      y: cursor.y - 16,
-      size: 11,
-      font: fonts.bold,
-      color: COLORS.navy
-    });
-    drawPriceCell(cursor, fonts, MARGIN + colPkg + 8, r.current_single, r.new_single);
-    drawPriceCell(cursor, fonts, MARGIN + colPkg + colPrice + 8, r.current_monthly, r.new_monthly);
-    cursor.y -= rowH;
-    cursor.page.drawRectangle({
-      x: MARGIN,
-      y: cursor.y + 4,
-      width: CONTENT_WIDTH,
-      height: 0.5,
-      color: COLORS.subtle
-    });
+    paint(i);
+    cursor.y -= TABLE_ROW_H;
+    cursor.page.drawRectangle({ x: MARGIN, y: cursor.y + 4, width: CONTENT_WIDTH, height: 0.5, color: COLORS.subtle });
+  }
+}
+
+/** Bold name, with an optional coloured second line ("-> Bath (renamed)"). */
+function drawNameCell(
+  cursor: Cursor,
+  fonts: Fonts,
+  name: string,
+  sub?: { text: string; color: RGB }
+): void {
+  cursor.page.drawText(truncateToWidth(name, fonts.bold, 11, COL_NAME - 16), {
+    x: MARGIN + 8,
+    y: cursor.y - 16,
+    size: 11,
+    font: fonts.bold,
+    color: COLORS.navy
   });
+  if (sub) {
+    cursor.page.drawText(truncateToWidth(sub.text, fonts.bold, 8, COL_NAME - 16), {
+      x: MARGIN + 8,
+      y: cursor.y - 28,
+      size: 8,
+      font: fonts.bold,
+      color: sub.color
+    });
+  }
+}
+
+/**
+ * Package | Single | Monthly, each price cell reading "$24.00 -> $26.00" with
+ * the difference beneath; renamed packages carry "-> New name (renamed)"
+ * under the old name, discontinued ones a red DISCONTINUED across the price
+ * columns, and new packages follow the existing ones tagged NEW PACKAGE.
+ * A custom table rather than drawTable: the new price, the difference and the
+ * change tags carry colour, which is the whole point of the table.
+ */
+function drawPriceTable(
+  doc: PDFDocument,
+  cursor: Cursor,
+  fonts: Fonts,
+  rows: PackagePriceRow[],
+  newPackages: NewPackage[] = []
+): void {
+  if (rows.length + newPackages.length === 0) return;
+  const xSingle = MARGIN + COL_NAME + 8;
+  const xMonthly = MARGIN + COL_NAME + COL_PRICE + 8;
+  drawTableShell(
+    doc,
+    cursor,
+    fonts,
+    [
+      { text: "PACKAGE", x: MARGIN + 8 },
+      { text: "SINGLE  (current -> new)", x: xSingle },
+      { text: "MONTHLY  (current -> new)", x: xMonthly }
+    ],
+    rows.length + newPackages.length,
+    (i) => {
+      const r = rows[i];
+      if (r) {
+        if (r.discontinue) {
+          drawNameCell(cursor, fonts, packageLabel(r.pkg), { text: "being removed", color: RED_TEXT });
+          cursor.page.drawText("DISCONTINUED", { x: xSingle, y: cursor.y - 16, size: 11, font: fonts.bold, color: RED_TEXT });
+          return;
+        }
+        drawNameCell(
+          cursor,
+          fonts,
+          packageLabel(r.pkg),
+          r.rename_to ? { text: `-> ${r.rename_to} (renamed)`, color: COLORS.blue } : undefined
+        );
+        drawPriceCell(cursor, fonts, xSingle, r.current_single, r.new_single);
+        drawPriceCell(cursor, fonts, xMonthly, r.current_monthly, r.new_monthly);
+        return;
+      }
+      const p = newPackages[i - rows.length]!;
+      drawNameCell(cursor, fonts, p.name, { text: "NEW PACKAGE", color: GREEN_TEXT });
+      for (const [x, v] of [[xSingle, p.single], [xMonthly, p.monthly]] as const) {
+        cursor.page.drawText(`$${v}`, { x, y: cursor.y - 16, size: 11, font: fonts.bold, color: COLORS.navy });
+        cursor.page.drawText("new", { x, y: cursor.y - 28, size: 8, font: fonts.regular, color: COLORS.muted });
+      }
+    }
+  );
+}
+
+/** Lube & detail | Price: one price per service, current -> new. */
+function drawServicesTable(doc: PDFDocument, cursor: Cursor, fonts: Fonts, services: ServicePrice[]): void {
+  if (services.length === 0) return;
+  const xPrice = MARGIN + COL_NAME + 8;
+  drawSpacer(cursor, 6);
+  drawTableShell(
+    doc,
+    cursor,
+    fonts,
+    [
+      { text: "LUBE & DETAIL", x: MARGIN + 8 },
+      { text: "PRICE  (current -> new)", x: xPrice }
+    ],
+    services.length,
+    (i) => {
+      const s = services[i]!;
+      drawNameCell(cursor, fonts, s.name, { text: serviceCategoryLabel(s.category).toUpperCase(), color: COLORS.muted });
+      drawPriceCell(cursor, fonts, xPrice, s.current, s.new);
+    }
+  );
+}
+
+/**
+ * The request's uploaded graphics: images embedded as thumbnails, two per
+ * row; anything pdf-lib cannot embed (PDFs, WebP, HEIC) listed by name, so
+ * the record still says it was attached. Capped so a request with dozens of
+ * images does not turn the approval PDF into a portfolio.
+ */
+async function drawAttachments(
+  doc: PDFDocument,
+  cursor: Cursor,
+  fonts: Fonts,
+  label: string,
+  entries: Array<{ r2_key: string; name: string; mime: string }>,
+  bucket: R2Like
+): Promise<void> {
+  if (entries.length === 0) return;
+  const MAX_IMAGES = 8;
+  const gap = 16;
+  const thumbW = (CONTENT_WIDTH - gap) / 2;
+  const thumbH = 150;
+  // Keep the heading with the first row of thumbnails: a heading stranded at
+  // the foot of a page with its images overleaf reads as an empty section.
+  const anyImage = entries.some((e) => e.mime === "image/png" || e.mime === "image/jpeg");
+  addPageIfNeeded(doc, cursor, 40 + (anyImage ? thumbH + 24 : 30));
+  drawSectionHeading(doc, cursor, fonts, label);
+
+  const listed: string[] = [];
+  let col = 0;
+  let embedded = 0;
+  for (const e of entries) {
+    const isImage = e.mime === "image/png" || e.mime === "image/jpeg";
+    if (!isImage || embedded >= MAX_IMAGES) {
+      listed.push(e.name);
+      continue;
+    }
+    let img;
+    try {
+      img = await fetchAndEmbedR2Image(doc, bucket, e.r2_key);
+    } catch (err) {
+      console.warn(`[forms.pdf] price-change attachment failed for ${e.r2_key}`, err);
+      listed.push(e.name);
+      continue;
+    }
+    if (col === 0) addPageIfNeeded(doc, cursor, thumbH + 24);
+    const x = MARGIN + col * (thumbW + gap);
+    const scale = Math.min(thumbW / img.width, thumbH / img.height, 1);
+    const w = img.width * scale;
+    const h = img.height * scale;
+    cursor.page.drawRectangle({
+      x,
+      y: cursor.y - thumbH,
+      width: thumbW,
+      height: thumbH,
+      color: rgb(248 / 255, 250 / 255, 252 / 255),
+      borderColor: COLORS.subtle,
+      borderWidth: 0.75
+    });
+    cursor.page.drawImage(img, { x: x + (thumbW - w) / 2, y: cursor.y - thumbH + (thumbH - h) / 2, width: w, height: h });
+    cursor.page.drawText(truncateToWidth(e.name, fonts.regular, 8, thumbW), {
+      x,
+      y: cursor.y - thumbH - 11,
+      size: 8,
+      font: fonts.regular,
+      color: COLORS.muted
+    });
+    embedded++;
+    col = (col + 1) % 2;
+    if (col === 0) cursor.y -= thumbH + 24;
+  }
+  if (col === 1) cursor.y -= thumbH + 24;
+  if (listed.length) {
+    drawLabel(cursor, fonts, embedded ? "Also attached" : "Attached files");
+    for (const n of listed) drawMuted(doc, cursor, fonts, n);
+  }
+  drawSpacer(cursor, 6);
 }
 
 function drawPriceCell(cursor: Cursor, fonts: Fonts, x: number, current: string, next: string): void {

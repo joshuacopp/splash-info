@@ -7,12 +7,13 @@
 // JSONB, or schema evolved) render in a "Other payload entries" appendix
 // at the bottom so nothing silently disappears.
 
-import type { DropdownField, Field, FormSchema, LookupField, MultiField, PackagePriceRow, RadioField } from "@splash/forms-schema";
+import type { DropdownField, Field, FormSchema, LookupField, MultiField, NewPackage, PackagePriceRow, RadioField, ServicePrice } from "@splash/forms-schema";
 import {
   isPackagePriceRows,
   isPackagePriceSites,
   packageLabel,
   priceDiff,
+  serviceCategoryLabel,
   siteLabel
 } from "@splash/forms-schema/package-price";
 import type { SubmissionFile } from "../../../../_lib/worker-fetch";
@@ -158,7 +159,8 @@ function FieldValue({
             {value.map((s) => (
               <div key={s.site}>
                 <p className="mb-1 font-semibold text-splash-navy">{siteLabel(s)}</p>
-                <PriceGridTable rows={s.rows} />
+                <PriceGridTable rows={s.rows} newPackages={s.new_packages ?? []} />
+                <ServicesTable services={s.services ?? []} />
               </div>
             ))}
           </div>
@@ -168,27 +170,35 @@ function FieldValue({
   }
 }
 
-function PriceGridTable({ rows }: { rows: PackagePriceRow[] }) {
-  const cell = (current: string, next: string) => {
-    if (current === next) {
-      return <span className="text-splash-navy/60">${current} (no change)</span>;
-    }
-    // Shared with the PDF and Dan's approval page, so all three agree.
-    const d = priceDiff(current, next);
-    return (
-      <span>
-        <span className="text-splash-navy/60">${current}</span> →{" "}
-        <strong>${next}</strong>
-        <span
-          className={`block text-xs font-semibold ${
-            d.direction === "up" ? "text-emerald-700" : "text-red-700"
-          }`}
-        >
-          {d.text}
-        </span>
+function PriceCell({ current, next }: { current: string; next: string }) {
+  if (current === next) {
+    return <span className="text-splash-navy/60">${current} (no change)</span>;
+  }
+  // Shared with the PDF and the approval page, so all three agree.
+  const d = priceDiff(current, next);
+  return (
+    <span>
+      <span className="text-splash-navy/60">${current}</span> →{" "}
+      <strong>${next}</strong>
+      <span
+        className={`block text-xs font-semibold ${
+          d.direction === "up" ? "text-emerald-700" : "text-red-700"
+        }`}
+      >
+        {d.text}
       </span>
-    );
-  };
+    </span>
+  );
+}
+
+function PriceGridTable({
+  rows,
+  newPackages = []
+}: {
+  rows: PackagePriceRow[];
+  newPackages?: NewPackage[];
+}) {
+  if (rows.length + newPackages.length === 0) return null;
   return (
     <table className="text-sm">
       <thead>
@@ -201,9 +211,73 @@ function PriceGridTable({ rows }: { rows: PackagePriceRow[] }) {
       <tbody>
         {rows.map((r) => (
           <tr key={r.pkg} className="border-t border-gray-light">
-            <td className="py-1 pr-6 font-semibold">{packageLabel(r.pkg)}</td>
-            <td className="py-1 pr-6">{cell(r.current_single, r.new_single)}</td>
-            <td className="py-1">{cell(r.current_monthly, r.new_monthly)}</td>
+            <td className="py-1 pr-6 font-semibold">
+              {r.discontinue ? (
+                <span className="text-red-700 line-through">{packageLabel(r.pkg)}</span>
+              ) : (
+                packageLabel(r.pkg)
+              )}
+              {r.rename_to && !r.discontinue && (
+                <span className="block text-xs font-semibold text-splash-blue">
+                  → {r.rename_to} (renamed)
+                </span>
+              )}
+            </td>
+            {r.discontinue ? (
+              <td className="py-1" colSpan={2}>
+                <span className="rounded bg-red-100 px-2 py-0.5 text-xs font-bold text-red-700">
+                  Discontinued
+                </span>
+              </td>
+            ) : (
+              <>
+                <td className="py-1 pr-6">
+                  <PriceCell current={r.current_single} next={r.new_single} />
+                </td>
+                <td className="py-1">
+                  <PriceCell current={r.current_monthly} next={r.new_monthly} />
+                </td>
+              </>
+            )}
+          </tr>
+        ))}
+        {newPackages.map((p) => (
+          <tr key={`new:${p.name}`} className="border-t border-gray-light">
+            <td className="py-1 pr-6 font-semibold">
+              {p.name}
+              <span className="block text-xs font-bold uppercase text-emerald-700">New package</span>
+            </td>
+            <td className="py-1 pr-6 font-semibold">${p.single}</td>
+            <td className="py-1 font-semibold">${p.monthly}</td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+}
+
+function ServicesTable({ services }: { services: ServicePrice[] }) {
+  if (services.length === 0) return null;
+  return (
+    <table className="mt-2 text-sm">
+      <thead>
+        <tr className="text-left text-xs uppercase tracking-wide text-splash-navy/60">
+          <th className="pr-6 font-semibold">Lube &amp; detail</th>
+          <th className="font-semibold">Price</th>
+        </tr>
+      </thead>
+      <tbody>
+        {services.map((s, i) => (
+          <tr key={i} className="border-t border-gray-light">
+            <td className="py-1 pr-6 font-semibold">
+              {s.name}
+              <span className="block text-xs uppercase text-splash-navy/60">
+                {serviceCategoryLabel(s.category)}
+              </span>
+            </td>
+            <td className="py-1">
+              <PriceCell current={s.current} next={s.new} />
+            </td>
           </tr>
         ))}
       </tbody>

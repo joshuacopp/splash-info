@@ -19,11 +19,13 @@ import {
   isPackagePriceSites,
   packageLabel,
   priceDiff,
+  serviceCategoryLabel,
   siteLabel,
   type Field,
   type FormMeta,
   type FormSchema,
   type PackagePriceRow,
+  type PackagePriceSite,
   type WorkflowStage,
   type WorkflowTransition
 } from "@splash/forms-schema";
@@ -155,6 +157,84 @@ async function validateLink(env: Env, token: string): Promise<LinkCheck> {
   }
 
   return { ok: true, link, submission, stage };
+}
+
+// =============================================================================
+// Attachments
+// =============================================================================
+
+/** One uploaded file on the submission, numbered in schema order. */
+interface LinkFile {
+  index: number;
+  fieldKey: string;
+  r2Key: string;
+  name: string;
+  mime: string;
+}
+
+/**
+ * Every file the submitter uploaded, read from the submission's OWN payload.
+ * The link route serves only these, addressed by position -- so a link can
+ * never be turned into a way to fetch an arbitrary R2 key, and a file from
+ * another submission cannot be reached through this one's link.
+ *
+ * Signatures are deliberately excluded: the approver needs the graphics he is
+ * approving, not the submitter's signature image.
+ */
+function linkFiles(submission: Submission): LinkFile[] {
+  const out: LinkFile[] = [];
+  const prefix = `form-submission-files/${submission.form_id}/${submission.id}/`;
+  for (const f of submission.version.schema.fields) {
+    if (f.type !== "file") continue;
+    const v = submission.payload[f.key];
+    const entries = Array.isArray(v) ? v : v ? [v] : [];
+    for (const e of entries) {
+      const o = (e ?? {}) as Record<string, unknown>;
+      const key = typeof o.r2_key === "string" ? o.r2_key : "";
+      if (!key.startsWith(prefix)) continue;
+      out.push({
+        index: out.length,
+        fieldKey: f.key,
+        r2Key: key,
+        name: typeof o.original_filename === "string" && o.original_filename
+          ? o.original_filename
+          : key.split("/").pop() ?? "file",
+        mime: typeof o.mime === "string" ? o.mime : "application/octet-stream"
+      });
+    }
+  }
+  return out;
+}
+
+/**
+ * GET /forms/approve/{token}/file/{n} -- one of the request's uploads, for
+ * the approver. Same link checks as the page: an expired, used or moved-on
+ * link stops serving files too.
+ */
+export async function handleApprovalLinkFile(
+  env: Env,
+  token: string,
+  index: number
+): Promise<Response> {
+  const check = await validateLink(env, token);
+  if (!check.ok) return new Response("Not found", { status: 404 });
+  const file = linkFiles(check.submission)[index];
+  if (!file) return new Response("Not found", { status: 404 });
+  const obj = await env.FORMS_FILES.get(file.r2Key);
+  if (!obj) return new Response("Not found", { status: 404 });
+  // Images and PDFs open in the browser; anything else downloads.
+  const inline = file.mime.startsWith("image/") || file.mime === "application/pdf";
+  const safeName = file.name.replace(/["\\\r\n]/g, "_");
+  return new Response(obj.body, {
+    headers: {
+      "Content-Type": file.mime,
+      "Content-Disposition": `${inline ? "inline" : "attachment"}; filename="${safeName}"`,
+      "Cache-Control": "private, no-store",
+      "X-Content-Type-Options": "nosniff",
+      "Referrer-Policy": "same-origin",
+      "X-Robots-Tag": "noindex"
+    }
+  });
 }
 
 // =============================================================================
@@ -372,9 +452,10 @@ function renderDecisionPage(
     timeStyle: "short"
   });
 
+  const files = linkFiles(submission);
   const answers = schema.fields
     .filter((f) => f.type !== "heading" && f.type !== "image")
-    .map((f) => answerRow(f, submission.payload[f.key]))
+    .map((f) => answerRow(f, submission.payload[f.key], token, files))
     .filter(Boolean)
     .join("");
 
@@ -431,48 +512,114 @@ function actionOption(t: WorkflowTransition, i: number): string {
   </label>`;
 }
 
-function answerRow(field: Field, value: unknown): string {
+function answerRow(
+  field: Field,
+  value: unknown,
+  token: string,
+  files: LinkFile[]
+): string {
   if (value == null || value === "" || (Array.isArray(value) && value.length === 0)) return "";
   let html: string;
   if (isPackagePriceSites(value)) {
     html = value
-      .map(
-        (s) =>
-          `<p class="ap-site">${escapeHtml(siteLabel(s))}</p>${priceTable(s.rows)}`
-      )
+      .map((s) => `<p class="ap-site">${escapeHtml(siteLabel(s))}</p>${siteChanges(s)}`)
       .join("");
   } else if (isPackagePriceRows(value)) {
     html = priceTable(value);
-  } else if (field.type === "file" || field.type === "signature") {
-    // Uploads are served from the admin-gated file route, which a link holder
-    // cannot reach. Saying so beats a broken image.
-    html = `<em>Attached &mdash; sign in to view</em>`;
+  } else if (field.type === "file") {
+    // Served through the link (handleApprovalLinkFile), so the approver sees
+    // the graphics he is approving without signing in.
+    const mine = files.filter((f) => f.fieldKey === field.key);
+    html = mine.length ? fileGallery(token, mine) : "";
+    if (!html) return "";
+  } else if (field.type === "signature") {
+    html = `<em>Signed &mdash; sign in to view</em>`;
   } else {
     html = escapeHtml(resolveDisplayValue(field, value)).replace(/\n/g, "<br>");
   }
   return `<div class="ap-row"><dt>${escapeHtml(field.label)}</dt><dd>${html}</dd></div>`;
 }
 
+// Same difference text as the PDF (priceDiff), so what the approver sees on
+// screen is exactly what the signed PDF says.
+function priceCell(cur: string, next: string): string {
+  if (cur === next) return `<span class="ap-muted">$${escapeHtml(cur)} (no change)</span>`;
+  const d = priceDiff(cur, next);
+  return (
+    `<span class="ap-muted">$${escapeHtml(cur)}</span> &rarr; <strong>$${escapeHtml(next)}</strong>` +
+    `<br><span class="ap-diff ap-diff-${d.direction}">${escapeHtml(d.text)}</span>`
+  );
+}
+
+function packageCell(r: PackagePriceRow): string {
+  const name = escapeHtml(packageLabel(r.pkg));
+  if (r.discontinue) return `<strong class="ap-struck">${name}</strong>`;
+  if (r.rename_to) {
+    return `<strong>${name}</strong> &rarr; <strong>${escapeHtml(r.rename_to)}</strong><br><span class="ap-tag">renamed</span>`;
+  }
+  return `<strong>${name}</strong>`;
+}
+
 function priceTable(rows: PackagePriceRow[]): string {
-  // Same difference text as the PDF (priceDiff), so what Dan approves on
-  // screen is exactly what the signed PDF says.
-  const cell = (cur: string, next: string) => {
-    if (cur === next) return `<span class="ap-muted">$${escapeHtml(cur)} (no change)</span>`;
-    const d = priceDiff(cur, next);
-    return (
-      `<span class="ap-muted">$${escapeHtml(cur)}</span> &rarr; <strong>$${escapeHtml(next)}</strong>` +
-      `<br><span class="ap-diff ap-diff-${d.direction}">${escapeHtml(d.text)}</span>`
-    );
-  };
+  if (rows.length === 0) return "";
   return `<table class="ap-prices">
     <thead><tr><th>Package</th><th>Single</th><th>Monthly</th></tr></thead>
     <tbody>${rows
-      .map(
-        (r) =>
-          `<tr><td><strong>${escapeHtml(packageLabel(r.pkg))}</strong></td><td>${cell(r.current_single, r.new_single)}</td><td>${cell(r.current_monthly, r.new_monthly)}</td></tr>`
+      .map((r) =>
+        r.discontinue
+          ? `<tr><td>${packageCell(r)}</td><td colspan="2"><span class="ap-discontinued">Discontinued</span></td></tr>`
+          : `<tr><td>${packageCell(r)}</td><td>${priceCell(r.current_single, r.new_single)}</td><td>${priceCell(r.current_monthly, r.new_monthly)}</td></tr>`
       )
       .join("")}</tbody>
   </table>`;
+}
+
+/** Every change at one site: existing packages, new packages, services. */
+function siteChanges(s: PackagePriceSite): string {
+  const newPkgs = (s.new_packages ?? [])
+    .map(
+      (p) =>
+        `<tr><td><strong>${escapeHtml(p.name)}</strong><br><span class="ap-tag ap-tag-new">new</span></td><td><strong>$${escapeHtml(p.single)}</strong></td><td><strong>$${escapeHtml(p.monthly)}</strong></td></tr>`
+    )
+    .join("");
+  const services = s.services ?? [];
+  const pkgTable =
+    s.rows.length || newPkgs
+      ? `<table class="ap-prices">
+    <thead><tr><th>Package</th><th>Single</th><th>Monthly</th></tr></thead>
+    <tbody>${s.rows
+      .map((r) =>
+        r.discontinue
+          ? `<tr><td>${packageCell(r)}</td><td colspan="2"><span class="ap-discontinued">Discontinued</span></td></tr>`
+          : `<tr><td>${packageCell(r)}</td><td>${priceCell(r.current_single, r.new_single)}</td><td>${priceCell(r.current_monthly, r.new_monthly)}</td></tr>`
+      )
+      .join("")}${newPkgs}</tbody>
+  </table>`
+      : "";
+  const serviceTable = services.length
+    ? `<table class="ap-prices ap-services">
+    <thead><tr><th>Lube &amp; detail</th><th colspan="2">Price</th></tr></thead>
+    <tbody>${services
+      .map(
+        (v) =>
+          `<tr><td><strong>${escapeHtml(v.name)}</strong><br><span class="ap-tag">${escapeHtml(serviceCategoryLabel(v.category))}</span></td><td colspan="2">${priceCell(v.current, v.new)}</td></tr>`
+      )
+      .join("")}</tbody>
+  </table>`
+    : "";
+  return pkgTable + serviceTable;
+}
+
+function fileGallery(token: string, files: LinkFile[]): string {
+  return `<div class="ap-files">${files
+    .map((f) => {
+      const href = `/forms/approve/${escapeHtml(token)}/file/${f.index}`;
+      const name = escapeHtml(f.name);
+      return f.mime.startsWith("image/")
+        ? `<a class="ap-thumb" href="${href}" target="_blank" rel="noopener"><img src="${href}" alt="${name}" loading="lazy"><span>${name}</span></a>`
+        : `<a class="ap-filelink" href="${href}" target="_blank" rel="noopener">${name}</a>`;
+    })
+    .join("")}</div>`;
 }
 
 function decodePngDataUrl(dataUrl: string): Uint8Array | null {
@@ -501,6 +648,16 @@ const PAGE_CSS = `
   .ap-prices td { padding: 6px 12px 6px 0; border-top: 1px solid #eef1f5; vertical-align: top; }
   .ap-muted { color: #666; }
   .ap-diff { font-size: 12px; font-weight: 700; }
+  .ap-struck { text-decoration: line-through; color: #8a1c1c; }
+  .ap-discontinued { display: inline-block; padding: 2px 8px; border-radius: 4px; background: #fee2e2; color: #b91c1c; font-weight: 700; font-size: 13px; }
+  .ap-tag { display: inline-block; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .03em; color: #666; }
+  .ap-tag-new { color: #047857; }
+  .ap-services { margin-top: 10px; }
+  .ap-files { display: flex; flex-wrap: wrap; gap: 10px; }
+  .ap-thumb { display: flex; flex-direction: column; width: 150px; text-decoration: none; color: var(--splash-navy); font-size: 12px; }
+  .ap-thumb img { width: 150px; height: 110px; object-fit: contain; background: #f4f6f9; border: 1px solid #dfe5ee; border-radius: 4px; }
+  .ap-thumb span { overflow-wrap: anywhere; margin-top: 3px; }
+  .ap-filelink { display: inline-block; padding: 8px 12px; border: 1px solid #dfe5ee; border-radius: 4px; color: var(--splash-blue); font-size: 14px; }
   .ap-diff-up { color: #047857; }
   .ap-diff-down { color: #b91c1c; }
   .ap-site { margin: 14px 0 4px; font-weight: 700; color: var(--splash-navy); }

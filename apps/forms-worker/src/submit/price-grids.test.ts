@@ -236,12 +236,12 @@ describe("resolvePriceGrids (multi-site)", () => {
     if (!r.ok) expect(r.fields.packages).toContain("listed twice");
   });
 
-  it("refuses a site added with nothing ticked instead of dropping it", async () => {
+  it("refuses a site added with no changes instead of dropping it", async () => {
     stubSites({ "122": { name: "Binghamton", pkgs: ["express"] } });
     const payload: Record<string, unknown> = { packages: [{ site: "122", rows: [] }] };
     const r = await resolvePriceGrids(ENV, MULTI, payload);
     expect(r.ok).toBe(false);
-    if (!r.ok) expect(r.fields.packages).toContain("tick at least one package");
+    if (!r.ok) expect(r.fields.packages).toContain("add at least one change");
   });
 
   it("names the site in a row error", async () => {
@@ -252,5 +252,118 @@ describe("resolvePriceGrids (multi-site)", () => {
     const r = await resolvePriceGrids(ENV, MULTI, payload);
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.fields.packages).toBe("Binghamton (122): Express: enter both current prices");
+  });
+});
+
+describe("resolvePriceGrids (menu changes)", () => {
+  it("stores a discontinued package with no prices, and a rename with its prices", async () => {
+    stubSites({ "122": { name: "Binghamton", pkgs: ["works", "ultimate"] } });
+    const payload: Record<string, unknown> = {
+      packages: [
+        {
+          site: "122",
+          rows: [
+            { ...row("works", "12", "24.99", "14"), rename_to: "  Bath " },
+            { pkg: "ultimate", current_single: "", current_monthly: "", new_single: "", new_monthly: "", discontinue: true }
+          ]
+        }
+      ]
+    };
+    expect(await resolvePriceGrids(ENV, MULTI, payload)).toEqual({ ok: true });
+    const site = (payload.packages as Array<{ rows: unknown[] }>)[0]!;
+    expect(site.rows).toEqual([
+      { ...row("works", "12.00", "24.99", "14.00", "24.99"), rename_to: "Bath" },
+      { pkg: "ultimate", current_single: "", current_monthly: "", new_single: "", new_monthly: "", discontinue: true }
+    ]);
+  });
+
+  it("drops a rename to the package's own name", async () => {
+    stubSites({ "122": { name: "Binghamton", pkgs: ["ultra_bath"] } });
+    const payload: Record<string, unknown> = {
+      packages: [{ site: "122", rows: [{ ...row("ultra_bath", "20", "40"), rename_to: "ultra bath" }] }]
+    };
+    await resolvePriceGrids(ENV, MULTI, payload);
+    const r = (payload.packages as Array<{ rows: Array<Record<string, unknown>> }>)[0]!.rows[0]!;
+    expect(r.rename_to).toBeUndefined();
+  });
+
+  it("accepts a site whose only changes are a new package and a service", async () => {
+    stubSites({ "122": { name: "Binghamton", pkgs: ["bath"] } });
+    const payload: Record<string, unknown> = {
+      packages: [
+        {
+          site: "122",
+          rows: [],
+          new_packages: [{ name: "Bubble Bath", single: "25", monthly: "49.99" }],
+          services: [
+            { category: "lube", name: "Full synthetic oil change", current: "79.99", new: "84.99" },
+            { category: "detail", name: "Interior detail", current: "150", new: "" }
+          ]
+        }
+      ]
+    };
+    expect(await resolvePriceGrids(ENV, MULTI, payload)).toEqual({ ok: true });
+    expect(payload.packages).toEqual([
+      {
+        site: "122",
+        site_name: "Binghamton",
+        rows: [],
+        new_packages: [{ name: "Bubble Bath", single: "25.00", monthly: "49.99" }],
+        services: [
+          { category: "lube", name: "Full synthetic oil change", current: "79.99", new: "84.99" },
+          { category: "detail", name: "Interior detail", current: "150.00", new: "150.00" }
+        ]
+      }
+    ]);
+  });
+
+  it("refuses a new package that already exists at the site", async () => {
+    stubSites({ "122": { name: "Binghamton", pkgs: ["bubble_bath"] } });
+    const payload: Record<string, unknown> = {
+      packages: [{ site: "122", rows: [], new_packages: [{ name: "Bubble Bath", single: "25", monthly: "49" }] }]
+    };
+    const r = await resolvePriceGrids(ENV, MULTI, payload);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.fields.packages).toContain("already exists here");
+  });
+
+  it("refuses a service with no category or no current price", async () => {
+    stubSites({ "122": { name: "Binghamton", pkgs: ["bath"] } });
+    const payload: Record<string, unknown> = {
+      packages: [
+        {
+          site: "122",
+          rows: [],
+          services: [
+            { category: "", name: "Wax", current: "10", new: "12" },
+            { category: "lube", name: "Oil change", current: "", new: "50" }
+          ]
+        }
+      ]
+    };
+    const r = await resolvePriceGrids(ENV, MULTI, payload);
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.fields.packages).toContain("choose Lube or Detail");
+      expect(r.fields.packages).toContain("Oil change: enter the current price");
+    }
+  });
+
+  it("ignores wholly blank new-package and service rows", async () => {
+    stubSites({ "122": { name: "Binghamton", pkgs: ["bath"] } });
+    const payload: Record<string, unknown> = {
+      packages: [
+        {
+          site: "122",
+          rows: [row("bath", "10", "20", "11")],
+          new_packages: [{ name: "", single: "", monthly: "" }],
+          services: [{ category: "lube", name: "", current: "", new: "" }]
+        }
+      ]
+    };
+    expect(await resolvePriceGrids(ENV, MULTI, payload)).toEqual({ ok: true });
+    const s = (payload.packages as Array<Record<string, unknown>>)[0]!;
+    expect(s.new_packages).toBeUndefined();
+    expect(s.services).toBeUndefined();
   });
 });

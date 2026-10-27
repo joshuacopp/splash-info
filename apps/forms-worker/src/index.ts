@@ -73,6 +73,7 @@ import { handleStaticAsset } from "./uploads/static.js";
 import { handleLookupResolve } from "./lookup/resolve.js";
 import { handlePackagesForSite } from "./lookup/packages.js";
 import {
+  handleApprovalLinkFile,
   handleApprovalLinkPage,
   handleApprovalLinkSubmit
 } from "./approval-links/handlers.js";
@@ -237,6 +238,15 @@ export default {
     const packagesMatch = url.pathname.match(/^\/forms\/api\/packages\/([^/]+)$/);
     if (packagesMatch && packagesMatch[1] && req.method === "POST") {
       return handlePackagesForSite(env, req, packagesMatch[1]);
+    }
+
+    // GET /forms/approve/{token}/file/{n} — the request's uploads, for the
+    // approver, under the same link checks as the page.
+    const approveFileMatch = url.pathname.match(
+      /^\/forms\/approve\/([A-Za-z0-9_-]{20,100})\/file\/(\d{1,3})$/
+    );
+    if (approveFileMatch && approveFileMatch[1] && approveFileMatch[2] && req.method === "GET") {
+      return handleApprovalLinkFile(env, approveFileMatch[1], Number(approveFileMatch[2]));
     }
 
     // GET|POST /forms/approve/{token} — emailed no-sign-in approval page.

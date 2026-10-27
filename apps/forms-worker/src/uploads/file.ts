@@ -104,7 +104,13 @@ export async function handleFileUpload(
   }
 
   const safeFilename = sanitizeFilename(file.name) || `upload.${sniffed.ext}`;
-  const r2_key = `form-submission-files/${form.id}/${pendingSubmissionId}/${fieldKey}/${safeFilename}`;
+  // A multi-file field keeps every upload, so two files that happen to share
+  // a name ("sign.png" from two folders) must not overwrite each other. A
+  // single-file field keeps the bare name, as before: re-uploading REPLACES.
+  const storedName = field.allowMultiple
+    ? `${crypto.randomUUID().slice(0, 8)}-${safeFilename}`
+    : safeFilename;
+  const r2_key = `form-submission-files/${form.id}/${pendingSubmissionId}/${fieldKey}/${storedName}`;
 
   try {
     await env.FORMS_FILES.put(r2_key, file.stream(), {

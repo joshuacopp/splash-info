@@ -698,6 +698,16 @@ function displayText(field: Field, value: unknown): string {
     }
     case "file":
     case "signature": {
+      // A multi-file field holds a list: name every file.
+      if (Array.isArray(value)) {
+        return value
+          .map((v) => {
+            const o = (v ?? {}) as Record<string, unknown>;
+            return typeof o.original_filename === "string" ? o.original_filename : typeof o.r2_key === "string" ? o.r2_key : "";
+          })
+          .filter(Boolean)
+          .join(", ");
+      }
       if (value && typeof value === "object") {
         const obj = value as Record<string, unknown>;
         if (typeof obj.original_filename === "string") return obj.original_filename;

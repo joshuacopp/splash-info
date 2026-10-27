@@ -55,6 +55,30 @@ export function parseSubmitFormData(
     if (field.type === "heading" || field.type === "image") continue;
     if (field.type === "lookup") continue; // Brief 93 — server resolves at submit time
 
+    if (field.type === "file" && field.allowMultiple) {
+      // JSON array of {r2_key, name} written by wireMultiFile. Only the keys
+      // are carried forward: the submit handler HEADs each one and enriches
+      // it from R2, so a client-supplied name or size is never trusted.
+      const raw = formData.get(`${field.key}_r2`);
+      let keys: string[] = [];
+      if (typeof raw === "string" && raw.trim()) {
+        try {
+          const parsed = JSON.parse(raw) as unknown;
+          if (Array.isArray(parsed)) {
+            keys = parsed
+              .map((e) => (e && typeof (e as { r2_key?: unknown }).r2_key === "string" ? (e as { r2_key: string }).r2_key : ""))
+              .filter((k) => k !== "");
+          }
+        } catch {
+          keys = [];
+        }
+      }
+      if (keys.length > 0 || field.required) {
+        payload[field.key] = [...new Set(keys)].map((r2_key) => ({ r2_key }));
+      }
+      continue;
+    }
+
     if (field.type === "file") {
       // Client-side JS uploaded the file via /forms/api/upload and wrote
       // the resulting r2_key into a hidden input named `${key}_r2`. The

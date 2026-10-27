@@ -10,7 +10,7 @@
 //   - a used link is refused
 
 import { afterEach, describe, expect, it } from "vitest";
-import { handleApprovalLinkPage, handleApprovalLinkSubmit } from "./handlers.js";
+import { handleApprovalLinkFile, handleApprovalLinkPage, handleApprovalLinkSubmit } from "./handlers.js";
 
 const FORM = "13c8b3ca-1411-4d99-9e97-01397e3e3a12";
 const SUB = "6ecafdce-8a68-46fe-84ba-4409c84abf5b";
@@ -23,6 +23,10 @@ const ENV = {
   SUPABASE_URL: "https://sb.test",
   SUPABASE_SERVICE_KEY: "k",
   FORMS_FILES: {
+    get: async (key: string) =>
+      key.endsWith("-sign.png")
+        ? { body: "PNGBYTES", httpMetadata: { contentType: "image/png" } }
+        : null,
     put: async (key: string) => {
       puts.push(key);
     }
@@ -43,8 +47,8 @@ function linkRow(over: Record<string, unknown> = {}) {
   };
 }
 
-function submissionRow(stage = "dan_review") {
-  return {
+function submissionRow(stage = "dan_review", payload?: Record<string, unknown>, extraFields: unknown[] = []) {
+  const row = {
     id: SUB,
     form_id: FORM,
     form_version_id: "v1",
@@ -113,6 +117,9 @@ function submissionRow(stage = "dan_review") {
     },
     files: []
   };
+  if (payload) (row as { payload: unknown }).payload = payload;
+  (row.version.schema.fields as unknown[]).push(...extraFields);
+  return row;
 }
 
 interface Call {
@@ -125,7 +132,7 @@ interface Call {
 const realFetch = globalThis.fetch;
 let calls: Call[] = [];
 
-function stub(opts: { link?: unknown; stage?: string; claimWins?: boolean } = {}) {
+function stub(opts: { link?: unknown; stage?: string; claimWins?: boolean; payload?: Record<string, unknown>; extraFields?: unknown[] } = {}) {
   calls = [];
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = new URL(typeof input === "string" ? input : input.toString());
@@ -143,7 +150,7 @@ function stub(opts: { link?: unknown; stage?: string; claimWins?: boolean } = {}
       return new Response(null, { status: 204 });
     }
     if (url.pathname === "/rest/v1/form_submissions") {
-      if (method === "GET") return json([submissionRow(opts.stage)]);
+      if (method === "GET") return json([submissionRow(opts.stage, opts.payload, opts.extraFields)]);
       return json([{ id: SUB }]);
     }
     throw new Error(`unexpected fetch ${method} ${url.pathname}`);
@@ -295,5 +302,60 @@ describe("POST /forms/approve/{token}", () => {
       body: new FormData()
     });
     expect((await handleApprovalLinkSubmit(ENV, req, TOKEN, ctx)).status).toBe(403);
+  });
+});
+
+describe("approval page: menu changes and graphics", () => {
+  const SIGN = `form-submission-files/${FORM}/${SUB}/signage/ab12cd34-sign.png`;
+  const OTHER = `form-submission-files/${FORM}/someone-else/signage/x.png`;
+  const multi = {
+    packages: [
+      {
+        site: "122",
+        site_name: "Binghamton",
+        rows: [
+          { pkg: "works", current_single: "12.00", current_monthly: "24.99", new_single: "14.00", new_monthly: "24.99", rename_to: "Bath" },
+          { pkg: "ultimate", current_single: "", current_monthly: "", new_single: "", new_monthly: "", discontinue: true }
+        ],
+        new_packages: [{ name: "Bubble Bath", single: "25.00", monthly: "49.99" }],
+        services: [{ category: "lube", name: "Full synthetic oil change", current: "79.99", new: "84.99" }]
+      }
+    ],
+    signage: [
+      { r2_key: SIGN, mime: "image/png", size_bytes: 8, original_filename: "sign.png" },
+      { r2_key: OTHER, mime: "image/png", size_bytes: 8, original_filename: "not-mine.png" }
+    ]
+  };
+  const fields = [
+    { id: "g", key: "packages", type: "package_price_grid", label: "Sites and changes", required: true, keyFieldKey: "", keyColumn: "pricing_simple.site", multiSite: true },
+    { id: "s", key: "signage", type: "file", label: "Signage & graphics", required: false, allowMultiple: true }
+  ];
+
+  it("shows renames, discontinues, new packages, services and the graphics", async () => {
+    stub({ payload: multi, extraFields: fields });
+    const html = await (await page()).text();
+    expect(html).toContain("Works</strong> &rarr; <strong>Bath");
+    expect(html).toContain("Discontinued");
+    expect(html).toContain("Bubble Bath");
+    expect(html).toContain("Full synthetic oil change");
+    expect(html).toContain("+$5.00 (+6.3%)");
+    // Only the request's OWN upload is offered, addressed by position.
+    expect(html).toContain(`/forms/approve/${TOKEN}/file/0`);
+    expect(html).not.toContain("not-mine.png");
+  });
+
+  it("serves the request's own file through the link, and nothing else", async () => {
+    stub({ payload: multi, extraFields: fields });
+    const ok = await handleApprovalLinkFile(ENV, TOKEN, 0);
+    expect(ok.status).toBe(200);
+    expect(ok.headers.get("Content-Type")).toBe("image/png");
+    expect(ok.headers.get("Content-Disposition")).toContain("inline");
+    // Index 1 would be the other submission's key -- it is never listed.
+    expect((await handleApprovalLinkFile(ENV, TOKEN, 1)).status).toBe(404);
+  });
+
+  it("stops serving files once the link is used", async () => {
+    stub({ payload: multi, extraFields: fields, link: linkRow({ used_at: "2026-10-27T12:00:00Z" }) });
+    expect((await handleApprovalLinkFile(ENV, TOKEN, 0)).status).toBe(404);
   });
 });

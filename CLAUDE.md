@@ -3251,6 +3251,22 @@ URL-based — service bindings don't apply to those.
   publish re-injects a site_number field. `forms-public.js` carries a copy of
   `packageLabel`; edit it with the Edit tool, not sed -- a shell edit once
   dropped the regex backslash and split names on the letter "s".
+  Menu changes (2026-10-27): a row may carry `rename_to` (display name) or
+  `discontinue: true` (its four prices are then ""); a site may carry
+  `new_packages` `{name, single, monthly}` and `services`
+  `{category: "lube"|"detail", name, current, new}` -- one price each. Rows
+  may be EMPTY when a site's changes are only new packages / services. All
+  four are display records: nothing writes pricing_simple.
+- **Multi-file uploads** (2026-10-27) - `file` fields with
+  `allowMultiple: true` now actually work (before, only the first picked file
+  uploaded). Payload is a LIST of the usual file objects; the hidden
+  `${key}_r2` input carries JSON; each stored name gets an 8-char random
+  prefix so two same-named files can't overwrite each other (single-file
+  fields keep the bare name, so re-uploading still replaces). The emailed
+  approval link serves a request's own uploads at
+  `/forms/approve/{token}/file/{n}` -- addressed by POSITION in the
+  submission's payload, never by R2 key, under the same link checks as the
+  page.
 - **outbound_emails table** (Brief 127) - Shared queue of fully-rendered
   outbound emails. Single Power Automate flow polls every 5 minutes
   and drains the queue regardless of which worker enqueued the row.

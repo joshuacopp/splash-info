@@ -185,6 +185,29 @@ const SHELL_CSS = `
   .price-grid-prices .row-head { font-size: 14px; color: var(--splash-navy); }
   .price-grid-prices input { width: 100%; padding: 8px 10px; border: 1px solid #ccc; border-radius: 4px; font-size: 16px; }
   .price-grid-prices input::placeholder { color: #9aa3ad; }
+  /* Menu changes on a ticked package row: rename / discontinue. A
+     discontinued row asks nothing about price, so its price boxes and the
+     rename box go away and the name is struck through. */
+  .price-grid-extras { display: none; flex-wrap: wrap; gap: 6px 20px; align-items: center; margin: 4px 0 6px; }
+  .price-grid-row.is-on .price-grid-extras { display: flex; }
+  .price-grid-rename { display: flex; align-items: center; gap: 8px; flex: 1 1 260px; font-size: 14px; color: var(--splash-navy); }
+  .price-grid-rename input { flex: 1; padding: 6px 8px; border: 1px solid #ccc; border-radius: 4px; font-size: 15px; }
+  .price-grid-discontinue { display: flex; align-items: center; gap: 6px; font-size: 14px; color: #8a1c1c; cursor: pointer; }
+  .price-grid-row.is-discontinued .price-grid-prices,
+  .price-grid-row.is-discontinued .price-grid-rename { display: none; }
+  .price-grid-row.is-discontinued .price-grid-pick span { text-decoration: line-through; color: #8a1c1c; }
+  /* New packages / lube & detail services: one line per item, wrapping on phones. */
+  .price-grid-subhead { margin: 12px 0 4px; font-size: 13px; font-weight: 700; text-transform: uppercase; color: #666; }
+  .price-grid-item { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-bottom: 6px; }
+  .price-grid-item input, .price-grid-item select { padding: 7px 8px; border: 1px solid #ccc; border-radius: 4px; font-size: 15px; background: #fff; }
+  .price-grid-item [data-np-name], .price-grid-item [data-sv-name] { flex: 2 1 180px; }
+  .price-grid-item [data-np-single], .price-grid-item [data-np-monthly],
+  .price-grid-item [data-sv-current], .price-grid-item [data-sv-new] { flex: 1 1 90px; min-width: 0; }
+  /* Multi-file upload list. */
+  .field-file-list { list-style: none; margin: 8px 0 0; padding: 0; }
+  .field-file-list li { display: flex; align-items: center; gap: 12px; padding: 6px 10px; border: 1px solid #dfe5ee; border-radius: 4px; margin-bottom: 4px; background: #fff; font-size: 14px; }
+  .field-file-list li span { flex: 1; overflow-wrap: anywhere; }
+  .field-file-remove { background: none; border: 0; color: var(--splash-error); cursor: pointer; text-decoration: underline; font-size: 13px; }
   /* Multi-site: one bordered section per site, the add box beneath them. */
   .price-grid-site { border: 1px solid #dfe5ee; border-radius: 8px; padding: 10px 12px; margin-bottom: 12px; background: var(--splash-gray-light); }
   .price-grid-site-head { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 16px; margin-bottom: 4px; }

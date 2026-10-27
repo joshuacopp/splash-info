@@ -106,6 +106,10 @@
   }
 
   function wireFile(wrap, slug, formEl) {
+    if (wrap.getAttribute("data-multiple") === "1") {
+      wireMultiFile(wrap, slug, formEl);
+      return;
+    }
     var input = wrap.querySelector('input[type="file"]');
     var fieldKey = wrap.getAttribute("data-field-key");
     if (!input || !fieldKey) return;
@@ -129,6 +133,95 @@
       var pendingId = currentPendingId(formEl);
       if (!pendingId) return;
       uploadFile(file, slug, pendingId, fieldKey, hidden, wrap);
+    });
+  }
+
+  // Multi-file field. Every picked file uploads on its own (one at a time, so
+  // a slow connection shows steady progress instead of N stalled bars) and
+  // joins a list the submitter can prune. The hidden `${key}_r2` input holds
+  // the JSON array of {r2_key, name} the server reads; the picker is cleared
+  // after each pick so the same file can be re-added after a Remove.
+  function wireMultiFile(wrap, slug, formEl) {
+    var input = wrap.querySelector('input[type="file"]');
+    var hidden = wrap.querySelector('input[type="hidden"][data-r2-key="1"]');
+    var list = wrap.querySelector('[data-file-list="1"]');
+    var fieldKey = wrap.getAttribute("data-field-key");
+    if (!input || !hidden || !list || !fieldKey) return;
+
+    var files = []; // { r2_key, name }
+
+    function sync() {
+      hidden.value = files.length ? JSON.stringify(files) : "";
+      try { hidden.dispatchEvent(new Event("input", { bubbles: true })); } catch (_) {}
+    }
+    function draw() {
+      list.innerHTML = "";
+      files.forEach(function (f, i) {
+        var li = document.createElement("li");
+        var name = document.createElement("span");
+        name.textContent = f.name;
+        var rm = document.createElement("button");
+        rm.type = "button";
+        rm.className = "field-file-remove";
+        rm.textContent = "Remove";
+        rm.addEventListener("click", function () {
+          files.splice(i, 1);
+          draw();
+          sync();
+        });
+        li.appendChild(name);
+        li.appendChild(rm);
+        list.appendChild(li);
+      });
+    }
+    function uploadOne(file) {
+      var pendingId = currentPendingId(formEl);
+      var fd = new FormData();
+      fd.append("pending_submission_id", pendingId);
+      fd.append("field_key", fieldKey);
+      fd.append("file", file);
+      return fetch("/forms/api/upload/" + encodeURIComponent(slug), { method: "POST", body: fd })
+        .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, body: j }; }); })
+        .then(function (res) {
+          if (!res.ok || res.body.error) throw new Error(res.body.error || "Upload failed");
+          files.push({ r2_key: res.body.r2_key, name: file.name });
+          draw();
+          sync();
+        });
+    }
+
+    input.addEventListener("change", function () {
+      var picked = Array.prototype.slice.call(input.files || []);
+      input.value = "";
+      if (!picked.length) return;
+      clearError(wrap);
+      var failed = [];
+      var chain = Promise.resolve();
+      picked.forEach(function (file, i) {
+        chain = chain.then(function () {
+          showStatus(wrap, "Uploading " + file.name + " (" + (i + 1) + " of " + picked.length + ")…");
+          return uploadOne(file).catch(function (e) {
+            failed.push(file.name + ": " + humanizeError(e && e.message));
+          });
+        });
+      });
+      chain.then(function () {
+        clearStatus(wrap);
+        if (failed.length) showError(wrap, "Not uploaded - " + failed.join("; "));
+      });
+    });
+
+    // Draft resume rewrites the hidden value and fires `change` on it.
+    hidden.addEventListener("change", function () {
+      try {
+        var v = JSON.parse(hidden.value || "[]");
+        files = Array.isArray(v)
+          ? v.filter(function (f) { return f && typeof f.r2_key === "string"; })
+          : [];
+      } catch (e) {
+        files = [];
+      }
+      draw();
     });
   }
 
@@ -468,10 +561,25 @@
 
   function setRowOn(row, on) {
     row.classList.toggle("is-on", on);
-    var box = row.querySelector('input[type="checkbox"]');
+    var box = row.querySelector("[data-row-pick]");
     if (box) box.checked = on;
+    syncRequired(row);
+  }
+
+  // Current prices are required on a ticked row -- unless it is being
+  // discontinued, which asks nothing about price.
+  function syncRequired(row) {
+    var on = row.classList.contains("is-on");
+    var disc = row.classList.contains("is-discontinued");
     var inputs = row.querySelectorAll('[data-price="cs"], [data-price="cm"]');
-    Array.prototype.forEach.call(inputs, function (el) { el.required = on; });
+    Array.prototype.forEach.call(inputs, function (el) { el.required = on && !disc; });
+  }
+
+  function setRowDiscontinued(row, disc) {
+    row.classList.toggle("is-discontinued", disc);
+    var box = row.querySelector("[data-row-discontinue]");
+    if (box) box.checked = disc;
+    syncRequired(row);
   }
 
   /** One tickable package row. `onChange` runs after any edit. */
@@ -487,6 +595,7 @@
     var box = document.createElement("input");
     box.type = "checkbox";
     box.id = id;
+    box.setAttribute("data-row-pick", "1");
     var name = document.createElement("span");
     // textContent: package names are data, not markup. Display label only;
     // data-pkg keeps the code, which is what the server matches on.
@@ -514,6 +623,35 @@
     grid.appendChild(priceInput("nm", false, prior && prior.new_monthly));
     row.appendChild(grid);
 
+    // Menu changes. Shown only once the row is ticked (CSS), like the prices.
+    var extras = document.createElement("div");
+    extras.className = "price-grid-extras";
+    var renameLabel = document.createElement("label");
+    renameLabel.className = "price-grid-rename";
+    var renameText = document.createElement("span");
+    renameText.textContent = "Rename to";
+    var rename = document.createElement("input");
+    rename.type = "text";
+    rename.maxLength = 100;
+    rename.autocomplete = "off";
+    rename.placeholder = "Leave blank to keep the name";
+    rename.setAttribute("data-row-rename", "1");
+    rename.value = (prior && prior.rename_to) || "";
+    renameLabel.appendChild(renameText);
+    renameLabel.appendChild(rename);
+    var discLabel = document.createElement("label");
+    discLabel.className = "price-grid-discontinue";
+    var disc = document.createElement("input");
+    disc.type = "checkbox";
+    disc.setAttribute("data-row-discontinue", "1");
+    var discText = document.createElement("span");
+    discText.textContent = "Discontinue this package";
+    discLabel.appendChild(disc);
+    discLabel.appendChild(discText);
+    extras.appendChild(renameLabel);
+    extras.appendChild(discLabel);
+    row.appendChild(extras);
+
     box.addEventListener("change", function () {
       setRowOn(row, box.checked);
       onChange();
@@ -522,7 +660,13 @@
       syncPlaceholders(row);
       onChange();
     });
+    rename.addEventListener("input", onChange);
+    disc.addEventListener("change", function () {
+      setRowDiscontinued(row, disc.checked);
+      onChange();
+    });
     setRowOn(row, !!prior);
+    setRowDiscontinued(row, !!(prior && prior.discontinue));
     syncPlaceholders(row);
     return row;
   }
@@ -536,13 +680,110 @@
         var el = row.querySelector('[data-price="' + k + '"]');
         return el ? el.value.trim() : "";
       };
-      out.push({
+      var item = {
         pkg: row.getAttribute("data-pkg"),
         current_single: get("cs"),
         current_monthly: get("cm"),
         new_single: get("ns"),
         new_monthly: get("nm")
-      });
+      };
+      var rename = row.querySelector("[data-row-rename]");
+      if (rename && rename.value.trim()) item.rename_to = rename.value.trim();
+      if (row.classList.contains("is-discontinued")) item.discontinue = true;
+      out.push(item);
+    });
+    return out;
+  }
+
+  function textInput(attr, value, placeholder, opts) {
+    var el = document.createElement("input");
+    el.type = "text";
+    el.autocomplete = "off";
+    el.setAttribute(attr, "1");
+    el.value = value || "";
+    if (placeholder) el.placeholder = placeholder;
+    if (opts && opts.price) {
+      el.inputMode = "decimal";
+      el.setAttribute("pattern", "\\$?[0-9,]{1,9}(\\.[0-9]{1,2})?");
+      el.title = "A price, e.g. 24.99";
+    }
+    if (opts && opts.maxLength) el.maxLength = opts.maxLength;
+    if (opts && opts.label) el.setAttribute("aria-label", opts.label);
+    return el;
+  }
+
+  function removeButton(onClick) {
+    var b = document.createElement("button");
+    b.type = "button";
+    b.className = "price-grid-link";
+    b.textContent = "Remove";
+    b.addEventListener("click", onClick);
+    return b;
+  }
+
+  /** A package the site doesn't sell yet: name + single + monthly. */
+  function buildNewPackageItem(prior, onChange) {
+    var el = document.createElement("div");
+    el.className = "price-grid-item price-grid-item-new";
+    el.appendChild(textInput("data-np-name", prior && prior.name, "New package name", { maxLength: 100, label: "New package name" }));
+    el.appendChild(textInput("data-np-single", prior && prior.single, "Single price", { price: true, label: "Single price" }));
+    el.appendChild(textInput("data-np-monthly", prior && prior.monthly, "Monthly price", { price: true, label: "Monthly price" }));
+    el.appendChild(removeButton(function () {
+      if (el.parentNode) el.parentNode.removeChild(el);
+      onChange();
+    }));
+    el.addEventListener("input", onChange);
+    return el;
+  }
+
+  /** A lube or detail service: one price, current -> new. */
+  function buildServiceItem(prior, onChange) {
+    var el = document.createElement("div");
+    el.className = "price-grid-item price-grid-item-service";
+    var cat = document.createElement("select");
+    cat.setAttribute("data-sv-category", "1");
+    cat.setAttribute("aria-label", "Service type");
+    [["", "Type…"], ["lube", "Lube"], ["detail", "Detail"]].forEach(function (o) {
+      var opt = document.createElement("option");
+      opt.value = o[0];
+      opt.textContent = o[1];
+      cat.appendChild(opt);
+    });
+    cat.value = (prior && prior.category) || "";
+    var cur = textInput("data-sv-current", prior && prior.current, "Current price", { price: true, label: "Current price" });
+    var next = textInput("data-sv-new", prior && prior.new, "New price", { price: true, label: "New price" });
+    // Blank new = unchanged, shown the same way as package rows.
+    var sync = function () { next.placeholder = cur.value.trim() || "Same as current"; };
+    el.appendChild(cat);
+    el.appendChild(textInput("data-sv-name", prior && prior.name, "Service name", { maxLength: 100, label: "Service name" }));
+    el.appendChild(cur);
+    el.appendChild(next);
+    el.appendChild(removeButton(function () {
+      if (el.parentNode) el.parentNode.removeChild(el);
+      onChange();
+    }));
+    el.addEventListener("input", function () { sync(); onChange(); });
+    el.addEventListener("change", onChange);
+    sync();
+    return el;
+  }
+
+  function readNewPackages(container) {
+    var out = [];
+    Array.prototype.forEach.call(container.querySelectorAll(".price-grid-item-new"), function (el) {
+      var v = function (a) { var i = el.querySelector("[" + a + "]"); return i ? i.value.trim() : ""; };
+      var item = { name: v("data-np-name"), single: v("data-np-single"), monthly: v("data-np-monthly") };
+      if (item.name || item.single || item.monthly) out.push(item);
+    });
+    return out;
+  }
+
+  function readServices(container) {
+    var out = [];
+    Array.prototype.forEach.call(container.querySelectorAll(".price-grid-item-service"), function (el) {
+      var v = function (a) { var i = el.querySelector("[" + a + "]"); return i ? i.value.trim() : ""; };
+      var item = { category: v("data-sv-category"), name: v("data-sv-name"), current: v("data-sv-current"), new: v("data-sv-new") };
+      if (item.name || item.current || item.new) out.push(item);
     });
     return out;
   }
@@ -665,7 +906,12 @@
     function serialize() {
       if (restoring) return; // don't overwrite a draft while it is rebuilt
       var out = sections.map(function (s) {
-        return { site: s.site, rows: readPriceRows(s.rowsEl) };
+        return {
+          site: s.site,
+          rows: readPriceRows(s.rowsEl),
+          new_packages: readNewPackages(s.npList),
+          services: readServices(s.svList)
+        };
       });
       hidden.value = out.length ? JSON.stringify(out) : "";
       // A Remove or Copy click fires no input event of its own, so autosave
@@ -701,10 +947,23 @@
               var el = row.querySelector('[data-price="' + pair[0] + '"]');
               if (el) el.value = pair[1];
             });
+          var rn = row.querySelector("[data-row-rename]");
+          if (rn) rn.value = r.rename_to || "";
           setRowOn(row, true);
+          setRowDiscontinued(row, !!r.discontinue);
           syncPlaceholders(row);
         });
         if (!hit) missing += 1;
+      });
+      // New packages and services are REPLACED, not appended: copying twice
+      // must not double them.
+      target.npList.innerHTML = "";
+      readNewPackages(first.npList).forEach(function (p) {
+        target.npList.appendChild(buildNewPackageItem(p, serialize));
+      });
+      target.svList.innerHTML = "";
+      readServices(first.svList).forEach(function (s) {
+        target.svList.appendChild(buildServiceItem(s, serialize));
       });
       var note = target.el.querySelector("[data-grid-copy-note]");
       if (note) {
@@ -715,7 +974,7 @@
       serialize();
     }
 
-    function addSection(site, siteName, packages, priorRows) {
+    function addSection(site, siteName, packages, priorRows, priorNew, priorServices) {
       if (sections.length === 0) sitesEl.innerHTML = "";
       var label = siteName ? siteName + " (" + site + ")" : site;
       var el = document.createElement("div");
@@ -755,7 +1014,32 @@
         );
       });
 
-      var section = { site: site, siteName: siteName, label: label, el: el, rowsEl: rowsEl };
+      // New packages + lube/detail services: per site, each an add-list.
+      function addList(title, addText, build, priors) {
+        var h = document.createElement("p");
+        h.className = "price-grid-subhead";
+        h.textContent = title;
+        var list = document.createElement("div");
+        (priors || []).forEach(function (p) { list.appendChild(build(p, serialize)); });
+        var add = document.createElement("button");
+        add.type = "button";
+        add.className = "price-grid-link";
+        add.textContent = addText;
+        add.addEventListener("click", function () {
+          var item = build(null, serialize);
+          list.appendChild(item);
+          var first = item.querySelector("input, select");
+          if (first) first.focus();
+        });
+        el.appendChild(h);
+        el.appendChild(list);
+        el.appendChild(add);
+        return list;
+      }
+      var npList = addList("New packages", "+ Add new package", buildNewPackageItem, priorNew);
+      var svList = addList("Lube & detail services", "+ Add lube/detail service", buildServiceItem, priorServices);
+
+      var section = { site: site, siteName: siteName, label: label, el: el, rowsEl: rowsEl, npList: npList, svList: svList };
       copy.addEventListener("click", function () { copyFromFirst(section); });
       remove.addEventListener("click", function () {
         sections = sections.filter(function (s) { return s !== section; });
@@ -839,7 +1123,7 @@
           // A site that no longer resolves is dropped rather than shown
           // empty; the rest of the draft still comes back.
           if (j && j.packages.length && j.site_name) {
-            addSection(j.site || s.site, j.site_name, j.packages, s.rows);
+            addSection(j.site || s.site, j.site_name, j.packages, s.rows, s.new_packages, s.services);
           }
         });
         restoring = false;

@@ -127,6 +127,12 @@ export function payloadValidatorFor(field: Field): z.ZodTypeAny | null {
         size_bytes: z.number().int().positive(),
         original_filename: z.string().nullable()
       });
+      if (field.allowMultiple) {
+        // A list, even of one. The per-submission file count is capped in the
+        // submit handler (HARD_LIMITS), which sees every file field at once.
+        const list = z.array(fileSchema);
+        return field.required ? list.min(1, "Attach at least one file") : list.optional();
+      }
       return field.required ? fileSchema : fileSchema.nullable().optional();
     }
 
@@ -143,22 +149,59 @@ export function payloadValidatorFor(field: Field): z.ZodTypeAny | null {
       // prices from current, and checked every package exists at the site --
       // this is the shape check that runs after that.
       const price = z.string().regex(/^\d{1,6}\.\d{2}$/, "Enter a price");
-      const rows = z.array(
-        z.object({
+      // A discontinued package asks nothing about price, so its four prices
+      // are "" -- and only then.
+      const row = z
+        .object({
           pkg: z.string().min(1).max(200),
-          current_single: price,
-          current_monthly: price,
-          new_single: price,
-          new_monthly: price
+          current_single: z.string(),
+          current_monthly: z.string(),
+          new_single: z.string(),
+          new_monthly: z.string(),
+          rename_to: z.string().min(1).max(100).optional(),
+          discontinue: z.boolean().optional()
         })
-      );
+        .superRefine((r, ctx) => {
+          if (r.discontinue) return;
+          for (const k of ["current_single", "current_monthly", "new_single", "new_monthly"] as const) {
+            if (!price.safeParse(r[k]).success) {
+              ctx.addIssue({ code: z.ZodIssueCode.custom, path: [k], message: "Enter a price" });
+            }
+          }
+        });
+      const rows = z.array(row);
       if (field.multiSite) {
         const sites = z.array(
-          z.object({
-            site: z.string().regex(/^\d{3}$/, "Site number must be 3 digits"),
-            site_name: z.string().max(200),
-            rows: rows.min(1, "Select at least one package at each site")
-          })
+          z
+            .object({
+              site: z.string().regex(/^\d{3}$/, "Site number must be 3 digits"),
+              site_name: z.string().max(200),
+              rows,
+              new_packages: z
+                .array(
+                  z.object({
+                    name: z.string().min(1).max(100),
+                    single: price,
+                    monthly: price
+                  })
+                )
+                .optional(),
+              services: z
+                .array(
+                  z.object({
+                    category: z.enum(["lube", "detail"]),
+                    name: z.string().min(1).max(100),
+                    current: price,
+                    new: price
+                  })
+                )
+                .optional()
+            })
+            .refine(
+              (s) =>
+                s.rows.length + (s.new_packages?.length ?? 0) + (s.services?.length ?? 0) > 0,
+              "Each site needs at least one change"
+            )
         );
         return field.required
           ? sites.min(1, "Add at least one site")

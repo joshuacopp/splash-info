@@ -1,7 +1,9 @@
 // Generator for the "Price change approval" form (slug: price-change).
 //
-// WHAT IT IS FOR. Marketing requests a package price change at one or more
-// sites in a single request; Dan
+// WHAT IT IS FOR. Marketing requests menu and price changes at one or more
+// sites in a single request -- repricing, renaming or discontinuing packages,
+// adding new packages, lube/detail service prices, plus signage and graphics
+// for the whole request; Dan
 // Petrelle approves (with a signature) or denies (with a note); the requester
 // is emailed the result either way.
 //
@@ -48,7 +50,7 @@ push({
   key: "packages",
   id: idFor("packages"),
   type: "package_price_grid",
-  label: "Sites and packages",
+  label: "Sites and changes",
   required: true,
   multiSite: true,
   keyFieldKey: "",
@@ -56,7 +58,23 @@ push({
   // The site list is what tells one queued request from another.
   show_in_queue: true,
   helpText:
-    "Add each site by its 3-digit number, then tick the packages changing there. Enter current prices as they are today; leave a new price blank if it isn't changing."
+    "Add each site by its 3-digit number. At each site you can reprice, rename or discontinue a package, add a new package, and add lube and detail service prices. Enter current prices as they are today; leave a new price blank if it isn't changing."
+} as Field);
+
+// Signage / graphics for the whole request, not per site (operator decision,
+// 2026-10-27). Images and PDFs; the approver sees them from the emailed link
+// (approval-links/ serves the request's own uploads) and image thumbnails
+// print on the decision PDF.
+push({
+  key: "signage",
+  id: idFor("signage"),
+  type: "file",
+  label: "Signage & graphics",
+  required: false,
+  allowMultiple: true,
+  allowedMimeTypes: ["image/*", "application/pdf"],
+  maxSizeMb: 25,
+  helpText: "Optional. Images or PDFs for this request; add as many as needed."
 } as Field);
 
 push({

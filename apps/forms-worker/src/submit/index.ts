@@ -175,63 +175,78 @@ export async function handleSubmit(
   let totalFiles = 0;
   for (const field of version.schema.fields) {
     if (field.type !== "file" && field.type !== "signature") continue;
-    const entry = payload[field.key];
-    if (!entry || typeof entry !== "object") continue;
-    const r2_key = (entry as { r2_key?: unknown }).r2_key;
-    if (typeof r2_key !== "string" || r2_key.length === 0) continue;
+    const value = payload[field.key];
+    // A multi-file field holds a LIST of references; everything else holds
+    // one. Same checks either way, per reference.
+    const isList = field.type === "file" && field.allowMultiple === true;
+    const entries: unknown[] = isList ? (Array.isArray(value) ? value : []) : [value];
+    const enriched: Record<string, unknown>[] = [];
 
-    const expectedPrefix = `form-submission-files/${form.id}/${pendingSubmissionId}/${field.key}/`;
-    if (!r2_key.startsWith(expectedPrefix)) {
-      return jsonError(
-        400,
-        `bad_r2_key: file reference for ${field.key} doesn't match this submission`
+    for (const entry of entries) {
+      if (!entry || typeof entry !== "object") continue;
+      const r2_key = (entry as { r2_key?: unknown }).r2_key;
+      if (typeof r2_key !== "string" || r2_key.length === 0) continue;
+
+      const expectedPrefix = `form-submission-files/${form.id}/${pendingSubmissionId}/${field.key}/`;
+      if (!r2_key.startsWith(expectedPrefix)) {
+        return jsonError(
+          400,
+          `bad_r2_key: file reference for ${field.key} doesn't match this submission`
+        );
+      }
+
+      let head: R2Object | null;
+      try {
+        head = await env.FORMS_FILES.head(r2_key);
+      } catch (err) {
+        console.error("[forms] handleSubmit: R2 head threw", err);
+        return jsonError(500, "r2_head_failed: please try again");
+      }
+      if (!head) {
+        return jsonError(
+          400,
+          `missing_file: file for ${field.key} not found in storage. Re-upload and try again.`
+        );
+      }
+
+      totalFiles += 1;
+      totalBytes += head.size;
+      if (totalFiles > HARD_LIMITS.PER_SUBMISSION_MAX_FILES) {
+        return jsonError(413, "too_many_files");
+      }
+      if (totalBytes > HARD_LIMITS.PER_SUBMISSION_MAX_BYTES) {
+        return jsonError(413, "submission_too_large");
+      }
+
+      const mime = head.httpMetadata?.contentType ?? "application/octet-stream";
+      const originalFilename = head.customMetadata?.originalFilename ?? null;
+
+      enriched.push(
+        field.type === "signature"
+          ? { r2_key, format: field.format }
+          : {
+              r2_key,
+              mime,
+              size_bytes: head.size,
+              original_filename: originalFilename
+            }
       );
+
+      fileRowsToInsert.push({
+        submissionId: pendingSubmissionId,
+        fieldKey: field.key,
+        r2Key: r2_key,
+        mime,
+        sizeBytes: head.size,
+        originalFilename
+      });
     }
 
-    let head: R2Object | null;
-    try {
-      head = await env.FORMS_FILES.head(r2_key);
-    } catch (err) {
-      console.error("[forms] handleSubmit: R2 head threw", err);
-      return jsonError(500, "r2_head_failed: please try again");
+    if (isList) {
+      if (Array.isArray(value)) payload[field.key] = enriched;
+    } else if (enriched[0]) {
+      payload[field.key] = enriched[0];
     }
-    if (!head) {
-      return jsonError(
-        400,
-        `missing_file: file for ${field.key} not found in storage. Re-upload and try again.`
-      );
-    }
-
-    totalFiles += 1;
-    totalBytes += head.size;
-    if (totalFiles > HARD_LIMITS.PER_SUBMISSION_MAX_FILES) {
-      return jsonError(413, "too_many_files");
-    }
-    if (totalBytes > HARD_LIMITS.PER_SUBMISSION_MAX_BYTES) {
-      return jsonError(413, "submission_too_large");
-    }
-
-    const mime = head.httpMetadata?.contentType ?? "application/octet-stream";
-    const originalFilename = head.customMetadata?.originalFilename ?? null;
-
-    payload[field.key] =
-      field.type === "signature"
-        ? { r2_key, format: field.format }
-        : {
-            r2_key,
-            mime,
-            size_bytes: head.size,
-            original_filename: originalFilename
-          };
-
-    fileRowsToInsert.push({
-      submissionId: pendingSubmissionId,
-      fieldKey: field.key,
-      r2Key: r2_key,
-      mime,
-      sizeBytes: head.size,
-      originalFilename
-    });
   }
 
   // -----------------------------------------------------------------

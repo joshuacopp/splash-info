@@ -153,7 +153,18 @@ function MultiLabels({ field, values }: { field: MultiField; values: unknown[] }
   );
 }
 
-function FileCell({ field: _field, value }: { field: FileField; value: unknown }) {
+function FileCell({ field, value }: { field: FileField; value: unknown }) {
+  // Multi-file fields hold a list; render each entry the way a single one is.
+  if (Array.isArray(value)) {
+    if (value.length === 0) return <Em />;
+    return (
+      <span className="flex flex-wrap items-center gap-1">
+        {value.map((v, i) => (
+          <FileCell key={i} field={field} value={v} />
+        ))}
+      </span>
+    );
+  }
   if (!value || typeof value !== "object") return <Em />;
   const obj = value as Record<string, unknown>;
   const r2Key = typeof obj.r2_key === "string" ? obj.r2_key : null;
