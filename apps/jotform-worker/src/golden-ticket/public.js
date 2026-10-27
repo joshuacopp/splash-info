@@ -104,7 +104,18 @@ async function check(request, env, base) {
   const today = todayEastern();
   const promo = lookupPromo(promos, today);
   if (!promo) {
-    return json({ ok: true, plate, promo: null, wins: [] });
+    // No promo has started. Say when the next one does, so "not set up" and
+    // "not started yet" read differently at the counter.
+    const next = promos
+      .filter((p) => p.starts_on > today)
+      .sort((a, b) => (a.starts_on < b.starts_on ? -1 : 1))[0];
+    return json({
+      ok: true,
+      plate,
+      promo: null,
+      next_promo: next ? { name: next.name, starts_on: next.starts_on } : null,
+      wins: []
+    });
   }
 
   const rows =

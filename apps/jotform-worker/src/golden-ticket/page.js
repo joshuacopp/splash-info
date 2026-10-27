@@ -93,7 +93,12 @@ const CLIENT_JS = `
       .then(function(res){
         var b = res.b;
         if (!res.ok || !b.ok) { out.innerHTML = '<div class="verdict warn">' + esc((b && b.error) || 'Could not check. Try again.') + '</div>'; return; }
-        if (!b.promo) { out.innerHTML = '<div class="verdict warn">No golden ticket promo has been set up yet.<small>Ask CRD before awarding.</small></div>'; return; }
+        if (!b.promo) {
+          out.innerHTML = b.next_promo
+            ? '<div class="verdict warn">The golden ticket promo hasn’t started yet.<small>' + esc(b.next_promo.name) + ' starts ' + esc(fmt(b.next_promo.starts_on)) + '. Ask CRD before awarding.</small></div>'
+            : '<div class="verdict warn">No golden ticket promo has been set up yet.<small>Ask CRD before awarding.</small></div>';
+          return;
+        }
         var promoLine = esc(b.promo.name) + ' (' + fmt(b.promo.starts_on) + ' \\u2013 ' + fmt(b.promo.ends_on) + ')' +
           (b.promo.running ? '' : ' \\u2014 this promo has ended');
         if (!b.wins.length) {
