@@ -11,13 +11,16 @@
 //     it is the same address.
 //   * No coverage row for the site (a new site, or the Test site): every
 //     region supervisor instead, so a win is never silently un-routed.
-// Each person gets their OWN queue row rather than a CC: nothing in the
-// monorepo sends with CC yet, so whether the drain flow passes CC through
-// is unproven, and a separate row is known to arrive.
+// ONE email per win: the agent is To, the supervisor CC (on the fallback,
+// the first supervisor To and the rest CC). Both drains pass CC through --
+// the PA flow since 2026-10-28 (Graph ccRecipients, tested) -- so this halves
+// the send count against Exchange's per-minute cap and a reply-all reaches
+// everyone. Before that date each person got their own row.
 //
 // DEDUP: (jotform-worker, golden-ticket-crd-notify, submission_id, recipient)
-// is the queue's unique key, so JotForm re-delivering the webhook (or the
-// same submission being edited) never emails anyone twice.
+// is the queue's unique key, and recipient is the To address only. JotForm
+// re-delivering the webhook (or the same submission being edited) re-enqueues
+// the same To and is a no-op.
 //
 // Backfill does NOT notify -- it is a bulk catch-up, and emailing CRD about
 // every historical win at once would bury the live ones.
@@ -86,22 +89,23 @@ export async function notifyCrdOfWin(env, submissionId) {
     }
 
     const { subject, html, text } = render(win);
-    for (const to of recipients) {
-      try {
-        await enqueueOutboundEmail(env, {
-          source_worker: SOURCE_WORKER,
-          source_kind: SOURCE_KIND,
-          source_id: submissionId,
-          recipient: to,
-          subject,
-          body_html: html,
-          body_text: text
-        });
-      } catch (err) {
-        console.error(`[golden-ticket.notify] enqueue failed for ${to}`, err);
-      }
+    const [to, ...cc] = recipients;
+    try {
+      await enqueueOutboundEmail(env, {
+        source_worker: SOURCE_WORKER,
+        source_kind: SOURCE_KIND,
+        source_id: submissionId,
+        recipient: to,
+        ...(cc.length ? { cc } : {}),
+        subject,
+        body_html: html,
+        body_text: text
+      });
+    } catch (err) {
+      console.error(`[golden-ticket.notify] enqueue failed for ${submissionId}`, err);
+      return;
     }
-    console.log(`[golden-ticket.notify] ${submissionId} -> ${recipients.join(", ")}`);
+    console.log(`[golden-ticket.notify] ${submissionId} -> to ${to}${cc.length ? `, cc ${cc.join(", ")}` : ""}`);
   } catch (err) {
     console.error(`[golden-ticket.notify] failed for ${submissionId}`, err);
   }

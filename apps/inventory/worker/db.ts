@@ -21,7 +21,7 @@
 // overlay children by inventoryGate, so nothing here needs to know about
 // parent_code.
 
-import type { SupabaseClient } from "@splash/db-supabase";
+import type { OutboundEmailPayload, SupabaseClient } from "@splash/db-supabase";
 import { enqueueOutboundEmail, logSysadminAudit } from "@splash/db-supabase";
 import type { Session } from "@splash/types/session";
 // (userCanAccessLocation used to be imported here and never called — dropped
@@ -1910,6 +1910,42 @@ async function resolveReportRecipients(
 }
 
 /**
+ * Queue ONE email for a report: the first recipient is To (the site address
+ * when there is one -- resolveDerivedEmails lists it first) and everyone else
+ * is CC. Both queue drains pass CC through (the PA flow since 2026-10-28), so
+ * a site's report is one send against Exchange's per-minute cap instead of one
+ * per person, and the visit report's comparison sheet is attached once.
+ *
+ * The queue dedups on the To address only, which still makes a double-tapped
+ * Submit a permanent no-op. queued / duplicates count PEOPLE, not queue rows,
+ * so the toasts ("Sending to 3 recipients") read exactly as before. The trade:
+ * the email now succeeds or fails as a unit rather than per person.
+ */
+async function enqueueReportEmail(
+  env: { SUPABASE_URL: string; SUPABASE_SERVICE_KEY: string },
+  recipients: ReportRecipient[],
+  payload: Omit<OutboundEmailPayload, "recipient" | "cc">,
+  logTag: string
+): Promise<{ queued: number; duplicates: number; delivered: string[] }> {
+  const [to, ...cc] = recipients.map((r) => r.email);
+  if (!to) return { queued: 0, duplicates: 0, delivered: [] };
+  const everyone = [to, ...cc];
+  try {
+    const result = await enqueueOutboundEmail(env, {
+      ...payload,
+      recipient: to,
+      ...(cc.length ? { cc } : {})
+    });
+    return result.was_duplicate
+      ? { queued: 0, duplicates: everyone.length, delivered: everyone }
+      : { queued: everyone.length, duplicates: 0, delivered: everyone };
+  } catch (err) {
+    console.error(`[${logTag}] enqueue failed for ${everyone.join(", ")}`, err);
+    return { queued: 0, duplicates: 0, delivered: [] };
+  }
+}
+
+/**
  * Load the whole dataset with NO location scoping.
  *
  * The report is rendered from the visited site's own data, and the caller has
@@ -1980,37 +2016,25 @@ export async function sendVisitReport(
   // double-clicked Resend button is still absorbed.
   const sourceId = opts.resend ? `${visitId}:r${Math.floor(Date.now() / 60000)}` : visitId;
 
-  let queued = 0;
-  let duplicates = 0;
-  const delivered: string[] = [];
-
-  // Sequential, not Promise.all. This is at most a handful of rows, and one
-  // failing recipient must not abort the others — a rejected Promise.all would
-  // lose the successes it already had.
-  for (const r of recipients) {
-    try {
-      const result = await enqueueOutboundEmail(env, {
-        source_worker: "inventory",
-        source_kind: "visit-report",
-        source_id: sourceId,
-        recipient: r.email,
-        subject,
-        body_html: bodyHtml,
-        body_text: bodyText,
-        // base64 rather than r2_key. The comparison sheet is tens of KB, and
-        // an r2_key would mean widening the bucket union in @splash/db-supabase,
-        // binding a new bucket on FORMS-worker's wrangler.toml, and extending
-        // its claim-endpoint dispatch — three coordinated changes across two
-        // workers to save a few KB per queue row.
-        attachments: [attachment]
-      });
-      if (result.was_duplicate) duplicates++;
-      else queued++;
-      delivered.push(r.email);
-    } catch (err) {
-      console.error(`[inventory.report] enqueue failed for ${r.email}`, err);
-    }
-  }
+  const { queued, duplicates, delivered } = await enqueueReportEmail(
+    env,
+    recipients,
+    {
+      source_worker: "inventory",
+      source_kind: "visit-report",
+      source_id: sourceId,
+      subject,
+      body_html: bodyHtml,
+      body_text: bodyText,
+      // base64 rather than r2_key. The comparison sheet is tens of KB, and
+      // an r2_key would mean widening the bucket union in @splash/db-supabase,
+      // binding a new bucket on FORMS-worker's wrangler.toml, and extending
+      // its claim-endpoint dispatch — three coordinated changes across two
+      // workers to save a few KB per queue row.
+      attachments: [attachment]
+    },
+    "inventory.report"
+  );
 
   // `via` rides back so the toast can say "site, RM and 2 others" rather than
   // just a count, and so a surprising recipient is traceable without opening
@@ -2068,30 +2092,19 @@ export async function sendDeliveryReceipt(
   // resend.
   const sourceId = opts.resend ? `${deliveryId}:r${Math.floor(Date.now() / 60000)}` : deliveryId;
 
-  let queued = 0;
-  let duplicates = 0;
-  const delivered: string[] = [];
-
-  // Sequential for the same reason as the visit report: one bad recipient must
-  // not discard the sends that already succeeded.
-  for (const r of recipients) {
-    try {
-      const result = await enqueueOutboundEmail(env, {
-        source_worker: "inventory",
-        source_kind: "delivery-receipt",
-        source_id: sourceId,
-        recipient: r.email,
-        subject,
-        body_html: bodyHtml,
-        body_text: bodyText
-      });
-      if (result.was_duplicate) duplicates++;
-      else queued++;
-      delivered.push(r.email);
-    } catch (err) {
-      console.error(`[inventory.receipt] enqueue failed for ${r.email}`, err);
-    }
-  }
+  const { queued, duplicates, delivered } = await enqueueReportEmail(
+    env,
+    recipients,
+    {
+      source_worker: "inventory",
+      source_kind: "delivery-receipt",
+      source_id: sourceId,
+      subject,
+      body_html: bodyHtml,
+      body_text: bodyText
+    },
+    "inventory.receipt"
+  );
 
   return {
     queued,

@@ -404,26 +404,31 @@ export async function runMxDailyDigest(env: MxDigestEnv, now = new Date()): Prom
     const digestSite: DigestSite = { name: site.name, dayLabel: label, workOrders };
     const { html, text, subject } = renderDailyDigestEmail(digestSite, appsWebBase);
 
-    for (const recipient of unique) {
-      try {
-        await enqueueOutboundEmail(env, {
-          source_worker: "workorders-worker",
-          source_kind: "workorders-daily-digest",
-          // Date + location, so a re-run on the same day is a no-op via the
-          // queue's dedup index rather than a second email.
-          source_id: `${startIso.slice(0, 10)}:${site.mxLocationId}`,
-          recipient,
-          subject,
-          body_html: html,
-          body_text: text,
-          attachments: []
-        });
-        result.emailsQueued += 1;
-      } catch (err) {
-        // Per-recipient, so one bad address cannot cost the other their email.
-        result.failedRecipients.push(recipient);
-        console.error(`[mx-digest] enqueue failed for ${recipient}:`, err);
-      }
+    // ONE email per site: the site address To, the RM CC. Both queue drains
+    // pass CC through (the PA flow since 2026-10-28), so this is one send
+    // against Exchange's per-minute cap instead of two. The queue dedups on
+    // the To address, so a same-day re-run is still a no-op. emailsQueued
+    // counts emails, not people.
+    // Non-empty: the zero-recipient case returned above.
+    const [recipient, ...cc] = unique as [string, ...string[]];
+    try {
+      await enqueueOutboundEmail(env, {
+        source_worker: "workorders-worker",
+        source_kind: "workorders-daily-digest",
+        // Date + location, so a re-run on the same day is a no-op via the
+        // queue's dedup index rather than a second email.
+        source_id: `${startIso.slice(0, 10)}:${site.mxLocationId}`,
+        recipient,
+        ...(cc.length ? { cc } : {}),
+        subject,
+        body_html: html,
+        body_text: text,
+        attachments: []
+      });
+      result.emailsQueued += 1;
+    } catch (err) {
+      result.failedRecipients.push(...unique);
+      console.error(`[mx-digest] enqueue failed for ${unique.join(", ")}:`, err);
     }
   }
 
