@@ -108,7 +108,7 @@ const CLIENT_JS = `
         }
         out.innerHTML = '<div class="verdict no">' + esc(b.plate) + ' has already won' +
           (b.wins.length > 1 ? ' ' + b.wins.length + ' times' : '') + '.' +
-          '<span class="say">Explain to the customer that the rule is one free unlimited win per customer, but that you can sign the ticket so they can give it to a friend or family member to redeem.</span>' +
+          '<span class="say">Explain to the customer that the rule is one free unlimited win per vehicle. You can sign the ticket so they can give it to a friend or family member, or bring it in with another vehicle.</span>' +
           '<small>' + promoLine + '</small></div>' +
           b.wins.map(function(w){
             return '<div class="win"><b>' + esc(PRIZE[w.prize_code] || w.prize || 'Prize') + '</b>' +
