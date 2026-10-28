@@ -64,8 +64,15 @@ const PRIZE_LABEL: Record<string, string> = {
   GTLIFE: "Free for life"
 };
 
-const TABS: { id: string; label: string; count: keyof WinsResponse["counts"] }[] = [
-  { id: "open", label: "To do", count: "open" },
+type Tab = { id: string; label: string; count: keyof WinsResponse["counts"] };
+
+// "My open" / "Supervisor open" come from CRD coverage (crd_site_coverage /
+// crd_regions) and only show for people who have some; the worker also picks
+// the default tab from the same facts.
+const MINE_TAB: Tab = { id: "mine", label: "My open", count: "mine" };
+const TEAM_TAB: Tab = { id: "team", label: "Supervisor open", count: "team" };
+const TABS: Tab[] = [
+  { id: "open", label: "All open", count: "open" },
   { id: "duplicates", label: "Duplicates", count: "duplicates" },
   { id: "done", label: "Done", count: "done" },
   { id: "void", label: "Void", count: "void" },
@@ -174,7 +181,7 @@ export default async function GoldenTicketPage({ searchParams }: PageProps) {
       </form>
 
       <nav className="mb-4 flex flex-wrap gap-2" aria-label="Status">
-        {TABS.map((t) => {
+        {[...(d.is_agent ? [MINE_TAB] : []), ...(d.is_supervisor ? [TEAM_TAB] : []), ...TABS].map((t) => {
           const active = d.status === t.id;
           const n = d.counts[t.count] ?? 0;
           return (

@@ -133,14 +133,26 @@ async function listWins(request, env, g) {
   const capReached = rows.length > WIN_CAP;
   if (capReached) rows.length = WIN_CAP;
 
+  const scope = await callerCoverage(env, g.session.email);
+  const isOpen = (r) => r.status === "new" || r.status === "in_progress";
+  const inMine = (r) => scope.mine.has(siteKey(r.site_number));
+  const inTeam = (r) => {
+    const k = siteKey(r.site_number);
+    return scope.team.has(k) || (scope.isSupervisor && !scope.covered.has(k));
+  };
+
   // Counts and duplicate partners come from the whole promo, BEFORE the
   // status / search filter, so a duplicate whose twin is already Done still
   // shows its twin.
-  const counts = { open: 0, new: 0, in_progress: 0, done: 0, void: 0, all: rows.length, duplicates: 0 };
+  const counts = { mine: 0, team: 0, open: 0, new: 0, in_progress: 0, done: 0, void: 0, all: rows.length, duplicates: 0 };
   const byPlate = new Map();
   for (const r of rows) {
     counts[r.status] = (counts[r.status] ?? 0) + 1;
-    if (r.status === "new" || r.status === "in_progress") counts.open++;
+    if (isOpen(r)) {
+      counts.open++;
+      if (inMine(r)) counts.mine++;
+      if (inTeam(r)) counts.team++;
+    }
     if (r.dup_count > 1) counts.duplicates++;
     if (r.plate_norm && r.promo_id && r.status !== "void") {
       const key = `${r.promo_id}|${r.plate_norm}`;
@@ -150,14 +162,20 @@ async function listWins(request, env, g) {
     }
   }
 
-  const status = url.searchParams.get("status") || "open";
+  // Default tab: your own sites if you are an agent, your regions if you only
+  // supervise, otherwise everything open (admins).
+  const status =
+    url.searchParams.get("status") ||
+    (scope.isAgent ? "mine" : scope.isSupervisor ? "team" : "open");
   const q = (url.searchParams.get("q") || "").trim().toLowerCase();
   const words = q.split(/\s+/).filter(Boolean);
   const qPlate = q.replace(/[^a-z0-9]/g, "").toUpperCase();
 
   const wins = rows
     .filter((r) => {
-      if (status === "open") return r.status === "new" || r.status === "in_progress";
+      if (status === "mine") return isOpen(r) && inMine(r);
+      if (status === "team") return isOpen(r) && inTeam(r);
+      if (status === "open") return isOpen(r);
       if (status === "duplicates") return r.dup_count > 1;
       if (STATUSES.includes(status)) return r.status === status;
       return true;
@@ -206,8 +224,54 @@ async function listWins(request, env, g) {
     current_promo_id: current ? current.id : null,
     status,
     can_admin: g.admin,
+    is_agent: scope.isAgent,
+    is_supervisor: scope.isSupervisor,
     lookup_path: link
   });
+}
+
+/** Site numbers as a comparable key: "090", "90" and 90 are the same site. */
+function siteKey(v) {
+  const n = Number.parseInt(String(v ?? "").replace(/\D/g, ""), 10);
+  return Number.isFinite(n) ? String(n) : "";
+}
+
+/**
+ * The caller's CRD coverage, from the same tables the win emails use:
+ *   mine    -- sites where they are crd_email (the agent)
+ *   team    -- every site in a region they supervise
+ *   covered -- every site with a coverage row; a supervisor's view also takes
+ *              wins at UNCOVERED sites, because those emails go to every
+ *              supervisor (golden-ticket/notify.js)
+ * Fail-soft to "no coverage": the tabs disappear, the queue still works.
+ */
+async function callerCoverage(env, email) {
+  const out = { mine: new Set(), team: new Set(), covered: new Set(), isAgent: false, isSupervisor: false };
+  const me = String(email ?? "").trim().toLowerCase();
+  if (!me) return out;
+  try {
+    const [coverage, regions] = await Promise.all([
+      sb(env, "crd_site_coverage", { query: { select: "site_number,crd_email,crd_region" } }),
+      sb(env, "crd_regions", { query: { select: "region,supervisor_email" } })
+    ]);
+    const myRegions = new Set(
+      (regions ?? [])
+        .filter((r) => String(r.supervisor_email ?? "").trim().toLowerCase() === me)
+        .map((r) => r.region)
+    );
+    out.isSupervisor = myRegions.size > 0;
+    for (const c of coverage ?? []) {
+      const k = siteKey(c.site_number);
+      if (!k) continue;
+      out.covered.add(k);
+      if (String(c.crd_email ?? "").trim().toLowerCase() === me) out.mine.add(k);
+      if (c.crd_region && myRegions.has(c.crd_region)) out.team.add(k);
+    }
+    out.isAgent = out.mine.size > 0;
+  } catch (err) {
+    console.error("[golden-ticket] coverage read failed", err);
+  }
+  return out;
 }
 
 /* ------------------------------------------------------------------------ */

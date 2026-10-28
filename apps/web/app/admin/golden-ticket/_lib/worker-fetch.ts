@@ -66,13 +66,17 @@ export interface GoldenTicketPromo {
 
 export interface WinsResponse {
   wins: GoldenTicketWin[];
-  counts: Record<"open" | "new" | "in_progress" | "done" | "void" | "all" | "duplicates", number>;
+  counts: Record<"mine" | "team" | "open" | "new" | "in_progress" | "done" | "void" | "all" | "duplicates", number>;
   cap_reached: boolean;
   promos: GoldenTicketPromo[];
   promo: string;
   current_promo_id: string | null;
   status: string;
   can_admin: boolean;
+  /** Caller is the CRD agent (crd_site_coverage.crd_email) for at least one site. */
+  is_agent: boolean;
+  /** Caller supervises at least one CRD region (crd_regions.supervisor_email). */
+  is_supervisor: boolean;
   lookup_path: string | null;
 }
 
