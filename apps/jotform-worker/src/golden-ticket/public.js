@@ -72,7 +72,8 @@ export async function handleGoldenTicketPublic(request, env, rest) {
   const base = `/jotform/golden-ticket/${encodeURIComponent(token)}`;
   try {
     if (rest.length === 1) {
-      return new Response(request.method === "HEAD" ? null : renderLookupPage({ base }), {
+      const formUrl = await goldenTicketFormUrl(env);
+      return new Response(request.method === "HEAD" ? null : renderLookupPage({ base, formUrl }), {
         status: 200,
         headers: { "Content-Type": "text/html; charset=utf-8", ...PRIVACY }
       });
@@ -84,6 +85,25 @@ export async function handleGoldenTicketPublic(request, env, rest) {
     return jsonError(500, "Something went wrong. Try again.");
   }
   return null;
+}
+
+/**
+ * Public URL of the golden ticket JotForm, for the page's "Continue to the
+ * win form" button. Found by tag rather than hard-coded so a copied form for
+ * a later promo is picked up by re-tagging. Null (no button) on any failure.
+ */
+async function goldenTicketFormUrl(env) {
+  try {
+    const rows = await sb(env, "jotform_forms", {
+      query: { access_tag: "eq.golden_ticket", enabled: "eq.true", select: "form_id", limit: "1" }
+    });
+    const id = Array.isArray(rows) && rows[0] ? rows[0].form_id : null;
+    if (!id || !env.JOTFORM_BASE_URL) return null;
+    return `${new URL(env.JOTFORM_BASE_URL).origin}/${encodeURIComponent(id)}`;
+  } catch (err) {
+    console.error("[golden-ticket] form url lookup failed", err);
+    return null;
+  }
 }
 
 function safeDecode(s) {

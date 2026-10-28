@@ -6,7 +6,11 @@
 // because this JS worker does not depend on @splash/storage-r2.
 const LOGO = "https://pub-88f136a47a5846d5b7e47fbce605719b.r2.dev/SplashScriptWhite_RedCar.png";
 
-export function renderLookupPage({ base }) {
+// JotForm field NAME of the plate question, used to pre-fill it via
+// ?licensePlatenumber=... Same name golden-ticket-01.sql reads.
+const PLATE_FIELD = "licensePlatenumber";
+
+export function renderLookupPage({ base, formUrl }) {
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -35,7 +39,7 @@ export function renderLookupPage({ base }) {
   <div id="out" aria-live="polite"></div>
   <p class="foot">For Splash staff only. Please don&rsquo;t share this link.</p>
 </main>
-<script type="application/json" id="cfg">${JSON.stringify({ base }).replace(/</g, "\\u003c")}</script>
+<script type="application/json" id="cfg">${JSON.stringify({ base, formUrl: formUrl || null, plateField: PLATE_FIELD }).replace(/</g, "\\u003c")}</script>
 <script>${CLIENT_JS}</script>
 </body>
 </html>`;
@@ -67,13 +71,26 @@ body{margin:0;background:#f4f5f9;color:#1c164e;font:16px/1.45 -apple-system,Blin
 .win .meta{color:#1c164ebb;margin-top:2px}
 .win img{display:block;width:100%;max-height:70vh;object-fit:contain;background:#eee;border-radius:10px;margin-top:10px}
 .cmp{margin-top:8px;font-size:14px;color:#1c164ebb}
+.cta{display:block;margin-top:14px;text-align:center;font-size:18px;font-weight:800;padding:14px 18px;border-radius:12px;background:#059669;color:#fff;text-decoration:none}
+.formlink{display:block;margin-top:22px;text-align:center;font-weight:700;color:#2b3491}
 .foot{margin-top:28px;text-align:center;font-size:13px;color:#1c164e77}
 `;
 
 // Plain ES5-ish: lives in a template string.
 const CLIENT_JS = `
 (function(){
-  var BASE = JSON.parse(document.getElementById('cfg').textContent).base;
+  var CFG = JSON.parse(document.getElementById('cfg').textContent);
+  var BASE = CFG.base;
+  // Same tab on purpose: from here the employee goes on to fill the form.
+  function formHref(plate){
+    return CFG.formUrl + (plate ? '?' + CFG.plateField + '=' + encodeURIComponent(plate) : '');
+  }
+  if (CFG.formUrl) {
+    var fl = document.createElement('a');
+    fl.className = 'formlink'; fl.href = formHref('');
+    fl.textContent = 'Go to the Golden Ticket win form ›';
+    document.querySelector('.foot').before(fl);
+  }
   var f = document.getElementById('f'), input = document.getElementById('plate');
   var out = document.getElementById('out'), go = document.getElementById('go');
   function esc(s){ return String(s).replace(/[&<>"']/g, function(c){
@@ -103,7 +120,10 @@ const CLIENT_JS = `
         var promoLine = esc(b.promo.name) + ' (' + fmt(b.promo.starts_on) + ' \\u2013 ' + fmt(b.promo.ends_on) + ')' +
           (b.promo.running ? '' : ' \\u2014 this promo has ended');
         if (!b.wins.length) {
-          out.innerHTML = '<div class="verdict ok">' + esc(b.plate) + ' has not won. OK to award.<small>' + promoLine + '</small></div>';
+          out.innerHTML = '<div class="verdict ok">' + esc(b.plate) + ' has not won. OK to award.<small>' + promoLine + '</small></div>' +
+            (CFG.formUrl && b.promo.running
+              ? '<a class="cta" href="' + esc(formHref(input.value.trim())) + '">Continue to the win form ›</a>'
+              : '');
           return;
         }
         out.innerHTML = '<div class="verdict no">' + esc(b.plate) + ' has already won' +
