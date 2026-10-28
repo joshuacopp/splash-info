@@ -61,6 +61,7 @@ body{margin:0;background:#f4f5f9;color:#1c164e;font:16px/1.45 -apple-system,Blin
 .no{background:#fde2e2;color:#a11d1d;border:2px solid #d64545}
 .warn{background:#fdf0c4;color:#7a5a00;border:2px solid #e0b100}
 .verdict small{display:block;font-weight:600;font-size:15px;margin-top:6px;opacity:.9}
+.verdict .say{display:block;font-weight:600;font-size:17px;line-height:1.4;margin-top:10px;color:#1c164e}
 .win{background:#fff;border:1px solid #dbdbdb;border-radius:14px;padding:14px;margin-top:12px}
 .win b{font-size:17px}
 .win .meta{color:#1c164ebb;margin-top:2px}
@@ -106,7 +107,9 @@ const CLIENT_JS = `
           return;
         }
         out.innerHTML = '<div class="verdict no">' + esc(b.plate) + ' has already won' +
-          (b.wins.length > 1 ? ' ' + b.wins.length + ' times' : '') + '. Do not award again.<small>' + promoLine + '</small></div>' +
+          (b.wins.length > 1 ? ' ' + b.wins.length + ' times' : '') + '.' +
+          '<span class="say">Explain to the customer that the rule is one free unlimited win per customer, but that you can sign the ticket so they can give it to a friend or family member to redeem.</span>' +
+          '<small>' + promoLine + '</small></div>' +
           b.wins.map(function(w){
             return '<div class="win"><b>' + esc(PRIZE[w.prize_code] || w.prize || 'Prize') + '</b>' +
               '<div class="meta">' + esc(fmt(w.won_on)) + ' at ' + esc(w.site) + '</div>' +
