@@ -102,7 +102,7 @@ SIGNATURE_MODE = "inline"
 # enqueues it on outbound_emails at submit time. Leave "off" until the
 # "Get MaxPass from Supabase" Power Automate flow is turned off, or customers
 # get two emails. See src/email/send-confirmation.ts.
-MAXPASS_CONFIRMATION_EMAIL = "off"
+MAXPASS_CONFIRMATION_EMAIL = "on"
 
 # Bindings (set with `wrangler secret put` for the *_KEY values):
 # SUPABASE_URL          — string (env var via dashboard or [vars])
