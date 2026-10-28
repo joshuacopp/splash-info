@@ -28,7 +28,7 @@
 // population later gains a second tile, or if another single-tool audience
 // appears.
 
-import { getMe } from "../../_lib/me";
+import { getMe, getMyFormAccessTags } from "../../_lib/me";
 import { DashboardTile } from "./_components/DashboardTile";
 import { SectionCard } from "./_components/SectionCard";
 import { GROUPS, TILES } from "./_lib/tiles";
@@ -41,8 +41,9 @@ const GROUP_DESCRIPTIONS: Record<string, string> = {
 
 export default async function AdminDashboardPage() {
   const session = await getMe().catch(() => null);
+  const tileCtx = { formAccessTags: session ? await getMyFormAccessTags() : [] };
 
-  const visibleTiles = TILES.filter((tile) => tile.visibleTo(session));
+  const visibleTiles = TILES.filter((tile) => tile.visibleTo(session, tileCtx));
 
   const visibleGroups = GROUPS.map((group) => ({
     group,

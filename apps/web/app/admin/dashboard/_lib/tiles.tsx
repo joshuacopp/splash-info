@@ -45,8 +45,16 @@ export interface Tile {
   href: string;
   /** Inline SVG icon (renders inside the white circle on the navy header). */
   icon: ReactNode;
-  /** Predicate that decides whether this tile renders for `session`. */
-  visibleTo: (session: Session | null) => boolean;
+  /** Predicate that decides whether this tile renders for `session`. Most
+   *  tiles only need the session; `ctx` carries what the session does not. */
+  visibleTo: (session: Session | null, ctx: TileContext) => boolean;
+}
+
+/** Extra visibility inputs the Session does not carry. Fetched only by the
+ *  dashboard pages (see getMyFormAccessTags in app/_lib/me.ts). */
+export interface TileContext {
+  /** form_access_grants tags, e.g. "golden_ticket". */
+  formAccessTags: string[];
 }
 
 import type {
@@ -523,10 +531,9 @@ export const TILES: ReadonlyArray<Tile> = [
     description: "Free unlimited winners to set up in Micrologic, and the site lookup link.",
     href: "/admin/golden-ticket",
     icon: ticketIcon,
-    // Admin tier only, though CRD reach the page too: their access is the
-    // golden_ticket form access tag, which the session does not carry, so a
-    // tile predicate cannot see it. CRD bookmark the page; the worker decides.
-    visibleTo: isAdminTier
+    // Admin tier, or the golden_ticket form access tag (CRD). The tag is not
+    // on the Session, so it arrives via ctx; the worker still decides access.
+    visibleTo: (s, ctx) => isAdminTier(s) || ctx.formAccessTags.includes("golden_ticket")
   },
   {
     id: "pending-approvals",

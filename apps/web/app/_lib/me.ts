@@ -97,6 +97,42 @@ export const getMe = cache(async (): Promise<Session | null> => {
 });
 
 /**
+ * The caller's form access tags (form_access_grants), e.g. `golden_ticket`.
+ * Only the dashboard tile grid needs these, so they are a separate call rather
+ * than part of /api/me, which runs on every page. Never throws: any failure is
+ * an empty list, which hides tag-gated tiles without blanking the dashboard.
+ */
+export const getMyFormAccessTags = cache(async (): Promise<string[]> => {
+  try {
+    const cookieHeader = (await cookies()).toString();
+    let resp: Response;
+    try {
+      const { env } = await getCloudflareContext({ async: true });
+      if (!env.DASHBOARD_WORKER) throw new Error("no binding");
+      resp = await env.DASHBOARD_WORKER.fetch(
+        new Request("https://internal/api/me/form-access-tags", {
+          method: "GET",
+          headers: { Cookie: cookieHeader }
+        })
+      );
+    } catch {
+      const base = process.env.NEXT_PUBLIC_DASHBOARD_WORKER_URL;
+      const h = await headers();
+      const origin = base ?? `${h.get("x-forwarded-proto") ?? "https"}://${h.get("host") ?? "localhost:3000"}`;
+      resp = await fetch(`${origin}/api/me/form-access-tags`, {
+        headers: { Cookie: cookieHeader },
+        cache: "no-store"
+      });
+    }
+    if (!resp.ok) return [];
+    const body = (await resp.json()) as { tags?: unknown };
+    return Array.isArray(body.tags) ? body.tags.filter((t): t is string => typeof t === "string") : [];
+  } catch {
+    return [];
+  }
+});
+
+/**
  * Map a UserRole to a human-readable label for header display. Default
  * branch handles forward-compat: any new role added to UserRole later
  * (regional_manager, etc.) renders as "Admin" until a label lands here.

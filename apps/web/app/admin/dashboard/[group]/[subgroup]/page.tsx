@@ -19,7 +19,7 @@
 
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { getMe } from "../../../../_lib/me";
+import { getMe, getMyFormAccessTags } from "../../../../_lib/me";
 import { GROUPS, SUBGROUPS, TILES, type TileGroup } from "../../_lib/tiles";
 import { DashboardTile } from "../../_components/DashboardTile";
 
@@ -50,12 +50,13 @@ export default async function DashboardSubgroupPage({ params }: PageProps) {
   }
 
   const session = await getMe().catch(() => null);
+  const tileCtx = { formAccessTags: session ? await getMyFormAccessTags() : [] };
 
   const tiles = TILES.filter(
     (tile) =>
       tile.group === group.id &&
       tile.subgroup === subgroup.id &&
-      tile.visibleTo(session)
+      tile.visibleTo(session, tileCtx)
   );
 
   if (tiles.length === 0) {

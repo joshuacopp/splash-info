@@ -9,6 +9,11 @@
 //   POST /api/forced-reset  — authenticated user fulfilling the
 //                             must_change_password gate; sets new password
 //                             and clears the flag.
+//   GET  /api/me/form-access-tags — the caller's form access tags
+//                             (form_access_grants), as {tags: string[]}.
+//                             Separate from /api/me because only the
+//                             dashboard tile grid needs it, and /api/me runs
+//                             on every page render.
 //   GET  /api/me            — returns the caller's Session as JSON. Used by
 //                             apps/web's root layout to populate the Header
 //                             with email + role. Cache-Control: no-store so
@@ -179,6 +184,9 @@ export default {
     // isOriginAllowed gate.
     if (pathname === "/api/session-resume" && method === "GET") {
       return handleSessionResume(request, env);
+    }
+    if (pathname === "/api/me/form-access-tags" && method === "GET") {
+      return handleMyFormAccessTags(request, env);
     }
     if (pathname === "/api/me" && method === "GET") {
       // Read-only — no isOriginAllowed gate. Browsers don't send Origin on
@@ -712,6 +720,46 @@ async function handleMe(request: Request, env: Env): Promise<Response> {
       "Content-Type": "application/json",
       "Cache-Control": "no-store"
     }
+  });
+}
+
+/**
+ * GET /api/me/form-access-tags — which form access tags the caller holds.
+ *
+ * Feeds the dashboard's tile predicates: a tag such as `golden_ticket` grants
+ * a page that neither role nor tools describe, and the Session does not carry
+ * tags. A UX hint only -- every tagged surface re-checks the grant itself.
+ * A failed read answers an empty list (the tile hides; the page still works
+ * by URL) rather than an error that would blank the dashboard.
+ */
+async function handleMyFormAccessTags(request: Request, env: Env): Promise<Response> {
+  const auth = await authenticate(request, env);
+  if (auth.status !== "authenticated") {
+    return jsonError(401, "unauthorized");
+  }
+  let tags: string[] = [];
+  try {
+    const url = new URL("/rest/v1/form_access_grants", env.SUPABASE_URL);
+    url.searchParams.set("user_id", `eq.${auth.session.userId}`);
+    url.searchParams.set("select", "tag");
+    const resp = await fetch(url.toString(), {
+      headers: {
+        apikey: env.SUPABASE_SERVICE_KEY,
+        Authorization: `Bearer ${env.SUPABASE_SERVICE_KEY}`
+      }
+    });
+    if (resp.ok) {
+      const rows = (await resp.json()) as { tag: unknown }[];
+      tags = rows.map((r) => r.tag).filter((t): t is string => typeof t === "string").sort();
+    } else {
+      console.error("[me.form-access-tags] read failed", resp.status);
+    }
+  } catch (err) {
+    console.error("[me.form-access-tags] read threw", err);
+  }
+  return new Response(JSON.stringify({ tags }), {
+    status: 200,
+    headers: { "Content-Type": "application/json", "Cache-Control": "no-store" }
   });
 }
 
