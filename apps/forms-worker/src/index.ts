@@ -155,6 +155,7 @@ import {
 } from "./admin/email-queue.js";
 import { runDailyCleanup } from "./cron/cleanup.js";
 import { runDailyApprovalDigest } from "./cron/approval-digest.js";
+import { runCloudflareEmailDrain } from "./email-queue/cloudflare-drain.js";
 
 export interface Env {
   SUPABASE_URL: string;
@@ -196,6 +197,15 @@ export interface Env {
    *  wrangler.toml before promo announcements with attachments land
    *  cleanly. */
   PROMO_FILES?: R2Bucket;
+  /** 2026-10-28 — Cloudflare Email Service binding (`[[send_email]]`) for
+   *  the outbound_emails pilot drain (email-queue/cloudflare-drain.ts).
+   *  Optional: unbound, the drain skips. Only source_kinds routed to
+   *  'cloudflare' in outbound_email_routes are ever sent through it. */
+  EMAIL?: SendEmail;
+  /** Fallback sender for the Cloudflare drain when a route row has no
+   *  from_address. Must be on a domain onboarded with
+   *  `wrangler email sending enable`. */
+  CF_EMAIL_FROM?: string;
 }
 
 export default {
@@ -772,6 +782,10 @@ export default {
   //
   //   "0 11 * * *"  — Brief 97 daily R2 orphan cleanup (11:00 UTC)
   //   "0 12 * * *"  — Brief 121 daily Pending Approvals digest (12:00 UTC)
+  //   "* * * * *"   — Cloudflare Email Service drain for outbound_emails
+  //                   (2026-10-28 pilot). MUST stay an explicit branch: the
+  //                   fall-through below would otherwise run the daily R2
+  //                   cleanup every minute.
   //
   // The [observability.logs] block from Brief 89 covers scheduled
   // invocations automatically (eventType: scheduled in CF dashboard).
@@ -784,6 +798,17 @@ export default {
     env: Env,
     ctx: ExecutionContext
   ): Promise<void> {
+    if (event.cron === "* * * * *") {
+      ctx.waitUntil(
+        runCloudflareEmailDrain(env)
+          .then((result) => {
+            // Quiet when idle -- this fires 1,440 times a day.
+            if (result.claimed > 0) console.log("[forms.email-queue.cloudflare] result", result);
+          })
+          .catch((err) => console.error("[forms.email-queue.cloudflare] drain failed", err))
+      );
+      return;
+    }
     if (event.cron === "0 12 * * *") {
       ctx.waitUntil(
         runDailyApprovalDigest(env).then((result) => {

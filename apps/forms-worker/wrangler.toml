@@ -117,6 +117,9 @@ routes = [
 ]
 
 [vars]
+# Fallback sender for the Cloudflare Email drain when an outbound_email_routes
+# row has no from_address (2026-10-28 pilot).
+CF_EMAIL_FROM = "notifications@splashcarwashes.info"
 # MFA enforcement (layer 3). Read by @splash/auth authenticate(): a user who has
 # a VERIFIED factor but whose session is still aal1 is treated as
 # unauthenticated. Non-enrolled users are unaffected regardless.
@@ -191,5 +194,16 @@ invocation_logs = true
 #   - 11:30 UTC  workorders-worker MaintainX user/team sync (Brief 71)
 #   - 12:00 UTC  forms-worker Pending Approvals digest (Brief 121)
 #   - 13:00 UTC  damage-worker daily summary cron (Brief 65)
+#   - every minute  forms-worker Cloudflare Email drain (2026-10-28 pilot) --
+#                   idle unless a source_kind is routed to 'cloudflare' in
+#                   outbound_email_routes. Needs its own branch in
+#                   scheduled(); the default branch is the R2 cleanup.
 [triggers]
-crons = ["0 11 * * *", "0 12 * * *"]
+crons = ["0 11 * * *", "0 12 * * *", "* * * * *"]
+
+# Cloudflare Email Service (2026-10-28 pilot). Sends the outbound_emails rows
+# whose source_kind is routed to 'cloudflare' (supabase/outbound-email-routes-01.sql);
+# everything else is still sent by the Power Automate drain. The sending
+# domain must be onboarded first: `npx wrangler email sending enable splashcarwashes.info`.
+[[send_email]]
+name = "EMAIL"

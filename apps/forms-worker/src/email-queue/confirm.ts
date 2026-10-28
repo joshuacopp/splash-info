@@ -120,7 +120,9 @@ async function markSent(
     },
     body: JSON.stringify({
       sent_at: new Date().toISOString(),
-      last_error: null
+      last_error: null,
+      // Which drain delivered it (supabase/outbound-email-routes-01.sql).
+      sent_via: "pa"
     })
   });
   if (!resp.ok) {
