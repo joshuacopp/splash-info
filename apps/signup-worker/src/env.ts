@@ -24,6 +24,12 @@ export interface Env extends SupabaseEnv {
    * SignatureMode (which would be a lie at runtime).
    */
   SIGNATURE_MODE?: string;
+  /**
+   * "on" = enqueue the customer confirmation email at submit time
+   * (src/email/send-confirmation.ts). Anything else = don't, and the
+   * "Get MaxPass from Supabase" Power Automate flow is still sending it.
+   */
+  MAXPASS_CONFIRMATION_EMAIL?: string;
 }
 
 const VALID_MODES: ReadonlySet<SignatureMode> = new Set(["inline", "jotform"]);

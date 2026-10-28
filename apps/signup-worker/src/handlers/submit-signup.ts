@@ -23,6 +23,7 @@ import { json, jsonError } from "@splash/http";
 import { isValidEmail } from "@splash/types/email-validate";
 import type { MaxpassSignupInsert, SuspiciousPhoneTier } from "@splash/types/signups";
 import type { Env } from "../env.js";
+import { confirmationEmailEnabled, sendMaxpassConfirmation } from "../email/send-confirmation.js";
 
 /** Submission body from the form's submit JS — see render/form.ts. */
 interface SubmitBody {
@@ -122,7 +123,7 @@ function captureRequestContext(request: Request): RequestContext {
 export async function handleSignupSubmission(
   request: Request,
   env: Env,
-  _ctx: ExecutionContext
+  executionCtx: ExecutionContext
 ): Promise<Response> {
   let body: SubmitBody;
   try {
@@ -331,6 +332,25 @@ export async function handleSignupSubmission(
   } catch (err) {
     console.error("maxpass_signups insert failed:", err);
     return jsonError(500, err instanceof Error ? err.message : "submission failed");
+  }
+
+  // Customer confirmation email, in the background: the signup is saved, so
+  // nothing about the email may delay or fail this response. Built from
+  // insertRow (the values actually stored), not the raw body.
+  if (insertRow.email && confirmationEmailEnabled(env)) {
+    executionCtx.waitUntil(
+      sendMaxpassConfirmation(env, confirmationToken, insertRow.email, {
+        location_pretty: insertRow.location_pretty ?? "",
+        package_pretty: insertRow.package_pretty ?? "",
+        phone_formatted: insertRow.phone_formatted ?? phone,
+        submitted_at: insertRow.submitted_at ?? new Date().toISOString(),
+        today_price: insertRow.today_price,
+        monthly_price: insertRow.monthly_price,
+        terms_text: insertRow.terms_text ?? "",
+        is_bogo: insertRow.is_bogo === true,
+        recurring_start_date: insertRow.recurring_start_date ?? null
+      })
+    );
   }
 
   const userResponseLog = body.monitor_acknowledged
