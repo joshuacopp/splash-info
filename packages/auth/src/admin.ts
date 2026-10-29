@@ -301,7 +301,12 @@ export async function adminCreateUser(
     body: JSON.stringify({
       email: args.email.trim().toLowerCase(),
       password: args.password,
-      email_confirm: args.emailConfirm ?? true
+      email_confirm: args.emailConfirm ?? true,
+      // The admin chose this password, so the user must replace it on first
+      // sign-in. Stored on the login itself so it holds for accounts with no
+      // pricing role (no user_permissions rows to carry it) -- see
+      // setMustChangePassword in @splash/db-supabase.
+      app_metadata: { must_change_password: true }
     })
   });
   if (!r.ok) {

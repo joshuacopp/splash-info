@@ -372,13 +372,25 @@ export async function clearRole(
 }
 
 /**
- * Set must_change_password to a specific value across ALL user_permissions
- * rows for a user. Legacy/signupworker.js:690 only ever cleared (false);
- * Josh's policy adds a path that sets true (admin-triggered reset). The
- * boolean parameter covers both directions.
+ * Set must_change_password to a specific value for a user, in BOTH places it
+ * is stored:
  *
- * Note: user_permissions has multiple rows per user (one per location for
- * location_admins). Legacy updates ALL of them — preserve that.
+ *   1. Every user_permissions row (one per location for location_admins;
+ *      legacy updates ALL of them -- preserved).
+ *   2. auth.users app_metadata.must_change_password.
+ *
+ * WHY TWO PLACES (2026-10-29): auth_unified ORs them. A user with NO pricing
+ * role -- a CRD queue account, which is a plain login plus a form access tag
+ * -- has no user_permissions rows, so (1) alone matches zero rows and the
+ * flag silently never exists: no forced change after Create user, and
+ * Sysadmin's Reset password did nothing either. app_metadata exists on every
+ * account and only the service role can write it (a user cannot clear their
+ * own flag). GoTrue MERGES app_metadata keys, so provider info is untouched.
+ *
+ * Either write failing throws. Safe in both directions: for `true` the
+ * caller (adminResetPassword) has not changed the password yet; for `false`
+ * the flag stays set in at least one place, the view ORs, and the user is
+ * simply asked again.
  */
 export async function setMustChangePassword(
   client: SupabaseClient,
@@ -390,6 +402,10 @@ export async function setMustChangePassword(
     .update({ must_change_password: value })
     .eq("user_id", userId);
   if (error) throw error;
+  const { error: metaError } = await client.auth.admin.updateUserById(userId, {
+    app_metadata: { must_change_password: value }
+  });
+  if (metaError) throw metaError;
 }
 
 /**
