@@ -78,6 +78,14 @@ export function ChangePasswordForm({ required, next }: ChangePasswordFormProps) 
       // session to subsequent requests on a real navigation boundary,
       // not on a client-side route transition.
       if (r.ok || r.redirected) {
+        // The worker sends a user who still has to set up two-factor to
+        // /mfa/enroll instead of `next` (first sign-in). Honour that one
+        // destination by path; everything else keeps the rule above.
+        const landed = r.redirected ? new URL(r.url) : null;
+        if (landed && landed.pathname === "/mfa/enroll") {
+          window.location.assign(`${landed.pathname}${landed.search}`);
+          return;
+        }
         window.location.assign(next || DEFAULT_AUTHED_LANDING);
         return;
       }

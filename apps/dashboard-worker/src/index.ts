@@ -439,7 +439,7 @@ async function handleForcedReset(request: Request, env: Env): Promise<Response> 
   }
 
   const safeNext = sanitizeRedirect(next);
-  const target = new URL(safeNext, request.url).toString();
+  let target = new URL(safeNext, request.url).toString();
 
   // Brief 147 — re-issue session cookies. Supabase invalidates the
   // previously-issued access_token when the password changes, so the
@@ -456,6 +456,26 @@ async function handleForcedReset(request: Request, env: Env): Promise<Response> 
     const fresh = await supabasePasswordLogin(env, session.email, newPassword);
     for (const c of buildAuthCookies(fresh.access_token, fresh.refresh_token)) {
       headers.append("Set-Cookie", c);
+    }
+    // First sign-in: a user with NO verified factor who owes enrollment goes
+    // straight to the setup page. Otherwise the destination is an /admin page,
+    // the middleware sends any aal1 session to /login, and a brand-new user
+    // lands on a sign-in form they must NOT fill in, with only a banner
+    // pointing at what they actually have to do. Someone who already has a
+    // factor (changing a password later) is untouched: they go to `next` as
+    // before. Same decision /api/login makes; fail-open on a factor-lookup
+    // error, i.e. today's behaviour. The change-password form follows this
+    // redirect only when it lands on /mfa/enroll.
+    try {
+      const hasFactor = await hasVerifiedFactor(env, fresh.access_token);
+      if (!hasFactor && resolveMfaEnrollment(env, fresh.user, false)?.overdue) {
+        target = new URL(
+          `/mfa/enroll?required=true&next=${encodeURIComponent(safeNext)}`,
+          request.url
+        ).toString();
+      }
+    } catch {
+      /* fall through to `next` */
     }
   } catch {
     // Password DID change in Supabase, but re-login failed. Safest
