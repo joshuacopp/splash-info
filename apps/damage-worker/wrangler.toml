@@ -214,8 +214,14 @@ binding = "IMAGES"
 # Event-driven claim emails (customer confirmation, internal new-claim,
 # note/status notifications) are NOT on this schedule; they fire in real time
 # on their triggering event.
+#
+# 2026-10-29: second cron "0 13 * * *" — EVERY day — sends the claim-changes
+# email (last 24h of claim_activity) to INCIDENTS_EMAIL via outbound_emails;
+# skipped on days with no changes. See src/daily-changes.ts. The scheduled
+# handler dispatches on the literal cron string (DAILY_CHANGES_CRON in
+# src/index.ts); keep the two in sync. 13:00 UTC is 8 AM EST / 9 AM EDT.
 [triggers]
-crons = ["0 13 * * MON,THU,SAT"]
+crons = ["0 13 * * MON,THU,SAT", "0 13 * * *"]
 
 # Brief 63 (2026-05-07): keeps Workers Logs sticky across deploys. Without
 # this, CF Builds re-provisions the worker on every push and the dashboard

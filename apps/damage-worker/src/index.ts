@@ -194,6 +194,10 @@ import {
 } from "./render/claim-summary-pdf.js";
 import { createMaintainXWorkOrder, type MaintainXResult } from "./maintainx.js";
 import { resolveAdminBase } from "./admin-url.js";
+import { runDailyChangesEmail } from "./daily-changes.js";
+
+/** Must match the second entry in wrangler.toml [triggers] crons exactly. */
+const DAILY_CHANGES_CRON = "0 13 * * *";
 import { ASSETS } from "@splash/storage-r2";
 import {
   handleClaimPhotoUpload,
@@ -464,8 +468,8 @@ export default {
     }
   },
 
-  // Brief 65 — daily open-claims summary cron. Wrangler trigger
-  // `0 13 * * *` (13:00 UTC = 8 AM ET) fires this handler once a day. See
+  // Brief 65 — open-claims summary cron. Wrangler trigger
+  // `0 13 * * MON,THU,SAT` (13:00 UTC) fires this pass. See
   // runDailySummaryCron below for the per-recipient digest pipeline.
   //
   // Brief 146 — same cron also runs the claim-uploads orphan sweep. Both
@@ -473,7 +477,20 @@ export default {
   // sweep finishing. Sequencing the sweep AFTER the summary makes the
   // summary fire-and-forget — even if upload cleanup runs long, the digest
   // emails have already gone out.
-  async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
+  //
+  // 2026-10-29 — a second, every-day cron (DAILY_CHANGES_CRON) sends the
+  // claim-changes email to INCIDENTS_EMAIL. Dispatch is on the literal
+  // controller.cron string: editing a schedule in wrangler.toml without
+  // editing the matching constant here silently changes which pass runs.
+  async scheduled(controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
+    if (controller.cron === DAILY_CHANGES_CRON) {
+      ctx.waitUntil(
+        runDailyChangesEmail(env, controller.scheduledTime).catch((err) => {
+          console.error("[daily-changes] run failed", err);
+        })
+      );
+      return;
+    }
     ctx.waitUntil(runDailySummaryCron(env));
     ctx.waitUntil(runClaimUploadsCleanup(env).then(() => undefined));
   }
