@@ -17,6 +17,7 @@
     "@splash/email-shell": "workspace:*",
     "@splash/http": "workspace:*",
     "@splash/maintainx": "workspace:*",
+    "@splash/report-kit": "workspace:*",
     "@splash/storage-r2": "workspace:*",
     "@splash/types": "workspace:*",
     "@splash/xlsx": "workspace:*",

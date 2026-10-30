@@ -693,6 +693,33 @@ URL-based — service bindings don't apply to those.
 
 ## Glossary
 
+- **report kit** (Brief 179, 2026-10-30) - `packages/report-kit`
+  (`@splash/report-kit`) plus apps/web `app/_components/report/`. **New
+  reports use it; do not hand-roll a table, a date default, a CSV escaper or an
+  Eastern-time helper.** A report is declared once with `defineReport` under
+  `packages/report-kit/src/reports/` and imported by BOTH the worker (query
+  bounds, `toCsv`, `exportFilename`) and the page (range bar, table, KPIs), so
+  they cannot disagree. `parseReportParams(def, searchParams)` is the ONE URL
+  parser: `range=<preset>` beats `from`/`to` beats legacy keys
+  (`legacyDays`, `legacyRangeParam`) beats `defaultRange`; malformed input
+  falls back to the default with `invalidInput` rather than a 400. All periods
+  are inclusive EASTERN days (`fromYmd`/`toYmd` + UTC ISO `fromIso`/`toIso`).
+  Pages send the worker an explicit `from`/`to`. Gotchas: (1) hand a SQL
+  `date()`-based query the YMD strings, not the ISO bounds -- the end of an
+  Eastern day is the next UTC date; (2) `ReportTable` must be rendered from a
+  per-report `"use client"` wrapper (definitions hold functions), while
+  `KpiTiles` / `StackedBarChart` / `ReportRangeBar` take plain data and
+  render from a server page; (3) kit imports are extensionless and the package
+  is in apps/web `transpilePackages` (webpack can't resolve `.js` specifiers
+  in workspace TS packages); (4) CSV = BOM + CRLF + formula guard on text
+  cells; keep an existing export's column order and headers when migrating;
+  (5) charts use categorical slots 1-3 in fixed order and always need a legend
+  and a table of the same numbers. Not Tremor: `@tremor/react` peers React 18.
+  TanStack Table pinned 8.21.3; Recharts 2.15.4. Scoping stays in each worker --
+  the kit standardises how a report looks, never who sees which rows. On the
+  kit: Fleet, Signups, Damage Reporting. Not yet: jotform, forms submissions,
+  damage list, maintenance, expenses, greeters, performance.
+
 - **Impersonation / "View as user"** (2026-10-30) - A super_admin can see, and
   optionally act, as another user from /admin/sysadmin. `authenticate()` in
   `packages/auth/src/session.ts` hands handlers the TARGET's Session when the

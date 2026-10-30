@@ -3,38 +3,24 @@
 // Server component. Reads filters from URL searchParams and calls the new
 // `/manage/api/reporting` endpoint on damage-worker. Multi-section layout
 // with sticky anchor nav (Overview / By Location / By Damage Type) plus a
-// filter row with 5 window presets, location, RD, and RM.
+// filter row with location, RD, and RM.
+//
+// Brief 179: the period comes from the shared damage report definition
+// (@splash/report-kit/reports/damage) through the same parser the worker
+// uses -- Eastern days, preset chips plus a custom range, and old
+// `?window=current_month|...` bookmarks still honoured. The page always sends
+// the worker an explicit from/to. KPI tiles and the claims-by-location chart
+// are the kit's shared report components.
 
 import Link from "next/link";
+import { formatRangeLabel, parseReportParams } from "@splash/report-kit";
+import { damageReport } from "@splash/report-kit/reports/damage";
 import { damageGetJson } from "../_lib/worker-fetch";
 import { DamageTabs } from "../_components/DamageTabs";
 import { ByLocationTableClient } from "./_components/ByLocationTableClient";
-
-const WINDOW_PRESETS: ReadonlyArray<{
-  value: ReportingWindow;
-  label: string;
-}> = [
-  { value: "current_month", label: "Current month" },
-  { value: "past_month", label: "Past month" },
-  { value: "qtd", label: "QTD" },
-  { value: "past_quarter", label: "Past quarter" },
-  { value: "ytd", label: "YTD" }
-];
-
-const REPORTING_WINDOWS = new Set<string>([
-  "current_month",
-  "past_month",
-  "qtd",
-  "past_quarter",
-  "ytd"
-]);
-
-type ReportingWindow =
-  | "current_month"
-  | "past_month"
-  | "qtd"
-  | "past_quarter"
-  | "ytd";
+import { KpiTiles } from "../../../_components/report/KpiTiles";
+import { ReportRangeBar } from "../../../_components/report/ReportRangeBar";
+import { StackedBarChart } from "../../../_components/report/StackedBarChart";
 
 interface ContactRosterEntry {
   email: string;
@@ -43,7 +29,7 @@ interface ContactRosterEntry {
 }
 
 interface ReportingResponse {
-  window: ReportingWindow;
+  window: string;
   from: string;
   to: string;
   filters: {
@@ -152,23 +138,16 @@ function formatCurrency(n: number): string {
   }).format(n);
 }
 
-function formatRange(fromIso: string, toIso: string): string {
-  const fmt = (iso: string) => (iso.length >= 10 ? iso.slice(0, 10) : iso);
-  return `${fmt(fromIso)} → ${fmt(toIso)}`;
-}
-
 export default async function DamageReportingPage({ searchParams }: PageProps) {
   const sp = await searchParams;
-  const windowRaw = firstParam(sp.window).trim();
-  const windowParam: ReportingWindow = REPORTING_WINDOWS.has(windowRaw)
-    ? (windowRaw as ReportingWindow)
-    : "qtd";
+  const { range } = parseReportParams(damageReport, sp);
   const locationParam = firstParam(sp.location).trim() || "All";
   const rdEmailParam = firstParam(sp.regional_director_email).trim();
   const rmEmailParam = firstParam(sp.regional_manager_email).trim();
 
   const reportingQs = new URLSearchParams();
-  reportingQs.set("window", windowParam);
+  reportingQs.set("from", range.fromYmd);
+  reportingQs.set("to", range.toYmd);
   if (locationParam && locationParam !== "All") reportingQs.set("location", locationParam);
   if (rdEmailParam) reportingQs.set("regional_director_email", rdEmailParam);
   if (rmEmailParam) reportingQs.set("regional_manager_email", rmEmailParam);
@@ -235,7 +214,10 @@ export default async function DamageReportingPage({ searchParams }: PageProps) {
     );
   }
 
-  const rangeText = formatRange(report.from, report.to);
+  const rangeText = `${formatRangeLabel(range)} (Eastern)`;
+  // Chips and the custom picker rewrite the period; drop the legacy key so
+  // a stale `window=` doesn't ride along in every link.
+  const rangeBarParams = { ...sp, window: undefined };
 
   return (
     <section className="mx-auto w-full max-w-[1100px] px-5 py-9">
@@ -279,35 +261,17 @@ export default async function DamageReportingPage({ searchParams }: PageProps) {
         </a>
       </nav>
 
-      {/* Window picker — separate from the filter form so each click
-          navigates immediately, preserving other filters. */}
       <div className="mb-5 rounded-splash-lg border border-gray-light bg-white p-5 shadow-splash-card">
         <span className="text-xs font-semibold uppercase tracking-wider text-splash-navy/70">
-          Window
+          Period
         </span>
-        <nav aria-label="Reporting window" className="mt-2 flex flex-wrap gap-2">
-          {WINDOW_PRESETS.map((w) => {
-            const isActive = w.value === windowParam;
-            const cls = isActive
-              ? "inline-flex items-center rounded-full border border-splash-blue bg-splash-blue px-3.5 py-1.5 text-sm font-bold text-white shadow-splash-btn"
-              : "inline-flex items-center rounded-full border border-splash-blue bg-white px-3.5 py-1.5 text-sm font-bold text-splash-blue hover:bg-splash-blue/5";
-            const next = new URLSearchParams();
-            next.set("window", w.value);
-            if (locationParam && locationParam !== "All") next.set("location", locationParam);
-            if (rdEmailParam) next.set("regional_director_email", rdEmailParam);
-            if (rmEmailParam) next.set("regional_manager_email", rmEmailParam);
-            return (
-              <Link
-                key={w.value}
-                href={`/admin/damage/reporting?${next.toString()}`}
-                aria-current={isActive ? "page" : undefined}
-                className={cls}
-              >
-                {w.label}
-              </Link>
-            );
-          })}
-        </nav>
+        <div className="mt-2">
+          <ReportRangeBar
+            presets={damageReport.presets}
+            range={range}
+            searchParams={rangeBarParams}
+          />
+        </div>
       </div>
 
       {/* Filter form */}
@@ -316,9 +280,16 @@ export default async function DamageReportingPage({ searchParams }: PageProps) {
         action="/admin/damage/reporting"
         className="mb-5 rounded-splash-lg border border-gray-light bg-white p-5 shadow-splash-card"
       >
-        {/* Window selection round-trips through the form on Apply too, so
-            the user keeps the chosen window when changing other filters. */}
-        <input type="hidden" name="window" value={windowParam} />
+        {/* The period round-trips through the form on Apply too, so the
+            user keeps it when changing other filters. */}
+        {range.preset === "custom" ? (
+          <>
+            <input type="hidden" name="from" value={range.fromYmd} />
+            <input type="hidden" name="to" value={range.toYmd} />
+          </>
+        ) : (
+          <input type="hidden" name="range" value={range.preset} />
+        )}
 
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
           <label className="flex flex-col gap-1">
@@ -390,7 +361,7 @@ export default async function DamageReportingPage({ searchParams }: PageProps) {
             Reset
           </Link>
           <span className="ml-auto text-xs text-splash-navy/60">
-            Range: <span className="font-mono">{rangeText}</span>
+            Period: {rangeText}
           </span>
         </div>
       </form>
@@ -400,17 +371,16 @@ export default async function DamageReportingPage({ searchParams }: PageProps) {
         {/* Brief 172 — Awaiting Payment inserted between Open and Closed
             so the row reads in lifecycle order. The three counts are
             mutually exclusive: open + awaiting_payment + closed = total. */}
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
-          <KpiTile label="Open" value={String(report.totals.open)} />
-          <KpiTile
-            label="Awaiting Payment"
-            value={String(report.totals.awaiting_payment)}
-          />
-          <KpiTile label="Closed" value={String(report.totals.closed)} />
-          <KpiTile label="Approved" value={String(report.totals.approved)} />
-          <KpiTile label="Denied" value={String(report.totals.denied)} />
-          <KpiTile label="Repair Cost" value={formatCurrency(report.totals.repair_cost)} />
-        </div>
+        <KpiTiles
+          items={[
+            { label: "Open", value: report.totals.open },
+            { label: "Awaiting Payment", value: report.totals.awaiting_payment },
+            { label: "Closed", value: report.totals.closed },
+            { label: "Approved", value: report.totals.approved },
+            { label: "Denied", value: report.totals.denied },
+            { label: "Repair Cost", value: report.totals.repair_cost, kind: "currency" }
+          ]}
+        />
 
         {/* Brief 172 — By Cause / fault-attribution. KPI-pill row below the
             tiles, one pill per category present in the result (the worker's
@@ -453,6 +423,22 @@ export default async function DamageReportingPage({ searchParams }: PageProps) {
 
       <section id="by-location" className="mb-8 scroll-mt-20">
         <h2 className="mb-3 text-lg font-bold text-splash-navy">By Location</h2>
+        <div className="mb-4">
+          <StackedBarChart
+            title="Claims by location, split by open, awaiting payment and closed"
+            series={[
+              { key: "open", label: "Open" },
+              { key: "awaiting_payment", label: "Awaiting payment" },
+              { key: "closed", label: "Closed" }
+            ]}
+            rows={report.by_location.map((r) => ({
+              label: r.location_pretty ?? r.location_code,
+              open: r.open,
+              awaiting_payment: r.awaiting_payment,
+              closed: r.closed
+            }))}
+          />
+        </div>
         <ByLocationTableClient
           rows={report.by_location}
           drilldown={report.by_location_drilldown}
@@ -502,17 +488,6 @@ export default async function DamageReportingPage({ searchParams }: PageProps) {
         together.
       </p>
     </section>
-  );
-}
-
-function KpiTile({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="rounded-splash-lg border border-gray-light bg-white p-4 shadow-splash-card">
-      <div className="text-xs font-semibold uppercase tracking-wider text-splash-navy/60">
-        {label}
-      </div>
-      <div className="mt-1 text-2xl font-bold text-splash-navy">{value}</div>
-    </div>
   );
 }
 

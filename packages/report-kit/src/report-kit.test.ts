@@ -198,9 +198,29 @@ describe("signups report", () => {
       { id: 7, submitted_at: "2026-10-30T14:00:00Z", email: "a@b.co", phone_formatted: "(607) 555-0100",
         package_code: "ultimate", package_pretty: "Ultimate", today_price: 29.99, city: null, region: null }
     ]);
-    const row = csv.split("\r\n")[1].split(",");
+    const row = (csv.split("\r\n")[1] ?? "").split(",");
     expect(row[2]).toBe("");
     expect(row[8]).toBe("ultimate");
     expect(row[10]).toBe("29.99");
+  });
+});
+
+describe("damage report", () => {
+  it("reads the pre-kit window= values as presets, in Eastern", async () => {
+    const { damageReport } = await import("./reports/damage");
+    const r = (sp: Record<string, string>) => parseReportParams(damageReport, sp, LATE_EVENING_ET).range;
+    expect(r({ window: "current_month" })).toMatchObject({ preset: "mtd", fromYmd: "2026-10-01", toYmd: "2026-10-30" });
+    expect(r({ window: "past_quarter" })).toMatchObject({ fromYmd: "2026-07-01", toYmd: "2026-09-30" });
+    expect(r({ window: "ytd" }).preset).toBe("ytd");
+  });
+
+  it("lets range/from/to beat window, and ignores unknown or prototype keys", async () => {
+    const { damageReport } = await import("./reports/damage");
+    const r = (sp: Record<string, string>) => parseReportParams(damageReport, sp, LATE_EVENING_ET).range;
+    expect(r({ window: "ytd", range: "past_month" }).preset).toBe("past_month");
+    expect(r({ window: "ytd", from: "2026-10-05", to: "2026-10-06" }).fromYmd).toBe("2026-10-05");
+    for (const bad of ["bogus", "constructor", "__proto__", "toString"]) {
+      expect(r({ window: bad })).toMatchObject({ preset: "qtd", invalidInput: false });
+    }
   });
 });

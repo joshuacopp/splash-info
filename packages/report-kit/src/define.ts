@@ -73,6 +73,12 @@ export interface ReportDef<Row> {
    * it) and only applies when the URL carries no `range`/`from`/`to`.
    */
   legacyDays?: ReadonlyArray<number>;
+  /**
+   * A pre-kit URL key that named a period, e.g. damage reporting's
+   * `?window=current_month`. A listed value is read as that preset, and only
+   * when the URL carries no `range`/`from`/`to`.
+   */
+  legacyRangeParam?: { name: string; values: Readonly<Record<string, RangePreset>> };
 }
 
 export function defineReport<Row>(def: ReportDef<Row>): ReportDef<Row> {
@@ -106,9 +112,13 @@ function formatPhone(raw: string): string {
 
 /** Human display text for a cell ("" for empty). Tables and PDFs use this. */
 export function formatCell<Row>(col: ReportColumn<Row>, row: Row): string {
-  const v = columnValue(col, row);
+  return formatValue(col.kind, columnValue(col, row));
+}
+
+/** Display text for one value of a kind. Shared by table cells and KPI tiles. */
+export function formatValue(kind: ColumnKind, v: unknown): string {
   if (v == null || v === "") return "";
-  switch (col.kind) {
+  switch (kind) {
     case "number":
       return typeof v === "number" ? v.toLocaleString("en-US") : String(v);
     case "currency":
@@ -179,9 +189,16 @@ export function parseReportParams<Row>(
 ): ReportParams {
   let from = readParam(sp, "from");
   let to = readParam(sp, "to");
-  const preset = readParam(sp, "range");
+  let preset = readParam(sp, "range");
   const days = Number(readParam(sp, "days"));
-  if (!preset && !from && !to && def.legacyDays?.includes(days)) {
+  const legacy = def.legacyRangeParam;
+  const legacyKey = legacy ? readParam(sp, legacy.name) : null;
+  // hasOwn, not a bare index: `?window=constructor` must not read the prototype.
+  const legacyPreset =
+    legacy && legacyKey && Object.hasOwn(legacy.values, legacyKey) ? legacy.values[legacyKey] : undefined;
+  if (!preset && !from && !to && legacyPreset) {
+    preset = legacyPreset;
+  } else if (!preset && !from && !to && def.legacyDays?.includes(days)) {
     const today = easternYmd(now);
     from = ymdToString(addDays(today, -days));
     to = ymdToString(today);

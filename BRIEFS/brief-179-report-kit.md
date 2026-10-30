@@ -1,6 +1,6 @@
 # Brief 179: Report kit — one way to build reports (TanStack Table + Tremor)
 
-**Status:** In progress — kit + pilot 1 (Fleet) + pilot 2 (Signups) done; pilot 3 next
+**Status:** Completed (2026-10-30)
 **Started:** 2026-10-30
 **Completed:**
 **Blocks:** Neither
@@ -196,4 +196,57 @@ each is reviewable on its own.
 (Filled in on completion.)
 
 ## Outcome
-(Filled in on completion.)
+
+Landed in three commits: `9793cef` (kit + Fleet), `8091120` (Signups), and
+the pilot 3 commit (Damage reporting + docs).
+
+**Created:** `packages/report-kit` (`time.ts`, `define.ts`, `csv.ts`,
+`index.ts`, `reports/{fleet,signups,damage}.ts`, 33 vitest cases);
+apps/web `_components/report/{ReportTable,ReportRangeBar,KpiTiles,StackedBarChart}.tsx`;
+per-report client wrappers `admin/fleet/_components/FleetTable.tsx`,
+`admin/signups/_components/SignupsTable.tsx`.
+
+**Modified:** fleet-inquiry-worker `admin.js`; signup-worker
+`handlers/admin-signups.ts`; damage-worker `index.ts` (reporting window);
+apps/web fleet page, signups `[location]` page, damage reporting page,
+`DateRangePicker.tsx`, `pricing/_lib/worker-fetch.ts`, `next.config.mjs`
+(`transpilePackages`); package.json deps on fleet / signup / damage workers
+and apps/web (`@tanstack/react-table` 8.21.3, `recharts` 2.15.4).
+
+**Decisions made on the operator's behalf**
+- **No `<ReportPage>` component.** The DoD names one; in practice each page
+  composes `ReportRangeBar` + `ReportTable` / `KpiTiles` / `StackedBarChart`,
+  because the three pilots share controls but not layout (damage reporting has
+  six sections). A wrapper would have been a prop bag. Revisit if a fourth
+  report wants the identical fleet/signups shape.
+- **Tremor not installed** (`@tremor/react` 3.18.7 peers React ^18; apps/web is
+  React 19). KPI tiles and the chart are Tremor-style components on Recharts.
+- **Recharts 2.15.4, not 3.x.** Already in the lockfile (inventory app), peers
+  React ^19, resolved against React 19.2.5 — no new download, smaller risk.
+- **TanStack Table pinned 8.21.3** (v9 shipped 2026-08, unreviewed).
+- Bad dates in a URL fall back to the default with a visible note instead of
+  a 400 — bookmarks should open.
+- Old URL shapes kept: signups `?days=1|7|30` (`legacyDays`), damage
+  `?window=current_month|…` (`legacyRangeParam`).
+- Damage reporting's own tables (By Location drill-down, Cost per Car, damage
+  types) were NOT moved to `ReportTable`: the drill-down is bespoke and
+  Cost per Car's total is a ratio, which the table's summing footer can't express.
+
+**Latent issues found**
+- Signups CSV listed `name` and `package`, which are not columns on
+  `maxpass_signups`; both were always blank. Positions kept, `package` now
+  filled from `package_code`.
+- Cost per Car would have counted an extra day of cars if handed Eastern ISO
+  bounds (`sumCarsInWindow` snaps with SQLite `date()`); it now gets the
+  Eastern day strings.
+- `/pertrack/api/submissions` was unscoped — fixed separately (`06559d6`).
+- Local `next build` fails prerendering `/404` (`useContext` of null) on HEAD
+  without these changes too; not investigated.
+- fleet-inquiry-worker's only tests are the wrangler "Hello World" template.
+
+**Validation:** kit vitest 33/33; `pnpm typecheck` 28/28; wrangler dry-runs for
+fleet, signup and damage workers; `next build` compiles (pre-existing `/404`
+failure only). D1 check: `claims.submitted_at` is ISO `…Z`, so the Eastern ISO
+bounds compare correctly; October counts 18 under both the old UTC and new
+Eastern bounds. Not done: pages not opened in a browser; chart not rendered
+and inspected.

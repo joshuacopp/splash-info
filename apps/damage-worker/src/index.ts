@@ -195,6 +195,8 @@ import {
 import { createMaintainXWorkOrder, type MaintainXResult } from "./maintainx.js";
 import { resolveAdminBase } from "./admin-url.js";
 import { runDailyChangesEmail } from "./daily-changes.js";
+import { parseReportParams, type ResolvedRange } from "@splash/report-kit";
+import { damageReport } from "@splash/report-kit/reports/damage";
 
 /** Must match the second entry in wrangler.toml [triggers] crons exactly. */
 const DAILY_CHANGES_CRON = "0 13 * * *";
@@ -1233,9 +1235,11 @@ async function getContactRoster(env: Env, session: Session, url: URL): Promise<R
  * GET /manage/api/reporting?location=<code|All>
  *                          &regional_director_email=<email>
  *                          &regional_manager_email=<email>
- *                          &window=current_month|past_month|qtd|past_quarter|ytd
+ *                          &range=<preset> | &from=YYYY-MM-DD&to=YYYY-MM-DD
+ *                          (legacy: &window=current_month|past_month|qtd|past_quarter|ytd)
  *
- * Server-side resolves the window relative to "now", then runs a single
+ * Server-side resolves the period in Eastern days via the shared damage
+ * report definition (@splash/report-kit/reports/damage), then runs a single
  * D1 batch of count + cost aggregates. dc_role scoping applies the same as
  * everywhere else.
  *
@@ -1262,20 +1266,12 @@ async function getContactRoster(env: Env, session: Session, url: URL): Promise<R
  * (operator confirmed 2026-08-27).
  * ============================================================ */
 
-type ReportingWindow =
-  | "current_month"
-  | "past_month"
-  | "qtd"
-  | "past_quarter"
-  | "ytd";
-
-const REPORTING_WINDOWS: ReadonlySet<string> = new Set([
-  "current_month",
-  "past_month",
-  "qtd",
-  "past_quarter",
-  "ytd"
-]);
+// The period comes from the shared damage report definition (Brief 179):
+// Eastern calendar days, `range`/`from`/`to` like every kit report, and the
+// pre-kit `window=current_month|...` still accepted. Before the kit these
+// windows were resolved in UTC, so "this month" rolled over in the evening
+// Eastern on the last day of a month.
+type ReportingWindow = ResolvedRange["preset"];
 
 interface ReportingTotals {
   open: number;
@@ -1372,6 +1368,9 @@ interface ReportingResponse {
   window: ReportingWindow;
   from: string;
   to: string;
+  /** The Eastern days `from`/`to` cover (Brief 179). */
+  from_ymd: string;
+  to_ymd: string;
   filters: {
     location: string;
     rd_email: string | null;
@@ -1412,43 +1411,6 @@ interface ReportingResponse {
   };
 }
 
-function resolveReportingWindow(window: ReportingWindow, now: Date): { from: string; to: string } {
-  const y = now.getUTCFullYear();
-  const m = now.getUTCMonth(); // 0-11
-  const startOfDay = (d: Date) => new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), 0, 0, 0, 0));
-  const startOfMonth = (year: number, month: number) => new Date(Date.UTC(year, month, 1, 0, 0, 0, 0));
-  const endOfMonth = (year: number, month: number) =>
-    new Date(Date.UTC(year, month + 1, 1, 0, 0, 0, 0) - 1);
-  const quarterStartMonth = (month: number) => Math.floor(month / 3) * 3;
-
-  if (window === "current_month") {
-    return { from: startOfMonth(y, m).toISOString(), to: now.toISOString() };
-  }
-  if (window === "past_month") {
-    const prevMonth = m === 0 ? 11 : m - 1;
-    const prevYear = m === 0 ? y - 1 : y;
-    return {
-      from: startOfMonth(prevYear, prevMonth).toISOString(),
-      to: endOfMonth(prevYear, prevMonth).toISOString()
-    };
-  }
-  if (window === "qtd") {
-    const qStart = quarterStartMonth(m);
-    return { from: startOfMonth(y, qStart).toISOString(), to: now.toISOString() };
-  }
-  if (window === "past_quarter") {
-    const qStart = quarterStartMonth(m);
-    const prevQEnd = qStart === 0 ? { year: y - 1, month: 11 } : { year: y, month: qStart - 1 };
-    const prevQStartMonth = quarterStartMonth(prevQEnd.month);
-    return {
-      from: startOfMonth(prevQEnd.year, prevQStartMonth).toISOString(),
-      to: endOfMonth(prevQEnd.year, prevQEnd.month).toISOString()
-    };
-  }
-  // ytd
-  return { from: startOfMonth(y, 0).toISOString(), to: now.toISOString() };
-}
-
 async function getReporting(env: Env, session: Session, url: URL): Promise<Response> {
   const scope = await damageScopeForSession(env, session);
   if (scope.kind === "denied") return jsonError(403, "no damage role assigned");
@@ -1456,12 +1418,10 @@ async function getReporting(env: Env, session: Session, url: URL): Promise<Respo
   const requestedLocation = url.searchParams.get("location") ?? "All";
   const rdEmail = url.searchParams.get("regional_director_email")?.trim().toLowerCase() || null;
   const rmEmail = url.searchParams.get("regional_manager_email")?.trim().toLowerCase() || null;
-  const windowParam = url.searchParams.get("window") ?? "qtd";
-  const window: ReportingWindow = REPORTING_WINDOWS.has(windowParam)
-    ? (windowParam as ReportingWindow)
-    : "qtd";
-
-  const { from, to } = resolveReportingWindow(window, new Date());
+  const { range } = parseReportParams(damageReport, url.searchParams);
+  const window: ReportingWindow = range.preset;
+  const from = range.fromIso;
+  const to = range.toIso;
 
   const resolved = await resolveLocationCodesWithFilters(env, scope, {
     requestedLocation,
@@ -1481,7 +1441,7 @@ async function getReporting(env: Env, session: Session, url: URL): Promise<Respo
   // list here without an extra round-trip; the in-D1 distinct is cheap.)
   let codes: string[];
   if (resolved.kind === "empty") {
-    return json(emptyReportingResponse(window, from, to, filters));
+    return json(emptyReportingResponse(range, filters));
   }
   if (resolved.kind === "all") {
     const distinct = await env.DB
@@ -1492,7 +1452,7 @@ async function getReporting(env: Env, session: Session, url: URL): Promise<Respo
       .all<{ location_code: string }>();
     codes = (distinct.results ?? []).map((r) => r.location_code).filter((c): c is string => !!c);
     if (codes.length === 0) {
-      return json(emptyReportingResponse(window, from, to, filters));
+      return json(emptyReportingResponse(range, filters));
     }
   } else {
     codes = resolved.codes;
@@ -1944,7 +1904,10 @@ async function getReporting(env: Env, session: Session, url: URL): Promise<Respo
   // per-location rollup above; default 0) with its apportioned car (tunnel)
   // count over the same window. `cars` is rounded to a whole number and
   // `cost_per_car` to cents; null when cars === 0.
-  const carsByLocation = await sumCarsInWindow(env.DB, codes, from, to);
+  // Eastern DAY strings, not the ISO bounds: sumCarsInWindow snaps with
+  // SQLite date(), and the end of an Eastern day is already the next UTC date
+  // (Oct 30 ET ends 2026-10-31T03:59Z), which would count one extra day.
+  const carsByLocation = await sumCarsInWindow(env.DB, codes, range.fromYmd, range.toYmd);
   const carsMap = new Map<string, number>();
   for (const r of carsByLocation) {
     carsMap.set(r.location_code, Number(r.cars) || 0);
@@ -1973,6 +1936,8 @@ async function getReporting(env: Env, session: Session, url: URL): Promise<Respo
     window,
     from,
     to,
+    from_ymd: range.fromYmd,
+    to_ymd: range.toYmd,
     filters,
     totals: {
       open: totalsOpen,
@@ -2156,15 +2121,15 @@ async function readDamageTrends(
 }
 
 function emptyReportingResponse(
-  window: ReportingWindow,
-  from: string,
-  to: string,
+  range: ResolvedRange,
   filters: ReportingResponse["filters"]
 ): ReportingResponse {
   return {
-    window,
-    from,
-    to,
+    window: range.preset,
+    from: range.fromIso,
+    to: range.toIso,
+    from_ymd: range.fromYmd,
+    to_ymd: range.toYmd,
     filters,
     totals: {
       open: 0,
