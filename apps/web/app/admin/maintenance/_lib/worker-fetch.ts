@@ -103,6 +103,31 @@ export interface WorkloadRow {
   median_days_to_close: number | null;
   mean_days_to_close: number | null;
 }
+/** One (mechanic, work order) behind a WorkloadRow count. Same predicates as
+ *  mt_mechanic_workload, so per-mechanic list length equals the count.
+ *  'closed' means completer_id -- the closer, not necessarily the worker. */
+export interface MechanicWorkOrderRow {
+  connecteam_user_id: number;
+  display_name: string;
+  bucket: "open" | "closed";
+  id: number;
+  sequential_id: number | null;
+  title: string | null;
+  priority: string | null;
+  status: string | null;
+  /** NULL when MaintainX gives no site. Kept, not dropped -- dropping would
+   *  make the list shorter than the count. */
+  site_number: number | null;
+  site_name: string | null;
+  mx_created_at: string;
+  completed_at: string | null;
+  /** Ticket age, not work time. */
+  age_days: number;
+  /** open_over_30d's exact predicate -- use this, not age_days > 30, so the
+   *  highlighted rows always number the same as the column. */
+  over_30d: boolean;
+  days_to_close: number | null;
+}
 /** One punch behind a site's billed hours. Flags are "look at this". */
 export interface PunchDetailRow {
   shift_id: string;
@@ -163,6 +188,7 @@ export interface MaintenanceSummary {
   work_orders: SiteWorkOrderRow[];
   devices: DeviceHealthRow[];
   workload: WorkloadRow[];
+  mechanic_work_orders: MechanicWorkOrderRow[];
   mechanic_days: MechanicDayRow[];
   punch_detail: PunchDetailRow[];
 }

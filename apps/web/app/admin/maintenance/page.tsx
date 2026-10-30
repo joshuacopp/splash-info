@@ -18,7 +18,11 @@ import { MaintenanceTabs, resolveTab } from "./_components/MaintenanceTabs";
 import { PeriodPicker, resolvePeriodParam } from "./_components/PeriodPicker";
 import { getMe } from "../../_lib/me";
 import NoAccessCard from "../forms/_components/NoAccessCard";
-import { getMaintenanceSummary, type MechanicRow } from "./_lib/worker-fetch";
+import {
+  getMaintenanceSummary,
+  type MechanicRow,
+  type MechanicWorkOrderRow
+} from "./_lib/worker-fetch";
 
 export const dynamic = "force-dynamic";
 
@@ -133,7 +137,7 @@ export default async function MaintenancePage({
   }
   const {
     period, cost_rows, mechanics, tiers, crew_names, site_names, site_rms, work_orders,
-    mechanic_days, punch_detail, devices, workload
+    mechanic_days, punch_detail, devices, workload, mechanic_work_orders
   } = result.data;
 
   const badDevices = devices.filter((d) => d.device_status !== "OK");
@@ -170,6 +174,24 @@ export default async function MaintenancePage({
     const list = woBySite.get(w.site_number);
     if (list) list.push(w);
     else woBySite.set(w.site_number, [w]);
+  }
+
+  // The work orders behind each workload row. mt_mechanic_work_orders copies
+  // mt_mechanic_workload's predicates, so each list is exactly as long as the
+  // count beside it. Sorted here rather than trusting the wire order: open
+  // oldest first (the stale ones are the point), closed newest first.
+  const woByMechanic = new Map<
+    number,
+    { open: typeof mechanic_work_orders; closed: typeof mechanic_work_orders }
+  >();
+  for (const w of mechanic_work_orders) {
+    const cur = woByMechanic.get(w.connecteam_user_id) ?? { open: [], closed: [] };
+    (w.bucket === "open" ? cur.open : cur.closed).push(w);
+    woByMechanic.set(w.connecteam_user_id, cur);
+  }
+  for (const v of woByMechanic.values()) {
+    v.open.sort((a, b) => a.mx_created_at.localeCompare(b.mx_created_at));
+    v.closed.sort((a, b) => (b.completed_at ?? "").localeCompare(a.completed_at ?? ""));
   }
 
   // Per-site billed and corroborated, folded out of the same rows the headline
@@ -783,54 +805,73 @@ GPS to corroborate.
       </h2>
       <p className="mb-3 text-sm text-splash-navy/70">
         Open is a live snapshot of what is assigned now; closed and days-to-close cover
-        the last 30 days.
+        the last 30 days. Expand a mechanic for the work orders behind the numbers.
       </p>
-      <div className="overflow-x-auto rounded-splash-lg border-[1.5px] border-gray-light bg-white shadow-splash-card">
-        <table className="w-full min-w-[720px] text-sm">
-          <thead className="border-b border-gray-light bg-gray-50 text-left">
-            <tr className="text-[0.75rem] uppercase tracking-wide text-splash-navy/60">
-              <th className="px-4 py-2.5 font-semibold">Mechanic</th>
-              <th className="px-4 py-2.5 text-right font-semibold">Open</th>
-              <th className="px-4 py-2.5 text-right font-semibold">In progress</th>
-              <th className="px-4 py-2.5 text-right font-semibold">Open &gt; 30d</th>
-              <th className="px-4 py-2.5 text-right font-semibold">Closed 7d</th>
-              <th className="px-4 py-2.5 text-right font-semibold">Closed 30d</th>
-              <th className="px-4 py-2.5 text-right font-semibold">Median days</th>
-              <th className="px-4 py-2.5 text-right font-semibold">Mean days</th>
-            </tr>
-          </thead>
-          <tbody>
-            {workload.map((w) => (
-              <tr key={w.connecteam_user_id} className="border-b border-gray-light/60 last:border-0">
-                <td className="px-4 py-2.5 font-semibold text-splash-navy">{w.display_name}</td>
-                <td className="px-4 py-2.5 text-right tabular-nums text-splash-navy/80">{w.open_assigned}</td>
-                <td className="px-4 py-2.5 text-right tabular-nums text-splash-navy/60">{w.open_in_progress}</td>
-                <td
-                  className={`px-4 py-2.5 text-right tabular-nums ${
-                    w.open_over_30d >= 5 ? "font-semibold text-amber-700" : "text-splash-navy/60"
-                  }`}
-                  title="Assigned work orders created more than 30 days ago and still not closed."
-                >
-                  {w.open_over_30d}
-                </td>
-                <td className="px-4 py-2.5 text-right tabular-nums text-splash-navy/80">{w.closed_7d}</td>
-                <td className="px-4 py-2.5 text-right font-semibold tabular-nums text-splash-navy">{w.closed_30d}</td>
-                <td
-                  className="px-4 py-2.5 text-right tabular-nums text-splash-navy/80"
-                  title="Typical time from work order created to closed. Median, because the mean is dragged by a few very old tickets."
-                >
-                  {w.median_days_to_close ?? "—"}
-                </td>
-                <td
-                  className="px-4 py-2.5 text-right tabular-nums text-splash-navy/45"
-                  title="Mean. Shown only so a gap between it and the median is visible — that gap IS the stale-ticket backlog."
-                >
-                  {w.mean_days_to_close ?? "—"}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+      {/* One <details> per mechanic, the same no-client-island pattern as the
+          site drill-down. The lists come from mt_mechanic_work_orders, which
+          copies this table's predicates, so a list's length IS the number in
+          the row -- if they ever disagree, the view has drifted from
+          mt_mechanic_workload. */}
+      <div className="overflow-hidden rounded-splash-lg border-[1.5px] border-gray-light bg-white shadow-splash-card">
+        <div className="hidden border-b border-gray-light bg-gray-50 px-4 py-2.5 text-[0.75rem] uppercase tracking-wide text-splash-navy/60 sm:flex">
+          <span className="flex-1 font-semibold">Mechanic</span>
+          <span className="w-16 text-right font-semibold">Open</span>
+          <span className="w-20 text-right font-semibold">In prog.</span>
+          <span className="w-20 text-right font-semibold">Open &gt; 30d</span>
+          <span className="w-20 text-right font-semibold">Closed 7d</span>
+          <span className="w-20 text-right font-semibold">Closed 30d</span>
+          <span className="w-20 text-right font-semibold">Median d</span>
+          <span className="w-20 text-right font-semibold">Mean d</span>
+        </div>
+        {workload.map((w) => {
+          const lists = woByMechanic.get(w.connecteam_user_id) ?? { open: [], closed: [] };
+          return (
+            <details key={w.connecteam_user_id} className="group border-b border-gray-light/60 last:border-0">
+              <summary className="flex cursor-pointer list-none flex-col gap-1 px-4 py-2.5 text-sm hover:bg-gray-50 sm:flex-row sm:flex-nowrap sm:items-baseline sm:gap-0">
+                <span className="min-w-0 flex-1 font-semibold text-splash-navy">
+                  <span className="mr-1.5 inline-block text-splash-navy/40 transition-transform group-open:rotate-90">
+                    &rsaquo;
+                  </span>
+                  {w.display_name}
+                </span>
+                <span className="flex flex-wrap items-baseline gap-x-4 gap-y-0.5 pl-5 sm:contents">
+                  <Figure label="Open" width="sm:w-16" value={w.open_assigned} />
+                  <Figure label="In prog." width="sm:w-20" muted value={w.open_in_progress} />
+                  <span
+                    className={`w-auto tabular-nums sm:w-20 sm:shrink-0 sm:text-right ${
+                      w.open_over_30d >= 5 ? "font-semibold text-amber-700" : "text-splash-navy/60"
+                    }`}
+                    title="Assigned work orders created more than 30 days ago and still not closed."
+                  >
+                    <span className="mr-1 text-[0.6875rem] font-semibold uppercase tracking-wide text-splash-navy/45 sm:hidden">
+                      Open &gt; 30d
+                    </span>
+                    {w.open_over_30d}
+                  </span>
+                  <Figure label="Closed 7d" width="sm:w-20" value={w.closed_7d} />
+                  <Figure label="Closed 30d" width="sm:w-20" strong value={w.closed_30d} />
+                  <Figure label="Median d" width="sm:w-20" value={w.median_days_to_close ?? "—"} />
+                  <Figure label="Mean d" width="sm:w-20" muted value={w.mean_days_to_close ?? "—"} />
+                </span>
+              </summary>
+
+              <div className="space-y-3 border-t border-gray-light/60 bg-gray-50/60 px-4 py-3">
+                <MechanicWoList
+                  heading={`Open now (${lists.open.length})`}
+                  empty="Nothing assigned and open."
+                  rows={lists.open}
+                  kind="open"
+                />
+                <MechanicWoList
+                  heading={`Closed in the last 30 days (${lists.closed.length})`}
+                  empty="Closed nothing in the last 30 days."
+                  rows={lists.closed}
+                  kind="closed"
+                />
+              </div>
+            </details>
+          );
+        })}
       </div>
       <p className="mt-2 text-xs leading-relaxed text-splash-navy/60">
         <strong>Days-to-close is ticket age, not work time.</strong> It measures created
@@ -839,7 +880,12 @@ GPS to corroborate.
         of 1.2 &mdash; a thin tail of stale tickets dragging the average to seven times
         typical. Where a mechanic&rsquo;s mean is far above their median, the backlog is
         the story, not the pace. A work order with two assignees counts for both, so the
-        Open column sums to more than the real backlog.
+        Open column sums to more than the real backlog &mdash; and it is listed under
+        both people when expanded.
+      </p>
+      <p className="mt-1 text-xs leading-relaxed text-splash-navy/60">
+        <strong>Closed means who pressed Done in MaintainX</strong>, not necessarily the
+        person who did the work. A job closed for a colleague counts for the closer.
       </p>
 
 
@@ -1237,6 +1283,102 @@ function Fact({ label, value }: { label: string; value: string }) {
  * are auto-width labelled pairs, not columns. Keep the values in step with
  * the header spans above if either changes.
  */
+/** One half of a mechanic's drill-down. Same row shape as the site
+ *  drill-down's work-order list so the two read alike. */
+function MechanicWoList({
+  heading,
+  empty,
+  rows,
+  kind
+}: {
+  heading: string;
+  empty: string;
+  rows: MechanicWorkOrderRow[];
+  kind: "open" | "closed";
+}) {
+  const shortDate = (iso: string) =>
+    new Date(iso).toLocaleDateString("en-US", {
+      month: "short",
+      day: "numeric",
+      timeZone: "America/New_York"
+    });
+  return (
+    <div>
+      <h3 className="mb-1.5 text-[0.75rem] font-semibold uppercase tracking-wide text-splash-navy/60">
+        {heading}
+      </h3>
+      {rows.length === 0 ? (
+        <p className="text-xs text-splash-navy/60">{empty}</p>
+      ) : (
+        <ul className="space-y-1.5">
+          {rows.map((w) => {
+            const stale = w.over_30d;
+            return (
+              <li
+                key={w.id}
+                className={`flex flex-wrap items-baseline gap-x-2 text-[0.8125rem] ${
+                  stale ? "-mx-1.5 rounded bg-amber-50 px-1.5" : ""
+                }`}
+              >
+                <a
+                  href={`https://app.getmaintainx.com/workorders/${w.id}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="font-mono text-xs text-sudsy-blue hover:underline"
+                >
+                  #{w.sequential_id ?? w.id}
+                </a>
+                <span className="min-w-0 flex-1 truncate text-splash-navy/85" title={w.title ?? ""}>
+                  {w.title ?? "(untitled)"}
+                </span>
+                <span className="text-xs text-splash-navy/70">
+                  {w.site_number !== null ? (w.site_name ?? `Site ${w.site_number}`) : "No site"}
+                </span>
+                {w.priority && w.priority !== "NONE" ? (
+                  <span className="rounded bg-gray-light px-1.5 py-0.5 text-[0.625rem] font-semibold uppercase tracking-wide text-splash-navy/70">
+                    {w.priority}
+                  </span>
+                ) : null}
+                {kind === "open" ? (
+                  <>
+                    {w.status && w.status !== "OPEN" ? (
+                      <span className="text-[0.625rem] uppercase tracking-wide text-splash-navy/55">
+                        {w.status.replace("_", " ")}
+                      </span>
+                    ) : null}
+                    <span
+                      className={`tabular-nums text-xs ${
+                        stale ? "font-semibold text-amber-700" : "text-splash-navy/55"
+                      }`}
+                      title="Days since the work order was created. Ticket age, not work time."
+                    >
+                      {w.age_days}d
+                    </span>
+                  </>
+                ) : (
+                  <>
+                    {w.completed_at ? (
+                      <span className="tabular-nums text-xs text-splash-navy/55">
+                        {shortDate(w.completed_at)}
+                      </span>
+                    ) : null}
+                    <span
+                      className="tabular-nums text-xs text-splash-navy/55"
+                      title="Created to closed. Ticket age, not work time."
+                    >
+                      {w.days_to_close ?? "—"}d to close
+                    </span>
+                  </>
+                )}
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </div>
+  );
+}
+
 function Figure({
   label,
   value,

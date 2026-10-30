@@ -123,6 +123,27 @@ export interface WorkloadRow {
   median_days_to_close: number | null;
   mean_days_to_close: number | null;
 }
+/** One (mechanic, work order) behind a WorkloadRow count. mt_mechanic_work_orders
+ *  copies mt_mechanic_workload's predicates verbatim so a drill-down list is
+ *  always the same length as the number beside it. 'closed' is completer_id --
+ *  the closer, not necessarily the person who did the work. */
+export interface MechanicWorkOrderRow {
+  connecteam_user_id: number;
+  display_name: string;
+  bucket: "open" | "closed";
+  id: number;
+  sequential_id: number | null;
+  title: string | null;
+  priority: string | null;
+  status: string | null;
+  site_number: number | null;
+  site_name: string | null;
+  mx_created_at: string;
+  completed_at: string | null;
+  age_days: number;
+  over_30d: boolean;
+  days_to_close: number | null;
+}
 /** One punch behind a site's billed hours. The level a site total is taken
  *  apart at -- a site figure can never explain itself, the answer is always
  *  a punch. Flags mean "look at this", never "this is wrong". */
@@ -309,7 +330,7 @@ export async function handleMaintenanceSummary(
   // Independent reads, issued together. They share no ordering and the page
   // needs all of them before it can render anything, so sequential would just
   // add up the latencies.
-  const [costDays, mechanics, tiers, crew, siteNames, workOrders, devices, workload, mechanicDays, punchDetail] =
+  const [costDays, mechanics, tiers, crew, siteNames, workOrders, devices, workload, mechanicWorkOrders, mechanicDays, punchDetail] =
     await Promise.all([
     // One day-grained fact, summed on the page into both the cost-centre
     // cards and the per-site table. Two reads would be two chances for the
@@ -345,6 +366,13 @@ export async function handleMaintenanceSummary(
     ),
     pgSelect<DeviceHealthRow>(env, "mt_device_health?select=*&order=device_status,device_id"),
     pgSelect<WorkloadRow>(env, "mt_mechanic_workload?select=*&order=closed_30d.desc"),
+    // Not period-scoped, unlike the other drill-downs: it must agree with the
+    // workload counts above, which are a live snapshot plus a fixed 30 days.
+    // ~360 rows. Ordered for the page: open oldest-first, closed newest-first.
+    pgSelect<MechanicWorkOrderRow>(
+      env,
+      "mt_mechanic_work_orders?select=*&order=bucket.desc,mx_created_at.asc,completed_at.desc"
+    ),
     // Scoped to the same window as the work orders. The drill-down is a
     // "what happened lately" surface; the full history is ~900 rows that
     // would be shipped and thrown away on every load.
@@ -360,7 +388,7 @@ export async function handleMaintenanceSummary(
 
   const firstError = [
     costDays, mechanics, tiers, crew, siteNames, workOrders, devices, workload,
-    mechanicDays, punchDetail
+    mechanicWorkOrders, mechanicDays, punchDetail
   ].find((r) => !r.ok);
   if (firstError && !firstError.ok) {
     console.error("[maintenance.summary] read failed:", firstError.error);
@@ -369,7 +397,7 @@ export async function handleMaintenanceSummary(
   if (
     !costDays.ok || !mechanics.ok || !tiers.ok || !crew.ok ||
     !siteNames.ok || !workOrders.ok || !devices.ok || !workload.ok ||
-    !mechanicDays.ok || !punchDetail.ok
+    !mechanicWorkOrders.ok || !mechanicDays.ok || !punchDetail.ok
   ) {
     return jsonError(502, "maintenance read failed");
   }
@@ -435,6 +463,7 @@ export async function handleMaintenanceSummary(
     work_orders: workOrders.rows,
     devices: devices.rows,
     workload: workload.rows,
+    mechanic_work_orders: mechanicWorkOrders.rows,
     mechanic_days: mechanicDays.rows,
     punch_detail: punchDetail.rows
   });
