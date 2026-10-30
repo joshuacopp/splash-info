@@ -711,7 +711,12 @@ URL-based — service bindings don't apply to those.
   fail-closed); (3) a new READ-ONLY POST must be added to
   `READ_ONLY_POST_PATHS` or view mode will refuse it. Endpoints live on
   sysadmin-worker (`/sysadmin/api/impersonation/{start,mode,stop}`), ahead of
-  its gate. The banner in the global Header holds the only Stop button.
+  its gate. The banner in the global Header holds the Stop button; pages
+  served by OTHER workers need their own copy (forms-worker:
+  `render/impersonation-banner.ts`). (4) A handler that treats an
+  unauthenticated caller as ANONYMOUS rather than refusing (forms link-only /
+  public submit) must check `auth.reason` first, or a view-mode write slips
+  through as an anonymous one.
 
 - **email validation** (Brief 152) - Canonical email validator for every
   customer-facing form in the monorepo. Lives at

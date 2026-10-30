@@ -23,7 +23,8 @@ import { ASSETS } from "@splash/storage-r2";
 import type { FormMeta } from "@splash/forms-schema";
 import { escapeHtml } from "../render/util.js";
 
-export function renderSuccessPage(form: FormMeta): Response {
+/** `bannerHtml`: the impersonation bar (render/impersonation-banner.ts), or "". */
+export function renderSuccessPage(form: FormMeta, bannerHtml = ""): Response {
   const successMessage =
     form.successMessage ?? "Thank you for your submission.";
   const slug = form.slug;
@@ -42,6 +43,7 @@ export function renderSuccessPage(form: FormMeta): Response {
   <style>${SUCCESS_CSS}</style>
 </head>
 <body>
+${bannerHtml}
   <header class="splash-header">
     <img src="${ASSETS.logoWhite}" alt="Splash Car Wash" class="splash-logo" />
   </header>

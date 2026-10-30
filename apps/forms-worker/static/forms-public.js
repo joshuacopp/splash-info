@@ -1539,7 +1539,13 @@
       turnstile_failed: "The anti-spam check failed. Please try again.",
       r2_head_failed: "A file couldn't be verified. Please try again.",
       missing_file: "An uploaded file is missing. Re-attach it and try again.",
-      insert_failed: "We couldn't save your submission. Please try again."
+      insert_failed: "We couldn't save your submission. Please try again.",
+      not_permitted: "This form isn't available to your account.",
+      fill_rule_unavailable: "We couldn't check access to this form. Try again in a minute.",
+      // A super admin using "View as user" (see the bar at the top of the page).
+      impersonation_view_only: "You're viewing as someone else in view-only mode, so this wasn't submitted. Switch to \"Act as them\" from an admin page, or click Stop.",
+      impersonation_ended: "Your \"View as\" session has ended, so this wasn't submitted. Click Stop, then try again as yourself.",
+      impersonation_log_failed: "This couldn't be recorded in the impersonation log, so it wasn't submitted. Try again."
     };
     return map[first] || (code ? String(code) : "Something went wrong. Please try again.");
   }

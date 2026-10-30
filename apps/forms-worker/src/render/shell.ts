@@ -15,9 +15,16 @@ interface ShellArgs {
   bodyHtml: string;
   /** When set, the Turnstile <script> tag is included in <head>. */
   turnstileSiteKey?: string;
+  /** Impersonation bar (render/impersonation-banner.ts); "" when not impersonating. */
+  bannerHtml?: string;
 }
 
-export function renderShell({ form, bodyHtml, turnstileSiteKey }: ShellArgs): string {
+export function renderShell({
+  form,
+  bodyHtml,
+  turnstileSiteKey,
+  bannerHtml = ""
+}: ShellArgs): string {
   const turnstileScript = turnstileSiteKey
     ? `<script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>`
     : "";
@@ -43,6 +50,7 @@ export function renderShell({ form, bodyHtml, turnstileSiteKey }: ShellArgs): st
   <style>${SHELL_CSS}</style>
 </head>
 <body>
+  ${bannerHtml}
   <header class="splash-header">
     <img src="${ASSETS.logoWhite}" alt="Splash Car Wash" class="splash-logo" />
   </header>

@@ -28,7 +28,7 @@
 //     resolved one (defends against tampering AND handles mid-fill drift).
 
 import { canFillForm, getFillRule, resolveFillCaller } from "../fill-audience.js";
-import { authenticate } from "@splash/auth";
+import { authenticate, IMPERSONATE_COOKIE } from "@splash/auth";
 import { isOriginAllowed, jsonError } from "@splash/http";
 import {
   payloadValidatorFor,
@@ -53,6 +53,7 @@ import { parseSubmitFormData } from "./parse.js";
 import { resolvePriceGrids } from "./price-grids.js";
 import { verifyTurnstile } from "./turnstile.js";
 import { renderSuccessPage } from "./success.js";
+import { impersonationBannerHtml } from "../render/impersonation-banner.js";
 import { fireSubmissionWebhook, type WebhookFile } from "./webhook.js";
 import { HARD_LIMITS } from "../limits.js";
 import {
@@ -94,8 +95,18 @@ export async function handleSubmit(
   let submitterUserId: string | null = null;
   let submitterEmail: string | null = null;
 
-  if (form.audience === "internal") {
-    const auth = await authenticate(req, env);
+  // "View as user" (impersonation). Checked for EVERY audience: link-only and
+  // public forms would otherwise treat a refused session as anonymous and
+  // save the submission anyway, breaking view mode's promise that nothing
+  // changes. One authenticate() serves this and the audience gate below.
+  const impersonating = (req.headers.get("Cookie") ?? "").includes(`${IMPERSONATE_COOKIE}=`);
+  const auth =
+    form.audience !== "public" || impersonating ? await authenticate(req, env) : null;
+  if (auth && auth.status === "unauthenticated" && auth.reason) {
+    return jsonError(403, auth.reason);
+  }
+
+  if (form.audience === "internal" && auth) {
     if (auth.status !== "authenticated") {
       // Structured 401 so the Brief 90 form's user-facing JS (and any
       // future apps/web preview surface) can surface a "session expired"
@@ -122,8 +133,7 @@ export async function handleSubmit(
     // (matches the brief's flag — link-only's slug is the gate, NOT the
     // session). authenticate() returns "unauthenticated" on either no
     // cookie or invalid cookie; either way we just stay anonymous.
-    const auth = await authenticate(req, env);
-    if (auth.status === "authenticated") {
+    if (auth && auth.status === "authenticated") {
       submitterKind = "authenticated";
       submitterUserId = auth.session.userId;
       submitterEmail = auth.session.email;
@@ -626,5 +636,8 @@ export async function handleSubmit(
   // before the approval step via the Workflow tab's Quick patterns
   // popover.
 
-  return renderSuccessPage(form);
+  return renderSuccessPage(
+    form,
+    impersonationBannerHtml(auth?.status === "authenticated" ? auth.session : null)
+  );
 }

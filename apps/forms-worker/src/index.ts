@@ -56,7 +56,8 @@
 //   link-only   → slug acts as gate; no further check; submit captures
 //                 session if present, anonymous otherwise.
 
-import { ACCESS_TOKEN_COOKIE, authenticate } from "@splash/auth";
+import { ACCESS_TOKEN_COOKIE, IMPERSONATE_COOKIE, authenticate } from "@splash/auth";
+import { impersonationBannerHtml } from "./render/impersonation-banner.js";
 import { canFillForm, getFillRule, resolveFillCaller } from "./fill-audience.js";
 import {
   getFormBySlug,
@@ -861,9 +862,20 @@ async function handleFormRender(
   if (form.status !== "published") return notFoundPage();   // draft / archived 404 publicly
   if (!form.currentVersionId) return notFoundPage();         // never published
 
+  // One authenticate() per render, only when something needs it: a restricted
+  // internal form, or the impersonation cookie (for the "Viewing as" bar --
+  // without it a super admin here has no sign they are impersonating).
+  const cookies = req.headers.get("Cookie") ?? "";
+  let authOutcome: Awaited<ReturnType<typeof authenticate>> | null = null;
+  const getAuth = async () => (authOutcome ??= await authenticate(req, env));
+  const banner = async () => {
+    if (!cookies.includes(`${IMPERSONATE_COOKIE}=`)) return "";
+    const a = await getAuth();
+    return impersonationBannerHtml(a.status === "authenticated" ? a.session : null);
+  };
+
   // Audience gate.
   if (form.audience === "internal") {
-    const cookies = req.headers.get("Cookie") ?? "";
     if (!cookies.includes(`${ACCESS_TOKEN_COOKIE}=`)) {
       const next = encodeURIComponent(url.pathname + url.search);
       return Response.redirect(`${url.origin}/login?next=${next}`, 302);
@@ -873,15 +885,15 @@ async function handleFormRender(
     // ones need the real session now, or a site login would see the form
     // and only be refused after filling it in.
     const rule = await getFillRule(env, form.id);
-    if (!rule) return fillUnavailablePage(503);
+    if (!rule) return fillUnavailablePage(503, await banner());
     if (rule.fillAudience.length > 0) {
-      const auth = await authenticate(req, env);
+      const auth = await getAuth();
       if (auth.status !== "authenticated") {
         const next = encodeURIComponent(url.pathname + url.search);
         return Response.redirect(`${url.origin}/login?next=${next}`, 302);
       }
       if (!canFillForm(rule, await resolveFillCaller(env, auth.session))) {
-        return fillUnavailablePage(403);
+        return fillUnavailablePage(403, await banner());
       }
     }
   }
@@ -911,7 +923,8 @@ async function handleFormRender(
   const html = renderShell({
     form,
     bodyHtml,
-    turnstileSiteKey: includeTurnstile ? env.TURNSTILE_SITE_KEY : undefined
+    turnstileSiteKey: includeTurnstile ? env.TURNSTILE_SITE_KEY : undefined,
+    bannerHtml: await banner()
   });
 
   return new Response(html, {
@@ -928,13 +941,13 @@ async function handleFormRender(
 /** Refusal page for a restricted internal form. 403: not in its audience.
  *  503: the rule couldn't be read -- refused rather than shown, so a blip
  *  can't open a restricted form. */
-function fillUnavailablePage(status: 403 | 503): Response {
+function fillUnavailablePage(status: 403 | 503, bannerHtml = ""): Response {
   const msg =
     status === 403
       ? "This form isn't available to your account. If you think you should be able to fill it out, ask your manager."
       : "We couldn't check access to this form just now. Please try again in a minute.";
   return new Response(
-    `<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Form unavailable — Splash</title></head><body style="font-family:sans-serif;padding:48px 16px;text-align:center;"><h1>Form unavailable</h1><p>${msg}</p><p><a href="/forms">Back to Forms</a></p></body></html>`,
+    `<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Form unavailable — Splash</title></head><body style="font-family:sans-serif;margin:0;">${bannerHtml}<div style="padding:48px 16px;text-align:center;"><h1>Form unavailable</h1><p>${msg}</p><p><a href="/forms">Back to Forms</a></p></div></body></html>`,
     {
       status,
       headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" }
