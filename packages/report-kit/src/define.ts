@@ -6,9 +6,12 @@
 // Plain TS, no React: this file is bundled into Workers.
 
 import {
+  addDays,
+  easternYmd,
   formatEtDate,
   formatEtDateTime,
   resolveRange,
+  ymdToString,
   type RangePreset,
   type ResolvedRange
 } from "./time";
@@ -64,6 +67,12 @@ export interface ReportDef<Row> {
   columns: ReadonlyArray<ReportColumn<Row>>;
   /** Stable row key for the table. */
   rowKey: (row: Row) => string;
+  /**
+   * Pre-kit `?days=N` values to keep honouring for old bookmarks. `days=N`
+   * means "N days ago through today" (N+1 Eastern days, as the old code had
+   * it) and only applies when the URL carries no `range`/`from`/`to`.
+   */
+  legacyDays?: ReadonlyArray<number>;
 }
 
 export function defineReport<Row>(def: ReportDef<Row>): ReportDef<Row> {
@@ -168,11 +177,16 @@ export function parseReportParams<Row>(
   sp: SearchParamsLike,
   now: Date = new Date()
 ): ReportParams {
-  const range = resolveRange(
-    { range: readParam(sp, "range"), from: readParam(sp, "from"), to: readParam(sp, "to") },
-    def.defaultRange,
-    now
-  );
+  let from = readParam(sp, "from");
+  let to = readParam(sp, "to");
+  const preset = readParam(sp, "range");
+  const days = Number(readParam(sp, "days"));
+  if (!preset && !from && !to && def.legacyDays?.includes(days)) {
+    const today = easternYmd(now);
+    from = ymdToString(addDays(today, -days));
+    to = ymdToString(today);
+  }
+  const range = resolveRange({ range: preset, from, to }, def.defaultRange, now);
   const filters: Record<string, string> = {};
   for (const f of def.filters) {
     const v = readParam(sp, f.id);

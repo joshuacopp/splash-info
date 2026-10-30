@@ -398,6 +398,9 @@ importers:
       '@splash/http':
         specifier: workspace:*
         version: link:../../packages/http
+      '@splash/report-kit':
+        specifier: workspace:*
+        version: link:../../packages/report-kit
       '@splash/storage-r2':
         specifier: workspace:*
         version: link:../../packages/storage-r2

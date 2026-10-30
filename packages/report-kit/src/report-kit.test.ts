@@ -147,6 +147,22 @@ describe("parseReportParams", () => {
     expect(exportFilename(def, range, "csv")).toBe("fleet-submissions-2026-10-01-to-2026-10-30.csv");
   });
 
+  it("maps a legacy days=N bookmark to N days ago through today (Eastern)", () => {
+    const legacy = defineReport<{ id: string }>({ ...def, legacyDays: [1, 7, 30] });
+    const { range } = parseReportParams(legacy, { days: "7" }, LATE_EVENING_ET);
+    expect([range.fromYmd, range.toYmd]).toEqual(["2026-10-23", "2026-10-30"]);
+    expect(range.preset).toBe("custom");
+  });
+
+  it("ignores days when the report has no legacy list, the value is not listed, or range/from/to is present", () => {
+    const legacy = defineReport<{ id: string }>({ ...def, legacyDays: [1, 7, 30] });
+    const dflt = parseReportParams(def, {}, LATE_EVENING_ET).range;
+    expect(parseReportParams(def, { days: "7" }, LATE_EVENING_ET).range).toEqual(dflt);
+    expect(parseReportParams(legacy, { days: "5" }, LATE_EVENING_ET).range).toEqual(dflt);
+    expect(parseReportParams(legacy, { days: "7", range: "ytd" }, LATE_EVENING_ET).range.preset).toBe("ytd");
+    expect(parseReportParams(legacy, { days: "7", from: "2026-10-01", to: "2026-10-02" }, LATE_EVENING_ET).range.fromYmd).toBe("2026-10-01");
+  });
+
   it("rejects duplicate column ids at definition time", () => {
     expect(() =>
       defineReport<{ a: string }>({
@@ -162,5 +178,29 @@ describe("parseReportParams", () => {
         ]
       })
     ).toThrow(/duplicate/);
+  });
+});
+
+describe("signups report", () => {
+  it("keeps the pre-kit CSV header order, with the Brief 142 columns appended", async () => {
+    const { signupsReport } = await import("./reports/signups");
+    const header = toCsv(signupsReport, []).replace(/^﻿/, "").split("\r\n")[0];
+    expect(header).toBe(
+      "id,submitted_at,name,email,phone,phone_formatted,location_code,location_pretty," +
+        "package,package_pretty,today_price,monthly_price,terms_text,country,city,region," +
+        "user_agent,confirmation_token,is_bogo,recurring_start_date"
+    );
+  });
+
+  it("fills `package` from package_code and leaves `name` blank", async () => {
+    const { signupsReport } = await import("./reports/signups");
+    const csv = toCsv(signupsReport, [
+      { id: 7, submitted_at: "2026-10-30T14:00:00Z", email: "a@b.co", phone_formatted: "(607) 555-0100",
+        package_code: "ultimate", package_pretty: "Ultimate", today_price: 29.99, city: null, region: null }
+    ]);
+    const row = csv.split("\r\n")[1].split(",");
+    expect(row[2]).toBe("");
+    expect(row[8]).toBe("ultimate");
+    expect(row[10]).toBe("29.99");
   });
 });

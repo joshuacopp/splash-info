@@ -24,6 +24,7 @@
 
 import { cookies, headers } from "next/headers";
 import { getCloudflareContext } from "@opennextjs/cloudflare";
+import type { SignupsReportRow } from "@splash/report-kit/reports/signups";
 
 /**
  * Build an absolute URL for a /admin/api/* call. Server-only — uses
@@ -139,26 +140,14 @@ export async function workerGetJsonResult<T>(path: string): Promise<WorkerJsonRe
  * signups pages live under apps/web/app/admin/signups/ and import this
  * helper.
  *
- * Brief 84 added arbitrary-date-range filtering (`from`/`to`) and a CSV
- * export endpoint. Brief 56's `days=N` callers continue to work — the
- * worker accepts either parameter shape — but new code should pass
- * `{ from, to }` instead of `{ days }`.
+ * Since Brief 179 the page resolves the range itself with the shared
+ * signups report definition (which also honours the Brief 56 `?days=N`
+ * bookmarks) and always sends the worker an explicit Eastern from/to, so
+ * the page and the worker cannot disagree about the window.
  */
 
-export type SignupDays = 1 | 7 | 30;
-
-export interface SignupRow {
-  submitted_at: string;
-  phone_formatted: string;
-  email: string | null;
-  package_pretty: string;
-  today_price: number;
-  city: string | null;
-  region: string | null;
-}
-
 export interface SignupsResponse {
-  rows: SignupRow[];
+  rows: SignupsReportRow[];
   count: number;
   /** ISO timestamp lower bound (Brief 56 field; preserved for back-compat). */
   since: string;
@@ -166,50 +155,35 @@ export interface SignupsResponse {
   from: string;
   /** ISO timestamp upper bound (Brief 84). */
   to: string;
-  /** Non-null when the caller used `days=N`; null for from/to or default windows. */
-  days: number | null;
   limit: number;
   limit_hit: boolean;
 }
 
 export interface SignupsParams {
-  /** YYYY-MM-DD UTC. Pair with `to`. */
-  from?: string;
-  /** YYYY-MM-DD UTC. Pair with `from`. */
-  to?: string;
-  /** Brief 56 back-compat. Ignored when `from`/`to` are provided. */
-  days?: SignupDays;
+  /** YYYY-MM-DD, Eastern. */
+  from: string;
+  /** YYYY-MM-DD, Eastern. */
+  to: string;
   /** 1..200; default 200. */
   limit?: number;
 }
 
 function buildSignupsQuery(params: SignupsParams): string {
-  const sp = new URLSearchParams();
-  if (params.from && params.to) {
-    sp.set("from", params.from);
-    sp.set("to", params.to);
-  } else if (params.days != null) {
-    sp.set("days", String(params.days));
-  }
+  const sp = new URLSearchParams({ from: params.from, to: params.to });
   if (params.limit != null) sp.set("limit", String(params.limit));
-  const qs = sp.toString();
-  return qs ? `?${qs}` : "";
+  return `?${sp.toString()}`;
 }
 
 /**
- * Fetch recent signups for a location. Accepts either Brief 56's `days`
- * shape or Brief 84's `{from, to}` shape (or neither — the worker
- * defaults to last-30-days).
+ * Fetch signups for a location over an Eastern date range.
  *
  *   Returns `null` on 401/403 (no access — caller renders sign-in card).
  *   Throws on other errors (malformed response, 5xx, etc).
  */
 export async function getSignupsForLocation(
   locationCode: string,
-  paramsOrDays: SignupsParams | SignupDays = {}
+  params: SignupsParams
 ): Promise<SignupsResponse | null> {
-  const params: SignupsParams =
-    typeof paramsOrDays === "number" ? { days: paramsOrDays } : paramsOrDays;
   const path =
     `/admin/api/locations/${encodeURIComponent(locationCode)}/signups` +
     buildSignupsQuery(params);
@@ -226,7 +200,7 @@ export async function getSignupsForLocation(
  */
 export function getSignupsCsvUrl(
   locationCode: string,
-  params: Pick<SignupsParams, "from" | "to"> = {}
+  params: Pick<SignupsParams, "from" | "to">
 ): string {
   const path =
     `/admin/api/locations/${encodeURIComponent(locationCode)}/signups.csv` +

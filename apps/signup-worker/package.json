@@ -14,6 +14,7 @@
     "@splash/auth": "workspace:*",
     "@splash/db-supabase": "workspace:*",
     "@splash/http": "workspace:*",
+    "@splash/report-kit": "workspace:*",
     "@splash/storage-r2": "workspace:*",
     "@splash/types": "workspace:*",
     "@splash/ui": "workspace:*"
