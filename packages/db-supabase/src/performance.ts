@@ -38,6 +38,42 @@ export interface PerformanceListFilters {
   rm_group?: string | null;
   fivestar?: string | null;
   limit?: number;
+  /** Permission scope as `locations.id` values. undefined = unscoped (admin
+   *  tier); [] = no sites, returns nothing. ANDed with `location_id`. */
+  scope_location_ids?: number[];
+}
+
+/**
+ * `locations.id` values for a set of location codes. performance_tracking keys
+ * on `locations.id` while sessions carry `pricing_simple.location_code`, so the
+ * scope has to cross pricing_simple.location_code -> site (zero-padded text) ->
+ * locations.site_number (int) -> id. Throws on a read error: callers enforce a
+ * permission boundary with this and must not treat a failure as "no filter".
+ */
+export async function locationIdsForCodes(
+  client: SupabaseClient,
+  codes: string[]
+): Promise<number[]> {
+  if (codes.length === 0) return [];
+  const { data: ps, error: e1 } = await client
+    .from("pricing_simple")
+    .select("site")
+    .in("location_code", codes);
+  if (e1) throw e1;
+  const sites = [
+    ...new Set(
+      (ps ?? [])
+        .map((r: { site: string | null }) => Number.parseInt(r.site ?? "", 10))
+        .filter((n) => Number.isFinite(n))
+    )
+  ];
+  if (sites.length === 0) return [];
+  const { data: locs, error: e2 } = await client
+    .from("locations")
+    .select("id")
+    .in("site_number", sites);
+  if (e2) throw e2;
+  return (locs ?? []).map((r: { id: number }) => r.id);
 }
 
 /**
@@ -66,6 +102,9 @@ export async function listPerformanceSubmissions(
   client: SupabaseClient,
   filters: PerformanceListFilters = {}
 ): Promise<unknown[]> {
+  // Scoped to no sites: nothing to read, and an empty in() would be a
+  // PostgREST syntax error rather than "match nothing".
+  if (filters.scope_location_ids && filters.scope_location_ids.length === 0) return [];
   let q = client
     .from("performance_tracking")
     .select(SUBMISSIONS_SELECT)
@@ -75,6 +114,7 @@ export async function listPerformanceSubmissions(
   if (filters.date_from) q = q.gte("visit_at", filters.date_from);
   if (filters.date_to) q = q.lte("visit_at", filters.date_to);
   if (filters.location_id != null) q = q.eq("location_id", filters.location_id);
+  if (filters.scope_location_ids) q = q.in("location_id", filters.scope_location_ids);
   if (filters.gm_on_site != null) q = q.eq("gm_on_site", filters.gm_on_site);
   if (filters.agm_on_site != null) q = q.eq("agm_on_site", filters.agm_on_site);
 

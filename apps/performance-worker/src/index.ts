@@ -53,6 +53,7 @@ import {
   buildAuthCookies,
   buildLogoutCookies,
   checkToolAccess,
+  sessionLocationScope,
   supabasePasswordLogin,
   type Session
 } from "@splash/auth";
@@ -60,6 +61,7 @@ import {
   createServiceClient,
   insertPerformanceSubmission,
   listPerformanceSubmissions,
+  locationIdsForCodes,
   searchLocations,
   type SupabaseEnv
 } from "@splash/db-supabase";
@@ -131,7 +133,7 @@ export default {
           return apiCreateSubmission(request, env, session);
         }
         if (pathname === "/api/submissions" && method === "GET") {
-          return apiListSubmissions(url, env);
+          return apiListSubmissions(url, env, session);
         }
 
         // Greeter scorecard — same grant, separate module. Returns null only if
@@ -308,6 +310,10 @@ async function apiCreateSubmission(
 
   const sb = createServiceClient(env);
   try {
+    const scope = await scopeLocationIds(sb, session);
+    if (scope !== undefined && !scope.includes(row.location_id)) {
+      return jsonResponse({ error: "forbidden", reason: "location not in your scope" }, 403);
+    }
     const inserted = await insertPerformanceSubmission(sb, row);
     return jsonResponse(inserted, 201);
   } catch (err) {
@@ -321,11 +327,29 @@ async function apiCreateSubmission(
   }
 }
 
-async function apiListSubmissions(url: URL, env: Env): Promise<Response> {
+/**
+ * Resolve the caller's site scope to locations.id values. undefined = admin
+ * tier (every site). Throws on a read failure -- the caller turns that into a
+ * 500, never an unscoped read.
+ *
+ * Until 2026-10-30 neither the list nor the create handler applied any scope:
+ * the pertrack tool grant alone let a GM read, and write, every site.
+ */
+async function scopeLocationIds(
+  sb: ReturnType<typeof createServiceClient>,
+  session: Session
+): Promise<number[] | undefined> {
+  const codes = sessionLocationScope(session);
+  return codes === undefined ? undefined : locationIdsForCodes(sb, codes);
+}
+
+async function apiListSubmissions(url: URL, env: Env, session: Session): Promise<Response> {
   const sp = url.searchParams;
   const sb = createServiceClient(env);
   try {
+    const scope = await scopeLocationIds(sb, session);
     const rows = await listPerformanceSubmissions(sb, {
+      scope_location_ids: scope,
       date_from: sp.get("date_from"),
       date_to: sp.get("date_to"),
       location_id: sp.get("location_id") ? Number(sp.get("location_id")) : null,

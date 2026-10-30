@@ -26,3 +26,29 @@ export function checkToolAccess(session: Session, tool: ToolName): boolean {
   if (session.role === "super_admin") return true;
   return session.tools.includes(tool);
 }
+
+/**
+ * The caller's location scope for site-stamped data. Pure, no I/O.
+ *
+ *   undefined  -> unscoped: full admin tier (super_admin, or dc_role admin /
+ *                 super_admin) reads every site.
+ *   string[]   -> only these lowercased location codes. AN EMPTY ARRAY MEANS
+ *                 "NO SITES", never "all" -- a caller with a tool grant and no
+ *                 assigned locations must read nothing. Callers must not
+ *                 collapse [] into undefined.
+ *
+ * Promoted here (2026-10-30) when a fourth copy was about to be written for
+ * performance submissions. Earlier module-private copies remain in
+ * performance-worker greeter.ts / expense.ts; they agree with this one and can
+ * switch to it when next touched.
+ */
+export function sessionLocationScope(session: Session): string[] | undefined {
+  if (
+    session.role === "super_admin" ||
+    session.dcRole === "admin" ||
+    session.dcRole === "super_admin"
+  ) {
+    return undefined;
+  }
+  return session.locations.map((l) => l.toLowerCase());
+}
