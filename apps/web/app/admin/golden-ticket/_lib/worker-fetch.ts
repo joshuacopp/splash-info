@@ -64,6 +64,26 @@ export interface GoldenTicketPromo {
   updated_by: string | null;
 }
 
+/** One location from the worker's roster. RD = area_manager / am_email,
+ *  RM = regional_manager / rm_email (legacy column names). Emails lower-case. */
+export interface RosterLocation {
+  site_number: string;
+  site: string;
+  area_manager: string;
+  am_email: string;
+  regional_manager: string;
+  rm_email: string;
+}
+
+/** Filters as the worker applied them (unknown values dropped). */
+export interface WinFilters {
+  location: string;
+  rd: string;
+  rm: string;
+  from: string;
+  to: string;
+}
+
 export interface WinsResponse {
   wins: GoldenTicketWin[];
   counts: Record<"mine" | "team" | "open" | "new" | "in_progress" | "done" | "void" | "all" | "duplicates", number>;
@@ -72,6 +92,8 @@ export interface WinsResponse {
   promo: string;
   current_promo_id: string | null;
   status: string;
+  filters: WinFilters;
+  roster: RosterLocation[];
   can_admin: boolean;
   /** Caller is the CRD agent (crd_site_coverage.crd_email) for at least one site. */
   is_agent: boolean;
@@ -113,7 +135,7 @@ async function call(path: string, init: { method: "GET" | "POST"; body?: unknown
 
 /** GET the queue. `{status}` on 401/403 so the page can say which. */
 export async function getWins(
-  params: { promo?: string; status?: string; q?: string }
+  params: Record<string, string | undefined>
 ): Promise<{ data: WinsResponse } | { status: number }> {
   const qs = new URLSearchParams();
   for (const [k, v] of Object.entries(params)) if (v) qs.set(k, v);

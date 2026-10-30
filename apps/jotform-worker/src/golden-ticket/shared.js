@@ -32,6 +32,26 @@ export function todayEastern() {
   return `${get("year")}-${get("month")}-${get("day")}`;
 }
 
+/** An ISO timestamp as Eastern wall-clock "YYYY-MM-DD HH:MM:SS" ("" when
+ *  blank or unparseable) -- for the Excel export, whose writer stores the
+ *  string as-is with no zone shift. */
+export function easternWallClock(iso) {
+  const t = Date.parse(String(iso ?? ""));
+  if (!Number.isFinite(t)) return "";
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/New_York",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hourCycle: "h23"
+  }).formatToParts(new Date(t));
+  const get = (k) => parts.find((p) => p.type === k)?.value ?? "";
+  return `${get("year")}-${get("month")}-${get("day")} ${get("hour")}:${get("minute")}:${get("second")}`;
+}
+
 /** Constant-time string compare (length leak accepted). */
 export function constantTimeEqual(a, b) {
   if (typeof a !== "string" || typeof b !== "string") return false;

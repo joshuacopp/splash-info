@@ -3335,6 +3335,14 @@ URL-based — service bindings don't apply to those.
   `golden_ticket_settings`, rotated from the page; plate must be typed, and
   the photo route re-checks the plate because JotForm submission ids are
   guessable.
+  Queue filters (2026-10-30): `location` (site number), `rd` / `rm` (emails,
+  resolved to sites through `locations.am_email` / `rm_email`) and
+  `from` / `to` on `won_on` (Eastern redemption day). One `loadQueue` feeds
+  both the JSON list and `GET .../golden-ticket/wins.xlsx` (via apps/web
+  `/admin/golden-ticket/export.xlsx`), so the Excel file is always the
+  on-screen view -- every field except the photo, plus CRD status, checkboxes
+  and notes. With a site or date filter on, a duplicate's twin is fetched
+  separately, because the twin is usually at another site or day.
 - **outbound_emails table** (Brief 127) - Shared queue of fully-rendered
   outbound emails. Single Power Automate flow polls every 5 minutes
   and drains the queue regardless of which worker enqueued the row.

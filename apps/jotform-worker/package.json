@@ -15,7 +15,8 @@
     "@splash/auth": "workspace:*",
     "@splash/db-supabase": "workspace:*",
     "@splash/email-shell": "workspace:*",
-    "@splash/http": "workspace:*"
+    "@splash/http": "workspace:*",
+    "@splash/xlsx": "workspace:*"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20250101.0",

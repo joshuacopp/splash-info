@@ -29,6 +29,7 @@ import {
   getWins,
   type GoldenTicketPromo,
   type GoldenTicketWin,
+  type RosterLocation,
   type WinStatus,
   type WinsResponse
 } from "./_lib/worker-fetch";
@@ -104,10 +105,26 @@ function href(params: Record<string, string>): string {
   return s ? `${PATH}?${s}` : PATH;
 }
 
+/** Distinct people for a dropdown, by email, labelled with their name. */
+function people(rows: RosterLocation[], email: "am_email" | "rm_email", name: "area_manager" | "regional_manager") {
+  const out = new Map<string, string>();
+  for (const r of rows) if (r[email] && !out.has(r[email])) out.set(r[email], r[name] || r[email]);
+  return [...out].map(([value, label]) => ({ value, label })).sort((a, b) => a.label.localeCompare(b.label));
+}
+
 export default async function GoldenTicketPage({ searchParams }: PageProps) {
   const sp = await searchParams;
   const q = first(sp.q);
-  const res = await getWins({ promo: first(sp.promo), status: first(sp.status), q });
+  const res = await getWins({
+    promo: first(sp.promo),
+    status: first(sp.status),
+    q,
+    location: first(sp.location),
+    rd: first(sp.rd),
+    rm: first(sp.rm),
+    from: first(sp.from),
+    to: first(sp.to)
+  });
 
   if (!("data" in res)) {
     const message =
@@ -138,46 +155,118 @@ export default async function GoldenTicketPage({ searchParams }: PageProps) {
         ? "Outside any promo"
         : (d.promos.find((p) => p.id === d.promo)?.name ?? "Promo");
 
+  // Everything that narrows the view, carried through tab links and export.
+  const f = d.filters;
+  const view = { promo: d.promo, q, location: f.location, rd: f.rd, rm: f.rm, from: f.from, to: f.to };
+  const filtered = Boolean(q || f.location || f.rd || f.rm || f.from || f.to);
+  const exportQs = new URLSearchParams(
+    Object.entries({ ...view, status: d.status }).filter(([, v]) => v)
+  ).toString();
+
+  // Each dropdown only offers choices that fit the others already picked
+  // (after Apply), so an RD's list shows only their RMs and sites.
+  const underRd = d.roster.filter((r) => !f.rd || r.am_email === f.rd);
+  const rdOptions = people(d.roster.filter((r) => !f.rm || r.rm_email === f.rm), "am_email", "area_manager");
+  const rmOptions = people(underRd, "rm_email", "regional_manager");
+  const locOptions = underRd.filter((r) => !f.rm || r.rm_email === f.rm);
+
   return (
     <Shell>
       {d.can_admin ? <AdminCards data={d} /> : null}
 
       {/* Filters: a plain GET form, so the view is a shareable URL. */}
-      <form method="get" action={PATH} className={`mb-4 flex flex-col gap-3 sm:flex-row sm:items-end ${CARD}`}>
+      <form method="get" action={PATH} className={`mb-4 flex flex-col gap-3 ${CARD}`}>
         <input type="hidden" name="status" value={d.status} />
-        <label className="flex flex-col gap-1 sm:w-64">
-          <span className={LABEL}>Promo</span>
-          <select name="promo" defaultValue={d.promo} className={INPUT}>
-            {d.promos.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.name} ({fmtDay(p.starts_on)} – {fmtDay(p.ends_on)})
-                {p.id === d.current_promo_id ? " · running" : ""}
-              </option>
-            ))}
-            <option value="all">All promos</option>
-            <option value="none">Outside any promo</option>
-          </select>
-        </label>
-        <label className="flex flex-1 flex-col gap-1">
-          <span className={LABEL}>Search</span>
-          <input
-            name="q"
-            type="search"
-            defaultValue={q}
-            placeholder="Plate, name, phone, ticket serial, barcode or site"
-            className={INPUT}
-          />
-        </label>
-        <div className="flex gap-2">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
+          <label className="flex flex-col gap-1 sm:w-64">
+            <span className={LABEL}>Promo</span>
+            <select name="promo" defaultValue={d.promo} className={INPUT}>
+              {d.promos.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name} ({fmtDay(p.starts_on)} – {fmtDay(p.ends_on)})
+                  {p.id === d.current_promo_id ? " · running" : ""}
+                </option>
+              ))}
+              <option value="all">All promos</option>
+              <option value="none">Outside any promo</option>
+            </select>
+          </label>
+          <label className="flex flex-1 flex-col gap-1">
+            <span className={LABEL}>Search</span>
+            <input
+              name="q"
+              type="search"
+              defaultValue={q}
+              placeholder="Plate, name, phone, ticket serial, barcode or site"
+              className={INPUT}
+            />
+          </label>
+        </div>
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-5">
+          <label className="flex min-w-0 flex-col gap-1">
+            <span className={LABEL}>Regional Director</span>
+            <select name="rd" defaultValue={f.rd} className={INPUT}>
+              <option value="">All</option>
+              {rdOptions.map((o) => (
+                <option key={o.value} value={o.value}>
+                  {o.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="flex min-w-0 flex-col gap-1">
+            <span className={LABEL}>Regional Manager</span>
+            <select name="rm" defaultValue={f.rm} className={INPUT}>
+              <option value="">All</option>
+              {rmOptions.map((o) => (
+                <option key={o.value} value={o.value}>
+                  {o.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="flex min-w-0 flex-col gap-1">
+            <span className={LABEL}>Location</span>
+            <select name="location" defaultValue={f.location} className={INPUT}>
+              <option value="">All</option>
+              {locOptions.map((r) => (
+                <option key={r.site_number} value={r.site_number}>
+                  {r.site} ({r.site_number})
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="flex min-w-0 flex-col gap-1">
+            <span className={LABEL}>Won from</span>
+            <input name="from" type="date" defaultValue={f.from} className={INPUT} />
+          </label>
+          <label className="flex min-w-0 flex-col gap-1">
+            <span className={LABEL}>Won to</span>
+            <input name="to" type="date" defaultValue={f.to} className={INPUT} />
+          </label>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
           <button type="submit" className={BTN}>
             Apply
           </button>
-          {q ? (
+          {filtered ? (
             <Link href={href({ promo: d.promo, status: d.status })} className={BTN_OUTLINE}>
-              Clear
+              Clear filters
             </Link>
           ) : null}
+          <a
+            href={`${PATH}/export.xlsx${exportQs ? `?${exportQs}` : ""}`}
+            download
+            className={`${BTN_OUTLINE} sm:ml-auto`}
+          >
+            Export to Excel ({d.wins.length.toLocaleString("en-US")})
+          </a>
         </div>
+        <p className="text-xs text-splash-navy/60">
+          Dates are the day the ticket was redeemed (Eastern). The export is the list below, with
+          every field except the photo, plus CRD&rsquo;s status, checkboxes and notes. Pick filters
+          and Apply first.
+        </p>
       </form>
 
       <nav className="mb-4 flex flex-wrap gap-2" aria-label="Status">
@@ -187,7 +276,7 @@ export default async function GoldenTicketPage({ searchParams }: PageProps) {
           return (
             <Link
               key={t.id}
-              href={href({ promo: d.promo, status: t.id, q })}
+              href={href({ ...view, status: t.id })}
               aria-current={active ? "page" : undefined}
               className={`rounded-full px-3.5 py-1.5 text-sm font-bold ${
                 active
@@ -218,7 +307,7 @@ export default async function GoldenTicketPage({ searchParams }: PageProps) {
       {d.wins.length === 0 ? (
         <div className={CARD}>
           <p className="text-splash-navy/80">
-            {q ? "No wins match that search." : `Nothing here for ${promoName}.`}
+            {filtered ? "No wins match these filters." : `Nothing here for ${promoName}.`}
           </p>
         </div>
       ) : (

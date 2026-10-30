@@ -1,6 +1,8 @@
 // Golden Ticket — CRD work queue API.
 //
-//   GET  /admin/jotform/api/golden-ticket/wins?promo=&status=&q=
+//   GET  /admin/jotform/api/golden-ticket/wins?promo=&status=&q=&location=&rd=&rm=&from=&to=
+//   GET  /admin/jotform/api/golden-ticket/wins.xlsx?(same params)  -- the current
+//        view as an Excel file, every field except the photo
 //   POST /admin/jotform/api/golden-ticket/wins/{submission_id}
 //        JSON {status?, account_setup?, micrologic_tagged?, note?}
 //   POST /admin/jotform/api/golden-ticket/promos          (admin tier)
@@ -19,10 +21,12 @@
 
 import { authenticate } from "@splash/auth";
 import { jsonError } from "@splash/http";
+import { buildXlsxWorkbook } from "@splash/xlsx";
 import {
   ACCESS_TAG,
   STATUSES,
   WIN_COLUMNS,
+  easternWallClock,
   listPromos,
   loadSettings,
   lookupPath,
@@ -93,6 +97,10 @@ export async function handleGoldenTicketAdmin(request, env, path) {
       if (request.method !== "GET") return jsonError(405, "method not allowed");
       return await listWins(request, env, g);
     }
+    if (rest.length === 1 && rest[0] === "wins.xlsx") {
+      if (request.method !== "GET") return jsonError(405, "method not allowed");
+      return await exportWins(request, env, g);
+    }
     if (rest.length === 2 && rest[0] === "wins") {
       if (request.method !== "POST") return jsonError(405, "method not allowed");
       return await updateWin(request, env, g, rest[1]);
@@ -116,24 +124,106 @@ export async function handleGoldenTicketAdmin(request, env, path) {
 /* ------------------------------------------------------------------------ */
 
 async function listWins(request, env, g) {
-  const url = new URL(request.url);
-  const promos = await listPromos(env);
-  const today = todayEastern();
-  const current = promoCovering(promos, today);
+  const q = await loadQueue(env, g, new URL(request.url).searchParams);
+
+  let link = null;
+  try {
+    link = lookupPath((await loadSettings(env)).lookup_token);
+  } catch (err) {
+    console.error("[golden-ticket] settings read failed", err);
+  }
+
+  return json({
+    wins: q.wins,
+    counts: q.counts,
+    cap_reached: q.capReached,
+    promos: q.promos,
+    promo: q.promo,
+    current_promo_id: q.currentPromoId,
+    status: q.status,
+    filters: q.filters,
+    roster: q.roster,
+    can_admin: g.admin,
+    is_agent: q.scope.isAgent,
+    is_supervisor: q.scope.isSupervisor,
+    lookup_path: link
+  });
+}
+
+/**
+ * The queue as the page shows it. Promo + location / RD / RM / date narrow
+ * the set and the counts come from that set; then the status tab and search
+ * pick the visible rows. Shared by the JSON list and the Excel export, so the
+ * download is always exactly what is on screen.
+ *
+ *   location  site number
+ *   rd        Regional Director email (locations.am_email)
+ *   rm        Regional Manager email (locations.rm_email)
+ *   from, to  YYYY-MM-DD, the Eastern day the ticket was redeemed (won_on)
+ */
+async function loadQueue(env, g, sp) {
+  const [promos, roster, scope] = await Promise.all([
+    listPromos(env),
+    loadRoster(env),
+    callerCoverage(env, g.session.email)
+  ]);
+  const current = promoCovering(promos, todayEastern());
 
   // promo: a promo id, "all", or "none" (wins dated outside every promo --
   // a sign a promo's dates are wrong). Defaults to today's promo.
-  let promo = url.searchParams.get("promo") || (current ? current.id : "all");
+  let promo = sp.get("promo") || (current ? current.id : "all");
   if (promo !== "all" && promo !== "none" && !UUID_RE.test(promo)) promo = "all";
+
+  // Unknown values are dropped rather than refused, so an old link still opens.
+  const knownEmail = (field, v) => {
+    const e = String(v ?? "").trim().toLowerCase();
+    return e && roster.some((r) => r[field] === e) ? e : "";
+  };
+  const locParam = siteKey(sp.get("location"));
+  const filters = {
+    location: locParam && roster.some((r) => r.site_key === locParam) ? locParam : "",
+    rd: knownEmail("am_email", sp.get("rd")),
+    rm: knownEmail("rm_email", sp.get("rm")),
+    from: realDate(sp.get("from")),
+    to: realDate(sp.get("to"))
+  };
+  if (filters.from && filters.to && filters.from > filters.to) {
+    [filters.from, filters.to] = [filters.to, filters.from];
+  }
 
   const query = { select: WIN_COLUMNS, order: "submitted_at.desc", limit: String(WIN_CAP + 1) };
   if (promo === "none") query.promo_id = "is.null";
   else if (promo !== "all") query.promo_id = `eq.${promo}`;
-  const rows = (await sb(env, "golden_ticket_wins", { query })) ?? [];
+  const range = [];
+  if (filters.from) range.push(`won_on.gte.${filters.from}`);
+  if (filters.to) range.push(`won_on.lte.${filters.to}`);
+  if (range.length) query.and = `(${range.join(",")})`;
+
+  const siteFiltered = Boolean(filters.location || filters.rd || filters.rm);
+  const sites = siteFiltered
+    ? roster
+        .filter(
+          (r) =>
+            (!filters.location || r.site_key === filters.location) &&
+            (!filters.rd || r.am_email === filters.rd) &&
+            (!filters.rm || r.rm_email === filters.rm)
+        )
+        .map((r) => r.site_key)
+    : null;
+  let rows = [];
+  // An RD + RM pair that shares no site matches nothing; skip the query.
+  if (!sites || sites.length) {
+    if (sites) {
+      // jotform_submissions.site_number is sometimes zero-padded ("090") and
+      // sometimes not ("127"); ask for both spellings.
+      const variants = new Set(sites.flatMap((k) => [k, k.padStart(3, "0")]));
+      query.site_number = `in.(${[...variants].join(",")})`;
+    }
+    rows = (await sb(env, "golden_ticket_wins", { query })) ?? [];
+  }
   const capReached = rows.length > WIN_CAP;
   if (capReached) rows.length = WIN_CAP;
 
-  const scope = await callerCoverage(env, g.session.email);
   const isOpen = (r) => r.status === "new" || r.status === "in_progress";
   const inMine = (r) => scope.mine.has(siteKey(r.site_number));
   const inTeam = (r) => {
@@ -141,11 +231,8 @@ async function listWins(request, env, g) {
     return scope.team.has(k) || (scope.isSupervisor && !scope.covered.has(k));
   };
 
-  // Counts and duplicate partners come from the whole promo, BEFORE the
-  // status / search filter, so a duplicate whose twin is already Done still
-  // shows its twin.
+  // Counts come from the filtered set BEFORE the status / search filter.
   const counts = { mine: 0, team: 0, open: 0, new: 0, in_progress: 0, done: 0, void: 0, all: rows.length, duplicates: 0 };
-  const byPlate = new Map();
   for (const r of rows) {
     counts[r.status] = (counts[r.status] ?? 0) + 1;
     if (isOpen(r)) {
@@ -154,24 +241,16 @@ async function listWins(request, env, g) {
       if (inTeam(r)) counts.team++;
     }
     if (r.dup_count > 1) counts.duplicates++;
-    if (r.plate_norm && r.promo_id && r.status !== "void") {
-      const key = `${r.promo_id}|${r.plate_norm}`;
-      const list = byPlate.get(key) ?? [];
-      list.push(r);
-      byPlate.set(key, list);
-    }
   }
 
   // Default tab: your own sites if you are an agent, your regions if you only
   // supervise, otherwise everything open (admins).
-  const status =
-    url.searchParams.get("status") ||
-    (scope.isAgent ? "mine" : scope.isSupervisor ? "team" : "open");
-  const q = (url.searchParams.get("q") || "").trim().toLowerCase();
+  const status = sp.get("status") || (scope.isAgent ? "mine" : scope.isSupervisor ? "team" : "open");
+  const q = (sp.get("q") || "").trim().toLowerCase();
   const words = q.split(/\s+/).filter(Boolean);
   const qPlate = q.replace(/[^a-z0-9]/g, "").toUpperCase();
 
-  const wins = rows
+  const visible = rows
     .filter((r) => {
       if (status === "mine") return isOpen(r) && inMine(r);
       if (status === "team") return isOpen(r) && inTeam(r);
@@ -188,45 +267,208 @@ async function listWins(request, env, g) {
         .join(" ")
         .toLowerCase();
       return words.every((w) => hay.includes(w));
-    })
-    .map((r) => ({
-      ...r,
-      duplicates:
-        r.dup_count > 1
-          ? (byPlate.get(`${r.promo_id}|${r.plate_norm}`) ?? [])
-              .filter((o) => o.submission_id !== r.submission_id)
-              .map((o) => ({
-                submission_id: o.submission_id,
-                won_on: o.won_on,
-                site_name: o.site_name,
-                site_number: o.site_number,
-                prize_code: o.prize_code,
-                customer_name: o.customer_name,
-                photo_url: o.photo_url,
-                status: o.status
-              }))
-          : []
-    }));
+    });
 
-  let link = null;
-  try {
-    link = lookupPath((await loadSettings(env)).lookup_token);
-  } catch (err) {
-    console.error("[golden-ticket] settings read failed", err);
-  }
+  const byPlate = await duplicatePartners(env, rows, visible, siteFiltered || range.length > 0);
+  const wins = visible.map((r) => ({
+    ...r,
+    duplicates:
+      r.dup_count > 1
+        ? (byPlate.get(`${r.promo_id}|${r.plate_norm}`) ?? [])
+            .filter((o) => o.submission_id !== r.submission_id)
+            .map((o) => ({
+              submission_id: o.submission_id,
+              won_on: o.won_on,
+              site_name: o.site_name,
+              site_number: o.site_number,
+              prize_code: o.prize_code,
+              customer_name: o.customer_name,
+              photo_url: o.photo_url,
+              status: o.status
+            }))
+        : []
+  }));
 
-  return json({
+  return {
     wins,
     counts,
-    cap_reached: capReached,
+    capReached,
     promos,
     promo,
-    current_promo_id: current ? current.id : null,
+    currentPromoId: current ? current.id : null,
     status,
-    can_admin: g.admin,
-    is_agent: scope.isAgent,
-    is_supervisor: scope.isSupervisor,
-    lookup_path: link
+    filters,
+    roster: roster.map((r) => ({
+      site_number: r.site_key,
+      site: r.site,
+      area_manager: r.area_manager,
+      am_email: r.am_email,
+      regional_manager: r.regional_manager,
+      rm_email: r.rm_email
+    })),
+    scope
+  };
+}
+
+/** "YYYY-MM-DD" when it is a real calendar day, else "". The shape check
+ *  alone lets "2026-13-99" through to Postgres, which refuses it with a 400
+ *  and the whole page errors instead of ignoring a bad link. */
+function realDate(v) {
+  const s = String(v ?? "");
+  if (!DATE_RE.test(s)) return "";
+  const [y, m, d] = s.split("-").map(Number);
+  const t = new Date(Date.UTC(y, m - 1, d));
+  return t.getUTCFullYear() === y && t.getUTCMonth() === m - 1 && t.getUTCDate() === d ? s : "";
+}
+
+const PARTNER_COLUMNS =
+  "submission_id,promo_id,plate_norm,won_on,site_name,site_number,prize_code,customer_name,photo_url,status";
+const PARTNER_PLATE_CAP = 300;
+
+/**
+ * Non-void wins per promo+plate, for the duplicate side-by-side. A location
+ * or date filter can hide a duplicate's twin (another site, another day), and
+ * the twin is the whole point of the warning -- so with a filter on, look the
+ * twins up directly. With no filter the promo's rows already hold them.
+ */
+async function duplicatePartners(env, rows, visible, filtered) {
+  const group = (list) => {
+    const m = new Map();
+    for (const r of list) {
+      if (!r.plate_norm || !r.promo_id || r.status === "void") continue;
+      const key = `${r.promo_id}|${r.plate_norm}`;
+      const l = m.get(key) ?? [];
+      l.push(r);
+      m.set(key, l);
+    }
+    return m;
+  };
+  const dups = visible.filter((r) => r.dup_count > 1 && r.promo_id && r.plate_norm);
+  if (!filtered || dups.length === 0) return group(rows);
+  const plates = [...new Set(dups.map((r) => r.plate_norm))];
+  if (plates.length > PARTNER_PLATE_CAP) return group(rows);
+  const promoIds = [...new Set(dups.map((r) => r.promo_id))];
+  try {
+    // plate_norm is A-Z0-9 only and promo ids are UUIDs, so both are safe
+    // unquoted inside in.(...).
+    const partners = await sb(env, "golden_ticket_wins", {
+      query: {
+        select: PARTNER_COLUMNS,
+        plate_norm: `in.(${plates.join(",")})`,
+        promo_id: `in.(${promoIds.join(",")})`,
+        status: "neq.void"
+      }
+    });
+    return group(partners ?? []);
+  } catch (err) {
+    console.error("[golden-ticket] duplicate lookup failed", err);
+    return group(rows);
+  }
+}
+
+/**
+ * Every location with a site number, with its Regional Director
+ * (area_manager / am_email) and Regional Manager (regional_manager /
+ * rm_email) -- legacy column names, see CLAUDE.md "Regional Director /
+ * Regional Manager". Emails lower-cased for comparison.
+ */
+async function loadRoster(env) {
+  const rows =
+    (await sb(env, "locations", {
+      query: { select: "site_number,site,area_manager,am_email,regional_manager,rm_email" }
+    })) ?? [];
+  const lower = (v) => String(v ?? "").trim().toLowerCase();
+  const trim = (v) => String(v ?? "").trim();
+  return rows
+    .map((r) => ({
+      site_key: siteKey(r.site_number),
+      site: trim(r.site) || `Site ${r.site_number}`,
+      area_manager: trim(r.area_manager),
+      am_email: lower(r.am_email),
+      regional_manager: trim(r.regional_manager),
+      rm_email: lower(r.rm_email)
+    }))
+    .filter((r) => r.site_key)
+    .sort((a, b) => a.site.localeCompare(b.site));
+}
+
+/* ------------------------------------------------------------------------ */
+
+const PRIZE_LABEL = { GT30: "Free month", GT365: "Free year", GTLIFE: "Free for life" };
+const STATUS_LABEL = { new: "New", in_progress: "In progress", done: "Done", void: "Void" };
+
+/** Every submission field except the photo, plus CRD's work. */
+const XLSX_COLUMNS = [
+  { header: "Won on", width: 12, kind: "date" },
+  { header: "Submitted (Eastern)", width: 19, kind: "datetime" },
+  { header: "Promo", width: 22, kind: "text" },
+  { header: "Site #", width: 8, kind: "text" },
+  { header: "Site", width: 20, kind: "text" },
+  { header: "Regional Director", width: 20, kind: "text" },
+  { header: "Regional Manager", width: 20, kind: "text" },
+  { header: "Customer", width: 24, kind: "text" },
+  { header: "Phone", width: 16, kind: "text" },
+  { header: "Plate", width: 12, kind: "text" },
+  { header: "Barcode", width: 16, kind: "text" },
+  { header: "Active Unlimited already?", width: 14, kind: "text" },
+  { header: "Prize", width: 14, kind: "text" },
+  { header: "Prize code", width: 10, kind: "text" },
+  { header: "Ticket serial", width: 16, kind: "text" },
+  { header: "Employee", width: 20, kind: "text" },
+  { header: "Status", width: 12, kind: "text" },
+  { header: "Account set up", width: 10, kind: "text" },
+  { header: "Micrologic tagged", width: 10, kind: "text" },
+  { header: "Wins for this plate in promo", width: 12, kind: "number" },
+  { header: "Last CRD update (Eastern)", width: 19, kind: "datetime" },
+  { header: "Last CRD update by", width: 26, kind: "text" },
+  { header: "CRD notes", width: 60, kind: "wrap" },
+  { header: "JotForm submission ID", width: 22, kind: "text" }
+];
+
+async function exportWins(request, env, g) {
+  const q = await loadQueue(env, g, new URL(request.url).searchParams);
+  const people = new Map(q.roster.map((r) => [r.site_number, r]));
+  const rows = q.wins.map((w) => {
+    const who = people.get(siteKey(w.site_number));
+    const notes = (Array.isArray(w.history) ? w.history : [])
+      .filter((h) => h && h.note)
+      .map((h) => `${easternWallClock(h.at).slice(0, 16)} ${h.by ?? "unknown"}: ${h.note}`)
+      .join("\n");
+    return [
+      w.won_on ?? "",
+      easternWallClock(w.submitted_at),
+      w.promo_name ?? "Outside any promo",
+      w.site_number ?? "",
+      w.site_name ?? "",
+      who?.area_manager ?? "",
+      who?.regional_manager ?? "",
+      w.customer_name ?? "",
+      w.phone ?? "",
+      w.plate ?? "",
+      w.barcode ?? "",
+      w.existing_unlimited ?? "",
+      (w.prize_code && PRIZE_LABEL[w.prize_code]) || w.prize || "",
+      w.prize_code ?? "",
+      w.ticket_serial ?? "",
+      w.employee_name ?? "",
+      STATUS_LABEL[w.status] ?? w.status ?? "",
+      w.account_setup ? "Yes" : "No",
+      w.micrologic_tagged ? "Yes" : "No",
+      w.dup_count || "",
+      easternWallClock(w.crd_updated_at),
+      w.crd_updated_by ?? "",
+      notes,
+      w.submission_id
+    ];
+  });
+  const bytes = buildXlsxWorkbook(XLSX_COLUMNS, rows, "Golden Ticket");
+  return new Response(bytes.buffer, {
+    status: 200,
+    headers: {
+      "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      "Content-Disposition": `attachment; filename="golden-ticket-${todayEastern()}.xlsx"`,
+      "Cache-Control": "no-store"
+    }
   });
 }
 
