@@ -1,0 +1,25 @@
+{
+  "name": "@splash/report-kit",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Report definitions, Eastern-time ranges and CSV export shared by workers and apps/web (Brief 179).",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./reports/*": "./src/reports/*.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "lint": "echo 'no lint yet'",
+    "clean": "rm -rf dist .turbo"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20250101.0",
+    "@splash/config": "workspace:*",
+    "typescript": "^5.6.0",
+    "vitest": "~3.2.0"
+  }
+}

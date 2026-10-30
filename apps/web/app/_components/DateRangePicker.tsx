@@ -35,6 +35,9 @@ export function DateRangePicker({ defaultFromYmd, defaultToYmd }: Props) {
     else next.delete("from");
     if (to) next.set("to", to);
     else next.delete("to");
+    // Report-kit pages (Brief 179) also carry a `range=<preset>`, which beats
+    // from/to; a custom range the user just typed must replace it.
+    if (from || to) next.delete("range");
     const qs = next.toString();
     router.push(qs ? `?${qs}` : "?");
   };

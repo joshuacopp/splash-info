@@ -1,7 +1,7 @@
-# Brief 178: Report kit — one way to build reports (TanStack Table + Tremor)
+# Brief 179: Report kit — one way to build reports (TanStack Table + Tremor)
 
-**Status:** Draft — awaiting operator review
-**Started:**
+**Status:** In progress — kit + pilot 1 (Fleet) done; pilots 2-3 next
+**Started:** 2026-10-30
 **Completed:**
 **Blocks:** Neither
 **Dependencies:** none

@@ -66,7 +66,7 @@ const nextConfig = {
   //
   // Workspace packages we author in this monorepo. Next.js needs to transpile
   // their TS sources because they ship as .ts files (no prebuild step).
-  transpilePackages: ["@splash/storage-r2", "@splash/types", "@splash/ui"],
+  transpilePackages: ["@splash/report-kit", "@splash/storage-r2", "@splash/types", "@splash/ui"],
   reactStrictMode: true,
 
   // Server actions default body limit is 1 MB. Promo material uploads

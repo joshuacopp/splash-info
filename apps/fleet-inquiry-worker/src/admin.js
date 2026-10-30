@@ -47,10 +47,16 @@
 
 import { authenticate } from "@splash/auth";
 import { isOriginAllowed, json, jsonError } from "@splash/http";
+import {
+  csvResponseHeaders,
+  exportFilename,
+  parseReportParams,
+  toCsv
+} from "@splash/report-kit";
+import { fleetReport } from "@splash/report-kit/reports/fleet";
 
 const ROW_LIMIT = 200;
 const CSV_SAFETY_CAP = 10_000;
-const DEFAULT_WINDOW_DAYS = 30;
 const SPLASH_NOTES_MAX_LEN = 10_000;
 
 // Brief 105 — status enum kept in sync with the apps/web constants in
@@ -58,38 +64,9 @@ const SPLASH_NOTES_MAX_LEN = 10_000;
 // validator; the apps/web dropdown is a UX hint only.
 const ALLOWED_STATUSES = new Set(["new", "reviewed", "contacted", "closed"]);
 
-/**
- * CSV column inventory. `key` reads the column directly from the row;
- * `get` is a derived value (used for packages_detail JSON pretty-printing).
- * Columns mirror the user-facing fields written by the public submit
- * handler in `src/index.js` plus the implicit `id` and `submitted_at`.
- */
-const CSV_COLUMNS = [
-  { key: "id", label: "id" },
-  { key: "submitted_at", label: "submitted_at" },
-  { key: "company", label: "company" },
-  { key: "name", label: "name" },
-  { key: "phone", label: "phone" },
-  { key: "email", label: "email" },
-  { key: "address", label: "address" },
-  { key: "location_code", label: "location_code" },
-  { key: "location_pretty", label: "location_pretty" },
-  { key: "service_type", label: "service_type" },
-  { key: "packages", label: "packages" },
-  {
-    label: "packages_detail",
-    get: (r) => (r.packages_detail == null ? "" : JSON.stringify(r.packages_detail))
-  },
-  { key: "detailing_requested", label: "detailing_requested" },
-  { key: "detailing_location_code", label: "detailing_location_code" },
-  { key: "detailing_location_pretty", label: "detailing_location_pretty" },
-  { key: "number_of_vehicles", label: "number_of_vehicles" },
-  { key: "anticipated_washes_per_month", label: "anticipated_washes_per_month" },
-  { key: "ip_address", label: "ip_address" },
-  { key: "user_agent", label: "user_agent" },
-  { key: "status", label: "status" },
-  { key: "splash_notes", label: "splash_notes" }
-];
+// CSV columns, the default date range and the CSV writer come from the
+// shared report definition (@splash/report-kit/reports/fleet, Brief 179), which
+// apps/web's /admin/fleet page also renders from.
 
 /* ============================================================
  * Router entry — called from src/index.js
@@ -173,61 +150,16 @@ async function authenticateAdmin(request, env) {
  * Date-range parsing
  * ============================================================ */
 
-const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
-
 /**
- * Parse `from` / `to` query params. Returns ISO timestamps that bracket the
- * inclusive day range (UTC). Defaults: from = today minus DEFAULT_WINDOW_DAYS,
- * to = today.
- *
- *   { ok: true, fromIso, toIso }
- *   { ok: false, response }    on malformed input
+ * The report's date range from `range` / `from` / `to`. Eastern calendar
+ * days via @splash/report-kit, the same parser the page uses, so the two
+ * cannot disagree. Malformed input falls back to the default (last 30 days)
+ * instead of 400ing a bookmarked URL. Before Brief 179 this was a UTC parser,
+ * which shifted "today" a day ahead after 7-8 PM Eastern.
  */
 function parseDateRange(url) {
-  const fromRaw = url.searchParams.get("from");
-  const toRaw = url.searchParams.get("to");
-
-  let fromDate, toDate;
-  const now = new Date();
-  const todayUtc = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
-
-  if (fromRaw == null || fromRaw === "") {
-    fromDate = new Date(todayUtc.getTime() - DEFAULT_WINDOW_DAYS * 86_400_000);
-  } else {
-    if (!DATE_RE.test(fromRaw)) {
-      return { ok: false, response: jsonError(400, "Invalid 'from' (expected YYYY-MM-DD)") };
-    }
-    fromDate = new Date(`${fromRaw}T00:00:00.000Z`);
-    if (Number.isNaN(fromDate.getTime())) {
-      return { ok: false, response: jsonError(400, "Invalid 'from' date") };
-    }
-  }
-
-  if (toRaw == null || toRaw === "") {
-    toDate = new Date(todayUtc.getTime() + 86_400_000 - 1);
-  } else {
-    if (!DATE_RE.test(toRaw)) {
-      return { ok: false, response: jsonError(400, "Invalid 'to' (expected YYYY-MM-DD)") };
-    }
-    const toMidnight = new Date(`${toRaw}T00:00:00.000Z`);
-    if (Number.isNaN(toMidnight.getTime())) {
-      return { ok: false, response: jsonError(400, "Invalid 'to' date") };
-    }
-    // Include the entire `to` day — push forward 24h minus 1ms.
-    toDate = new Date(toMidnight.getTime() + 86_400_000 - 1);
-  }
-
-  if (fromDate.getTime() > toDate.getTime()) {
-    return { ok: false, response: jsonError(400, "'from' must be on or before 'to'") };
-  }
-
-  return {
-    ok: true,
-    fromIso: fromDate.toISOString(),
-    toIso: toDate.toISOString(),
-    fromYmd: fromDate.toISOString().slice(0, 10),
-    toYmd: toDate.toISOString().slice(0, 10)
-  };
+  const { range } = parseReportParams(fleetReport, url.searchParams);
+  return { ok: true, ...range };
 }
 
 function parseLimit(url) {
@@ -291,6 +223,8 @@ async function handleListSubmissions(request, env) {
     total: total != null ? total : (Array.isArray(rows) ? rows.length : 0),
     from: range.fromIso,
     to: range.toIso,
+    from_ymd: range.fromYmd,
+    to_ymd: range.toYmd,
     limit,
     limit_hit: Array.isArray(rows) && rows.length === limit
   });
@@ -530,34 +464,8 @@ async function handleCsvExport(request, env) {
     );
   }
 
-  const csv = toCsv(rows, CSV_COLUMNS);
-  const filename = `fleet-submissions-${range.fromYmd}-to-${range.toYmd}.csv`;
-  return new Response(csv, {
+  return new Response(toCsv(fleetReport, rows), {
     status: 200,
-    headers: {
-      "Content-Type": "text/csv; charset=utf-8",
-      "Content-Disposition": `attachment; filename="${filename}"`,
-      "Cache-Control": "no-store"
-    }
+    headers: csvResponseHeaders(exportFilename(fleetReport, range, "csv"))
   });
-}
-
-/* ============================================================
- * CSV rendering
- * ============================================================ */
-
-function toCsv(rows, columns) {
-  const escape = (v) => {
-    const s = v == null ? "" : String(v);
-    return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
-  };
-  const header = columns.map((c) => escape(c.label)).join(",");
-  const body = rows
-    .map((r) =>
-      columns
-        .map((c) => escape(typeof c.get === "function" ? c.get(r) : r[c.key]))
-        .join(",")
-    )
-    .join("\n");
-  return header + "\n" + body + (rows.length > 0 ? "\n" : "");
 }

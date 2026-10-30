@@ -14,7 +14,8 @@
   "dependencies": {
     "@splash/auth": "workspace:*",
     "@splash/db-supabase": "workspace:*",
-    "@splash/http": "workspace:*"
+    "@splash/http": "workspace:*",
+    "@splash/report-kit": "workspace:*"
   },
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "^0.12.4",
