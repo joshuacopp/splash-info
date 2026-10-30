@@ -52,6 +52,7 @@ import {
 import {
   createServiceClient,
   fetchPricingResolvedByLocation,
+  getCrdCoverageForEmail,
   getPricingMode,
   listDistinctLocations,
   listLocationPkgs,
@@ -96,10 +97,24 @@ export async function adminGate(request: Request, env: Env): Promise<AdminGate> 
   if (auth.status !== "authenticated") {
     return { ok: false, response: jsonError(401, "unauthorized") };
   }
-  if (!checkToolAccess(auth.session, "pricing")) {
+  const session = auth.session;
+  if (session.role === "super_admin") {
+    return { ok: true, session, sb: createServiceClient(env) };
+  }
+
+  // CRD agents / supervisors get pricing + signups for the sites they cover
+  // (operator 2026-10-29), read live from crd_site_coverage on every request
+  // so a reassignment takes effect immediately. Folded into `locations` so
+  // userCanAccessLocation and listAccessibleLocations need no CRD awareness.
+  const crd = await getCrdCoverageForEmail(env, session.email ?? "");
+  const hasPricing = checkToolAccess(session, "pricing");
+  if (!hasPricing && crd.locationCodes.length === 0) {
     return { ok: false, response: jsonError(403, "forbidden") };
   }
-  return { ok: true, session: auth.session, sb: createServiceClient(env) };
+  const locations = hasPricing
+    ? [...new Set([...session.locations.map((l) => l.toLowerCase()), ...crd.locationCodes])]
+    : crd.locationCodes;
+  return { ok: true, session: { ...session, locations }, sb: createServiceClient(env) };
 }
 
 /** Aggregated per-location summary for the picker. */

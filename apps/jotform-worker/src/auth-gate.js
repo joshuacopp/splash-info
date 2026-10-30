@@ -21,7 +21,8 @@
 // dcRole super_admin → `"all"` (skip scope filter). Anyone else → resolve
 // the set of `site_number` strings the user can see via
 // `getLocationsByContactEmail` (RM via rm_email, RD via am_email, GM via
-// site_email). JotForm's `typeA` widget returns the site number as a
+// site_email), plus any sites they cover as a CRD agent or supervisor
+// (`getCrdCoverageForEmail`). JotForm's `typeA` widget returns the site number as a
 // string sometimes padded ("090" for Milford) and sometimes not ("127"
 // for Elmira Heights) — observed in the operator's sample payloads. The
 // `locations` table stores `site_number` as an integer; we convert each
@@ -29,7 +30,7 @@
 // here so the downstream PostgREST `in.(...)` filter matches either form.
 
 import { authenticate } from "@splash/auth";
-import { getLocationsByContactEmail } from "@splash/db-supabase";
+import { getCrdCoverageForEmail, getLocationsByContactEmail } from "@splash/db-supabase";
 import { jsonError } from "@splash/http";
 
 /**
@@ -49,10 +50,15 @@ export async function accessibleSiteNumbersForSession(env, session) {
   const email = typeof session.email === "string" ? session.email : "";
   if (!email) return new Set();
 
-  const locations = await getLocationsByContactEmail(env, email);
+  // CRD agents / supervisors also see the sites they cover (2026-10-29),
+  // read live from crd_site_coverage -- see @splash/db-supabase crd-coverage.
+  const [locations, crd] = await Promise.all([
+    getLocationsByContactEmail(env, email),
+    getCrdCoverageForEmail(env, email)
+  ]);
   const set = new Set();
-  for (const loc of locations) {
-    const n = loc.site_number;
+  const siteNumbers = [...locations.map((l) => l.site_number), ...crd.siteNumbers];
+  for (const n of siteNumbers) {
     if (typeof n !== "number" || !Number.isFinite(n)) continue;
     const unpadded = String(n);
     const padded3 = unpadded.padStart(3, "0");
