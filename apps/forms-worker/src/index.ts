@@ -107,7 +107,11 @@ import {
   handleCreateComment
 } from "./admin/submission-comments.js";
 import { handleReResolveApprovers } from "./admin/reresolve-approvers.js";
-import { handleSetAccessTag, handleListAccessTags } from "./admin/forms.js";
+import {
+  handleSetAccessTag,
+  handleListAccessTags,
+  handleSetCrdVisible
+} from "./admin/forms.js";
 import {
   handleListActionItems,
   handlePatchActionItem,
@@ -708,6 +712,14 @@ export default {
     );
     if (accessTagMatch && accessTagMatch[1] && req.method === "PATCH") {
       return handleSetAccessTag(env, req, accessTagMatch[1]);
+    }
+
+    // PATCH /forms/admin/api/forms/{id}/crd-visible
+    const crdVisibleMatch = url.pathname.match(
+      /^\/forms\/admin\/api\/forms\/([^/]+)\/crd-visible$/
+    );
+    if (crdVisibleMatch && crdVisibleMatch[1] && req.method === "PATCH") {
+      return handleSetCrdVisible(env, req, crdVisibleMatch[1]);
     }
 
     // POST /forms/admin/api/forms/{id}/re-resolve-approvers

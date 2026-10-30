@@ -41,6 +41,25 @@ async function get<T>(env: Env, path: string, params: Record<string, string>): P
   return (await res.json()) as T[];
 }
 
+/**
+ * Custom forms switched on for CRD (`forms.crd_visible`). CRD reads those
+ * forms' submissions at their covered sites only. Callers check this FIRST and
+ * skip the coverage read when it is empty, so while no form is flagged the
+ * cost to everyone else is this one indexed read.
+ *
+ * FAILS CLOSED: an error yields [] (logged).
+ */
+export async function listCrdVisibleFormIds(env: Env): Promise<string[]> {
+  if (!env.SUPABASE_URL || !env.SUPABASE_SERVICE_KEY) return [];
+  try {
+    const rows = await get<{ id: string }>(env, "forms", { select: "id", crd_visible: "is.true" });
+    return rows.map((r) => r.id).filter((id) => typeof id === "string" && id.length > 0);
+  } catch (err) {
+    console.error("[crd-coverage] crd_visible forms read failed — treating as none", err);
+    return [];
+  }
+}
+
 export async function getCrdCoverageForEmail(env: Env, email: string): Promise<CrdCoverage> {
   const me = typeof email === "string" ? email.trim().toLowerCase() : "";
   if (!me || !env.SUPABASE_URL || !env.SUPABASE_SERVICE_KEY) return EMPTY;

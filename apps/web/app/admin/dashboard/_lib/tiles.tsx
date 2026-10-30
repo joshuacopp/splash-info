@@ -411,7 +411,9 @@ export const TILES: ReadonlyArray<Tile> = [
     description: "View submissions to admin-built custom forms.",
     href: "/admin/forms/submissions",
     icon: inboxIcon,
-    visibleTo: isAdminTier
+    // "crd:forms" = CRD coverage + at least one form switched on for CRD
+    // (dashboard-worker /api/me/form-access-tags). The worker scopes the rows.
+    visibleTo: (s, ctx) => isAdminTier(s) || ctx.formAccessTags.includes("crd:forms")
   },
   {
     id: "my-requests",

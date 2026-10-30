@@ -16,6 +16,7 @@ import {
   publishFormAdmin,
   reResolveApproversAdmin,
   setFormAccessTagAdmin,
+  setFormCrdVisibleAdmin,
   updateDraftAdmin,
   type PublishResponse,
   type ReResolveApproversResult
@@ -109,6 +110,27 @@ export async function setAccessTagAction(
   try {
     const res = await setFormAccessTagAdmin(formId, accessTag);
     return { ok: true, access_tag: res.access_tag };
+  } catch (err) {
+    return {
+      ok: false,
+      error: err instanceof Error ? err.message : String(err)
+    };
+  }
+}
+
+export type SetCrdVisibleResult =
+  | { ok: true; crd_visible: boolean }
+  | { ok: false; error: string };
+
+/** Turn CRD visibility on or off for this form. Writes the `forms` row
+ *  directly and takes effect immediately, like the access tag. */
+export async function setCrdVisibleAction(
+  formId: string,
+  crdVisible: boolean
+): Promise<SetCrdVisibleResult> {
+  try {
+    const res = await setFormCrdVisibleAdmin(formId, crdVisible);
+    return { ok: true, crd_visible: res.crd_visible };
   } catch (err) {
     return {
       ok: false,

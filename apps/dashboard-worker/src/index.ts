@@ -75,7 +75,11 @@ import {
   userCompleteForcedReset
 } from "@splash/auth";
 import { getMfaSessionStatus } from "@splash/auth";
-import type { SupabaseEnv } from "@splash/db-supabase";
+import {
+  getCrdCoverageForEmail,
+  listCrdVisibleFormIds,
+  type SupabaseEnv
+} from "@splash/db-supabase";
 import { isOriginAllowed, json, jsonError, readForm } from "@splash/http";
 import { verifyTurnstile } from "./turnstile";
 import { recordAndCheck, clearEmail, type RateLimitEnv } from "./rate-limit";
@@ -776,6 +780,15 @@ async function handleMyFormAccessTags(request: Request, env: Env): Promise<Respo
     }
   } catch (err) {
     console.error("[me.form-access-tags] read threw", err);
+  }
+  // "crd:forms" is a pseudo-tag, not a form_access_grants row (the colon can
+  // never match the DB's tag shape): the caller has CRD coverage and at least
+  // one form is switched on for CRD. Shows the Forms tile; forms-worker
+  // decides what they actually see. Both helpers fail closed to empty.
+  const crdForms = await listCrdVisibleFormIds(env);
+  if (crdForms.length > 0) {
+    const crd = await getCrdCoverageForEmail(env, auth.session.email ?? "");
+    if (crd.locationCodes.length > 0) tags.push("crd:forms");
   }
   return new Response(JSON.stringify({ tags }), {
     status: 200,

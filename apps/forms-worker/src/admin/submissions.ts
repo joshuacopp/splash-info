@@ -149,8 +149,13 @@ export function formScopeFor(
   if (scope.forms.includes(formId)) {
     return { allow: true, locationScope: undefined };
   }
-  if (scope.locations.length > 0) {
-    return { allow: true, locationScope: scope.locations };
+  // CRD sites count only on forms switched on for CRD; the location grant
+  // counts on every location-scoped form. A caller holding both reads the
+  // union on a CRD form -- picking one would hide rows they can see elsewhere.
+  const crd = scope.crdForms?.includes(formId) ? (scope.crdLocations ?? []) : [];
+  const locations = crd.length > 0 ? [...new Set([...scope.locations, ...crd])] : scope.locations;
+  if (locations.length > 0) {
+    return { allow: true, locationScope: locations };
   }
   return { allow: false };
 }

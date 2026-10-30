@@ -332,6 +332,7 @@ export default function BuilderClient({
           }
           formId={formId}
           accessTag={accessTag}
+          crdVisible={initial.crdVisible === true}
         />
       )}
     </div>

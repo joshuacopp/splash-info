@@ -19,6 +19,7 @@
 // every admin endpoint to 503 anyway.
 
 import { authenticate, checkToolAccess, type Session } from "@splash/auth";
+import { getCrdCoverageForEmail, listCrdVisibleFormIds } from "@splash/db-supabase";
 
 /**
  * Re-exported so every auth concern in this worker arrives through ONE module.
@@ -128,7 +129,18 @@ export const FORM_SUBMISSIONS_TOOL = "form_submissions";
  */
 export type SubmissionScope =
   | "all"
-  | { forms: string[]; locations: string[] };
+  | {
+      forms: string[];
+      locations: string[];
+      /** Forms flagged `crd_visible`, present only when the caller has CRD
+       *  coverage. On these forms the caller also reads `crdLocations`. */
+      crdForms?: string[];
+      /** Location codes of the sites the caller covers as a CRD agent or
+       *  supervisor (crd_site_coverage, read live). Applies ONLY to
+       *  `crdForms` -- unlike `locations`, which applies to every
+       *  location-scoped form. */
+      crdLocations?: string[];
+    };
 
 export type SubmissionGateResult =
   | { ok: true; session: Session; scope: SubmissionScope }
@@ -181,10 +193,21 @@ export async function submissionGate(
   // works IMMEDIATELY. dc_role, promo_role and role all require the user to
   // sign out and back in before they take effect -- a footgun CLAUDE.md
   // documents in three separate places.
-  const forms = await resolveTaggedFormIds(env, session.userId);
+  // CRD path (2026-10-30). Forms an admin has switched on for CRD are readable
+  // at the sites the caller covers in crd_site_coverage -- live, same rule as
+  // JotForm and MaxPass. The coverage read is skipped while no form is flagged.
+  const [forms, crdForms] = await Promise.all([
+    resolveTaggedFormIds(env, session.userId),
+    listCrdVisibleFormIds(env)
+  ]);
+  const crdLocations =
+    crdForms.length > 0
+      ? (await getCrdCoverageForEmail(env, session.email ?? "")).locationCodes
+      : [];
+  const crd = crdLocations.length > 0 ? { crdForms, crdLocations } : {};
 
-  if (forms.length > 0 || locations.length > 0) {
-    return { ok: true, session, scope: { forms, locations } };
+  if (forms.length > 0 || locations.length > 0 || crdLocations.length > 0) {
+    return { ok: true, session, scope: { forms, locations, ...crd } };
   }
 
   return {

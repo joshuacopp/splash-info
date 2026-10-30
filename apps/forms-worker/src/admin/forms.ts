@@ -47,11 +47,13 @@ import {
   getFormScopingContext,
   setFormScopeFieldKey,
   setFormAccessTag,
+  setFormCrdVisible,
   listAccessTags,
   ACCESS_TAG_RE,
   type ListFormsFilter,
   type FormListItem
 } from "../db/admin-forms.js";
+import { getFormScopeFieldKey } from "../db/forms.js";
 import type { Env } from "../index.js";
 
 const FORM_ID_RE =
@@ -102,31 +104,40 @@ export async function handleListForms(env: Env, req: Request): Promise<Response>
   // caller may hold both. Tagged forms come back with UNSCOPED counts (the tag
   // is org-wide); location-scoped forms keep per-site counts. Running one
   // query with both filters would AND them and return neither set correctly.
-  const taggedForms = gate.scope === "all" ? [] : gate.scope.forms;
-  const scopedLocations = gate.scope === "all" ? [] : gate.scope.locations;
-
+  //
+  // CRD-visible forms are a third call: those form ids, counted at the CRD
+  // sites plus any location grant (the same union formScopeFor reads).
   try {
     let items: FormListItem[];
     if (gate.scope === "all") {
       items = await listForms(env, filter);
-    } else if (taggedForms.length > 0 && scopedLocations.length === 0) {
-      items = await listForms(env, { ...filter, formIdScope: taggedForms });
-    } else if (taggedForms.length === 0) {
-      items = await listForms(env, {
-        ...filter,
-        submissionLocationScope: scopedLocations
-      });
     } else {
-      // Both grants. Merge, tagged entry winning on collision -- its count is
-      // the true org-wide number, where the location-scoped row would under-
-      // report the same form.
-      const [tagged, scoped] = await Promise.all([
-        listForms(env, { ...filter, formIdScope: taggedForms }),
-        listForms(env, { ...filter, submissionLocationScope: scopedLocations })
-      ]);
+      const { forms: taggedForms, locations: scopedLocations } = gate.scope;
+      const crdForms = gate.scope.crdForms ?? [];
+      const crdLocations = gate.scope.crdLocations ?? [];
+      // Merged in this order, later winning on collision: a tagged form's
+      // count is the true org-wide number, and a CRD form's count covers more
+      // sites than the location-grant row for the same form.
+      const calls: Promise<FormListItem[]>[] = [];
+      if (scopedLocations.length > 0) {
+        calls.push(listForms(env, { ...filter, submissionLocationScope: scopedLocations }));
+      }
+      if (crdForms.length > 0 && crdLocations.length > 0) {
+        calls.push(
+          listForms(env, {
+            ...filter,
+            formIdScope: crdForms,
+            submissionLocationScope: [...new Set([...scopedLocations, ...crdLocations])]
+          })
+        );
+      }
+      if (taggedForms.length > 0) {
+        calls.push(listForms(env, { ...filter, formIdScope: taggedForms }));
+      }
       const byId = new Map<string, FormListItem>();
-      for (const f of scoped) byId.set(f.id, f);
-      for (const f of tagged) byId.set(f.id, f);
+      for (const list of await Promise.all(calls)) {
+        for (const f of list) byId.set(f.id, f);
+      }
       items = [...byId.values()];
     }
     return new Response(JSON.stringify({ items }), {
@@ -515,6 +526,64 @@ export async function handleSetAccessTag(
   } catch (err) {
     console.error("[forms.admin] set access_tag failed", err);
     return jsonError(500, "access_tag_write_failed");
+  }
+}
+
+// =============================================================================
+// PATCH /forms/admin/api/forms/{id}/crd-visible
+// =============================================================================
+//
+// Turns CRD visibility on or off for one form. On: every CRD agent and
+// supervisor reads this form's submissions at the sites they cover in
+// crd_site_coverage (live -- reassigning a site moves it). Admin gate, for the
+// same reason as the access tag: this widens who can read submissions.
+//
+// Only location-scoped forms can be switched on. CRD access is per site, and a
+// form that stamps no location has no site to scope by -- the flag would admit
+// CRD to the form and then show them nothing.
+
+export async function handleSetCrdVisible(
+  env: Env,
+  req: Request,
+  formId: string
+): Promise<Response> {
+  const sk = requireServiceKey(env);
+  if (sk) return sk;
+  if (!isOriginAllowed(req)) return jsonError(403, "bad_origin");
+  const gate = await adminGate(env, req);
+  if (!gate.ok) return adminGateResponse(gate);
+  if (!FORM_ID_RE.test(formId)) return jsonError(400, "bad_id");
+
+  let body: { crd_visible?: unknown };
+  try {
+    body = (await req.json()) as { crd_visible?: unknown };
+  } catch {
+    return jsonError(400, "bad_json");
+  }
+  if (typeof body.crd_visible !== "boolean") return jsonError(400, "bad_crd_visible");
+  const on = body.crd_visible;
+
+  try {
+    if (on && !(await getFormScopeFieldKey(env, formId))) {
+      return new Response(
+        JSON.stringify({
+          error: "form_not_location_scoped",
+          reason: "This form doesn't record a site, so there is nothing to scope CRD access by."
+        }),
+        { status: 400, headers: { "Content-Type": "application/json" } }
+      );
+    }
+    await setFormCrdVisible(env, formId, on);
+    console.log(
+      `[forms.admin] crd_visible set form=${formId} on=${on} by=${gate.session.email}`
+    );
+    return new Response(JSON.stringify({ ok: true, crd_visible: on }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" }
+    });
+  } catch (err) {
+    console.error("[forms.admin] set crd_visible failed", err);
+    return jsonError(500, "crd_visible_write_failed");
   }
 }
 

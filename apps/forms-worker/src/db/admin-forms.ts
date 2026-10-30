@@ -103,8 +103,9 @@ export interface ListFormsFilter {
   // Restrict to these form ids, with UNSCOPED submission counts. Set for a
   // caller holding a form access tag: the tag means org-wide on those forms,
   // so filtering their counts by location would report zero for every one.
-  // Mutually exclusive with submissionLocationScope -- the handler decides
-  // which applies, and runs both and merges when a caller holds both grants.
+  // Alone: org-wide counts (tagged forms). With submissionLocationScope: these
+  // forms only, counted at those sites (CRD-visible forms). The handler runs
+  // one call per grant and merges when a caller holds several.
   formIdScope?: string[];
 }
 
@@ -139,7 +140,9 @@ export async function listForms(
         ? filter.formIdScope
         : ["00000000-0000-0000-0000-000000000000"];
     url.searchParams.set("id", `in.(${ids.join(",")})`);
-  } else if (filter?.submissionLocationScope) {
+  }
+  // Both may be set (CRD forms: these ids, counted at these sites).
+  if (filter?.submissionLocationScope) {
     const codes =
       filter.submissionLocationScope.length > 0
         ? filter.submissionLocationScope
@@ -327,6 +330,33 @@ export async function setFormAccessTag(
   }
 }
 
+/**
+ * Set `forms.crd_visible`. On: CRD agents and supervisors read this form's
+ * submissions at the sites they cover (crd_site_coverage). Off: they stop
+ * immediately -- nothing is granted per user, so there is nothing to clean up.
+ */
+export async function setFormCrdVisible(
+  env: SupabaseEnv,
+  formId: string,
+  crdVisible: boolean
+): Promise<void> {
+  const url = new URL("/rest/v1/forms", env.SUPABASE_URL);
+  url.searchParams.set("id", `eq.${formId}`);
+  const resp = await fetch(url.toString(), {
+    method: "PATCH",
+    headers: {
+      ...headers(env),
+      "Content-Type": "application/json",
+      Prefer: "return=minimal"
+    },
+    body: JSON.stringify({ crd_visible: crdVisible })
+  });
+  if (!resp.ok) {
+    const errText = await resp.text().catch(() => "");
+    throw new Error(`setFormCrdVisible: ${resp.status}: ${errText}`);
+  }
+}
+
 /** Distinct tags currently in use. Backs the sysadmin checkbox list, so a tag
  *  becomes grantable by the act of tagging a form -- no migration, no code
  *  change, which is the whole reason this is a column and not a tool grant. */
@@ -487,10 +517,13 @@ export interface FormDetailResult {
    *  adding it to the shared FormMeta would push it into every consumer of
    *  @splash/forms-schema for one admin screen's benefit. */
   accessTag: string | null;
+  /** `forms.crd_visible`: CRD reads this form's submissions at their sites. */
+  crdVisible: boolean;
 }
 
 interface FormDetailRow {
   access_tag: string | null;
+  crd_visible: boolean | null;
   id: string;
   slug: string;
   title: string;
@@ -543,7 +576,7 @@ export async function getFormDetail(
   formUrl.searchParams.set("id", `eq.${formId}`);
   formUrl.searchParams.set(
     "select",
-    "id,slug,title,description,audience,status,current_version_id,draft_version_id,notify_webhook,success_message,turnstile_required,access_tag"
+    "id,slug,title,description,audience,status,current_version_id,draft_version_id,notify_webhook,success_message,turnstile_required,access_tag,crd_visible"
   );
   formUrl.searchParams.set("limit", "1");
 
@@ -582,6 +615,7 @@ export async function getFormDetail(
     form: rowToFormMeta(formRow),
     draftSchema,
     accessTag: formRow.access_tag ?? null,
+    crdVisible: formRow.crd_visible === true,
     currentVersionNumber: currentRow?.version_number ?? null,
     versions: versionRows.map((v) => ({
       id: v.id,

@@ -13,19 +13,22 @@
 import type { FormMetaState } from "../_builder/reducer";
 
 import AccessTagCard from "./AccessTagCard";
+import CrdVisibleCard from "./CrdVisibleCard";
 
 interface Props {
   formMeta: FormMetaState;
   onUpdate: (patch: Partial<FormMetaState>) => void;
   formId: string;
   accessTag: string | null;
+  crdVisible: boolean;
 }
 
 export default function SettingsTab({
   formMeta,
   onUpdate,
   formId,
-  accessTag
+  accessTag,
+  crdVisible
 }: Props) {
   return (
     <div className="space-y-4">
@@ -122,6 +125,8 @@ export default function SettingsTab({
       </section>
 
       <AccessTagCard formId={formId} initialTag={accessTag} />
+
+      <CrdVisibleCard formId={formId} initialVisible={crdVisible} />
     </div>
   );
 }

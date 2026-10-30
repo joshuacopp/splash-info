@@ -181,6 +181,9 @@ export interface FormDetail {
    *  `form` because it is an access control on the row, not part of the
    *  published form shape. */
   accessTag: string | null;
+  /** `forms.crd_visible`: CRD agents/supervisors read this form's submissions
+   *  at the sites they cover. Optional so an older worker still parses. */
+  crdVisible?: boolean;
 }
 
 export interface CreateFormArgs {
@@ -566,6 +569,17 @@ export async function setFormAccessTagAdmin(
     resp,
     "setFormAccessTagAdmin"
   );
+}
+
+export async function setFormCrdVisibleAdmin(
+  formId: string,
+  crdVisible: boolean
+): Promise<{ ok: true; crd_visible: boolean }> {
+  const resp = await callForms(
+    `/forms/admin/api/forms/${encodeURIComponent(formId)}/crd-visible`,
+    { method: "PATCH", jsonBody: { crd_visible: crdVisible } }
+  );
+  return readJson<{ ok: true; crd_visible: boolean }>(resp, "setFormCrdVisibleAdmin");
 }
 
 export interface ReResolveApproversResult {

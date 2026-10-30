@@ -91,6 +91,31 @@ describe("formScopeFor", () => {
     });
   });
 
+  // CRD (2026-10-30): coverage sites apply ONLY to forms switched on for CRD.
+  it("scopes a CRD caller to their sites on a CRD form", () => {
+    const scope = { forms: [], locations: [], crdForms: [FORM], crdLocations: ["vestal"] };
+    expect(formScopeFor(scope, FORM)).toEqual({ allow: true, locationScope: ["vestal"] });
+  });
+
+  it("does NOT extend CRD sites to a form that is not switched on", () => {
+    const scope = { forms: [], locations: [], crdForms: [OTHER_FORM], crdLocations: ["vestal"] };
+    expect(formScopeFor(scope, FORM)).toEqual({ allow: false });
+  });
+
+  it("unions CRD sites with a location grant on a CRD form, and only there", () => {
+    const scope = { forms: [], locations: ["oswego"], crdForms: [FORM], crdLocations: ["vestal"] };
+    expect(formScopeFor(scope, FORM)).toEqual({
+      allow: true,
+      locationScope: ["oswego", "vestal"]
+    });
+    expect(formScopeFor(scope, OTHER_FORM)).toEqual({ allow: true, locationScope: ["oswego"] });
+  });
+
+  it("still lets a tag win over CRD scoping", () => {
+    const scope = { forms: [FORM], locations: [], crdForms: [FORM], crdLocations: ["vestal"] };
+    expect(formScopeFor(scope, FORM)).toEqual({ allow: true, locationScope: undefined });
+  });
+
   // The property behind all of the above, stated once over every shape: an
   // allowed caller is never handed the empty scope. A future branch that
   // violates this fails here even if nobody thinks to write its own case.
