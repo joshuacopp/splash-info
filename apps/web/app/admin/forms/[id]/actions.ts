@@ -17,6 +17,7 @@ import {
   reResolveApproversAdmin,
   setFormAccessTagAdmin,
   setFormCrdVisibleAdmin,
+  setFormFillAudienceAdmin,
   updateDraftAdmin,
   type PublishResponse,
   type ReResolveApproversResult
@@ -131,6 +132,27 @@ export async function setCrdVisibleAction(
   try {
     const res = await setFormCrdVisibleAdmin(formId, crdVisible);
     return { ok: true, crd_visible: res.crd_visible };
+  } catch (err) {
+    return {
+      ok: false,
+      error: err instanceof Error ? err.message : String(err)
+    };
+  }
+}
+
+export type SetFillAudienceResult =
+  | { ok: true; fill_audience: string[] }
+  | { ok: false; error: string };
+
+/** Set who may fill out this form ([] = everyone signed in). Writes the
+ *  `forms` row directly and takes effect immediately. */
+export async function setFillAudienceAction(
+  formId: string,
+  fillAudience: string[]
+): Promise<SetFillAudienceResult> {
+  try {
+    const res = await setFormFillAudienceAdmin(formId, fillAudience);
+    return { ok: true, fill_audience: res.fill_audience };
   } catch (err) {
     return {
       ok: false,

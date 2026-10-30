@@ -48,12 +48,14 @@ import {
   setFormScopeFieldKey,
   setFormAccessTag,
   setFormCrdVisible,
+  setFormFillAudience,
   listAccessTags,
   ACCESS_TAG_RE,
   type ListFormsFilter,
   type FormListItem
 } from "../db/admin-forms.js";
 import { getFormScopeFieldKey } from "../db/forms.js";
+import { FILL_GROUPS, normalizeFillAudience } from "../fill-audience.js";
 import type { Env } from "../index.js";
 
 const FORM_ID_RE =
@@ -584,6 +586,59 @@ export async function handleSetCrdVisible(
   } catch (err) {
     console.error("[forms.admin] set crd_visible failed", err);
     return jsonError(500, "crd_visible_write_failed");
+  }
+}
+
+// =============================================================================
+// PATCH /forms/admin/api/forms/{id}/fill-audience
+// =============================================================================
+//
+// Sets who may fill out this form (see fill-audience.ts). Body
+// `{ fill_audience: ("site"|"rm"|"rd"|"tag")[] }`; [] = everyone signed in.
+// Admin gate, like the access tag and CRD switch beside it. Takes effect on
+// the next request -- nothing is cached.
+
+export async function handleSetFillAudience(
+  env: Env,
+  req: Request,
+  formId: string
+): Promise<Response> {
+  const sk = requireServiceKey(env);
+  if (sk) return sk;
+  if (!isOriginAllowed(req)) return jsonError(403, "bad_origin");
+  const gate = await adminGate(env, req);
+  if (!gate.ok) return adminGateResponse(gate);
+  if (!FORM_ID_RE.test(formId)) return jsonError(400, "bad_id");
+
+  let body: { fill_audience?: unknown };
+  try {
+    body = (await req.json()) as { fill_audience?: unknown };
+  } catch {
+    return jsonError(400, "bad_json");
+  }
+  const raw = body.fill_audience;
+  // Reject unknown values outright rather than silently dropping them: a typo
+  // that quietly vanished would leave the form more open than intended.
+  if (
+    !Array.isArray(raw) ||
+    raw.some((v) => !(FILL_GROUPS as readonly unknown[]).includes(v))
+  ) {
+    return jsonError(400, "bad_fill_audience");
+  }
+  const fillAudience = normalizeFillAudience(raw);
+
+  try {
+    await setFormFillAudience(env, formId, fillAudience);
+    console.log(
+      `[forms.admin] fill_audience set form=${formId} to=${JSON.stringify(fillAudience)} by=${gate.session.email}`
+    );
+    return new Response(JSON.stringify({ ok: true, fill_audience: fillAudience }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" }
+    });
+  } catch (err) {
+    console.error("[forms.admin] set fill_audience failed", err);
+    return jsonError(500, "fill_audience_write_failed");
   }
 }
 

@@ -357,6 +357,30 @@ export async function setFormCrdVisible(
   }
 }
 
+/** Set `forms.fill_audience` (who may fill out the form; [] = everyone
+ *  signed in). Values are validated by the handler. */
+export async function setFormFillAudience(
+  env: SupabaseEnv,
+  formId: string,
+  fillAudience: string[]
+): Promise<void> {
+  const url = new URL("/rest/v1/forms", env.SUPABASE_URL);
+  url.searchParams.set("id", `eq.${formId}`);
+  const resp = await fetch(url.toString(), {
+    method: "PATCH",
+    headers: {
+      ...headers(env),
+      "Content-Type": "application/json",
+      Prefer: "return=minimal"
+    },
+    body: JSON.stringify({ fill_audience: fillAudience })
+  });
+  if (!resp.ok) {
+    const errText = await resp.text().catch(() => "");
+    throw new Error(`setFormFillAudience: ${resp.status}: ${errText}`);
+  }
+}
+
 /** Distinct tags currently in use. Backs the sysadmin checkbox list, so a tag
  *  becomes grantable by the act of tagging a form -- no migration, no code
  *  change, which is the whole reason this is a column and not a tool grant. */
@@ -519,11 +543,14 @@ export interface FormDetailResult {
   accessTag: string | null;
   /** `forms.crd_visible`: CRD reads this form's submissions at their sites. */
   crdVisible: boolean;
+  /** `forms.fill_audience`: who may fill out the form; [] = everyone signed in. */
+  fillAudience: string[];
 }
 
 interface FormDetailRow {
   access_tag: string | null;
   crd_visible: boolean | null;
+  fill_audience: string[] | null;
   id: string;
   slug: string;
   title: string;
@@ -576,7 +603,7 @@ export async function getFormDetail(
   formUrl.searchParams.set("id", `eq.${formId}`);
   formUrl.searchParams.set(
     "select",
-    "id,slug,title,description,audience,status,current_version_id,draft_version_id,notify_webhook,success_message,turnstile_required,access_tag,crd_visible"
+    "id,slug,title,description,audience,status,current_version_id,draft_version_id,notify_webhook,success_message,turnstile_required,access_tag,crd_visible,fill_audience"
   );
   formUrl.searchParams.set("limit", "1");
 
@@ -616,6 +643,7 @@ export async function getFormDetail(
     draftSchema,
     accessTag: formRow.access_tag ?? null,
     crdVisible: formRow.crd_visible === true,
+    fillAudience: Array.isArray(formRow.fill_audience) ? formRow.fill_audience : [],
     currentVersionNumber: currentRow?.version_number ?? null,
     versions: versionRows.map((v) => ({
       id: v.id,

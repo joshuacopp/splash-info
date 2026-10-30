@@ -14,6 +14,7 @@ import type { FormMetaState } from "../_builder/reducer";
 
 import AccessTagCard from "./AccessTagCard";
 import CrdVisibleCard from "./CrdVisibleCard";
+import FillAudienceCard from "./FillAudienceCard";
 
 interface Props {
   formMeta: FormMetaState;
@@ -21,6 +22,7 @@ interface Props {
   formId: string;
   accessTag: string | null;
   crdVisible: boolean;
+  fillAudience: string[];
 }
 
 export default function SettingsTab({
@@ -28,7 +30,8 @@ export default function SettingsTab({
   onUpdate,
   formId,
   accessTag,
-  crdVisible
+  crdVisible,
+  fillAudience
 }: Props) {
   return (
     <div className="space-y-4">
@@ -127,6 +130,16 @@ export default function SettingsTab({
       <AccessTagCard formId={formId} initialTag={accessTag} />
 
       <CrdVisibleCard formId={formId} initialVisible={crdVisible} />
+
+      {/* Enforced only for internal forms; for public / link-only the link is
+          the permission, so the card would promise something it can't do. */}
+      {formMeta.audience === "internal" && (
+        <FillAudienceCard
+          formId={formId}
+          initialAudience={fillAudience}
+          accessTag={accessTag}
+        />
+      )}
     </div>
   );
 }

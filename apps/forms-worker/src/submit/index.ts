@@ -27,6 +27,7 @@
 //     ignores any client-supplied lookup value and writes the freshly
 //     resolved one (defends against tampering AND handles mid-fill drift).
 
+import { canFillForm, getFillRule, resolveFillCaller } from "../fill-audience.js";
 import { authenticate } from "@splash/auth";
 import { isOriginAllowed, jsonError } from "@splash/http";
 import {
@@ -103,6 +104,14 @@ export async function handleSubmit(
         401,
         "session_expired: log in again in a new tab and click Retry on the form"
       );
+    }
+    // Who may fill it (forms.fill_audience) -- the same rule as the /forms
+    // list and the render, re-checked here because a URL can skip both. An
+    // unreadable rule refuses rather than falls open.
+    const rule = await getFillRule(env, form.id);
+    if (!rule) return jsonError(503, "fill_rule_unavailable: try again in a minute");
+    if (!canFillForm(rule, await resolveFillCaller(env, auth.session))) {
+      return jsonError(403, "not_permitted: this form isn't available to your account");
     }
     submitterKind = "authenticated";
     submitterUserId = auth.session.userId;

@@ -184,6 +184,9 @@ export interface FormDetail {
   /** `forms.crd_visible`: CRD agents/supervisors read this form's submissions
    *  at the sites they cover. Optional so an older worker still parses. */
   crdVisible?: boolean;
+  /** `forms.fill_audience`: who may fill out the form ("site" | "rm" | "rd" |
+   *  "tag"); [] = everyone signed in. Optional so an older worker still parses. */
+  fillAudience?: string[];
 }
 
 export interface CreateFormArgs {
@@ -580,6 +583,17 @@ export async function setFormCrdVisibleAdmin(
     { method: "PATCH", jsonBody: { crd_visible: crdVisible } }
   );
   return readJson<{ ok: true; crd_visible: boolean }>(resp, "setFormCrdVisibleAdmin");
+}
+
+export async function setFormFillAudienceAdmin(
+  formId: string,
+  fillAudience: string[]
+): Promise<{ ok: true; fill_audience: string[] }> {
+  const resp = await callForms(
+    `/forms/admin/api/forms/${encodeURIComponent(formId)}/fill-audience`,
+    { method: "PATCH", jsonBody: { fill_audience: fillAudience } }
+  );
+  return readJson<{ ok: true; fill_audience: string[] }>(resp, "setFormFillAudienceAdmin");
 }
 
 export interface ReResolveApproversResult {

@@ -56,7 +56,8 @@
 //   link-only   → slug acts as gate; no further check; submit captures
 //                 session if present, anonymous otherwise.
 
-import { ACCESS_TOKEN_COOKIE } from "@splash/auth";
+import { ACCESS_TOKEN_COOKIE, authenticate } from "@splash/auth";
+import { canFillForm, getFillRule, resolveFillCaller } from "./fill-audience.js";
 import {
   getFormBySlug,
   getCurrentVersion,
@@ -110,7 +111,8 @@ import { handleReResolveApprovers } from "./admin/reresolve-approvers.js";
 import {
   handleSetAccessTag,
   handleListAccessTags,
-  handleSetCrdVisible
+  handleSetCrdVisible,
+  handleSetFillAudience
 } from "./admin/forms.js";
 import {
   handleListActionItems,
@@ -722,6 +724,14 @@ export default {
       return handleSetCrdVisible(env, req, crdVisibleMatch[1]);
     }
 
+    // PATCH /forms/admin/api/forms/{id}/fill-audience
+    const fillAudienceMatch = url.pathname.match(
+      /^\/forms\/admin\/api\/forms\/([^/]+)\/fill-audience$/
+    );
+    if (fillAudienceMatch && fillAudienceMatch[1] && req.method === "PATCH") {
+      return handleSetFillAudience(env, req, fillAudienceMatch[1]);
+    }
+
     // POST /forms/admin/api/forms/{id}/re-resolve-approvers
     const reResolveMatch = url.pathname.match(
       /^\/forms\/admin\/api\/forms\/([^/]+)\/re-resolve-approvers$/
@@ -858,6 +868,22 @@ async function handleFormRender(
       const next = encodeURIComponent(url.pathname + url.search);
       return Response.redirect(`${url.origin}/login?next=${next}`, 302);
     }
+    // Who may fill it (forms.fill_audience). Unrestricted forms keep the
+    // cookie-presence check above and defer validation to submit; restricted
+    // ones need the real session now, or a site login would see the form
+    // and only be refused after filling it in.
+    const rule = await getFillRule(env, form.id);
+    if (!rule) return fillUnavailablePage(503);
+    if (rule.fillAudience.length > 0) {
+      const auth = await authenticate(req, env);
+      if (auth.status !== "authenticated") {
+        const next = encodeURIComponent(url.pathname + url.search);
+        return Response.redirect(`${url.origin}/login?next=${next}`, 302);
+      }
+      if (!canFillForm(rule, await resolveFillCaller(env, auth.session))) {
+        return fillUnavailablePage(403);
+      }
+    }
   }
   // public: Turnstile widget rendered (verification at submit time, Brief 91).
   // link-only: slug acts as gate.
@@ -897,6 +923,23 @@ async function handleFormRender(
       "Referrer-Policy": "same-origin"
     }
   });
+}
+
+/** Refusal page for a restricted internal form. 403: not in its audience.
+ *  503: the rule couldn't be read -- refused rather than shown, so a blip
+ *  can't open a restricted form. */
+function fillUnavailablePage(status: 403 | 503): Response {
+  const msg =
+    status === 403
+      ? "This form isn't available to your account. If you think you should be able to fill it out, ask your manager."
+      : "We couldn't check access to this form just now. Please try again in a minute.";
+  return new Response(
+    `<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Form unavailable — Splash</title></head><body style="font-family:sans-serif;padding:48px 16px;text-align:center;"><h1>Form unavailable</h1><p>${msg}</p><p><a href="/forms">Back to Forms</a></p></body></html>`,
+    {
+      status,
+      headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" }
+    }
+  );
 }
 
 function notFoundPage(): Response {
