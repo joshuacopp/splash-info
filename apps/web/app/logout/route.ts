@@ -30,6 +30,9 @@ import type { NextRequest } from "next/server";
 
 const ACCESS_TOKEN_COOKIE = "sb-access-token";
 const REFRESH_TOKEN_COOKIE = "sb-refresh-token";
+// @splash/auth IMPERSONATE_COOKIE, inlined for the same reason as the two
+// above. Signing out must also drop any "View as".
+const IMPERSONATE_COOKIE = "sb-impersonate";
 
 /**
  * Cookie-clear header. Attributes match @splash/auth/buildLogoutCookies
@@ -59,6 +62,7 @@ function logoutResponse(request: NextRequest): NextResponse {
   const response = NextResponse.redirect(url, 302);
   response.headers.append("Set-Cookie", clearCookieHeader(ACCESS_TOKEN_COOKIE));
   response.headers.append("Set-Cookie", clearCookieHeader(REFRESH_TOKEN_COOKIE));
+  response.headers.append("Set-Cookie", clearCookieHeader(IMPERSONATE_COOKIE));
   return response;
 }
 

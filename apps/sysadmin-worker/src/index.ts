@@ -183,6 +183,7 @@ import {
 } from "@splash/db-supabase";
 import { isOriginAllowed, json, jsonError } from "@splash/http";
 import type { ToolName, UserRole } from "@splash/types/auth";
+import { handleImpersonation, IMPERSONATION_PATH_RE } from "./impersonation";
 
 type Env = SupabaseEnv;
 
@@ -273,6 +274,24 @@ export default {
     const url = new URL(request.url);
     const path = url.pathname.replace(/\/+$/, "") || "/";
     const method = request.method;
+
+    // Impersonation start / mode / stop. AHEAD of the single gate below on
+    // purpose: that gate answers as the impersonated TARGET (never a
+    // super_admin), so it would 403 "stop" and strand the operator. These
+    // authenticate with ownIdentity themselves -- see ./impersonation.ts.
+    const impersonationMatch = IMPERSONATION_PATH_RE.exec(path);
+    if (impersonationMatch) {
+      try {
+        return await handleImpersonation(
+          request,
+          env,
+          impersonationMatch[1] as "start" | "mode" | "stop"
+        );
+      } catch (err) {
+        console.error("sysadmin impersonation failed:", path, err);
+        return jsonError(500, "Internal error");
+      }
+    }
 
     const isOwnedPost = OWNED_POST_PATHS.has(path);
     const isOwnedPatch = OWNED_PATCH_PATHS.has(path);
@@ -3431,7 +3450,10 @@ const ALLOWED_AUDIT_ACTIONS: ReadonlySet<string> = new Set([
   "create_location",
   "update_package",
   "update_packages_bulk",
-  "update_location"
+  "update_location",
+  "impersonation_start",
+  "impersonation_mode",
+  "impersonation_stop"
 ]);
 
 const ALLOWED_AUDIT_TARGET_TYPES: ReadonlySet<string> = new Set([
@@ -3441,12 +3463,15 @@ const ALLOWED_AUDIT_TARGET_TYPES: ReadonlySet<string> = new Set([
   "damage_claim_user_roles",
   "promo_user_roles",
   "form_access_grants",
+  "auth_impersonation",
   "pricing_simple",
   "locations"
 ]);
 
+// auth_impersonation rows carry the TARGET's user id in target_id, so
+// filtering the log by a user shows every time someone viewed as them.
 const USER_TARGET_TYPES_CSV =
-  "user_permissions,user_tool_access,auth.users,damage_claim_user_roles,promo_user_roles,form_access_grants";
+  "user_permissions,user_tool_access,auth.users,damage_claim_user_roles,promo_user_roles,form_access_grants,auth_impersonation";
 const LOCATION_TARGET_TYPES_CSV = "pricing_simple,locations";
 
 const UUID_RE = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;

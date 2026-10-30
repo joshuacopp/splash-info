@@ -693,6 +693,26 @@ URL-based — service bindings don't apply to those.
 
 ## Glossary
 
+- **Impersonation / "View as user"** (2026-10-30) - A super_admin can see, and
+  optionally act, as another user from /admin/sysadmin. `authenticate()` in
+  `packages/auth/src/session.ts` hands handlers the TARGET's Session when the
+  `sb-impersonate` cookie maps to a live `auth_impersonation` grant; rules live
+  in the pure `decideImpersonation()` in `packages/auth/src/impersonation.ts`
+  and are re-checked every request. **`session.email` / `session.userId` ARE
+  THE TARGET while impersonating** -- that is the point -- and
+  `session.impersonation` is the only place the real person shows through. So:
+  (1) an endpoint that changes the CALLER'S OWN ACCOUNT (password, MFA, the
+  impersonation endpoints themselves) MUST use
+  `authenticate(request, env, { ownIdentity: true })`, or it will act on the
+  wrong account -- `handleForcedReset` passing the session to
+  `userCompleteForcedReset` is the case that made this rule; (2) don't
+  "fix" records stamped with the target -- in act mode the truth is in
+  `auth_impersonation_action` (one row per write, written before the handler,
+  fail-closed); (3) a new READ-ONLY POST must be added to
+  `READ_ONLY_POST_PATHS` or view mode will refuse it. Endpoints live on
+  sysadmin-worker (`/sysadmin/api/impersonation/{start,mode,stop}`), ahead of
+  its gate. The banner in the global Header holds the only Stop button.
+
 - **email validation** (Brief 152) - Canonical email validator for every
   customer-facing form in the monorepo. Lives at
   `packages/types/src/email-validate.ts` and exports

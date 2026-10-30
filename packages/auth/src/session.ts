@@ -8,7 +8,15 @@
 import { createServiceClient, getAuthContext, type SupabaseEnv } from "@splash/db-supabase";
 import type { AuthUser } from "@splash/types/auth";
 import type { Session } from "@splash/types/session";
-import { getAccessToken } from "./cookies.js";
+import { getAccessToken, getCookie } from "./cookies.js";
+import {
+  IMPERSONATE_COOKIE,
+  decideImpersonation,
+  fetchGrantByToken,
+  isWriteRequest,
+  logImpersonatedWrite,
+  type ImpersonationRefusal
+} from "./impersonation.js";
 import { resolveMfaEnrollment } from "./mfa-policy.js";
 
 // Re-export Session for convenience — many consumers will only import from
@@ -17,7 +25,22 @@ export type { Session };
 
 export type AuthOutcome =
   | { status: "authenticated"; session: Session }
-  | { status: "unauthenticated" };
+  // `reason` is set only for impersonation refusals. It is OPTIONAL so the ten
+  // workers whose gates read `status !== "authenticated"` need no change: a
+  // refused write is simply unauthenticated to them.
+  | { status: "unauthenticated"; reason?: ImpersonationRefusal };
+
+export interface AuthenticateOptions {
+  enforceMfa?: boolean;
+  /**
+   * Ignore any impersonation and return the caller's REAL session. For the
+   * endpoints that act on the account itself -- password change, MFA,
+   * starting / stopping impersonation -- where answering as the target would
+   * change the target's account with the operator's token, or make "stop"
+   * unreachable.
+   */
+  ownIdentity?: boolean;
+}
 
 /**
  * Validate the request's session.
@@ -34,7 +57,7 @@ export type AuthOutcome =
 export async function authenticate(
   request: Request,
   env: SupabaseEnv & { MFA_ENFORCE?: string; MFA_ENROLL_ENFORCE?: string },
-  opts?: { enforceMfa?: boolean }
+  opts?: AuthenticateOptions
 ): Promise<AuthOutcome> {
   const token = getAccessToken(request);
   if (!token) return { status: "unauthenticated" };
@@ -69,6 +92,37 @@ export async function authenticate(
   const session = await getAuthContext(sb, user.id);
   if (!session) return { status: "unauthenticated" };
 
+  // ── Impersonation (see ./impersonation.ts for every rule) ────────────────
+  // Requests without the cookie never enter this block: zero added cost.
+  const impToken = opts?.ownIdentity ? null : getCookie(request, IMPERSONATE_COOKIE);
+  if (impToken) {
+    const grant = await fetchGrantByToken(sb, impToken);
+    const target =
+      grant && grant.actor_user_id === user.id
+        ? await getAuthContext(sb, grant.target_user_id)
+        : null;
+    const decision = decideImpersonation({
+      own: session,
+      ownAal: tokenAal(token),
+      grant,
+      target,
+      now: new Date(),
+      isWrite: isWriteRequest(request.method, new URL(request.url).pathname)
+    });
+    if (decision.kind === "refuse") {
+      return { status: "unauthenticated", reason: decision.reason };
+    }
+    if (decision.kind === "impersonate") {
+      if (decision.logWrite && !(await logImpersonatedWrite(sb, decision.session, request))) {
+        return { status: "unauthenticated", reason: "impersonation_log_failed" };
+      }
+      // No enrollment countdown: it would be the TARGET's, and the operator
+      // cannot act on it (see decideImpersonation).
+      return { status: "authenticated", session: decision.session };
+    }
+    // decision.kind === "own": dead grant on a read -- fall through as self.
+  }
+
   // ── MFA enrollment countdown (annotation only) ───────────────────────────
   // Flag-gated (MFA_ENROLL_ENFORCE). Attaches the countdown status to the
   // session for the banner/redirect at the call site. Deliberately does NOT
@@ -95,7 +149,7 @@ function isMfaEnforced(env: { MFA_ENFORCE?: string }): boolean {
  * via /auth/v1/user — this just reads a claim off a token GoTrue already
  * vouched for. Returns "aal1" | "aal2" | null (null = malformed / claim absent).
  */
-function tokenAal(token: string): string | null {
+export function tokenAal(token: string): string | null {
   const [, payloadSegment] = token.split(".");
   if (!payloadSegment) return null;
   try {

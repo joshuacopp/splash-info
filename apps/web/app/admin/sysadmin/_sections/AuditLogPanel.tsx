@@ -55,7 +55,10 @@ const ALLOWED_ACTIONS = [
   "create_location",
   "update_package",
   "update_packages_bulk",
-  "update_location"
+  "update_location",
+  "impersonation_start",
+  "impersonation_mode",
+  "impersonation_stop"
 ] as const;
 
 const ALLOWED_TARGET_TYPES = [
@@ -64,6 +67,7 @@ const ALLOWED_TARGET_TYPES = [
   "auth.users",
   "damage_claim_user_roles",
   "promo_user_roles",
+  "auth_impersonation",
   "pricing_simple",
   "locations"
 ] as const;

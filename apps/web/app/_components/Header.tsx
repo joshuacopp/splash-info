@@ -46,7 +46,8 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { ASSETS } from "@splash/storage-r2/assets";
-import type { MfaEnrollmentStatus } from "@splash/types/session";
+import type { ImpersonationInfo, MfaEnrollmentStatus } from "@splash/types/session";
+import { ImpersonationBanner } from "./ImpersonationBanner";
 import { SignOutButton } from "./SignOutButton";
 
 const MONTHS = [
@@ -94,9 +95,12 @@ export interface HeaderProps {
    *  When present + `required`, a banner nudges the user to enroll. Undefined
    *  when the policy is off or the user already has a verified factor. */
   mfaEnrollment?: MfaEnrollmentStatus;
+  /** Set while a super_admin is viewing / acting as `user`. The banner shows
+   *  on every page, admin or not: it holds the only Stop button. */
+  impersonation?: ImpersonationInfo;
 }
 
-export function Header({ user, mfaEnrollment }: HeaderProps = {}) {
+export function Header({ user, mfaEnrollment, impersonation }: HeaderProps = {}) {
   const pathname = usePathname() ?? "";
   const isAdminContext = ADMIN_PATH_RE.test(pathname);
   const logoHref = isAdminContext ? "/admin/dashboard" : "/";
@@ -150,6 +154,9 @@ export function Header({ user, mfaEnrollment }: HeaderProps = {}) {
         </nav>
       ) : null}
     </header>
+    {impersonation && user ? (
+      <ImpersonationBanner impersonation={impersonation} targetEmail={user.email} />
+    ) : null}
     {showMfaBanner && mfaEnrollment ? (
       <div
         role="status"

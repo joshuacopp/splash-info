@@ -36,6 +36,7 @@ import { ResetMfaCard } from "../_components/ResetMfaCard";
 import { SetDcRoleCard } from "../_components/SetDcRoleCard";
 import { SetPromoRoleCard } from "../_components/SetPromoRoleCard";
 import { UserPicker } from "../_components/UserPicker";
+import { ViewAsCard } from "../_components/ViewAsCard";
 import { ALL_TOOLS, TOOL_HELP } from "../_components/tools";
 import {
   createUserAction,
@@ -52,6 +53,7 @@ export function UserOperations() {
       <CreateUserCard />
       <ResetPasswordCard />
       <ResetMfaSection />
+      <ViewAsSection />
       <ParkedOperations />
     </>
   );
@@ -150,6 +152,21 @@ function ResetMfaSection() {
       description="Lost-device recovery — clears a user's authenticator factors so they re-enroll on next login. super_admin only."
     >
       <ResetMfaCard />
+    </OperationCard>
+  );
+}
+
+/* ============================================================
+ * 7. View as user (impersonation)
+ * ============================================================ */
+
+function ViewAsSection() {
+  return (
+    <OperationCard
+      title="View as user"
+      description="See the tools exactly as someone else does, for troubleshooting. View-only by default; acting as them records changes under their name and logs each one against you."
+    >
+      <ViewAsCard />
     </OperationCard>
   );
 }

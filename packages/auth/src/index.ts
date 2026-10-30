@@ -144,6 +144,7 @@
 
 export * from "./cookies.js";
 export * from "./session.js";
+export * from "./impersonation.js";
 export * from "./tool-access.js";
 export * from "./admin.js";
 export * from "./password-policy.js";

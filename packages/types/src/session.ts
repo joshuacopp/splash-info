@@ -54,6 +54,26 @@ export interface Session {
    *  has a verified factor (nothing to enroll). When present, the caller shows
    *  the countdown banner and, if `overdue`, routes to /mfa/enroll. */
   mfaEnrollment?: MfaEnrollmentStatus;
+
+  /** Present ONLY when a super_admin is viewing or acting as this user (see
+   *  @splash/auth/impersonation.ts). Every other field on the Session is the
+   *  TARGET's -- that is the point -- so this is the one place the real
+   *  person shows through. Anything that writes an audit row may read it;
+   *  nothing should branch permissions on it. */
+  impersonation?: ImpersonationInfo;
+}
+
+export type ImpersonationMode = "view" | "act";
+
+export interface ImpersonationInfo {
+  /** auth_impersonation.id -- the grant this request rode on. */
+  grantId: string;
+  actorUserId: string;
+  actorEmail: string;
+  /** "view" refuses every write; "act" allows writes and logs each one. */
+  mode: ImpersonationMode;
+  /** ISO timestamp. The grant is dead after this; nothing renews it. */
+  expiresAt: string;
 }
 
 /** Per-user MFA enrollment countdown, derived from the org enrollment policy.

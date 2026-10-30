@@ -59,10 +59,12 @@ import {
   buildLogoutCookies,
   buildSessionForUser,
   challengeAndVerify,
+  clearImpersonateCookie,
   enrollTotpFactor,
   getAccessToken,
   getCookie,
   hasVerifiedFactor,
+  IMPERSONATE_COOKIE,
   listFactors,
   PASSWORD_POLICY,
   PASSWORD_POLICY_MESSAGE,
@@ -351,7 +353,7 @@ async function handleLoginMfa(request: Request, env: Env): Promise<Response> {
   // enforceMfa: false — this IS the elevation step. It legitimately runs on an
   // aal1 session and turns it into aal2, so it must not be blocked by the aal2
   // gate (that would deadlock: you'd need aal2 to obtain aal2).
-  const auth = await authenticate(request, env, { enforceMfa: false });
+  const auth = await authenticate(request, env, { enforceMfa: false, ownIdentity: true });
   if (auth.status !== "authenticated") {
     return jsonError(401, "unauthorized");
   }
@@ -410,13 +412,19 @@ async function handleLoginMfa(request: Request, env: Env): Promise<Response> {
 function handleLogout(): Response {
   const headers = new Headers();
   for (const c of buildLogoutCookies()) headers.append("Set-Cookie", c);
+  // Signing out also drops any "View as". The grant row stays until expiry
+  // but is useless without the cookie, whose value is never stored.
+  headers.append("Set-Cookie", clearImpersonateCookie());
   headers.set("Location", "/");
   return new Response("", { status: 302, headers });
 }
 
 async function handleForcedReset(request: Request, env: Env): Promise<Response> {
-  // Auth gate FIRST.
-  const auth = await authenticate(request, env);
+  const busy = refuseWhileImpersonating(request);
+  if (busy) return busy;
+  // Auth gate FIRST. ownIdentity: this changes the caller's OWN password, and
+  // userCompleteForcedReset is handed the session -- it must be the real one.
+  const auth = await authenticate(request, env, { ownIdentity: true });
   if (auth.status !== "authenticated") {
     return jsonError(401, "unauthorized");
   }
@@ -509,7 +517,9 @@ async function handleForcedReset(request: Request, env: Env): Promise<Response> 
  * user out of MFA permanently.
  */
 async function handleMfaEnroll(request: Request, env: Env): Promise<Response> {
-  const auth = await authenticate(request, env);
+  const busy = refuseWhileImpersonating(request);
+  if (busy) return busy;
+  const auth = await authenticate(request, env, { ownIdentity: true });
   if (auth.status !== "authenticated") {
     return jsonError(401, "unauthorized");
   }
@@ -582,7 +592,9 @@ async function handleMfaEnroll(request: Request, env: Env): Promise<Response> {
  * primes the session for when layer-2 enforcement lands.
  */
 async function handleMfaEnrollVerify(request: Request, env: Env): Promise<Response> {
-  const auth = await authenticate(request, env);
+  const busy = refuseWhileImpersonating(request);
+  if (busy) return busy;
+  const auth = await authenticate(request, env, { ownIdentity: true });
   if (auth.status !== "authenticated") {
     return jsonError(401, "unauthorized");
   }
@@ -799,6 +811,17 @@ async function handleMyFormAccessTags(request: Request, env: Env): Promise<Respo
 /* ============================================================
  * Worker-local helpers
  * ============================================================ */
+
+/**
+ * The account endpoints change the account the TOKEN belongs to -- the
+ * operator's -- while the page that sent the user there was rendered for the
+ * impersonated TARGET. Refuse rather than change the wrong account in a way
+ * the screen implies is someone else's. Stop viewing as, then retry.
+ */
+function refuseWhileImpersonating(request: Request): Response | null {
+  if (!getCookie(request, IMPERSONATE_COOKIE)) return null;
+  return jsonError(409, "You are viewing as another user. Stop viewing as them first.");
+}
 
 /**
  * Allowlist for redirect targets. Source: legacy/dashboard.js:135.
