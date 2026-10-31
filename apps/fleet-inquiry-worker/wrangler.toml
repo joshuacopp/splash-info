@@ -117,6 +117,11 @@ routes = [
 MFA_ENFORCE = "true"
 SUPABASE_URL       = "https://rewokyofschtvqgxrxwl.supabase.co"
 TURNSTILE_SITE_KEY = "0x4AAAAAADBV7fdfR67Jt-ab"
+# Google Maps geocoding for "find the nearest location" (2026-10-31: OFF).
+# Every new address is a billed Google call from a public form, so it is off
+# until it sits behind a rate limit. Off = all locations listed A-Z. Set "true"
+# and push to turn it back on; GOOGLE_MAPS_API_KEY must still be bound.
+FLEET_GEOCODE_ENABLED = "false"
 
 [limits]
 cpu_ms = 30000

@@ -86,6 +86,11 @@ export default {
           if (segs.length === 0) return new Response("Not found", { status: 404 });
 
           const locationCode = decodeURIComponent(segs[0]!).toLowerCase();
+          // Every real location_code is a lowercase slug. Anything else is not
+          // a location, and it is echoed into the page, so refuse it here.
+          if (!/^[a-z0-9_-]+$/.test(locationCode)) {
+            return new Response("Not found", { status: 404 });
+          }
 
           if (segs.length === 1) {
             return handlePicker({ env, ctx, locationCode, prefix });

@@ -14,7 +14,7 @@ import { ASSETS } from "@splash/storage-r2/assets";
 import type { PricingSimpleResolvedRow } from "@splash/types/pricing";
 import { EMAIL_REGEX_SOURCE } from "@splash/types/email-validate";
 import { BUBBLE_BACKGROUND_CSS, BUBBLES_HTML, FORM_CSS } from "./css.js";
-import { cap, escHtml } from "./escape.js";
+import { cap, escHtml, jsonForScript } from "./escape.js";
 
 export interface SignupFormRenderArgs {
   locationCode: string;
@@ -161,7 +161,7 @@ ${FORM_CSS}
 
   <script>
     (function(){
-      var termsText = ${JSON.stringify(termsText)};
+      var termsText = ${jsonForScript(termsText)};
       document.getElementById('termsDisplay').textContent = termsText;
       document.getElementById('termsInput').value = termsText;
 
@@ -173,7 +173,7 @@ ${FORM_CSS}
       var submitBtn    = document.getElementById('submitBtn');
       var form         = document.getElementById('signupForm');
 
-      var EMAIL_RE = new RegExp(${JSON.stringify(EMAIL_REGEX_SOURCE)});
+      var EMAIL_RE = new RegExp(${jsonForScript(EMAIL_REGEX_SOURCE)});
 
       phoneInput.addEventListener('input', function(e){
         var digits = e.target.value.replace(/\\D/g, '').slice(0, 10);

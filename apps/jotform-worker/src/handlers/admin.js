@@ -1021,8 +1021,17 @@ function renderCsv(rows, range, slug) {
   });
 }
 
+// Excel runs a cell starting with = + - @ (or tab / CR) as a formula, and
+// JotForm answers are typed by the public, so such cells get a leading
+// apostrophe. A plain number ("-5.00") is left alone so it stays a number.
+// Same rule as @splash/report-kit csvField.
+const CSV_FORMULA_START = /^[=+\-@\t\r]/;
+const CSV_PLAIN_NUMBER = /^-?\d+(\.\d+)?$/;
+
 function csvEscape(v) {
-  const s = v == null ? "" : String(v);
+  const raw = v == null ? "" : String(v);
+  const s =
+    CSV_FORMULA_START.test(raw) && !CSV_PLAIN_NUMBER.test(raw) ? `'${raw}` : raw;
   return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 }
 

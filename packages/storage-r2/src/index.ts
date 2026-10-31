@@ -243,6 +243,43 @@ export function isHeicContentType(
 }
 
 /**
+ * Types the claim photo route may hand to the browser to render inline. The
+ * stored type comes from the uploader (the legacy multipart claim path takes
+ * file.type as sent), so anything else -- text/html, image/svg+xml, script --
+ * would otherwise render as a live page on splashcarwashes.info, with staff
+ * cookies. Those are sent as a download in a sandbox instead.
+ */
+const INLINE_SAFE_TYPES = new Set([
+  "image/jpeg",
+  "image/jpg",
+  "image/png",
+  "image/gif",
+  "image/webp",
+  "image/avif",
+  "image/bmp",
+  "image/tiff",
+  "image/heic",
+  "image/heif",
+  "image/heic-sequence",
+  "image/heif-sequence",
+  "application/pdf"
+]);
+
+function servingHeaders(contentType: string, key: string): Headers {
+  const headers = new Headers();
+  headers.set("Content-Type", contentType);
+  headers.set("Cache-Control", "public, max-age=86400");
+  headers.set("X-Content-Type-Options", "nosniff");
+  const bare = contentType.split(";")[0]!.trim().toLowerCase();
+  if (!INLINE_SAFE_TYPES.has(bare)) {
+    const name = (key.split("/").pop() ?? "download").replace(/["\\\r\n]/g, "_");
+    headers.set("Content-Disposition", `attachment; filename="${name}"`);
+    headers.set("Content-Security-Policy", "sandbox");
+  }
+  return headers;
+}
+
+/**
  * Build the serving Response for an R2 object, transcoding HEIC/HEIF to
  * JPEG on the fly when a Cloudflare Images binding is available. Shared by
  * serveClaimPhoto (legacy `claims/` keys) and the worker's serveR2KeyDirect
@@ -268,25 +305,18 @@ export async function buildPhotoResponse(
       const converted = await images
         .input(new Response(original).body as ReadableStream)
         .output({ format: "image/jpeg" });
-      const headers = new Headers();
-      headers.set("Content-Type", "image/jpeg");
-      headers.set("Cache-Control", "public, max-age=86400");
-      return new Response(converted.response().body, { headers });
+      return new Response(converted.response().body, {
+        headers: servingHeaders("image/jpeg", key)
+      });
     } catch (convErr) {
       // Serve the original bytes — a broken preview is better than a 500,
       // and the viewer's "Open original" still lets staff download the file.
       console.error("[serve] HEIC->JPEG conversion failed for", key, convErr);
-      const headers = new Headers();
-      headers.set("Content-Type", storedType);
-      headers.set("Cache-Control", "public, max-age=86400");
-      return new Response(original, { headers });
+      return new Response(original, { headers: servingHeaders(storedType, key) });
     }
   }
 
-  const headers = new Headers();
-  headers.set("Content-Type", storedType);
-  headers.set("Cache-Control", "public, max-age=86400");
-  return new Response(object.body, { headers });
+  return new Response(object.body, { headers: servingHeaders(storedType, key) });
 }
 
 /**

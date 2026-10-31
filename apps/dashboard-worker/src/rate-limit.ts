@@ -102,3 +102,47 @@ async function readBucket(kv: KVNamespace, key: string, now: number): Promise<Bu
   }
   return { count: 0, resetAt: now + WINDOW_MS };
 }
+
+/* ============================================================
+ * MFA code step (/api/login/mfa)
+ * ============================================================ */
+
+// A six-digit code has a million values and GoTrue accepts the current one and
+// its neighbours, so unthrottled guessing on a stolen password reaches a match
+// in hours. Keyed on the ACCOUNT, not the IP: whoever is guessing already holds
+// that account's password, and rotating IPs must not buy more guesses. Five per
+// 15 minutes puts a match out of reach (~480 tries a day against ~330,000
+// expected) while leaving room for a user who mistypes a couple of times.
+const MFA_LIMIT = 5;
+
+/** Record one code attempt for this account. Call BEFORE verifying the code. */
+export async function recordMfaAttempt(
+  env: RateLimitEnv,
+  userId: string
+): Promise<RateLimitResult> {
+  const kv = env.LOGIN_RATE_LIMIT;
+  if (!kv) return { allowed: true, retryAfterSec: 0 }; // fail-open (dev)
+  const key = `mfa_rl:user:${userId}`;
+  const now = Date.now();
+  try {
+    const bucket = await readBucket(kv, key, now);
+    bucket.count += 1;
+    const ttlSec = Math.max(1, Math.ceil((bucket.resetAt - now) / 1000));
+    await kv.put(key, JSON.stringify(bucket), { expirationTtl: ttlSec });
+    if (bucket.count > MFA_LIMIT) return { allowed: false, retryAfterSec: ttlSec };
+  } catch (err) {
+    console.error("[dashboard] mfa rate-limit KV error", err);
+  }
+  return { allowed: true, retryAfterSec: 0 };
+}
+
+/** Clear the account's code-attempt bucket after a correct code. Best-effort. */
+export async function clearMfaAttempts(env: RateLimitEnv, userId: string): Promise<void> {
+  const kv = env.LOGIN_RATE_LIMIT;
+  if (!kv) return;
+  try {
+    await kv.delete(`mfa_rl:user:${userId}`);
+  } catch (err) {
+    console.error("[dashboard] mfa rate-limit clear error", err);
+  }
+}

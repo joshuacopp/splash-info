@@ -1021,9 +1021,18 @@ function stringifyPayloadValue(
   return String(v);
 }
 
+// Excel runs a cell starting with = + - @ (or tab / CR) as a formula, and
+// submitters' answers reach this export, so such cells get a leading
+// apostrophe. A plain number ("-5.00") is left alone so it stays a number.
+// Same rule as @splash/report-kit csvField.
+const CSV_FORMULA_START = /^[=+\-@\t\r]/;
+const CSV_PLAIN_NUMBER = /^-?\d+(\.\d+)?$/;
+
 function csvEscape(v: string): string {
   if (v == null) return "";
-  const s = String(v);
+  const raw = String(v);
+  const s =
+    CSV_FORMULA_START.test(raw) && !CSV_PLAIN_NUMBER.test(raw) ? `'${raw}` : raw;
   if (
     s.includes(",") ||
     s.includes("\n") ||

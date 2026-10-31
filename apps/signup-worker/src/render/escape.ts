@@ -18,6 +18,18 @@ export function escHtml(s: string | number | null | undefined): string {
   return String(s ?? "").replace(/[&<>"']/g, (m) => ESC_MAP[m] ?? m);
 }
 
+/**
+ * JSON for an inline `<script>` block. Plain JSON.stringify leaves `</script>`
+ * intact, which closes the block and lets a URL segment inject markup -- the
+ * location code reaches the picker straight from the path.
+ */
+export function jsonForScript(v: unknown): string {
+  return JSON.stringify(v)
+    .replace(/</g, "\\u003c")
+    .replace(/\u2028/g, "\\u2028")
+    .replace(/\u2029/g, "\\u2029");
+}
+
 /** Capitalize first character. Used for the location-name display. */
 export function cap(s: string): string {
   return s ? s[0]!.toUpperCase() + s.slice(1) : s;

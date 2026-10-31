@@ -12,6 +12,7 @@
 // actually talk to GoTrue.
 
 import { EnrollMfaForm } from "./form";
+import { sanitizeReturn } from "../../_lib/return-path";
 
 interface PageProps {
   searchParams: Promise<{ next?: string; required?: string }>;
@@ -19,7 +20,7 @@ interface PageProps {
 
 export default async function EnrollMfaPage({ searchParams }: PageProps) {
   const params = await searchParams;
-  const next = params.next ?? "/admin/dashboard";
+  const next = sanitizeReturn(params.next);
   // `required=true` is set by the login handler and the /admin overdue guard
   // when enrollment is mandatory. It switches the form to its mandatory framing
   // (no "this is optional" language). Enforcement itself lives server-side.

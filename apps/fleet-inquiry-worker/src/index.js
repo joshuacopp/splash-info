@@ -116,18 +116,18 @@ async function handleFindLocations(request, env, ctx) {
 
     if (hasCoords) {
       userCoords = { lat, lng };
-    } else if (env.GOOGLE_MAPS_API_KEY) {
-      userCoords = await geocodeAddress(address, env.GOOGLE_MAPS_API_KEY);
+    } else if (mapsKey(env)) {
+      userCoords = await geocodeAddress(address, mapsKey(env));
       if (!userCoords) {
         return jsonResponse(400, { error: "Could not find that address. Please try again." });
       }
     }
 
     // If we have user coordinates and a Maps API key, geocode all locations and find nearest
-    if (userCoords && env.GOOGLE_MAPS_API_KEY) {
+    if (userCoords && mapsKey(env)) {
       const locationsWithDistance = await Promise.all(
         locations.map(async (loc) => {
-          const locCoords = await geocodeAddress(loc.address, env.GOOGLE_MAPS_API_KEY);
+          const locCoords = await geocodeAddress(loc.address, mapsKey(env));
           if (!locCoords) return { ...loc, distance: Infinity };
           const distance = haversineDistance(userCoords, locCoords);
           return { ...loc, distance };
@@ -258,7 +258,7 @@ async function resolveFivestarOption({ selectedLocationCode, userCoords, env, ct
 
     // Case 2: need to find nearest fivestar within radius
     // Requires user coordinates and Google Maps
-    if (!userCoords || !env.GOOGLE_MAPS_API_KEY) {
+    if (!userCoords || !mapsKey(env)) {
       return { available: false };
     }
 
@@ -272,7 +272,7 @@ async function resolveFivestarOption({ selectedLocationCode, userCoords, env, ct
 
     const locsWithDistance = await Promise.all(
       fivestarLocs.map(async (loc) => {
-        const locCoords = await geocodeAddress(loc.address, env.GOOGLE_MAPS_API_KEY);
+        const locCoords = await geocodeAddress(loc.address, mapsKey(env));
         if (!locCoords) return { ...loc, distance: Infinity };
         return { ...loc, distance: haversineDistance(userCoords, locCoords) };
       })
@@ -572,6 +572,20 @@ async function verifyTurnstileToken(token, secretKey, clientIp) {
 }
 
 /* ===================== Google Maps Helpers ===================== */
+
+/**
+ * The Google Maps key, or null while geocoding is switched off.
+ *
+ * Off unless FLEET_GEOCODE_ENABLED = "true" (wrangler [vars]). This is a public,
+ * unauthenticated form and every new address typed in is a billed Geocoding
+ * call, so anyone can run the bill up from a script. With it off the form lists
+ * every location alphabetically -- the same fallback it always had for an
+ * unbound key -- and the nearest-Fivestar suggestion is skipped.
+ */
+function mapsKey(env) {
+  if (env.FLEET_GEOCODE_ENABLED !== "true") return null;
+  return env.GOOGLE_MAPS_API_KEY || null;
+}
 
 async function geocodeAddress(address, apiKey) {
   if (!address || !apiKey) return null;

@@ -967,8 +967,8 @@ async function getCarCounts(env: Env, session: Session): Promise<Response> {
 
 /**
  * POST /manage/api/car-counts — create (no id) or update (id given) a
- * car-count range. dc_role-scoped: scoped users may only write within
- * scope.codes. Rejects overlapping ranges for the same location (409).
+ * car-count range. Admin / super_admin dc_role only. Rejects overlapping
+ * ranges for the same location (409).
  *
  * Body: { id?, location_code, start_date, end_date, cars, note }.
  */
@@ -979,8 +979,10 @@ async function handleUpsertCarCount(
 ): Promise<Response> {
   if (!isOriginAllowed(request)) return jsonError(403, "bad origin");
 
+  // Car counts feed the per-site damage rate, so only admin / super_admin may
+  // write them (2026-10-31). GM / RM keep read access via GET.
   const scope = await damageScopeForSession(env, session);
-  if (scope.kind === "denied") return jsonError(403, "no damage role assigned");
+  if (scope.kind !== "global") return jsonError(403, "car counts are admin-only");
 
   // Body arrives form-encoded via apps/web's damagePostForm (readForm is
   // content-type-aware and also accepts JSON, so direct callers still work).
@@ -997,10 +999,6 @@ async function handleUpsertCarCount(
 
   const locationCode = (form.get("location_code") ?? "").trim();
   if (!locationCode) return jsonError(400, "location_code is required");
-  // Scoped users may only write within their scope.
-  if (scope.kind === "scoped" && !scope.codes.includes(locationCode)) {
-    return jsonError(403, "location out of scope");
-  }
 
   const startDate = (form.get("start_date") ?? "").trim();
   const endDate = (form.get("end_date") ?? "").trim();
@@ -1043,9 +1041,7 @@ async function handleUpsertCarCount(
 
 /**
  * POST /manage/api/car-counts/delete — hard-delete a car-count row.
- * dc_role-scoped: scoped users may only delete a row whose location_code is
- * in scope.codes (row is looked up first — 404 if missing, 403 if out of
- * scope). Body: { id }.
+ * Admin / super_admin dc_role only; 404 if the id is missing. Body: { id }.
  */
 async function handleDeleteCarCount(
   request: Request,
@@ -1055,7 +1051,7 @@ async function handleDeleteCarCount(
   if (!isOriginAllowed(request)) return jsonError(403, "bad origin");
 
   const scope = await damageScopeForSession(env, session);
-  if (scope.kind === "denied") return jsonError(403, "no damage role assigned");
+  if (scope.kind !== "global") return jsonError(403, "car counts are admin-only");
 
   // Body arrives form-encoded via apps/web's damagePostForm (readForm also
   // accepts JSON, so direct callers still work).
@@ -1065,16 +1061,12 @@ async function handleDeleteCarCount(
     return jsonError(400, "id must be a positive integer");
   }
 
-  // Look the row up first so scoped users can't delete out-of-scope rows and
-  // a missing id 404s rather than silently succeeding.
+  // Look the row up first so a missing id 404s rather than silently succeeding.
   const existing = await env.DB
     .prepare("SELECT location_code FROM car_counts WHERE id = ?")
     .bind(id)
     .first<{ location_code: string }>();
   if (!existing) return jsonError(404, "not found");
-  if (scope.kind === "scoped" && !scope.codes.includes(existing.location_code)) {
-    return jsonError(403, "location out of scope");
-  }
 
   await deleteCarCount(env.DB, id);
   return json({ ok: true });
@@ -2661,9 +2653,18 @@ function claimsCsvFilename(): string {
  * contains a comma, quote, CR, or LF; doubles any embedded quotes.
  * Numbers are stringified verbatim.
  */
+// Excel runs a cell starting with = + - @ (or tab / CR) as a formula, and
+// customer-typed text reaches this export, so such cells get a leading
+// apostrophe. A plain number ("-5.00") is left alone so it stays a number.
+// Same rule as @splash/report-kit csvField.
+const CSV_FORMULA_START = /^[=+\-@\t\r]/;
+const CSV_PLAIN_NUMBER = /^-?\d+(\.\d+)?$/;
+
 function csvQuote(value: unknown): string {
-  const s = value === null || value === undefined ? "" : String(value);
-  if (s === "") return "";
+  const raw = value === null || value === undefined ? "" : String(value);
+  if (raw === "") return "";
+  const s =
+    CSV_FORMULA_START.test(raw) && !CSV_PLAIN_NUMBER.test(raw) ? `'${raw}` : raw;
   if (/[",\r\n]/.test(s)) {
     return `"${s.replace(/"/g, '""')}"`;
   }

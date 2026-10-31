@@ -10,7 +10,7 @@
 import { ASSETS } from "@splash/storage-r2/assets";
 import type { PricingSimpleResolvedRow } from "@splash/types/pricing";
 import { BUBBLE_BACKGROUND_CSS, BUBBLES_HTML, PICKER_CSS } from "./css.js";
-import { cap, escHtml } from "./escape.js";
+import { cap, escHtml, jsonForScript } from "./escape.js";
 
 export interface PickerRenderArgs {
   /** URL-form location code, e.g. "binghamton". */
@@ -73,8 +73,8 @@ ${PICKER_CSS}
 
   <script>
     (function(){
-      var loc = ${JSON.stringify(locationCode)};
-      var prefix = ${JSON.stringify(prefix)};
+      var loc = ${jsonForScript(locationCode)};
+      var prefix = ${jsonForScript(prefix)};
       function go(card) {
         var pkg = card.getAttribute('data-pkg') || '';
         if (!pkg) return;

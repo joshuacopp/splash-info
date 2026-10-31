@@ -10,6 +10,7 @@
 // setup. The page itself renders correctly in isolation.
 
 import { ChangePasswordForm } from "./form";
+import { sanitizeReturn } from "../_lib/return-path";
 
 interface PageProps {
   searchParams: Promise<{ required?: string; next?: string }>;
@@ -18,6 +19,6 @@ interface PageProps {
 export default async function ChangePasswordPage({ searchParams }: PageProps) {
   const params = await searchParams;
   const required = params.required === "true";
-  const next = params.next ?? "/admin";
+  const next = sanitizeReturn(params.next, "/admin");
   return <ChangePasswordForm required={required} next={next} />;
 }

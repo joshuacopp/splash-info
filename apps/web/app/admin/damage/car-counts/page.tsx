@@ -15,6 +15,7 @@
 
 import Link from "next/link";
 import { damageGetJson, damageGetJsonOrStatus } from "../_lib/worker-fetch";
+import { getMe } from "../../../_lib/me";
 import { DamageTabs } from "../_components/DamageTabs";
 import { RedirectForm } from "../../_components/RedirectForm";
 import { SaveCarCountButton } from "./_components/SaveCarCountButton";
@@ -176,6 +177,11 @@ export default async function DamageCarCountsPage({ searchParams }: PageProps) {
 
   const rows = countsResult && countsResult.kind === "ok" ? countsResult.rows : [];
 
+  // Only admin / super_admin dc_role may add or delete (the worker enforces
+  // it; this just keeps GM / RM from seeing controls that would be refused).
+  const me = await getMe().catch(() => null);
+  const canEdit = me?.dcRole === "admin" || me?.dcRole === "super_admin";
+
   // Location dropdown options — dc_role-scoped roster, sorted by pretty name.
   // Rows already in the table are merged in as a fallback so a location that
   // has a count but somehow isn't in the roster still shows a readable label.
@@ -203,6 +209,7 @@ export default async function DamageCarCountsPage({ searchParams }: PageProps) {
       {/* Entry form — create or update one car-count range. The worker owns
           all validation (date shape, end>=start, cars>=0, overlaps -> 409);
           the only up-front check is that a location was picked. */}
+      {canEdit ? (
       <div className="mb-6 rounded-splash-lg border border-gray-light bg-white p-5 shadow-splash-card">
         <h2 className="mb-1 text-lg font-bold text-splash-navy">
           Add a car count
@@ -267,12 +274,17 @@ export default async function DamageCarCountsPage({ searchParams }: PageProps) {
           </div>
         </RedirectForm>
       </div>
+      ) : (
+        <p className="mb-6 text-sm text-splash-navy/70">
+          Car counts are entered by admins. Contact an admin to add or change one.
+        </p>
+      )}
 
       {/* Existing ranges */}
       {rows.length === 0 ? (
         <div className="rounded-splash-lg border border-gray-light bg-white p-6 shadow-splash-card">
           <p className="text-splash-navy/80">
-            No car counts recorded yet. Add one above.
+            No car counts recorded yet.{canEdit ? " Add one above." : ""}
           </p>
         </div>
       ) : (
@@ -314,6 +326,7 @@ export default async function DamageCarCountsPage({ searchParams }: PageProps) {
                       </div>
                     </td>
                     <td className="px-4 py-3 text-right">
+                      {canEdit ? (
                       <RedirectForm action={deleteCarCountAction}>
                         <input type="hidden" name="id" value={String(r.id)} />
                         <DeleteCarCountButton
@@ -322,6 +335,7 @@ export default async function DamageCarCountsPage({ searchParams }: PageProps) {
                           )} (${formatRange(r.start_date, r.end_date)})? This can't be undone.`}
                         />
                       </RedirectForm>
+                      ) : null}
                     </td>
                   </tr>
                 ))}

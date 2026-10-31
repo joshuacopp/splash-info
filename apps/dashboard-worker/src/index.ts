@@ -84,7 +84,13 @@ import {
 } from "@splash/db-supabase";
 import { isOriginAllowed, json, jsonError, readForm } from "@splash/http";
 import { verifyTurnstile } from "./turnstile";
-import { recordAndCheck, clearEmail, type RateLimitEnv } from "./rate-limit";
+import {
+  recordAndCheck,
+  clearEmail,
+  recordMfaAttempt,
+  clearMfaAttempts,
+  type RateLimitEnv
+} from "./rate-limit";
 
 // Base Supabase env + the login-hardening bindings (Brief: login abuse
 // protection). Both are optional so local dev works unbound (Turnstile
@@ -369,6 +375,14 @@ async function handleLoginMfa(request: Request, env: Env): Promise<Response> {
     return jsonError(400, "code required");
   }
 
+  // Counted BEFORE verifying so wrong codes count; cleared on a correct one.
+  const rl = await recordMfaAttempt(env, auth.session.userId);
+  if (!rl.allowed) {
+    const res = jsonError(429, "Too many codes tried. Please wait and try again.");
+    res.headers.set("Retry-After", String(rl.retryAfterSec));
+    return res;
+  }
+
   // Resolve the factor to step up on from the SERVER's view of the user's
   // factors — a client-supplied id would let a caller point verification at an
   // arbitrary factor. Pick the first verified TOTP factor.
@@ -392,6 +406,7 @@ async function handleLoginMfa(request: Request, env: Env): Promise<Response> {
     // Bad or expired code — generic message, caller re-prompts.
     return jsonError(400, "Invalid or expired code. Please try again.");
   }
+  await clearMfaAttempts(env, auth.session.userId);
 
   const headers = new Headers();
   for (const c of buildAuthCookies(elevated.accessToken, elevated.refreshToken)) {
