@@ -96,7 +96,15 @@ export async function handleAdminApi(request, env, ctx) {
     });
   }
 
-  if (!isOriginAllowed(request)) {
+  // The asset proxy is exempt for GET: it is read-only and session-gated, so
+  // the CSRF check protects nothing there -- and it broke real use. Opening a
+  // photo full size (a link with rel="noreferrer", or the phone's long-press
+  // "Open image") sends neither Origin nor Referer, and isOriginAllowed
+  // refuses a request with no headers, so CRD got {"error":"bad origin"}
+  // tapping a Golden Ticket photo. A cross-site page still cannot read the
+  // image, and the session cookie is SameSite=Lax.
+  const isAssetGet = path === "/admin/jotform/api/asset" && request.method === "GET";
+  if (!isAssetGet && !isOriginAllowed(request)) {
     return jsonError(403, "bad origin");
   }
 
