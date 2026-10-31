@@ -773,3 +773,502 @@ export function VolumeScatter({
     </svg>
   );
 }
+
+/* ============================================================
+ * 4. Overview charts
+ *
+ * The charts above all draw ONE MARK PER SITE OR PER GREETER, which is what
+ * makes them good for drilling down and poor as an overview: with sixteen
+ * sites the by-day lines are a tangle, and nothing on the page answered "how
+ * are we doing overall, and where is the trouble" without reading. These
+ * answer that from the same rows, with no extra reads.
+ * ============================================================ */
+
+/**
+ * Two inks for the gained/lost and better/worse charts. Checked with the
+ * dataviz palette validator (lightness band, colour-blind separation, 3:1
+ * contrast on white) -- CHART.blue fails the lightness band and CHART.sudsy
+ * fails contrast, which is why these aren't simply those two.
+ *
+ * Up is blue and down is orange, NOT green and red, because green/amber/red
+ * already mean "against goal" everywhere on this page. A site that slipped but
+ * is still over goal must not be painted red.
+ */
+export const POLARITY = {
+  up: "#4352c0",
+  down: "#d9631e"
+} as const;
+
+/** Square-swatch key, for charts whose marks are cells and bars, not lines. */
+export function SwatchLegend({
+  items
+}: {
+  items: { key: string; label: string; fill: string; hollow?: boolean }[];
+}) {
+  return (
+    <div className="mb-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-splash-navy/70">
+      {items.map((it) => (
+        <span key={it.key} className="inline-flex items-center gap-1.5">
+          <svg width={12} height={12} viewBox="0 0 12 12" aria-hidden="true">
+            <rect
+              x={1}
+              y={1}
+              width={10}
+              height={10}
+              rx={2}
+              fill={it.hollow ? "#ffffff" : it.fill}
+              stroke={it.hollow ? CHART.muted : "none"}
+              strokeWidth={it.hollow ? 1 : 0}
+              {...(it.hollow ? { strokeDasharray: "2 1.5" } : {})}
+            />
+          </svg>
+          <span className="font-semibold">{it.label}</span>
+        </span>
+      ))}
+    </div>
+  );
+}
+
+/* ---------- 4a. Site x day grid ---------- */
+
+/** What one site-day cell shows. */
+export type HeatState = CaptureTier | "ungraded" | "missing";
+
+export interface HeatCell {
+  date: string;
+  state: HeatState;
+  hover: string;
+}
+
+export interface HeatRow {
+  key: string;
+  label: string;
+  href: string;
+  active?: boolean;
+  /** SAME LENGTH and ORDER as every other row -- positional, like TrendChart. */
+  cells: HeatCell[];
+  /** Right-hand figure, e.g. the period capture rate. */
+  summary: string;
+}
+
+export const HEAT_FILL: Record<HeatState, string> = {
+  hit: CHART.success,
+  near: CHART.warn,
+  miss: CHART.deny,
+  ungraded: CHART.grid,
+  missing: "#ffffff"
+};
+
+/**
+ * Every site, every day, one cell each, graded against that day's goal.
+ *
+ * The overview the per-site line chart can't be. A site missing every day is a
+ * solid red row, one bad Tuesday is a single red cell, and a site that stopped
+ * reporting is a run of empty outlined cells. Whether a problem keeps happening
+ * or happened once is the question a manager actually has, and it reads here
+ * without a single number.
+ *
+ * Missing days are drawn as OUTLINED EMPTY cells, never left out: dropping them
+ * would slide a row's later days left and misdate them, and "didn't report" is
+ * one of the things this grid exists to show.
+ */
+export function SiteDayHeatmap({ rows }: { rows: HeatRow[] }) {
+  const first = rows[0];
+  if (!first || first.cells.length === 0) {
+    return <ChartEmpty>No sites reported in this window.</ChartEmpty>;
+  }
+  const days = first.cells.length;
+  const W = 720;
+  const LABEL_W = 140;
+  const SUMMARY_W = 56;
+  const GAP = 2;
+  const plotW = W - LABEL_W - SUMMARY_W;
+  // Capped so a 3-day window doesn't draw billboard-sized cells; bounded by the
+  // plot width, so a 90-day window still fits -- cells get thin, never overflow.
+  const cellW = Math.min(28, plotW / days);
+  const ROW_H = 18;
+  const HEAD = 16;
+  const H = HEAD + rows.length * ROW_H + 4;
+  const labelEvery = Math.max(1, Math.ceil((days * 34) / plotW));
+
+  return (
+    <svg
+      viewBox={`0 0 ${W} ${H}`}
+      className="h-auto w-full"
+      role="img"
+      aria-label={`Grid of ${rows.length} sites by ${days} days, each day coloured against goal`}
+    >
+      {first.cells.map((c, i) =>
+        i % labelEvery === 0 ? (
+          <text
+            key={`h-${c.date}`}
+            x={LABEL_W + i * cellW + cellW / 2}
+            y={11}
+            textAnchor="middle"
+            fontSize={9}
+            fill={CHART.muted}
+          >
+            {c.date.slice(5)}
+          </text>
+        ) : null
+      )}
+
+      {rows.map((r, ri) => {
+        const top = HEAD + ri * ROW_H;
+        const cellH = ROW_H - GAP;
+        return (
+          <a key={r.key} href={r.href}>
+            <g>
+              {r.active ? (
+                <rect
+                  x={0}
+                  y={top - 1}
+                  width={W}
+                  height={ROW_H}
+                  fill={CHART.sudsy}
+                  opacity={0.14}
+                  rx={3}
+                />
+              ) : null}
+              <text
+                x={LABEL_W - 8}
+                y={top + cellH - 4}
+                textAnchor="end"
+                fontSize={10.5}
+                fontWeight={600}
+                fill={CHART.navy}
+              >
+                {r.label}
+              </text>
+              {r.cells.map((c, ci) => (
+                <rect
+                  key={c.date}
+                  x={LABEL_W + ci * cellW + GAP / 2}
+                  y={top}
+                  width={Math.max(1, cellW - GAP)}
+                  height={cellH}
+                  rx={2}
+                  fill={HEAT_FILL[c.state]}
+                  stroke={c.state === "missing" ? CHART.muted : "none"}
+                  strokeWidth={c.state === "missing" ? 1 : 0}
+                  {...(c.state === "missing" ? { strokeDasharray: "2 1.5" } : {})}
+                >
+                  <title>{c.hover}</title>
+                </rect>
+              ))}
+              <text
+                x={W - SUMMARY_W + 8}
+                y={top + cellH - 4}
+                fontSize={10.5}
+                fontWeight={700}
+                fill={CHART.navy}
+              >
+                {r.summary}
+              </text>
+            </g>
+          </a>
+        );
+      })}
+    </svg>
+  );
+}
+
+/* ---------- 4b. Members gained and lost by day ---------- */
+
+export interface GainLossDay {
+  date: string;
+  label: string;
+  /** Null = no site reported that day; nothing is drawn in that slot. */
+  gained: number | null;
+  lost: number | null;
+  hover: string;
+}
+
+/**
+ * Members in (up) and out (down) each day, from one shared zero line.
+ *
+ * ONE SCALE for both directions: an orange bar as tall as a blue one really is
+ * as many cancellations as that bar is sign ups. Two charts would each scale to
+ * their own maximum and could make a bad week look like a good one.
+ */
+export function GainLossBars({ days }: { days: GainLossDay[] }) {
+  const reported = days.filter((d) => d.gained !== null || d.lost !== null);
+  if (reported.length === 0) {
+    return <ChartEmpty>No days with membership numbers in this window.</ChartEmpty>;
+  }
+  const W = 720;
+  const H = 220;
+  const PAD = { top: 12, right: 14, bottom: 26, left: 44 };
+  const plotW = W - PAD.left - PAD.right;
+  const plotH = H - PAD.top - PAD.bottom;
+  const maxUp = Math.max(1, ...days.map((d) => d.gained ?? 0));
+  const maxDown = Math.max(1, ...days.map((d) => d.lost ?? 0));
+  const unit = plotH / (maxUp + maxDown);
+  const zeroY = PAD.top + maxUp * unit;
+  const slot = plotW / days.length;
+  const barW = Math.max(2, Math.min(24, slot * 0.7));
+  const labelEvery = Math.max(1, Math.ceil(days.length / 12));
+
+  const ticks = [
+    { k: "up", y: PAD.top, t: `+${Math.round(maxUp).toLocaleString()}`, zero: false },
+    { k: "zero", y: zeroY, t: "0", zero: true },
+    {
+      k: "down",
+      y: PAD.top + plotH,
+      t: `−${Math.round(maxDown).toLocaleString()}`,
+      zero: false
+    }
+  ];
+
+  return (
+    <svg
+      viewBox={`0 0 ${W} ${H}`}
+      className="h-auto w-full"
+      role="img"
+      aria-label={`Members gained and lost on each of ${days.length} days`}
+    >
+      {ticks.map((tk) => (
+        <g key={tk.k}>
+          <line
+            x1={PAD.left}
+            x2={W - PAD.right}
+            y1={tk.y}
+            y2={tk.y}
+            stroke={tk.zero ? CHART.muted : CHART.grid}
+            strokeWidth={1}
+          />
+          <text
+            x={PAD.left - 8}
+            y={tk.y + 4}
+            textAnchor="end"
+            fontSize={10}
+            fill={CHART.muted}
+          >
+            {tk.t}
+          </text>
+        </g>
+      ))}
+
+      {days.map((d, i) => {
+        const cx = PAD.left + i * slot + slot / 2;
+        const upH = (d.gained ?? 0) * unit;
+        const downH = (d.lost ?? 0) * unit;
+        return (
+          <g key={d.date}>
+            <title>{d.hover}</title>
+            {/* Full-height hit target, so a one-member day is still hoverable. */}
+            <rect
+              x={PAD.left + i * slot}
+              y={PAD.top}
+              width={slot}
+              height={plotH}
+              fill="transparent"
+            />
+            {upH > 0 ? (
+              <rect
+                x={cx - barW / 2}
+                y={zeroY - upH}
+                width={barW}
+                height={Math.max(1, upH - 1)}
+                rx={2}
+                fill={POLARITY.up}
+              />
+            ) : null}
+            {downH > 0 ? (
+              <rect
+                x={cx - barW / 2}
+                y={zeroY + 1}
+                width={barW}
+                height={Math.max(1, downH - 1)}
+                rx={2}
+                fill={POLARITY.down}
+              />
+            ) : null}
+            {i % labelEvery === 0 ? (
+              <text
+                x={cx}
+                y={H - 8}
+                textAnchor="middle"
+                fontSize={10}
+                fill={CHART.muted}
+              >
+                {d.label}
+              </text>
+            ) : null}
+          </g>
+        );
+      })}
+    </svg>
+  );
+}
+
+/* ---------- 4c. Change since the prior period ---------- */
+
+export interface ChangeRow {
+  key: string;
+  label: string;
+  href: string;
+  active?: boolean;
+  prior: number | null;
+  current: number | null;
+  goal: number | null;
+  hover: string;
+}
+
+/**
+ * Each site's capture rate last period (hollow dot) and this period (filled
+ * dot), joined by a line coloured by direction. The caller sorts; worst
+ * decline first is the intended order.
+ *
+ * Shows what the ranking bars can't: which way each site is MOVING, and by how
+ * much, against its own goal tick. A site at 31% looks fine in a ranking; a
+ * site at 31% that was at 38% is the phone call to make today.
+ */
+export function ChangeDumbbell({ rows }: { rows: ChangeRow[] }) {
+  if (rows.length === 0) {
+    return <ChartEmpty>No sites reported in this window.</ChartEmpty>;
+  }
+  const ROW_H = 24;
+  const W = 720;
+  const LABEL_W = 150;
+  const PAD_R = 110;
+  const H = rows.length * ROW_H + 8;
+  const plotW = W - LABEL_W - PAD_R;
+  // Zoomed to the range actually in play, NOT from zero. These are dots, not
+  // bars -- no length is being compared against a baseline -- and the moves
+  // are a few points on rates in the 20s and 30s, so a 0-40% axis squashed
+  // every change into a few pixels in testing. Goals are included so every
+  // site's goal tick stays on the chart.
+  const [lo, hi] = domain(
+    rows.flatMap((r) =>
+      [r.prior, r.current, r.goal].filter((v): v is number => v !== null)
+    ),
+    null
+  );
+  const sx = (v: number) => LABEL_W + ((v - lo) / (hi - lo)) * plotW;
+
+  return (
+    <svg
+      viewBox={`0 0 ${W} ${H}`}
+      className="h-auto w-full"
+      role="img"
+      aria-label={`Change in capture rate from the prior period for ${rows.length} sites`}
+    >
+      {rows.map((r, i) => {
+        const cy = i * ROW_H + ROW_H / 2 + 4;
+        const change =
+          r.prior === null || r.current === null ? null : r.current - r.prior;
+        const ink =
+          change === null || Math.abs(change) < 0.05
+            ? CHART.muted
+            : change > 0
+              ? POLARITY.up
+              : POLARITY.down;
+        const changeText =
+          change === null
+            ? r.current === null
+              ? "no data"
+              : "no prior"
+            : Math.abs(change) < 0.05
+              ? "no change"
+              : `${change > 0 ? "+" : "−"}${Math.abs(change).toFixed(1)} pts`;
+        return (
+          <a key={r.key} href={r.href}>
+            <g>
+              <title>{r.hover}</title>
+              {r.active ? (
+                <rect
+                  x={0}
+                  y={cy - ROW_H / 2}
+                  width={W}
+                  height={ROW_H}
+                  fill={CHART.sudsy}
+                  opacity={0.14}
+                  rx={4}
+                />
+              ) : null}
+              <rect
+                x={0}
+                y={cy - ROW_H / 2}
+                width={W}
+                height={ROW_H}
+                fill="transparent"
+              />
+              <text
+                x={LABEL_W - 10}
+                y={cy + 4}
+                textAnchor="end"
+                fontSize={11}
+                fontWeight={600}
+                fill={CHART.navy}
+              >
+                {r.label}
+              </text>
+              <line
+                x1={LABEL_W}
+                x2={LABEL_W + plotW}
+                y1={cy}
+                y2={cy}
+                stroke={CHART.grid}
+                strokeWidth={1}
+              />
+              {r.goal !== null ? (
+                <line
+                  x1={sx(r.goal)}
+                  x2={sx(r.goal)}
+                  y1={cy - 7}
+                  y2={cy + 7}
+                  stroke={CHART.navy}
+                  strokeWidth={2}
+                />
+              ) : null}
+              {r.prior !== null && r.current !== null ? (
+                <line
+                  x1={sx(r.prior)}
+                  x2={sx(r.current)}
+                  y1={cy}
+                  y2={cy}
+                  stroke={ink}
+                  strokeWidth={3}
+                  strokeLinecap="round"
+                />
+              ) : null}
+              {r.prior !== null ? (
+                <circle
+                  cx={sx(r.prior)}
+                  cy={cy}
+                  r={4}
+                  fill="#ffffff"
+                  stroke={CHART.muted}
+                  strokeWidth={2}
+                />
+              ) : null}
+              {r.current !== null ? (
+                <circle
+                  cx={sx(r.current)}
+                  cy={cy}
+                  r={5}
+                  fill={ink}
+                  stroke="#ffffff"
+                  strokeWidth={2}
+                />
+              ) : null}
+              <text
+                x={W - PAD_R + 8}
+                y={cy + 4}
+                fontSize={11}
+                fontWeight={700}
+                fill={CHART.navy}
+              >
+                {r.current === null ? "—" : fmt(r.current, "pct")}
+                <tspan dx={6} fontWeight={600} fill={CHART.muted}>
+                  {changeText}
+                </tspan>
+              </text>
+            </g>
+          </a>
+        );
+      })}
+    </svg>
+  );
+}

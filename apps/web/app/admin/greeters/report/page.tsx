@@ -94,8 +94,18 @@ import {
   SiteGroupBlock
 } from "../_lib/site-groups";
 import {
+  ChangeDumbbell,
   CHART,
   ChartFrame,
+  GainLossBars,
+  HEAT_FILL,
+  POLARITY,
+  SiteDayHeatmap,
+  SwatchLegend,
+  type ChangeRow,
+  type GainLossDay,
+  type HeatRow,
+  type HeatState,
   RankBars,
   seriesStyle,
   SiteLegend,
@@ -563,6 +573,144 @@ export default async function GreeterReportPage({ searchParams }: PageProps) {
       )} wash sales`
   );
 
+  // ---- Overview charts (see the note above them in Charts.tsx) ----
+  //
+  // The prior window is the same length as this one by construction, so the
+  // two line up day-for-day by POSITION: day 1 of last week sits under day 1 of
+  // this week, which keeps the weekday mix matched. Its points carry their own
+  // dates in the hover so nobody mistakes the ghost line for this window.
+  const priorWindowDays = fillWindow(
+    byDay(priorRows ?? []),
+    prior.date_from,
+    prior.date_to
+  );
+  const companySeries = (
+    pick: (d: DayTotals) => number | null,
+    note: (d: DayTotals) => string
+  ): TrendSeries[] => [
+    {
+      key: "now",
+      label: "This period",
+      style: { colour: POLARITY.up },
+      points: windowDays.map(({ iso, day }) => ({
+        date: iso,
+        label: iso.slice(5),
+        value: day ? pick(day) : null,
+        note: day ? note(day) : "no site reported"
+      }))
+    },
+    {
+      key: "prior",
+      label: "Prior period",
+      style: { colour: CHART.muted, dash: "5 3" },
+      points: windowDays.map(({ iso }, i) => {
+        const p = priorWindowDays[i];
+        const day = p?.day ?? null;
+        return {
+          date: p?.iso ?? iso,
+          label: iso.slice(5),
+          value: day ? pick(day) : null,
+          note: day ? note(day) : "no site reported"
+        };
+      })
+    }
+  ];
+  const companyCapture = companySeries(
+    (d) => d.capture_pct,
+    (d) =>
+      `${num(d.sign_ups)} sign ups / ${num(d.wash_sales + d.sign_ups)} opportunities · ${d.days} sites`
+  );
+  const companyDob = companySeries(
+    (d) => d.dob,
+    (d) =>
+      `${money(d.package_dollars + d.extras_dollars)} over ${num(d.wash_sales)} wash sales · ${d.days} sites`
+  );
+  const companyLegend: LegendItem[] = [
+    {
+      key: "now",
+      label: `This period (${dateFrom} to ${dateTo})`,
+      style: { colour: POLARITY.up }
+    },
+    {
+      key: "prior",
+      label: `Prior period (${prior.date_from} to ${prior.date_to})`,
+      style: { colour: CHART.muted, dash: "5 3" }
+    }
+  ];
+
+  const heatRows: HeatRow[] = sitesWorstFirst.map((s) => {
+    const byDate = new Map(
+      daysForSite(siteList, s.location_id).map((r) => [r.business_date, r])
+    );
+    return {
+      key: String(s.location_id),
+      label: `${s.location_code} · ${s.site_number}`,
+      href: link({ site: String(s.location_id) }),
+      active: selectedSite === s.location_id,
+      summary: pct(s.capture_pct),
+      cells: windowDays.map(({ iso }) => {
+        const r = byDate.get(iso);
+        let state: HeatState;
+        let hover: string;
+        if (!r) {
+          state = "missing";
+          hover = `${s.location_code} · ${iso} · not reported`;
+        } else if (r.capture_pct === null || r.capture_goal_pct === null) {
+          state = "ungraded";
+          hover = `${s.location_code} · ${iso} · ${pct(r.capture_pct)} capture · no goal to grade against`;
+        } else {
+          state = captureTier(r.capture_pct, r.capture_goal_pct);
+          hover = `${s.location_code} · ${iso} · ${pct(r.capture_pct)} capture against ${goalNum(
+            r.capture_goal_pct
+          )}% goal · ${num(r.sign_ups)} sign ups on ${num(r.wash_sales)} wash sales`;
+        }
+        return { date: iso, state, hover };
+      })
+    };
+  });
+
+  const gainLossDays: GainLossDay[] = windowDays.map(({ iso, day }) => ({
+    date: iso,
+    label: iso.slice(5),
+    gained: day ? day.sign_ups + day.reactivations : null,
+    lost: day ? day.cancellations : null,
+    hover: day
+      ? `${iso} · ${num(day.sign_ups)} sign ups + ${num(day.reactivations)} reactivations − ${num(
+          day.cancellations
+        )} cancellations = ${day.net_members >= 0 ? "+" : ""}${num(day.net_members)} net · ${day.days} sites`
+      : `${iso} · no site reported`
+  }));
+
+  const priorBySite = new Map(
+    bySite(priorRows ?? []).map((s): [number, SiteTotals] => [s.location_id, s])
+  );
+  // Worst decline first: the top of the list is the reason to pick up the
+  // phone. Sites with no prior figure have no direction and sort last.
+  const changeRows: ChangeRow[] = sites
+    .map((s) => {
+      const p = priorBySite.get(s.location_id)?.capture_pct ?? null;
+      return {
+        key: String(s.location_id),
+        label: `${s.location_code} · ${s.site_number}`,
+        href: link({ site: String(s.location_id) }),
+        active: selectedSite === s.location_id,
+        prior: p,
+        current: s.capture_pct,
+        goal: s.capture_goal_pct,
+        hover: `${s.location_code} · ${pct(p)} last period → ${pct(s.capture_pct)} this period${
+          s.capture_goal_pct === null ? "" : ` · goal ${goalNum(s.capture_goal_pct)}%`
+        }`
+      };
+    })
+    .sort((a, b) => {
+      const da = a.prior === null || a.current === null ? null : a.current - a.prior;
+      const db = b.prior === null || b.current === null ? null : b.current - b.prior;
+      if (da === null && db === null) return a.label.localeCompare(b.label);
+      if (da === null) return 1;
+      if (db === null) return -1;
+      return da - db;
+    });
+
   // The URL the void buttons return to: this exact screen, drill-through and
   // all. Built from link({}) rather than assembled by hand so it can't drift
   // from what every other link on the page considers "here".
@@ -787,7 +935,73 @@ export default async function GreeterReportPage({ searchParams }: PageProps) {
           across days.
         </p>
 
-        {/* Charts */}
+        {/* Overview: all sites combined, then every site at a glance. */}
+        <h2 className="mb-3 text-base font-bold text-splash-navy">Overview</h2>
+        <SiteLegend items={companyLegend} />
+        <div className="mb-4 grid grid-cols-1 gap-4 lg:grid-cols-2">
+          <ChartFrame
+            title="Capture rate, all sites combined"
+            caption="One line for everyone in scope. The dashed grey line is the prior period, day for day."
+          >
+            <TrendChart
+              series={companyCapture}
+              goal={now.capture_goal_pct}
+              unit="pct"
+            />
+          </ChartFrame>
+          <ChartFrame
+            title="D.O.B., all sites combined"
+            caption="Package and extras dollars per wash sale, all sites together."
+          >
+            <TrendChart series={companyDob} goal={now.dob_goal} unit="money" />
+          </ChartFrame>
+        </div>
+
+        <div className="mb-4 grid grid-cols-1 gap-4">
+          <ChartFrame
+            title="Every site, every day"
+            caption="Each square is one site on one day, graded against that day's capture goal. Worst site at the top. A dashed empty square means the site didn't report. Click a row to open the site."
+          >
+            <SwatchLegend
+              items={[
+                { key: "hit", label: "At or over goal", fill: HEAT_FILL.hit },
+                { key: "near", label: "Within 3 pts", fill: HEAT_FILL.near },
+                { key: "miss", label: "Under goal", fill: HEAT_FILL.miss },
+                { key: "ungraded", label: "No goal set", fill: HEAT_FILL.ungraded },
+                { key: "missing", label: "Not reported", fill: HEAT_FILL.missing, hollow: true }
+              ]}
+            />
+            <SiteDayHeatmap rows={heatRows} />
+          </ChartFrame>
+        </div>
+
+        <div className="mb-6 grid grid-cols-1 gap-4">
+          <ChartFrame
+            title="Members gained and lost by day"
+            caption={`Sign ups plus reactivations above the line, cancellations below. This period: +${num(
+              now.sign_ups + now.reactivations
+            )} in, −${num(now.cancellations)} out, ${now.net_members >= 0 ? "+" : ""}${num(
+              now.net_members
+            )} net.`}
+          >
+            <SwatchLegend
+              items={[
+                { key: "in", label: "Sign ups + reactivations", fill: POLARITY.up },
+                { key: "out", label: "Cancellations", fill: POLARITY.down }
+              ]}
+            />
+            <GainLossBars days={gainLossDays} />
+          </ChartFrame>
+          <ChartFrame
+            title="Capture rate change since the prior period"
+            caption="Hollow dot is last period, filled dot is this period. Blue moved up, orange moved down; the navy tick is the site's goal. Biggest drop at the top."
+          >
+            <ChangeDumbbell rows={changeRows} />
+          </ChartFrame>
+        </div>
+
+        {/* By site: the drill-down charts. */}
+        <h2 className="mb-3 text-base font-bold text-splash-navy">By site</h2>
         <div className="mb-6 grid grid-cols-1 gap-4 lg:grid-cols-2">
           <ChartFrame title="Capture rate by day">
             <TrendChart
