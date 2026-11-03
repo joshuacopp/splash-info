@@ -26,7 +26,7 @@ export default function FormBuilderTabs({ formId, active }: Props) {
   return (
     <nav
       aria-label="Form builder sections"
-      className="mb-4 flex gap-2 border-b border-gray-light pb-3"
+      className="mb-4 flex gap-2 overflow-x-auto border-b border-gray-light pb-3"
     >
       {TABS.map((t) => {
         const isActive = t.id === active;
@@ -35,8 +35,8 @@ export default function FormBuilderTabs({ formId, active }: Props) {
             ? `/admin/forms/${formId}`
             : `/admin/forms/${formId}?tab=${t.id}`;
         const cls = isActive
-          ? "inline-flex items-center rounded-full border border-splash-navy bg-splash-navy px-4 py-1.5 text-sm font-bold text-white shadow-splash-btn"
-          : "inline-flex items-center rounded-full border border-splash-navy bg-white px-4 py-1.5 text-sm font-bold text-splash-navy hover:bg-splash-navy/5";
+          ? "inline-flex shrink-0 items-center whitespace-nowrap rounded-full border border-splash-navy bg-splash-navy px-4 py-1.5 text-sm font-bold text-white shadow-splash-btn"
+          : "inline-flex shrink-0 items-center whitespace-nowrap rounded-full border border-splash-navy bg-white px-4 py-1.5 text-sm font-bold text-splash-navy hover:bg-splash-navy/5";
         return (
           <Link
             key={t.id}

@@ -14,16 +14,16 @@ export default function PackagePriceGridRenderer({ field }: { field: Field }) {
           <input type="checkbox" disabled checked readOnly />
           <span>Example package</span>
         </label>
-        <div className="mt-2 grid grid-cols-[70px_1fr_1fr] gap-x-2 gap-y-1 text-xs">
+        <div className="mt-2 grid grid-cols-[70px_minmax(0,1fr)_minmax(0,1fr)] gap-x-2 gap-y-1 text-xs">
           <span />
           <span className="font-semibold uppercase text-splash-navy/60">Current</span>
           <span className="font-semibold uppercase text-splash-navy/60">New</span>
           <span>Single</span>
-          <input disabled className="rounded border border-gray-light px-1" placeholder="0.00" />
-          <input disabled className="rounded border border-gray-light px-1" placeholder="Same as current" />
+          <input disabled className="w-full min-w-0 rounded border border-gray-light px-1" placeholder="0.00" />
+          <input disabled className="w-full min-w-0 rounded border border-gray-light px-1" placeholder="Same as current" />
           <span>Monthly</span>
-          <input disabled className="rounded border border-gray-light px-1" placeholder="0.00" />
-          <input disabled className="rounded border border-gray-light px-1" placeholder="Same as current" />
+          <input disabled className="w-full min-w-0 rounded border border-gray-light px-1" placeholder="0.00" />
+          <input disabled className="w-full min-w-0 rounded border border-gray-light px-1" placeholder="Same as current" />
         </div>
       </div>
       <p className="mt-1 text-xs text-splash-navy/60">

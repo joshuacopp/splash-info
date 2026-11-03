@@ -71,11 +71,11 @@ export default function FormsAdminTabs({ formId, canBuild = true }: Props) {
   if (tabs.length < 2) return null;
 
   return (
-    <nav aria-label="Forms admin sections" className="mb-5 flex gap-2">
+    <nav aria-label="Forms admin sections" className="-mx-1 mb-5 flex gap-2 overflow-x-auto px-1 pb-1">
       {tabs.map((t) => {
         const cls = t.active
-          ? "inline-flex items-center rounded-full border border-splash-blue bg-splash-blue px-4 py-1.5 text-sm font-bold text-white shadow-splash-btn"
-          : "inline-flex items-center rounded-full border border-splash-blue bg-white px-4 py-1.5 text-sm font-bold text-splash-blue hover:bg-splash-blue/5";
+          ? "inline-flex shrink-0 items-center whitespace-nowrap rounded-full border border-splash-blue bg-splash-blue px-4 py-1.5 text-sm font-bold text-white shadow-splash-btn"
+          : "inline-flex shrink-0 items-center whitespace-nowrap rounded-full border border-splash-blue bg-white px-4 py-1.5 text-sm font-bold text-splash-blue hover:bg-splash-blue/5";
         return (
           <Link
             key={t.href}

@@ -187,6 +187,10 @@ export interface FormDetail {
   /** `forms.fill_audience`: who may fill out the form ("site" | "rm" | "rd" |
    *  "tag"); [] = everyone signed in. Optional so an older worker still parses. */
   fillAudience?: string[];
+  /** `forms.scope_location_field_key`. Null: publish will add or designate a
+   *  site_number field. Optional so an older worker still parses (undefined
+   *  keeps the old banner behaviour). */
+  scopeLocationFieldKey?: string | null;
 }
 
 export interface CreateFormArgs {

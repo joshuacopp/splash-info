@@ -17,6 +17,9 @@ interface Props {
   lookupSources: readonly LookupSource[];
   formId: string;
   onFieldUpdate: (patch: Partial<Field>) => void;
+  /** "sheet" is the phone layout: the bottom sheet supplies the frame and the
+   *  title, so render only the field's editor. */
+  layout?: "panel" | "sheet";
 }
 
 export default function Inspector({
@@ -24,8 +27,20 @@ export default function Inspector({
   allFields,
   lookupSources,
   formId,
-  onFieldUpdate
+  onFieldUpdate,
+  layout = "panel"
 }: Props) {
+  if (layout === "sheet") {
+    return selectedField ? (
+      <FieldInspector
+        field={selectedField}
+        allFields={allFields}
+        lookupSources={lookupSources}
+        formId={formId}
+        onUpdate={onFieldUpdate}
+      />
+    ) : null;
+  }
   return (
     <aside className="w-80 shrink-0 overflow-y-auto rounded-splash-md border border-gray-light bg-white px-4 py-3">
       {selectedField ? (

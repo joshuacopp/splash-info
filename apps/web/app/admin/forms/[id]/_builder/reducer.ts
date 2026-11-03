@@ -107,7 +107,9 @@ export interface BuilderState {
 }
 
 export type BuilderAction =
-  | { type: "add_field"; fieldType: FieldType }
+  // `afterId` (phone layout) inserts the new field right after that field;
+  // omitted, it appends to the end as before.
+  | { type: "add_field"; fieldType: FieldType; afterId?: string }
   // Insert the preconfigured location-scoping site-number field (key
   // SCOPE_FIELD_KEY). Idempotent: selects the existing one if already present.
   | { type: "add_scope_field" }
@@ -721,9 +723,16 @@ export function reducer(
         id: nanoid(8),
         key: `${action.fieldType}_${lowerNanoid()}`
       } as Field;
+      const afterIdx = action.afterId
+        ? state.fields.findIndex((f) => f.id === action.afterId)
+        : -1;
+      const fields =
+        afterIdx >= 0
+          ? [...state.fields.slice(0, afterIdx + 1), newField, ...state.fields.slice(afterIdx + 1)]
+          : [...state.fields, newField];
       return {
         ...state,
-        fields: [...state.fields, newField],
+        fields,
         selectedFieldId: newField.id,
         dirty: true
       };

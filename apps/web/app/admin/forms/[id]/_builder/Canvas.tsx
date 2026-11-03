@@ -16,6 +16,10 @@ interface Props {
   onSelect: (id: string) => void;
   onDelete: (id: string) => void;
   onDuplicate: (id: string) => void;
+  /** Phone layout: up/down buttons replace the drag handle, because a drag
+   *  gesture on a touch screen fights the page scroll. */
+  narrow?: boolean;
+  onMove?: (id: string, direction: -1 | 1) => void;
 }
 
 export default function Canvas({
@@ -23,17 +27,27 @@ export default function Canvas({
   selectedFieldId,
   onSelect,
   onDelete,
-  onDuplicate
+  onDuplicate,
+  narrow = false,
+  onMove
 }: Props) {
   return (
-    <section className="min-h-[400px] flex-1 overflow-y-auto rounded-splash-md border border-gray-light bg-white px-4 py-3">
+    <section
+      className={
+        narrow
+          ? "min-w-0 rounded-splash-md border border-gray-light bg-white px-3 py-3"
+          : "min-h-[400px] min-w-0 flex-1 overflow-y-auto rounded-splash-md border border-gray-light bg-white px-4 py-3"
+      }
+    >
       {fields.length === 0 ? (
-        <div className="flex h-full min-h-[300px] items-center justify-center text-sm italic text-splash-navy/60">
-          Empty canvas. Add fields from the palette on the left.
+        <div className="flex h-full min-h-[200px] items-center justify-center text-center text-sm italic text-splash-navy/60">
+          {narrow
+            ? "No fields yet. Tap “+ Add field” to start."
+            : "Empty canvas. Add fields from the palette on the left."}
         </div>
       ) : (
         <ul className="space-y-3">
-          {fields.map((field) => (
+          {fields.map((field, i) => (
             <CanvasField
               key={field.id}
               field={field}
@@ -41,6 +55,9 @@ export default function Canvas({
               onSelect={() => onSelect(field.id)}
               onDelete={() => onDelete(field.id)}
               onDuplicate={() => onDuplicate(field.id)}
+              narrow={narrow}
+              onMoveUp={i > 0 && onMove ? () => onMove(field.id, -1) : undefined}
+              onMoveDown={i < fields.length - 1 && onMove ? () => onMove(field.id, 1) : undefined}
             />
           ))}
         </ul>
@@ -55,6 +72,10 @@ interface CanvasFieldProps {
   onSelect: () => void;
   onDelete: () => void;
   onDuplicate: () => void;
+  narrow: boolean;
+  /** Undefined = no field in that direction (first / last). */
+  onMoveUp?: () => void;
+  onMoveDown?: () => void;
 }
 
 function CanvasField({
@@ -62,10 +83,13 @@ function CanvasField({
   selected,
   onSelect,
   onDelete,
-  onDuplicate
+  onDuplicate,
+  narrow,
+  onMoveUp,
+  onMoveDown
 }: CanvasFieldProps) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
-    useSortable({ id: field.id });
+    useSortable({ id: field.id, disabled: narrow });
 
   const mod = getFieldModule(field.type);
   const Renderer = mod.Renderer;
@@ -80,6 +104,11 @@ function CanvasField({
     ? "border-splash-blue ring-2 ring-splash-blue/20"
     : "border-gray-light hover:border-splash-blue/40";
 
+  // Bigger hit areas on touch screens; the desktop icons stay compact.
+  const iconBtn = narrow
+    ? "rounded px-2.5 py-1.5 text-sm disabled:opacity-25"
+    : "rounded px-2 py-0.5 text-xs";
+
   return (
     <li
       ref={setNodeRef}
@@ -92,47 +121,80 @@ function CanvasField({
         }
       }}
       tabIndex={0}
-      className={`relative cursor-pointer rounded-splash-md border bg-white p-3 ${borderClass}`}
+      className={`cursor-pointer rounded-splash-md border bg-white p-3 ${borderClass}`}
     >
-      <div className="absolute right-2 top-2 flex items-center gap-1">
-        <button
-          type="button"
-          onClick={(e) => {
-            e.stopPropagation();
-            onDuplicate();
-          }}
-          aria-label="Duplicate field"
-          className="rounded px-2 py-0.5 text-xs text-splash-navy/70 hover:bg-sudsy-blue-soft/40"
-        >
-          ⧉
-        </button>
-        <button
-          type="button"
-          onClick={(e) => {
-            e.stopPropagation();
-            onDelete();
-          }}
-          aria-label="Delete field"
-          className="rounded px-2 py-0.5 text-xs text-racecar-red hover:bg-racecar-red/10"
-        >
-          ✕
-        </button>
-        <button
-          type="button"
-          aria-label="Drag to reorder"
-          className="cursor-grab rounded px-2 py-0.5 text-xs text-splash-navy/70 hover:bg-sudsy-blue-soft/40 active:cursor-grabbing"
-          {...attributes}
-          {...listeners}
-          onClick={(e) => e.stopPropagation()}
-        >
-          ⋮⋮
-        </button>
-      </div>
-      <div className="mb-1 flex items-center gap-2 text-[0.65rem] uppercase tracking-wide text-splash-navy/50">
-        <span>{mod.label}</span>
-        <span className="font-mono normal-case text-splash-navy/40">
-          {field.key}
-        </span>
+      {/* Header row: label on the left (wraps on narrow screens), controls on
+          the right. The controls used to be absolutely positioned over the
+          header and covered it at narrow widths. */}
+      <div className="mb-1 flex items-start justify-between gap-2">
+        <div className="flex min-w-0 flex-wrap items-center gap-x-2 text-[0.65rem] uppercase tracking-wide text-splash-navy/50">
+          <span>{mod.label}</span>
+          <span className="break-all font-mono normal-case text-splash-navy/40">{field.key}</span>
+        </div>
+        <div className="flex shrink-0 items-center gap-0.5">
+          {narrow ? (
+            <>
+              <button
+                type="button"
+                disabled={!onMoveUp}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onMoveUp?.();
+                }}
+                aria-label="Move field up"
+                className={`${iconBtn} text-splash-navy/70`}
+              >
+                ↑
+              </button>
+              <button
+                type="button"
+                disabled={!onMoveDown}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onMoveDown?.();
+                }}
+                aria-label="Move field down"
+                className={`${iconBtn} text-splash-navy/70`}
+              >
+                ↓
+              </button>
+            </>
+          ) : null}
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              onDuplicate();
+            }}
+            aria-label="Duplicate field"
+            className={`${iconBtn} text-splash-navy/70 hover:bg-sudsy-blue-soft/40`}
+          >
+            ⧉
+          </button>
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              onDelete();
+            }}
+            aria-label="Delete field"
+            className={`${iconBtn} text-racecar-red hover:bg-racecar-red/10`}
+          >
+            ✕
+          </button>
+          {narrow ? null : (
+            <button
+              type="button"
+              aria-label="Drag to reorder"
+              className={`${iconBtn} cursor-grab text-splash-navy/70 hover:bg-sudsy-blue-soft/40 active:cursor-grabbing`}
+              {...attributes}
+              {...listeners}
+              onClick={(e) => e.stopPropagation()}
+            >
+              ⋮⋮
+            </button>
+          )}
+        </div>
       </div>
       <Renderer field={field} />
     </li>

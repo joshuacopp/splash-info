@@ -545,10 +545,16 @@ export interface FormDetailResult {
   crdVisible: boolean;
   /** `forms.fill_audience`: who may fill out the form; [] = everyone signed in. */
   fillAudience: string[];
+  /** `forms.scope_location_field_key`. Null means publish will designate (or
+   *  inject) a site_number field; set means publish leaves the fields alone.
+   *  The builder's "no Site number field" banner keys off this so it only
+   *  warns when publish will actually add one. */
+  scopeLocationFieldKey: string | null;
 }
 
 interface FormDetailRow {
   access_tag: string | null;
+  scope_location_field_key: string | null;
   crd_visible: boolean | null;
   fill_audience: string[] | null;
   id: string;
@@ -603,7 +609,7 @@ export async function getFormDetail(
   formUrl.searchParams.set("id", `eq.${formId}`);
   formUrl.searchParams.set(
     "select",
-    "id,slug,title,description,audience,status,current_version_id,draft_version_id,notify_webhook,success_message,turnstile_required,access_tag,crd_visible,fill_audience"
+    "id,slug,title,description,audience,status,current_version_id,draft_version_id,notify_webhook,success_message,turnstile_required,access_tag,crd_visible,fill_audience,scope_location_field_key"
   );
   formUrl.searchParams.set("limit", "1");
 
@@ -644,6 +650,7 @@ export async function getFormDetail(
     accessTag: formRow.access_tag ?? null,
     crdVisible: formRow.crd_visible === true,
     fillAudience: Array.isArray(formRow.fill_audience) ? formRow.fill_audience : [],
+    scopeLocationFieldKey: formRow.scope_location_field_key?.trim() || null,
     currentVersionNumber: currentRow?.version_number ?? null,
     versions: versionRows.map((v) => ({
       id: v.id,

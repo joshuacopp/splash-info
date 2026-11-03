@@ -36,6 +36,8 @@ import Canvas from "./Canvas";
 import Inspector from "./Inspector";
 import Palette from "./Palette";
 import TopBar from "./TopBar";
+import { BottomSheet, useIsWide } from "./MobileSheet";
+import { getFieldModule } from "../_field-types";
 import {
   initialState,
   reducer,
@@ -87,6 +89,11 @@ export default function BuilderClient({
     "idle" | "publishing" | "done" | "error"
   >("idle");
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  // Phone layout (see MobileSheet.tsx): the palette and the field settings
+  // are bottom sheets instead of side columns.
+  const wide = useIsWide();
+  const [addSheetOpen, setAddSheetOpen] = useState(false);
+  const [settingsSheetOpen, setSettingsSheetOpen] = useState(false);
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
@@ -177,10 +184,24 @@ export default function BuilderClient({
   // operator can add it themselves (controlling label / placement) rather
   // than being surprised by an appended field after publishing. Public forms
   // are never scoped (anonymous fillers don't know site numbers).
+  //
+  // Publish only injects while forms.scope_location_field_key is still NULL
+  // (admin/forms.ts). Once it is set -- the price change form keeps it set
+  // and deliberately has no site field -- publish leaves the fields alone, so
+  // the warning would be false. An older worker that does not send the key
+  // (undefined) keeps the old behaviour.
   const needsScopeField =
     (state.formMeta.audience === "internal" ||
       state.formMeta.audience === "link-only") &&
-    !hasScopeField(state.fields);
+    !hasScopeField(state.fields) &&
+    (initial.scopeLocationFieldKey === undefined || initial.scopeLocationFieldKey === null);
+
+  function moveField(id: string, direction: -1 | 1) {
+    const from = state.fields.findIndex((f) => f.id === id);
+    const to = from + direction;
+    if (from < 0 || to < 0 || to >= state.fields.length) return;
+    dispatch({ type: "reorder_field", fields: arrayMove(state.fields, from, to) });
+  }
 
   const workflowTabDispatch: WorkflowTabDispatch = {
     onEnable: () => dispatch({ type: "workflow_enable" }),
@@ -266,7 +287,78 @@ export default function BuilderClient({
         </div>
       )}
 
-      {activeTab === "fields" && (
+      {activeTab === "fields" && !wide && (
+        <div className="flex flex-col gap-3">
+          <DndContext id="form-builder-fields-narrow" sensors={sensors}>
+          <SortableContext items={state.fields.map((f) => f.id)} strategy={verticalListSortingStrategy}>
+          <Canvas
+            narrow
+            fields={state.fields}
+            selectedFieldId={state.selectedFieldId}
+            onSelect={(id) => {
+              dispatch({ type: "select_field", fieldId: id });
+              setSettingsSheetOpen(true);
+            }}
+            onDelete={(id) => dispatch({ type: "remove_field", fieldId: id })}
+            onDuplicate={(id) => dispatch({ type: "duplicate_field", fieldId: id })}
+            onMove={moveField}
+          />
+          </SortableContext>
+          </DndContext>
+          {/* Sticky so it is reachable from anywhere in a long form. */}
+          <div className="sticky bottom-3 z-20 flex justify-center pb-[env(safe-area-inset-bottom,0px)]">
+            <button
+              type="button"
+              onClick={() => setAddSheetOpen(true)}
+              className="rounded-full bg-splash-blue px-6 py-3 text-sm font-bold text-white shadow-splash-btn"
+            >
+              + Add field
+            </button>
+          </div>
+
+          <BottomSheet open={addSheetOpen} title="Add a field" doneLabel="Close" onClose={() => setAddSheetOpen(false)}>
+            <p className="mb-3 text-xs text-splash-navy/60">
+              {selectedField
+                ? "Goes right after the field you have selected."
+                : "Goes at the end of the form."}
+            </p>
+            <Palette
+              layout="sheet"
+              onAdd={(fieldType) => {
+                dispatch({ type: "add_field", fieldType, afterId: state.selectedFieldId ?? undefined });
+                setAddSheetOpen(false);
+                setSettingsSheetOpen(true);
+              }}
+              onAddScopeField={() => {
+                dispatch({ type: "add_scope_field" });
+                setAddSheetOpen(false);
+                setSettingsSheetOpen(true);
+              }}
+            />
+          </BottomSheet>
+
+          <BottomSheet
+            open={settingsSheetOpen && !!selectedField}
+            title={selectedField ? `${getFieldModule(selectedField.type).label} settings` : "Field settings"}
+            onClose={() => setSettingsSheetOpen(false)}
+          >
+            <Inspector
+              layout="sheet"
+              selectedField={selectedField}
+              allFields={state.fields}
+              lookupSources={lookupSources}
+              formId={formId}
+              onFieldUpdate={(patch) => {
+                if (selectedField) {
+                  dispatch({ type: "update_field_config", fieldId: selectedField.id, patch });
+                }
+              }}
+            />
+          </BottomSheet>
+        </div>
+      )}
+
+      {activeTab === "fields" && wide && (
         <div
           className="flex gap-4"
           style={{ minHeight: "calc(100vh - 320px)" }}
@@ -278,6 +370,9 @@ export default function BuilderClient({
             onAddScopeField={() => dispatch({ type: "add_scope_field" })}
           />
           <DndContext
+            // Fixed id: dnd-kit's generated accessibility ids differ between
+            // the server render and the browser otherwise (hydration warning).
+            id="form-builder-fields"
             sensors={sensors}
             collisionDetection={closestCenter}
             onDragEnd={handleDragEnd}

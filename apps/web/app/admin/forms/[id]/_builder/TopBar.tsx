@@ -51,16 +51,18 @@ export default function TopBar({
           : "Publish";
 
   return (
-    <header className="flex flex-wrap items-center justify-between gap-3 border-b border-gray-light pb-3">
-      <div className="flex flex-1 items-center gap-3">
+    // Sticky below lg so Save / Publish stay in reach while scrolling a long
+    // form on a phone; static on desktop, as before.
+    <header className="sticky top-0 z-30 -mx-4 flex flex-wrap items-center justify-between gap-x-3 gap-y-2 border-b border-gray-light bg-white px-4 py-2 lg:static lg:mx-0 lg:bg-transparent lg:px-0 lg:pb-3 lg:pt-0">
+      <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-3 gap-y-1">
         <input
           type="text"
           value={formMeta.title}
           onChange={(e) => onTitleChange(e.currentTarget.value)}
           placeholder="Untitled form"
-          className="min-w-[240px] flex-1 rounded-splash-sm border border-transparent bg-transparent px-2 py-1 text-lg font-bold text-splash-navy focus:border-gray-light focus:bg-white"
+          className="min-w-0 basis-full rounded-splash-sm border border-transparent bg-transparent px-2 py-1 text-base sm:basis-auto sm:flex-1 font-bold text-splash-navy focus:border-gray-light focus:bg-white sm:min-w-[240px] sm:text-lg"
         />
-        <code className="font-mono text-xs text-splash-navy/60">
+        <code className="hidden font-mono text-xs text-splash-navy/60 sm:inline">
           /forms/{formMeta.slug}
         </code>
         <StatusBadge status={status} versionNumber={currentVersionNumber} />
@@ -70,7 +72,7 @@ export default function TopBar({
           </span>
         )}
       </div>
-      <div className="flex items-center gap-2">
+      <div className="flex flex-wrap items-center justify-end gap-2">
         {errorMsg && (
           <span
             role="alert"

@@ -52,7 +52,7 @@ export default function AddStepPopover({
       {open && (
         <div
           role="menu"
-          className="absolute left-1/2 z-20 mt-1 w-80 -translate-x-1/2 rounded-splash-md border border-gray-light bg-white p-1 shadow-lg"
+          className="absolute left-1/2 z-20 mt-1 w-80 max-w-[calc(100vw-2rem)] -translate-x-1/2 rounded-splash-md border border-gray-light bg-white p-1 shadow-lg"
         >
           <button
             type="button"

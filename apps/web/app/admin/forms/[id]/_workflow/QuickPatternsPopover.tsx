@@ -86,7 +86,7 @@ export default function QuickPatternsPopover({ onApply }: Props) {
       {open && (
         <div
           role="menu"
-          className="absolute left-0 z-20 mt-1 w-96 rounded-splash-md border border-gray-light bg-white p-1 shadow-lg"
+          className="absolute left-0 z-20 mt-1 w-96 max-w-[calc(100vw-2rem)] rounded-splash-md border border-gray-light bg-white p-1 shadow-lg"
         >
           {PATTERNS.map((p) => (
             <button
