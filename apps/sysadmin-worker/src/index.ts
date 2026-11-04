@@ -2108,10 +2108,33 @@ async function handleGetUserPermissions(env: Env, userId: string): Promise<Respo
     console.error("[sysadmin] form access read failed", err);
   }
 
+  // Last login comes from the Auth Admin API rather than auth_unified: the
+  // view is in `public`, and widening it with auth.users timestamps would
+  // expose them to anything else that reads the view. Fail-soft like the
+  // form access read -- null means "unknown", which the card shows as such.
+  //
+  // last_sign_in_at moves on a PASSWORD login only. The sliding-session
+  // refresh (supabaseRefreshSession) does not touch it, so a user who stays
+  // signed in shows the last time they typed a password, not last activity.
+  let lastSignInAt: string | null = null;
+  let accountCreatedAt: string | null = null;
+  let signInKnown = false;
+  try {
+    const authUser = await adminGetUser(env, userId);
+    lastSignInAt = authUser.last_sign_in_at ?? null;
+    accountCreatedAt = authUser.created_at ?? null;
+    signInKnown = true;
+  } catch (err) {
+    console.error("[sysadmin] last sign-in read failed", err);
+  }
+
   return json({
     ...row,
     form_access_tags: formAccessTags,
-    grantable_form_access_tags: grantableFormAccessTags
+    grantable_form_access_tags: grantableFormAccessTags,
+    last_sign_in_at: lastSignInAt,
+    account_created_at: accountCreatedAt,
+    sign_in_known: signInKnown
   });
 }
 

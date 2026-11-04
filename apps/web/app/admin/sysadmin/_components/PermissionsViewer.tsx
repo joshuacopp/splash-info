@@ -24,6 +24,7 @@ import {
   viewerRemoveLocationAction,
   viewerRevokeToolAction
 } from "../actions";
+import { formatEst } from "../../jotform/_lib/format-est";
 
 // Structural copy of the server actions' return shape. Kept local because a
 // "use server" module can't export non-function values (see ../actions.ts).
@@ -53,6 +54,11 @@ interface Permissions {
   dc_role: string | null;
   dc_locations: string[];
   promo_role: string | null;
+  /** From the Auth Admin API, not auth_unified. Null = never signed in. */
+  last_sign_in_at: string | null;
+  account_created_at: string | null;
+  /** False when the worker couldn't read the auth record (show "unknown"). */
+  sign_in_known: boolean;
 }
 
 /** auth_unified array columns can come back as a real array or a JSON string. */
@@ -81,7 +87,11 @@ function normalize(raw: Record<string, unknown>): Permissions {
     tools: parseArr(raw.tools),
     dc_role: typeof raw.dc_role === "string" ? raw.dc_role : null,
     dc_locations: parseArr(raw.dc_locations),
-    promo_role: typeof raw.promo_role === "string" ? raw.promo_role : null
+    promo_role: typeof raw.promo_role === "string" ? raw.promo_role : null,
+    last_sign_in_at: typeof raw.last_sign_in_at === "string" ? raw.last_sign_in_at : null,
+    account_created_at:
+      typeof raw.account_created_at === "string" ? raw.account_created_at : null,
+    sign_in_known: raw.sign_in_known === true
   };
 }
 
@@ -465,6 +475,7 @@ function PermissionsPanel({
         ) : null}
         <span className="font-mono text-[10px] text-splash-navy/40">{perms.user_id}</span>
       </div>
+      <LastLogin perms={perms} />
 
       {/* Pricing & schedule */}
       <Section title="Pricing & schedule locations">
@@ -560,6 +571,44 @@ function PermissionsPanel({
         trigger may be re-added on the next locations/pricing edit. Tool and
         claims changes take effect on the user&rsquo;s next sign-in.
       </p>
+    </div>
+  );
+}
+
+/** Last password login. The sliding-session refresh doesn't update it, so
+ *  the hint says so -- otherwise a long-lived session reads as inactivity. */
+function LastLogin({ perms }: { perms: Permissions }) {
+  const created = perms.account_created_at ? formatEst(perms.account_created_at).absolute : "";
+  let value: React.ReactNode;
+  if (!perms.sign_in_known) {
+    value = <span className="text-splash-navy/50">unknown (couldn&rsquo;t read the sign-in record)</span>;
+  } else if (!perms.last_sign_in_at) {
+    value = (
+      <span className="inline-flex rounded-full border border-gray-light bg-white px-2 py-0.5 text-[0.6875rem] font-semibold text-splash-navy/70">
+        Never signed in
+      </span>
+    );
+  } else {
+    const f = formatEst(perms.last_sign_in_at);
+    value = (
+      <span>
+        <span className="font-semibold">{f.absolute}</span>
+        {f.relative && f.relative !== f.absolute ? (
+          <span className="text-splash-navy/60"> &middot; {f.relative}</span>
+        ) : null}
+      </span>
+    );
+  }
+  return (
+    <div className="-mt-3 text-sm text-splash-navy">
+      <span className="text-splash-navy/70">Last login: </span>
+      {value}
+      {created ? (
+        <span className="text-xs text-splash-navy/50"> &middot; account created {created}</span>
+      ) : null}
+      <div className="text-xs text-splash-navy/50">
+        Updates when they sign in with a password; staying signed in doesn&rsquo;t change it.
+      </div>
     </div>
   );
 }
