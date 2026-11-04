@@ -112,12 +112,15 @@ export async function escalateAction(_prev: ActionResult | null, fd: FormData): 
 
 export async function mxRequestAction(_prev: ActionResult | null, fd: FormData): Promise<ActionResult> {
   const id = s(fd, "id");
-  const r = await itPost<{ mx_request_id: number }>(`/workorders/api/it-issues/${encodeURIComponent(id)}/mx-request`, {
-    actor_name: s(fd, "actor_name")
-  });
+  const r = await itPost<{ mx_request_id: number; photos_failed?: number }>(
+    `/workorders/api/it-issues/${encodeURIComponent(id)}/mx-request`,
+    { actor_name: s(fd, "actor_name") }
+  );
   if (!r.ok) return { ok: false, error: r.error };
   refresh(id);
-  return { ok: true, message: `MaintainX request #${r.data.mx_request_id} created.` };
+  const failed = r.data.photos_failed ?? 0;
+  const warn = failed ? ` ${failed} photo${failed === 1 ? "" : "s"} could not be attached; add them in MaintainX.` : "";
+  return { ok: true, message: `MaintainX request #${r.data.mx_request_id} created.${warn}` };
 }
 
 /** The public email-link page. No session is forwarded: the token decides. */

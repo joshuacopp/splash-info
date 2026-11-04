@@ -3,7 +3,15 @@
 // old resolution, a renamed HTML file accepted as a "photo".
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { applyChange, mxBlockedReason, recipientsOf, type IssueRow, type ItIssuesEnv } from "./it-issues";
+import {
+  applyChange,
+  buildMxDescription,
+  mxBlockedReason,
+  photosForMx,
+  recipientsOf,
+  type IssueRow,
+  type ItIssuesEnv
+} from "./it-issues";
 import { sniffImage } from "./it-issues-photos";
 
 const ENV = {
@@ -137,5 +145,33 @@ describe("recipientsOf", () => {
   it("splits, trims, lowercases and de-duplicates", () => {
     expect(recipientsOf(" A@x.com, a@x.com ,b@x.com,")).toEqual(["a@x.com", "b@x.com"]);
     expect(recipientsOf(undefined)).toEqual([]);
+  });
+});
+
+describe("buildMxDescription", () => {
+  it("includes first-reported date and leaves out a missing ticket number", () => {
+    const d = buildMxDescription(issue());
+    expect(d).toContain("First reported: Nov 4, 2026");
+    expect(d).toContain("IT issue: IT-7");
+    expect(d).not.toContain("IT ticket #");
+  });
+  it("includes the repeat history and the IT ticket number when present", () => {
+    const d = buildMxDescription(
+      issue({ occurrence_count: 3, last_occurred_at: "2026-11-06T15:00:00Z", it_ticket_no: "INC-99" })
+    );
+    expect(d).toContain("Happened 3 times (first Nov 4, 2026, last Nov 6, 2026)");
+    expect(d).toContain("IT ticket #: INC-99");
+  });
+});
+
+describe("photosForMx", () => {
+  const p = (n: number) => ({ file: `${n}.jpg`, mime: "image/jpeg", size: 1, name: `${n}` });
+  it("takes timeline photos in order, capped at 5", () => {
+    const got = photosForMx([
+      { details: { photos: [p(1), p(2)] } },
+      { details: {} },
+      { details: { photos: [p(3), p(4), p(5), p(6)] } }
+    ]);
+    expect(got.map((x) => x.file)).toEqual(["1.jpg", "2.jpg", "3.jpg", "4.jpg", "5.jpg"]);
   });
 });

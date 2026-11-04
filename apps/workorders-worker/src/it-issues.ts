@@ -28,9 +28,9 @@
 
 import type { Session } from "@splash/auth";
 import { isOriginAllowed, json, jsonError } from "@splash/http";
-import { createMaintainXWorkRequest } from "@splash/maintainx";
+import { createMaintainXWorkRequest, uploadMaintainXWorkRequestFile } from "@splash/maintainx";
 import { sendEscalationEmail, sendSiteUpdateEmail } from "./it-issues-email.js";
-import { MAX_PHOTOS_PER_ACTION, servePhoto, storePhotos, type IssuePhoto } from "./it-issues-photos.js";
+import { MAX_PHOTOS_PER_ACTION, photoKey, servePhoto, storePhotos, type IssuePhoto } from "./it-issues-photos.js";
 
 export interface ItIssuesEnv {
   SUPABASE_URL: string;
@@ -661,7 +661,9 @@ export async function handleItIssuesRequest(
       const blocked = mxBlockedReason(issue);
       if (blocked) return jsonError(400, blocked);
       const made = await createMxRequest(env, issue, site!, session, actor);
-      return made.ok ? json({ ok: true, mx_request_id: made.id }) : jsonError(502, made.error);
+      return made.ok
+        ? json({ ok: true, mx_request_id: made.id, photos_failed: made.photosFailed })
+        : jsonError(502, made.error);
     }
 
     return jsonError(404, "not found");
@@ -784,30 +786,81 @@ export function deviceLabel(issue: Pick<IssueRow, "device" | "device_unit">): st
   return issue.device_unit ? `${issue.device} ${issue.device_unit}` : issue.device;
 }
 
-async function createMxRequest(
-  env: ItIssuesEnv,
-  issue: IssueRow,
-  site: SiteRow,
-  session: Session,
-  actor: Actor
-): Promise<{ ok: true; id: number } | { ok: false; error: string }> {
-  if (!env.MAINTAINX_API_KEY) return { ok: false, error: "MaintainX is not configured." };
-  if (!site.maintainx_id) return { ok: false, error: "This site is not linked to a MaintainX location." };
+function easternDay(iso: string): string {
+  return new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/New_York",
+    month: "short",
+    day: "numeric",
+    year: "numeric"
+  }).format(new Date(iso));
+}
 
-  const description = [
+/** The MaintainX request description. No link back to the issue, by operator
+ *  decision: the IT-{ref} line is the cross-reference. */
+export function buildMxDescription(
+  issue: Pick<
+    IssueRow,
+    | "problem"
+    | "error_text"
+    | "customer_impact"
+    | "troubleshooting"
+    | "occurrence_count"
+    | "first_reported_at"
+    | "last_occurred_at"
+    | "it_ticket_no"
+    | "reporter_name"
+    | "reporter_phone"
+    | "ref_no"
+  >
+): string {
+  const history =
+    issue.occurrence_count > 1
+      ? `Happened ${issue.occurrence_count} times (first ${easternDay(issue.first_reported_at)}, last ${easternDay(issue.last_occurred_at)})`
+      : `First reported: ${easternDay(issue.first_reported_at)}`;
+  return [
     issue.problem,
     issue.error_text ? `Error: ${issue.error_text}` : "",
     `Customer impact: ${IMPACT_LABEL[issue.customer_impact]}`,
+    history,
     issue.troubleshooting ? `Already tried: ${issue.troubleshooting}` : "",
     "",
     "---",
     `Reported by: ${issue.reporter_name}`,
     `Phone: ${issue.reporter_phone}`,
     `IT issue: IT-${issue.ref_no}`,
+    issue.it_ticket_no ? `IT ticket #: ${issue.it_ticket_no}` : "",
     `Submitted via: Splash IT Issues`
   ]
     .filter((l, i, a) => l !== "" || (i > 0 && a[i - 1] !== ""))
     .join("\n");
+}
+
+/**
+ * The photos to send with a MaintainX request: every photo on the timeline in
+ * the order they were added, capped at MaintainX's 5 (the /workorders form
+ * cap). The first becomes the request's thumbnail, so the original report's
+ * picture leads.
+ */
+export function photosForMx(events: Pick<EventRow, "details">[]): IssuePhoto[] {
+  const out: IssuePhoto[] = [];
+  for (const ev of events) {
+    const photos = (ev.details as { photos?: IssuePhoto[] } | null)?.photos;
+    if (Array.isArray(photos)) out.push(...photos);
+  }
+  return out.slice(0, MAX_PHOTOS_PER_ACTION);
+}
+
+async function createMxRequest(
+  env: ItIssuesEnv,
+  issue: IssueRow,
+  site: SiteRow,
+  session: Session,
+  actor: Actor
+): Promise<{ ok: true; id: number; photosFailed: number } | { ok: false; error: string }> {
+  if (!env.MAINTAINX_API_KEY) return { ok: false, error: "MaintainX is not configured." };
+  if (!site.maintainx_id) return { ok: false, error: "This site is not linked to a MaintainX location." };
+
+  const description = buildMxDescription(issue);
 
   const ctl = new AbortController();
   const timer = setTimeout(() => ctl.abort(), 15_000);
@@ -830,7 +883,45 @@ async function createMxRequest(
     console.error(`[it-issues] MaintainX request for IT-${issue.ref_no} failed: ${result.status} ${result.error}`);
     return { ok: false, error: `MaintainX request could not be created (${result.error ?? "upstream error"}).` };
   }
-  await patchIssue(env, issue.id, { mx_request_id: result.requestId });
+  const requestId = result.requestId;
+  // Link the request before uploading, so a slow or failed upload can never
+  // let a second click create a duplicate request.
+  await patchIssue(env, issue.id, { mx_request_id: requestId });
+
+  // Photos are best-effort: the request exists either way (same posture as
+  // the /workorders New Request form).
+  const photos = photosForMx(await getEvents(env, issue.id));
+  let photosFailed = 0;
+  for (const [i, p] of photos.entries()) {
+    const obj = env.WORKORDER_FILES ? await env.WORKORDER_FILES.get(photoKey(issue.id, p.file)) : null;
+    if (!obj) {
+      photosFailed += 1;
+      continue;
+    }
+    const upCtl = new AbortController();
+    const upTimer = setTimeout(() => upCtl.abort(), 15_000);
+    try {
+      const up = await uploadMaintainXWorkRequestFile({
+        requestId,
+        filename: `IT-${issue.ref_no}-${i + 1}.${p.file.split(".").pop()}`,
+        body: await obj.arrayBuffer(),
+        apiKey: env.MAINTAINX_API_KEY,
+        baseUrl: env.MAINTAINX_BASE_URL,
+        endpoint: i === 0 ? "thumbnail" : "attachment",
+        signal: upCtl.signal
+      });
+      if (!up.ok) {
+        photosFailed += 1;
+        console.error(`[it-issues] MaintainX request ${requestId} photo ${i} failed: ${up.status} ${up.error}`);
+      }
+    } catch (err) {
+      photosFailed += 1;
+      console.error(`[it-issues] MaintainX request ${requestId} photo ${i} threw`, err);
+    } finally {
+      clearTimeout(upTimer);
+    }
+  }
+
   await addEvent(env, {
     issue_id: issue.id,
     kind: "mx_request",
@@ -838,9 +929,13 @@ async function createMxRequest(
     actor_email: actor.email,
     via: "app",
     note: null,
-    details: { mx_request_id: result.requestId }
+    details: {
+      mx_request_id: requestId,
+      photos_sent: photos.length - photosFailed,
+      ...(photosFailed ? { photos_failed: photosFailed } : {})
+    }
   });
-  return { ok: true, id: result.requestId };
+  return { ok: true, id: requestId, photosFailed };
 }
 
 /* ============================================================
