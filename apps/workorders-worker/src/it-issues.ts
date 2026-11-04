@@ -30,6 +30,7 @@ import type { Session } from "@splash/auth";
 import { isOriginAllowed, json, jsonError } from "@splash/http";
 import { createMaintainXWorkRequest } from "@splash/maintainx";
 import { sendEscalationEmail } from "./it-issues-email.js";
+import { MAX_PHOTOS_PER_ACTION, servePhoto, storePhotos, type IssuePhoto } from "./it-issues-photos.js";
 
 export interface ItIssuesEnv {
   SUPABASE_URL: string;
@@ -41,6 +42,8 @@ export interface ItIssuesEnv {
   IT_ISSUES_REPORT_TO?: string;
   /** Comma-separated. "Send to IT support now" recipients. */
   IT_ISSUES_ESCALATE_TO?: string;
+  /** Photos live here under it-issues/ (it-issues-photos.ts). */
+  WORKORDER_FILES?: R2Bucket;
 }
 
 /* ============================================================
@@ -251,6 +254,34 @@ async function readJson(request: Request): Promise<Body | null> {
   }
 }
 
+/**
+ * JSON, or multipart when photos ride along. Multipart text fields become the
+ * same Body the JSON path produces, and every non-empty `photo` part is a file.
+ */
+async function readBody(request: Request): Promise<{ body: Body; files: File[] } | null> {
+  if (!(request.headers.get("content-type") ?? "").includes("multipart/form-data")) {
+    const body = await readJson(request);
+    return body ? { body, files: [] } : null;
+  }
+  let form: FormData;
+  try {
+    form = await request.formData();
+  } catch {
+    return null;
+  }
+  const body: Body = {};
+  form.forEach((v, k) => {
+    if (typeof v === "string") body[k] = v;
+  });
+  const files = form.getAll("photo").filter((v): v is File => typeof v !== "string" && v.size > 0);
+  if (files.length > MAX_PHOTOS_PER_ACTION) throw new InputError(`Up to ${MAX_PHOTOS_PER_ACTION} photos at a time.`);
+  return { body, files };
+}
+
+function photoWarning(rejected: string[]): string | null {
+  return rejected.length ? `Not saved (not an image, or too large): ${rejected.join(", ")}` : null;
+}
+
 /** Trimmed string, null when blank. Throws a user-facing message past `max`. */
 function str(body: Body, key: string, max: number, label: string): string | null {
   const v = body[key];
@@ -295,6 +326,8 @@ export interface Change {
   it_ticket_no?: string | null;
   note?: string | null;
   resolution?: string | null;
+  /** Already stored; recorded on the note event. */
+  photos?: IssuePhoto[];
 }
 
 /**
@@ -341,7 +374,16 @@ export async function applyChange(
     }
   }
 
-  if (change.note) events.push({ ...base, kind: "note", note: change.note });
+  // Photos sent with an update hang off the note -- a photo with no words is
+  // still a note on the timeline.
+  if (change.note || change.photos?.length) {
+    events.push({
+      ...base,
+      kind: "note",
+      note: change.note ?? null,
+      details: change.photos?.length ? { photos: change.photos } : {}
+    });
+  }
 
   if (events.length === 0) return { ok: false, error: "Nothing to save -- nothing was changed." };
 
@@ -371,14 +413,18 @@ async function recordOccurrence(
   issue: IssueRow,
   actor: Actor,
   note: string | null,
-  errorText: string | null
+  errorText: string | null,
+  photos: IssuePhoto[] = []
 ): Promise<IssueRow | null> {
   const base = { issue_id: issue.id, actor_name: actor.name, actor_email: actor.email, via: actor.via };
   const reopening = issue.status === "resolved";
   if (reopening) {
     await addEvent(env, { ...base, kind: "reopened", note: null, details: { to: "open", previous_resolution: issue.resolution } });
   }
-  await addEvent(env, { ...base, kind: "occurrence", note, details: errorText ? { error_text: errorText } : {} });
+  const details: Record<string, unknown> = {};
+  if (errorText) details.error_text = errorText;
+  if (photos.length) details.photos = photos;
+  await addEvent(env, { ...base, kind: "occurrence", note, details });
 
   const counted = await pg<unknown[]>(env, "GET", `it_issue_events?issue_id=eq.${issue.id}&kind=eq.occurrence&select=id`, undefined, {
     Prefer: "count=exact",
@@ -483,7 +529,7 @@ export async function handleItIssuesRequest(
 ): Promise<Response> {
   try {
     const rest = path.replace(/^workorders\/api\/it-issues\/?/, "");
-    const [id, action] = rest.split("/");
+    const [id, action, file] = rest.split("/");
 
     if (request.method !== "GET" && !isOriginAllowed(request)) return jsonError(403, "bad origin");
 
@@ -496,6 +542,8 @@ export async function handleItIssuesRequest(
     const loaded = await loadAccessibleIssue(env, session, id);
     if (loaded instanceof Response) return loaded;
     const { issue, site } = loaded;
+
+    if (action === "photo" && file && request.method === "GET") return servePhoto(env, issue.id, file);
 
     if (!action && request.method === "GET") {
       const events = await getEvents(env, issue.id);
@@ -513,20 +561,34 @@ export async function handleItIssuesRequest(
     }
     if (request.method !== "POST") return jsonError(405, "method not allowed");
 
-    const body = await readJson(request);
-    if (!body) return jsonError(400, "Send the form as JSON.");
+    const parsed = await readBody(request);
+    if (!parsed) return jsonError(400, "Could not read the form.");
+    const { body, files } = parsed;
     const actor = actorFromBody(body, session);
+    // Validate the text before storing anything, so a rejected form leaves no
+    // orphan photos behind.
+    const note = str(body, "note", LIMITS.text, "Note");
+    const stored =
+      (action === "occurrence" || action === "update") && files.length
+        ? await storePhotos(env, issue.id, files)
+        : { photos: [], rejected: [] as string[] };
 
     if (action === "occurrence") {
       const updated = await recordOccurrence(
         env,
         issue,
         actor,
-        str(body, "note", LIMITS.text, "Note"),
-        str(body, "error_text", LIMITS.error, "Error message")
+        note,
+        str(body, "error_text", LIMITS.error, "Error message"),
+        stored.photos
       );
       if (!updated) return jsonError(500, "Could not record it. Try again.");
-      return json({ ok: true, issue: updated, reopened: issue.status === "resolved" });
+      return json({
+        ok: true,
+        issue: updated,
+        reopened: issue.status === "resolved",
+        photo_warning: photoWarning(stored.rejected)
+      });
     }
 
     if (action === "update") {
@@ -537,12 +599,15 @@ export async function handleItIssuesRequest(
           status: oneOf(body, "status", STATUSES, "Status"),
           priority: oneOf(body, "priority", PRIORITIES, "Priority"),
           it_ticket_no: str(body, "it_ticket_no", LIMITS.ticket, "IT ticket #"),
-          note: str(body, "note", LIMITS.text, "Note"),
-          resolution: str(body, "resolution", LIMITS.text, "Resolution")
+          note,
+          resolution: str(body, "resolution", LIMITS.text, "Resolution"),
+          photos: stored.photos
         },
         actor
       );
-      return result.ok ? json({ ok: true, issue: result.issue }) : jsonError(400, result.error);
+      return result.ok
+        ? json({ ok: true, issue: result.issue, photo_warning: photoWarning(stored.rejected) })
+        : jsonError(400, result.error);
     }
 
     if (action === "escalate") {
@@ -612,8 +677,9 @@ async function listIssues(env: ItIssuesEnv, session: Session, url: URL): Promise
 }
 
 async function createIssue(request: Request, env: ItIssuesEnv, session: Session): Promise<Response> {
-  const body = await readJson(request);
-  if (!body) return jsonError(400, "Send the form as JSON.");
+  const parsed = await readBody(request);
+  if (!parsed) return jsonError(400, "Could not read the form.");
+  const { body, files } = parsed;
 
   const { sites } = await accessibleSites(env, session);
   const site = siteFor(sites, Number(body.location_id));
@@ -647,6 +713,9 @@ async function createIssue(request: Request, env: ItIssuesEnv, session: Session)
   const issue = ins.data?.[0];
   if (!issue) return jsonError(500, "Could not save the issue. Try again.");
 
+  // Photos need the issue id for their key, so they are stored after the
+  // issue row and recorded on the "created" event.
+  const stored = await storePhotos(env, issue.id, files);
   const actor: Actor = { name: row.reporter_name, email: row.created_by_email || null, via: "app" };
   await addEvent(env, {
     issue_id: issue.id,
@@ -655,10 +724,10 @@ async function createIssue(request: Request, env: ItIssuesEnv, session: Session)
     actor_email: actor.email,
     via: "app",
     note: null,
-    details: { phone: row.reporter_phone }
+    details: stored.photos.length ? { phone: row.reporter_phone, photos: stored.photos } : { phone: row.reporter_phone }
   });
 
-  return json({ ok: true, id: issue.id, ref_no: issue.ref_no }, 201);
+  return json({ ok: true, id: issue.id, ref_no: issue.ref_no, photo_warning: photoWarning(stored.rejected) }, 201);
 }
 
 /**
@@ -767,12 +836,22 @@ function publicView(issue: IssueRow, events: EventRow[]) {
   };
 }
 
-export async function handleItIssueLink(request: Request, env: ItIssuesEnv, token: string): Promise<Response> {
+export async function handleItIssueLink(
+  request: Request,
+  env: ItIssuesEnv,
+  token: string,
+  photoFile?: string
+): Promise<Response> {
   try {
     const found = await resolveLink(env, token);
     // Bad token, expired and unknown all look the same.
     if (!found) return jsonError(404, "This link has expired or is not valid.");
     const { issue } = found;
+
+    // A photo on this link's issue. Not counted as an open.
+    if (photoFile) {
+      return request.method === "GET" ? servePhoto(env, issue.id, photoFile) : jsonError(405, "method not allowed");
+    }
 
     if (request.method === "GET") {
       // Opening never spends the link; the count is just an audit trail.

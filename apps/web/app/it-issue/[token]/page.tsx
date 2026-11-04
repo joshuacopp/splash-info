@@ -45,7 +45,7 @@ export default async function ItIssueLinkPage({ params }: { params: Promise<{ to
       <div className="grid gap-5 lg:grid-cols-[1fr_360px]">
         <div className="space-y-5">
           <IssueDetails issue={issue} />
-          <IssueTimeline events={events} />
+          <IssueTimeline events={events} photoBase={`/it-issue/${token}/photo`} />
         </div>
 
         <div className="space-y-5">

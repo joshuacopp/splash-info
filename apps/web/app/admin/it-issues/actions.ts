@@ -23,8 +23,27 @@ function refresh(id?: string) {
   if (id) revalidatePath(`/admin/it-issues/${id}`);
 }
 
+/**
+ * The worker body: JSON normally, multipart when the form carried photos.
+ * Undefined fields are dropped either way, so "absent" still means "no change".
+ */
+function withPhotos(fd: FormData, fields: Record<string, string | number | undefined>): FormData | Record<string, unknown> {
+  const photos = fd.getAll("photo").filter((v): v is File => typeof v !== "string" && v.size > 0);
+  if (photos.length === 0) return fields;
+  const out = new FormData();
+  for (const [k, v] of Object.entries(fields)) if (v !== undefined) out.set(k, String(v));
+  for (const p of photos) out.append("photo", p, p.name);
+  return out;
+}
+
+function withWarning(message: string, warning: string | null | undefined): string {
+  return warning ? `${message} ${warning}` : message;
+}
+
+type PhotoReply = { photo_warning?: string | null };
+
 export async function createIssueAction(_prev: ActionResult | null, fd: FormData): Promise<ActionResult> {
-  const r = await itPost<{ id: string; ref_no: number }>("/workorders/api/it-issues", {
+  const r = await itPost<{ id: string; ref_no: number } & PhotoReply>("/workorders/api/it-issues", withPhotos(fd, {
     location_id: Number(s(fd, "location_id")),
     device: s(fd, "device"),
     device_unit: opt(fd, "device_unit"),
@@ -36,37 +55,48 @@ export async function createIssueAction(_prev: ActionResult | null, fd: FormData
     reporter_name: s(fd, "reporter_name"),
     reporter_phone: s(fd, "reporter_phone"),
     it_ticket_no: opt(fd, "it_ticket_no")
-  });
+  }));
   if (!r.ok) return { ok: false, error: r.error };
   refresh(r.data.id);
-  return { ok: true, message: `Logged as IT-${r.data.ref_no}.`, redirectTo: `/admin/it-issues/${r.data.id}` };
+  // The page is about to change, so a photo warning is carried on the URL.
+  const qs = r.data.photo_warning ? `?photo_warning=${encodeURIComponent(r.data.photo_warning)}` : "";
+  return { ok: true, message: `Logged as IT-${r.data.ref_no}.`, redirectTo: `/admin/it-issues/${r.data.id}${qs}` };
 }
 
 export async function occurrenceAction(_prev: ActionResult | null, fd: FormData): Promise<ActionResult> {
   const id = s(fd, "id");
-  const r = await itPost<{ reopened: boolean }>(`/workorders/api/it-issues/${encodeURIComponent(id)}/occurrence`, {
-    actor_name: s(fd, "actor_name"),
-    note: opt(fd, "note"),
-    error_text: opt(fd, "error_text")
-  });
+  const r = await itPost<{ reopened: boolean } & PhotoReply>(
+    `/workorders/api/it-issues/${encodeURIComponent(id)}/occurrence`,
+    withPhotos(fd, {
+      actor_name: s(fd, "actor_name"),
+      note: opt(fd, "note"),
+      error_text: opt(fd, "error_text")
+    })
+  );
   if (!r.ok) return { ok: false, error: r.error };
   refresh(id);
-  return { ok: true, message: r.data.reopened ? "Logged, and the issue was reopened." : "Logged." };
+  return {
+    ok: true,
+    message: withWarning(r.data.reopened ? "Logged, and the issue was reopened." : "Logged.", r.data.photo_warning)
+  };
 }
 
 export async function updateIssueAction(_prev: ActionResult | null, fd: FormData): Promise<ActionResult> {
   const id = s(fd, "id");
-  const r = await itPost(`/workorders/api/it-issues/${encodeURIComponent(id)}/update`, {
-    actor_name: s(fd, "actor_name"),
-    status: opt(fd, "status"),
-    priority: opt(fd, "priority"),
-    it_ticket_no: opt(fd, "it_ticket_no"),
-    note: opt(fd, "note"),
-    resolution: opt(fd, "resolution")
-  });
+  const r = await itPost<PhotoReply>(
+    `/workorders/api/it-issues/${encodeURIComponent(id)}/update`,
+    withPhotos(fd, {
+      actor_name: s(fd, "actor_name"),
+      status: opt(fd, "status"),
+      priority: opt(fd, "priority"),
+      it_ticket_no: opt(fd, "it_ticket_no"),
+      note: opt(fd, "note"),
+      resolution: opt(fd, "resolution")
+    })
+  );
   if (!r.ok) return { ok: false, error: r.error };
   refresh(id);
-  return { ok: true, message: "Saved." };
+  return { ok: true, message: withWarning("Saved.", r.data.photo_warning) };
 }
 
 export async function escalateAction(_prev: ActionResult | null, fd: FormData): Promise<ActionResult> {

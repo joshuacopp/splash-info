@@ -87,6 +87,9 @@ function eventLine(ev: EventRow): string {
   if (ev.kind === "ticket") what = `Ticket #: ${d.to}`;
   if (ev.kind === "mx_request") what = `MaintainX request #${d.mx_request_id}`;
   if (ev.kind === "occurrence" && d.error_text) what += ` (error: ${d.error_text})`;
+  if (Array.isArray(d.photos) && d.photos.length) {
+    what += ` [${d.photos.length} photo${d.photos.length === 1 ? "" : "s"} - open the issue to see]`;
+  }
   const who = [ev.actor_name, ev.via === "email_link" ? "via email link" : ""].filter(Boolean).join(", ");
   return `${fmt(ev.at)} - ${what}${who ? ` - ${who}` : ""}${ev.note ? `: ${ev.note}` : ""}`;
 }

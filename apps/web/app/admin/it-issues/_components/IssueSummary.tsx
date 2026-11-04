@@ -71,7 +71,21 @@ export function IssueDetails({ issue }: { issue: Issue }) {
   );
 }
 
-export function IssueTimeline({ events }: { events: IssueEvent[] }) {
+interface PhotoRef {
+  file: string;
+  name: string;
+}
+
+function photosOf(e: IssueEvent): PhotoRef[] {
+  const p = e.details?.photos;
+  return Array.isArray(p) ? (p as PhotoRef[]).filter((x) => typeof x?.file === "string") : [];
+}
+
+/**
+ * `photoBase` is the URL prefix photos are served under -- the signed-in
+ * proxy or the email-link proxy -- so both pages render the same timeline.
+ */
+export function IssueTimeline({ events, photoBase }: { events: IssueEvent[]; photoBase: string }) {
   return (
     <div className="rounded-splash-md border-[1.5px] border-splash-navy/15 bg-white p-4 shadow-splash-card">
       <h2 className="mb-3 text-base font-bold text-splash-navy">Timeline</h2>
@@ -85,6 +99,21 @@ export function IssueTimeline({ events }: { events: IssueEvent[] }) {
               {e.via === "email_link" ? " · via email link" : ""}
             </div>
             {e.note && <p className="mt-1 whitespace-pre-wrap text-splash-navy/90">{e.note}</p>}
+            {photosOf(e).length > 0 && (
+              <div className="mt-2 flex flex-wrap gap-2">
+                {photosOf(e).map((p) => (
+                  <a key={p.file} href={`${photoBase}/${p.file}`} target="_blank" rel="noreferrer" title={p.name}>
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img
+                      src={`${photoBase}/${p.file}`}
+                      alt={p.name}
+                      loading="lazy"
+                      className="h-24 w-24 rounded-splash-sm border border-gray-light object-cover"
+                    />
+                  </a>
+                ))}
+              </div>
+            )}
           </li>
         ))}
       </ol>

@@ -26,12 +26,14 @@ export async function itFetch(
 ): Promise<Response> {
   const h: Record<string, string> = {};
   if (withSession) h.Cookie = (await cookies()).toString();
-  if (body !== undefined) h["Content-Type"] = "application/json";
+  // FormData sets its own multipart boundary header; anything else is JSON.
+  const isForm = body instanceof FormData;
+  if (body !== undefined && !isForm) h["Content-Type"] = "application/json";
   const init = (origin: string): RequestInit => ({
     method,
     // The worker's isOriginAllowed compares against the URL it was called on.
     headers: method === "POST" ? { ...h, Origin: origin } : h,
-    body: body === undefined ? undefined : JSON.stringify(body)
+    body: body === undefined ? undefined : isForm ? body : JSON.stringify(body)
   });
 
   try {

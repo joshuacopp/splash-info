@@ -480,9 +480,9 @@ export default {
       // whole gate, exactly like the forms approval links. It is reached only
       // through apps/web's public /it-issue/{token} page (service binding),
       // and grants one issue's timeline plus note / ticket # / close.
-      const itLinkMatch = /^workorders\/api\/it-issue-link\/([A-Za-z0-9_-]+)$/.exec(path);
+      const itLinkMatch = /^workorders\/api\/it-issue-link\/([A-Za-z0-9_-]+)(?:\/photo\/([A-Za-z0-9.-]+))?$/.exec(path);
       if (itLinkMatch) {
-        return handleItIssueLink(request, env, itLinkMatch[1]!);
+        return handleItIssueLink(request, env, itLinkMatch[1]!, itLinkMatch[2]);
       }
 
       return new Response("Not found", { status: 404 });
