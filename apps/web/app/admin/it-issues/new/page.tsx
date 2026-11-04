@@ -1,6 +1,8 @@
 import Link from "next/link";
 import { getMe } from "../../../_lib/me";
 import NoAccessCard from "../../forms/_components/NoAccessCard";
+import { canUseItIssues } from "../_lib/access";
+import { BetaGate } from "../_components/BetaGate";
 import { listIssues } from "../_lib/worker-fetch";
 import NewIssueForm from "./NewIssueForm";
 
@@ -9,6 +11,7 @@ export const dynamic = "force-dynamic";
 export default async function NewItIssuePage() {
   const session = await getMe().catch(() => null);
   if (!session) return <NoAccessCard reason="signin" returnPath="/admin/it-issues/new" />;
+  if (!canUseItIssues(session)) return <BetaGate />;
 
   // The caller's open issues, so the form can say "this is already open --
   // log another occurrence instead" before a duplicate is created.

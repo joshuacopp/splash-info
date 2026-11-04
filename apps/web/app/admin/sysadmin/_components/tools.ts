@@ -20,7 +20,8 @@ export const ALL_TOOLS = [
   "schedule",
   "inventory_view",
   "inventory",
-  "inventory_admin"
+  "inventory_admin",
+  "it_issues"
 ] as const;
 
 export type Tool = (typeof ALL_TOOLS)[number];
@@ -35,7 +36,8 @@ export const TOOL_HELP: Record<Tool, string> = {
   inventory_view: "Chemical inventory — read only (pick one inventory tier)",
   inventory: "Chemical inventory — submit visits (pick one inventory tier)",
   inventory_admin:
-    "Chemical inventory — full admin: products, recipients, edit/delete visits (pick one inventory tier)"
+    "Chemical inventory — full admin: products, recipients, edit/delete visits (pick one inventory tier)",
+  it_issues: "IT Issue Tracker (beta) — report and track IT issues at their own sites"
 };
 
 /** Stable render order, whatever order the codes arrived in. */

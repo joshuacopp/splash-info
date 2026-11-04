@@ -378,3 +378,69 @@ export async function runItIssuesDailyReport(env: ItIssuesEnv, now = new Date())
   }
   return result;
 }
+
+/* ============================================================
+ * Site update -- IT acted from an emailed link
+ * ============================================================ */
+
+/**
+ * Tell the site what IT just did from an emailed link: a note, a ticket #, a
+ * status change or a close. Without this the site only finds out by opening
+ * the tracker. Goes to the location's site_email; a site with none on file is
+ * logged and skipped (the change itself has already been saved).
+ *
+ * The site's own actions in the app never send this.
+ */
+export async function sendSiteUpdateEmail(env: ItIssuesEnv, issue: IssueRow, events: EventRow[]): Promise<void> {
+  const loc = await pg<Array<{ site_email: string | null }>>(env, "GET", `locations?id=eq.${issue.location_id}&select=site_email`);
+  const recipient = loc.data?.[0]?.site_email?.trim().toLowerCase();
+  if (!recipient) {
+    console.warn(`[it-issues] IT-${issue.ref_no}: no site_email for location ${issue.location_id}; site update not sent`);
+    return;
+  }
+
+  const closed = events.some((e) => e.kind === "resolved");
+  const who = events[0]?.actor_name ?? "IT";
+  const subject = `${closed ? "IT closed" : "IT update on"} IT-${issue.ref_no}: ${deviceLabel(issue)} at ${issue.site_name}`.slice(0, 200);
+  const url = `${appsWebBase(env)}/admin/it-issues/${issue.id}`;
+  const after = closed
+    ? "If the problem comes back, open the issue and use \"It happened again\" - that reopens it so IT can see the fix didn't hold."
+    : "No action is needed unless IT asked you for something.";
+
+  const html = wrapInEmailShell(
+    [
+      `<h2 style="margin:0 0 6px;color:${NAVY};font-size:20px;">${escapeHtml(closed ? "IT closed this issue" : "IT updated this issue")}</h2>`,
+      `<p style="margin:0 0 14px;color:${NAVY};font-size:14px;"><strong>IT-${issue.ref_no}</strong> ${escapeHtml(deviceLabel(issue))} - ${escapeHtml(issue.problem)}</p>`,
+      `<ul style="margin:0 0 14px;padding-left:18px;font-size:14px;color:${NAVY};">`,
+      events.map((e) => `<li style="margin-bottom:4px;">${escapeHtml(eventLine(e)).replace(/\n/g, "<br />")}</li>`).join(""),
+      `</ul>`,
+      `<p style="margin:0 0 16px;color:${MUTED};font-size:13px;">${escapeHtml(after)}</p>`,
+      button(url, "Open the issue")
+    ].join(""),
+    { title: subject, preheader: `${who}: ${closed ? "closed" : "updated"} IT-${issue.ref_no}` }
+  );
+  const text = [
+    `${closed ? "IT closed" : "IT updated"} IT-${issue.ref_no}: ${deviceLabel(issue)} - ${issue.problem}`,
+    "",
+    ...events.map((e) => `- ${eventLine(e)}`),
+    "",
+    after,
+    url
+  ].join("\n");
+
+  try {
+    await enqueueOutboundEmail(env, {
+      source_worker: "workorders-worker",
+      source_kind: "it-issue-site-update",
+      // First event of this action: one email per IT action.
+      source_id: `${issue.id}:${events[0]!.id}`,
+      recipient,
+      subject,
+      body_html: html,
+      body_text: text,
+      attachments: []
+    });
+  } catch (err) {
+    console.error(`[it-issues] site update enqueue failed for IT-${issue.ref_no}:`, err);
+  }
+}

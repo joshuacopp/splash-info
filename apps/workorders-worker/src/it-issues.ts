@@ -29,7 +29,7 @@
 import type { Session } from "@splash/auth";
 import { isOriginAllowed, json, jsonError } from "@splash/http";
 import { createMaintainXWorkRequest } from "@splash/maintainx";
-import { sendEscalationEmail } from "./it-issues-email.js";
+import { sendEscalationEmail, sendSiteUpdateEmail } from "./it-issues-email.js";
 import { MAX_PHOTOS_PER_ACTION, servePhoto, storePhotos, type IssuePhoto } from "./it-issues-photos.js";
 
 export interface ItIssuesEnv {
@@ -213,6 +213,19 @@ async function patchIssue(env: ItIssuesEnv, id: string, patch: Partial<IssueRow>
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+/**
+ * BETA GATE (operator, 2026-11-04): the tracker is opened per person with the
+ * `it_issues` tool grant, so nobody stumbles into it and starts using it
+ * without direction. Super admins have it implicitly. Admin tier deliberately
+ * does NOT -- that is the population most likely to wander in. The emailed
+ * no-sign-in links are unaffected: they are minted by the tool itself.
+ *
+ * Mirrored in apps/web (tile + pages); this is the one that counts.
+ */
+export function canUseItIssues(session: Session): boolean {
+  return session.role === "super_admin" || (session.tools as readonly string[]).includes("it_issues");
+}
+
 function isAdminTier(session: Session): boolean {
   return session.role === "super_admin" || session.dcRole === "admin" || session.dcRole === "super_admin";
 }
@@ -343,7 +356,7 @@ export async function applyChange(
   issue: IssueRow,
   change: Change,
   actor: Actor
-): Promise<{ ok: true; issue: IssueRow } | { ok: false; error: string }> {
+): Promise<{ ok: true; issue: IssueRow; events: EventRow[] } | { ok: false; error: string }> {
   const patch: Partial<IssueRow> = {};
   const events: Array<Parameters<typeof addEvent>[1]> = [];
   const base = { issue_id: issue.id, actor_name: actor.name, actor_email: actor.email, via: actor.via };
@@ -397,8 +410,12 @@ export async function applyChange(
     // flag in the IT report.
     updated = (await patchIssue(env, issue.id, {})) ?? issue;
   }
-  for (const ev of events) await addEvent(env, ev);
-  return { ok: true, issue: updated };
+  const written: EventRow[] = [];
+  for (const ev of events) {
+    const row = await addEvent(env, ev);
+    if (row) written.push(row);
+  }
+  return { ok: true, issue: updated, events: written };
 }
 
 /**
@@ -530,6 +547,10 @@ export async function handleItIssuesRequest(
   try {
     const rest = path.replace(/^workorders\/api\/it-issues\/?/, "");
     const [id, action, file] = rest.split("/");
+
+    if (!canUseItIssues(session)) {
+      return jsonError(403, "The IT Issue Tracker is in beta. Ask a super admin for access.");
+    }
 
     if (request.method !== "GET" && !isOriginAllowed(request)) return jsonError(403, "bad origin");
 
@@ -886,6 +907,9 @@ export async function handleItIssueLink(
       actor
     );
     if (!result.ok) return jsonError(400, result.error);
+    // Tell the site what IT just did. The site's own actions (in the app)
+    // never trigger this -- only IT, acting from an emailed link.
+    if (result.events.length) await sendSiteUpdateEmail(env, result.issue, result.events);
     return json({ ok: true, ...publicView(result.issue, await getEvents(env, issue.id)) });
   } catch (err) {
     if (err instanceof InputError) return jsonError(400, err.message);

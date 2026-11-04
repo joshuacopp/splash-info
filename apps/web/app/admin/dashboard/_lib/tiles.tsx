@@ -479,7 +479,8 @@ export const TILES: ReadonlyArray<Tile> = [
     description: "Log POS, kiosk, gate and network problems and track them until fixed.",
     href: "/admin/it-issues",
     icon: cogIcon,
-    visibleTo: allStaff
+    // Beta: the `it_issues` grant (or super_admin). Same rule as the worker.
+    visibleTo: (s) => s?.role === "super_admin" || (s?.tools as readonly string[] | undefined)?.includes("it_issues") === true
   },
   {
     id: "maintenance-tracker",

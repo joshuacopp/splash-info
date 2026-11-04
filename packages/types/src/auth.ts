@@ -82,7 +82,8 @@ export type ToolName =
   | "schedule"
   | "inventory"
   | "inventory_view"
-  | "inventory_admin";
+  | "inventory_admin"
+  | "it_issues";
 
 export const VALID_TOOLS: readonly ToolName[] = [
   "pricing",
@@ -92,7 +93,8 @@ export const VALID_TOOLS: readonly ToolName[] = [
   "schedule",
   "inventory_view",
   "inventory",
-  "inventory_admin"
+  "inventory_admin",
+  "it_issues"
 ] as const;
 
 /**

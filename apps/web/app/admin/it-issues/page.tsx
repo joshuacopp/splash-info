@@ -7,6 +7,8 @@
 import Link from "next/link";
 import { getMe } from "../../_lib/me";
 import NoAccessCard from "../forms/_components/NoAccessCard";
+import { canUseItIssues } from "./_lib/access";
+import { BetaGate } from "./_components/BetaGate";
 import { listIssues } from "./_lib/worker-fetch";
 import {
   PRIORITY_PILL,
@@ -35,6 +37,7 @@ export default async function ItIssuesPage({ searchParams }: PageProps) {
   const sp = await searchParams;
   const session = await getMe().catch(() => null);
   if (!session) return <NoAccessCard reason="signin" returnPath="/admin/it-issues" />;
+  if (!canUseItIssues(session)) return <BetaGate />;
 
   const status = ["open", "resolved", "all"].includes(param(sp.status)) ? param(sp.status) : "open";
   const qs = new URLSearchParams({ status });

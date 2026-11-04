@@ -59,7 +59,7 @@ export default async function ItIssueLinkPage({ params }: { params: Promise<{ to
             <>
               <div className={card}>
                 <h2 className="mb-3 text-base font-bold text-splash-navy">Update</h2>
-                <ActionForm action={linkAction} className="space-y-3">
+                <ActionForm key={issue.updated_at} action={linkAction} className="space-y-3">
                   <input type="hidden" name="token" value={token} />
                   <NameInput />
                   <label className="block text-sm">

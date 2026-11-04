@@ -2,6 +2,8 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { getMe } from "../../../_lib/me";
 import NoAccessCard from "../../forms/_components/NoAccessCard";
+import { canUseItIssues } from "../_lib/access";
+import { BetaGate } from "../_components/BetaGate";
 import { ActionForm } from "../../_components/ActionForm";
 import { SubmitButton } from "../../_components/SubmitButton";
 import { escalateAction, mxRequestAction, occurrenceAction, updateIssueAction } from "../actions";
@@ -26,6 +28,7 @@ export default async function ItIssuePage({ params, searchParams }: PageProps) {
   const { id } = await params;
   const session = await getMe().catch(() => null);
   if (!session) return <NoAccessCard reason="signin" returnPath={`/admin/it-issues/${id}`} />;
+  if (!canUseItIssues(session)) return <BetaGate />;
 
   const data = await getIssueDetail(id);
   // Not found and not yours are the same answer.
@@ -103,7 +106,10 @@ export default async function ItIssuePage({ params, searchParams }: PageProps) {
 
           <div className={card}>
             <h2 className="mb-3 text-base font-bold text-splash-navy">Update</h2>
-            <ActionForm action={updateIssueAction} className="space-y-3">
+            {/* Keyed on updated_at: an uncontrolled select keeps its old value across a
+                refresh, so after a reopen it still said "Resolved" and Save would
+                have tried to close the issue again. A new key remounts it. */}
+            <ActionForm key={issue.updated_at} action={updateIssueAction} className="space-y-3">
               <input type="hidden" name="id" value={issue.id} />
               <NameInput />
               <div className="grid grid-cols-2 gap-2">
