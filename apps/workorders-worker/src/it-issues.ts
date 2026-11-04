@@ -664,17 +664,16 @@ async function createIssue(request: Request, env: ItIssuesEnv, session: Session)
 /**
  * Why this issue may NOT be sent to MaintainX, or null when it may.
  *
- * Deliberately not offered when an issue is reported (operator, 2026-11-04):
- * a checkbox on every report turns MaintainX into a copy of this log. A
- * request is for something that has earned IT's attention -- serious, or
- * repeating, or already escalated and still open.
+ * WHERE, not WHEN, is the control (operator, 2026-11-04). A MaintainX request
+ * is never offered on the report form -- an "add to MaintainX" box right
+ * before submit would send nearly every report there. It IS offered on any
+ * open issue's page, with no priority / repeat / escalation qualifier: a kiosk
+ * that is completely dead should not have to be reported twice to qualify.
+ * The deliberate second visit to the issue is the filter.
  */
-export function mxBlockedReason(issue: Pick<IssueRow, "status" | "priority" | "occurrence_count" | "last_escalated_at">): string | null {
+export function mxBlockedReason(issue: Pick<IssueRow, "status">): string | null {
   if (issue.status === "resolved") return "The issue is resolved.";
-  if (issue.priority === "critical" || issue.priority === "high") return null;
-  if (issue.occurrence_count >= 2) return null;
-  if (issue.last_escalated_at) return null;
-  return "Only for High or Critical issues, issues that have happened more than once, or issues already sent to IT support.";
+  return null;
 }
 
 const MX_PRIORITY: Record<Priority, "HIGH" | "MEDIUM" | "LOW"> = {

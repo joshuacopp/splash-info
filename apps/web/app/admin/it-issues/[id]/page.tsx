@@ -28,7 +28,7 @@ export default async function ItIssuePage({ params }: PageProps) {
   const data = await getIssueDetail(id);
   // Not found and not yours are the same answer.
   if (!data) notFound();
-  const { issue, events, escalate_to, mx_available, mx_blocked_reason } = data;
+  const { issue, events, escalate_to, mx_available } = data;
   const resolved = issue.status === "resolved";
 
   return (
@@ -134,18 +134,12 @@ export default async function ItIssuePage({ params }: PageProps) {
             </ActionForm>
           </div>
 
-          {mx_blocked_reason && !resolved && (
-            <p className="px-1 text-xs text-splash-navy/60">
-              <span className="font-semibold">MaintainX work request:</span> {mx_blocked_reason}
-            </p>
-          )}
-
           {mx_available && (
             <div className={card}>
               <h2 className="mb-1 text-base font-bold text-splash-navy">MaintainX</h2>
               <p className="mb-3 text-xs text-splash-navy/60">
-                This issue is serious, repeating or already with IT, so it can go to MaintainX as a work request. Only
-                create one if IT needs it tracked there - the number is saved on this issue.
+                Send this issue to MaintainX as a work request when it needs to be tracked there (for example, a kiosk
+                that is completely down). The request number is saved on this issue.
               </p>
               <ActionForm action={mxRequestAction} className="space-y-3">
                 <input type="hidden" name="id" value={issue.id} />
