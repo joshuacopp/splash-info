@@ -42,6 +42,9 @@ export interface ItIssuesEnv {
   IT_ISSUES_REPORT_TO?: string;
   /** Comma-separated. "Send to IT support now" recipients. */
   IT_ISSUES_ESCALATE_TO?: string;
+  /** MaintainX team that approves requests made from an issue. Unset =
+   *  MaintainX's default approvers. */
+  IT_ISSUES_MX_APPROVER_TEAM_ID?: string;
   /** Photos live here under it-issues/ (it-issues-photos.ts). */
   WORKORDER_FILES?: R2Bucket;
 }
@@ -850,6 +853,13 @@ export function photosForMx(events: Pick<EventRow, "details">[]): IssuePhoto[] {
   return out.slice(0, MAX_PHOTOS_PER_ACTION);
 }
 
+/** The configured approver team, or undefined (default routing) when unset or
+ *  not a positive integer -- a typo must not block request creation. */
+export function mxApproverTeamId(env: Pick<ItIssuesEnv, "IT_ISSUES_MX_APPROVER_TEAM_ID">): number | undefined {
+  const n = Number(env.IT_ISSUES_MX_APPROVER_TEAM_ID?.trim());
+  return Number.isInteger(n) && n > 0 ? n : undefined;
+}
+
 async function createMxRequest(
   env: ItIssuesEnv,
   issue: IssueRow,
@@ -872,6 +882,8 @@ async function createMxRequest(
       priority: MX_PRIORITY[issue.priority],
       locationId: site.maintainx_id,
       creatorContactInfo: session.email ?? "",
+      approverTeamId: mxApproverTeamId(env),
+      externalId: `IT-${issue.ref_no}`,
       apiKey: env.MAINTAINX_API_KEY,
       baseUrl: env.MAINTAINX_BASE_URL,
       signal: ctl.signal

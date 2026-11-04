@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   applyChange,
   buildMxDescription,
+  mxApproverTeamId,
   mxBlockedReason,
   photosForMx,
   recipientsOf,
@@ -173,5 +174,14 @@ describe("photosForMx", () => {
       { details: { photos: [p(3), p(4), p(5), p(6)] } }
     ]);
     expect(got.map((x) => x.file)).toEqual(["1.jpg", "2.jpg", "3.jpg", "4.jpg", "5.jpg"]);
+  });
+});
+
+describe("mxApproverTeamId", () => {
+  it("reads a positive integer and ignores anything else", () => {
+    expect(mxApproverTeamId({ IT_ISSUES_MX_APPROVER_TEAM_ID: " 74229 " })).toBe(74229);
+    expect(mxApproverTeamId({ IT_ISSUES_MX_APPROVER_TEAM_ID: "" })).toBeUndefined();
+    expect(mxApproverTeamId({ IT_ISSUES_MX_APPROVER_TEAM_ID: "IT Team" })).toBeUndefined();
+    expect(mxApproverTeamId({})).toBeUndefined();
   });
 });

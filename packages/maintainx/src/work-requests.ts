@@ -373,6 +373,13 @@ export interface CreateWorkRequestInput {
   /** MaintainX expects this field as the requester contact identifier
    *  (string; an email is the canonical shape). */
   creatorContactInfo: string;
+  /** Team responsible for approving the request. Omitted = MaintainX's
+   *  default approvers. NOT returned when a request is read back, so it can
+   *  only be confirmed in the MaintainX UI. */
+  approverTeamId?: number;
+  /** Unique per organization: MaintainX refuses a second request with the
+   *  same value, which makes it the only duplicate guard this endpoint has. */
+  externalId?: string;
   apiKey: string;
   baseUrl: string;
   signal?: AbortSignal;
@@ -415,7 +422,9 @@ export async function createMaintainXWorkRequest(
     description: input.description,
     priority: input.priority,
     locationId: input.locationId,
-    creatorContactInfo: input.creatorContactInfo
+    creatorContactInfo: input.creatorContactInfo,
+    ...(input.approverTeamId ? { approverTeamId: input.approverTeamId } : {}),
+    ...(input.externalId ? { externalId: input.externalId } : {})
   };
 
   let res: Response;
