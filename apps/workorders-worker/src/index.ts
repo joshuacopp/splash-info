@@ -70,6 +70,8 @@ import { runMxIngestHealth } from "./mx-health.js";
 import { fetchPmOnTime, type PmOnTimeResult } from "./mx-pm-ontime.js";
 import { handleMaintenanceSummary } from "./maintenance.js";
 import { handlePartsRequest } from "./parts.js";
+import { handleItIssueLink, handleItIssuesRequest } from "./it-issues.js";
+import { runItIssuesDailyReport } from "./it-issues-email.js";
 import { runMaintainXUserTeamSync, type SyncResult } from "./sync.js";
 
 // The two cron expressions registered under `[triggers] crons` in
@@ -116,6 +118,10 @@ interface Env extends SupabaseEnv {
    *  entry, not a secret. Unset means the check still runs and logs but sends
    *  nothing. */
   INGEST_ALERT_EMAIL?: string;
+  /** IT Issue Tracker daily report recipients (comma-separated `[vars]`). */
+  IT_ISSUES_REPORT_TO?: string;
+  /** IT Issue Tracker "Send to IT support now" recipients. */
+  IT_ISSUES_ESCALATE_TO?: string;
   /** MaintainX webhook signing secret, returned by POST /subscriptions and
    *  re-readable from GET /subscriptions/{id}/secret.
    *  `wrangler secret put MAINTAINX_WEBHOOK_SECRET`.
@@ -462,6 +468,23 @@ export default {
         return handlePartsRequest(request, env, path, auth.session);
       }
 
+      // IT Issue Tracker -- /workorders/api/it-issues[/{id}[/{action}]]. Site
+      // scoping and the shared change path live in ./it-issues.ts.
+      if (path === "workorders/api/it-issues" || path.startsWith("workorders/api/it-issues/")) {
+        const auth = await authenticate(request, env);
+        if (auth.status !== "authenticated") return jsonError(401, "unauthorized");
+        return handleItIssuesRequest(request, env, path, auth.session);
+      }
+
+      // The IT Issue Tracker's emailed links. NO SESSION: the token is the
+      // whole gate, exactly like the forms approval links. It is reached only
+      // through apps/web's public /it-issue/{token} page (service binding),
+      // and grants one issue's timeline plus note / ticket # / close.
+      const itLinkMatch = /^workorders\/api\/it-issue-link\/([A-Za-z0-9_-]+)$/.exec(path);
+      if (itLinkMatch) {
+        return handleItIssueLink(request, env, itLinkMatch[1]!);
+      }
+
       return new Response("Not found", { status: 404 });
     } catch (err) {
       console.error("workorders-worker request failed:", path, err);
@@ -588,6 +611,16 @@ export default {
             console.log("workorders-worker mx reconcile:", JSON.stringify(rec));
           } catch (err) {
             console.error("workorders-worker mx reconcile failed:", err);
+          }
+
+          // IT Issue Tracker daily report (7:30 AM Eastern in summer, 6:30 in
+          // winter). Rides this existing slot rather than adding a cron, and
+          // has its own try so it cannot take the sync or reconcile down.
+          try {
+            const report = await runItIssuesDailyReport(env);
+            console.log("workorders-worker it issues report:", JSON.stringify(report));
+          } catch (err) {
+            console.error("workorders-worker it issues report failed:", err);
           }
           return;
         }

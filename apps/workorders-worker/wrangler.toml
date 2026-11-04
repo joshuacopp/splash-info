@@ -211,6 +211,16 @@ APPS_WEB_BASE_URL  = "https://splashcarwashes.info"
 # reconciliation down behind it the whole time. Everything needed to notice was
 # already in mx_sync_state and nothing was reading it.
 INGEST_ALERT_EMAIL = "josh.copp@splashcarwashes.com"
+
+# IT Issue Tracker (src/it-issues*.ts). Comma-separated lists.
+#   IT_ISSUES_REPORT_TO   -- the daily open-issues report (11:30 UTC slot).
+#   IT_ISSUES_ESCALATE_TO -- the per-issue "Send to IT support now" button.
+# TESTING: both go to the operator only, so IT is not bothered by a tool that
+# is still being shaken out. Going live = set both to
+# itsupport@splashcarwashes.com and push. Unset = report skipped / button
+# refuses with "no IT support address is configured".
+IT_ISSUES_REPORT_TO   = "josh.copp@splashcarwashes.com"
+IT_ISSUES_ESCALATE_TO = "josh.copp@splashcarwashes.com"
 # CUTOVER 2026-09-14: /workorders now reads the local mirror, not live
 # MaintainX calls. Roll back by commenting this line and pushing -- the
 # MaintainX path is untouched and an unset value resolves back to it.

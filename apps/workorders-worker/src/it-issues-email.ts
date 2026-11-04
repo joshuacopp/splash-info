@@ -1,0 +1,377 @@
+// IT Issue Tracker emails: the daily report to IT and the per-issue
+// "Send to IT support now" escalation. Both go through the shared
+// outbound_emails queue and both carry no-sign-in links (it-issues.ts
+// mintIssueLink) so IT can add a ticket number or close an issue from the
+// email without ever signing in -- the operator's expectation is that IT will
+// not work inside this tool, only read times, dates and ticket numbers.
+//
+// RECIPIENTS ARE [vars], not code: IT_ISSUES_REPORT_TO / IT_ISSUES_ESCALATE_TO
+// in wrangler.toml. During testing both point at the operator so IT is not
+// bothered by a half-finished tool; going live is a one-line change each.
+
+import { enqueueOutboundEmail } from "@splash/db-supabase";
+import { escapeHtml, wrapInEmailShell } from "@splash/email-shell";
+import {
+  IMPACT_LABEL,
+  appsWebBase,
+  deviceLabel,
+  mintIssueLink,
+  pg,
+  recipientsOf,
+  type EventRow,
+  type IssueRow,
+  type ItIssuesEnv
+} from "./it-issues.js";
+
+const NAVY = "#0b2545";
+const MUTED = "#5b6b7f";
+const RULE = "#e3e8ef";
+const RED = "#b42318";
+const AMBER = "#b54708";
+
+/** An unresolved issue with no activity for this long is flagged at the top of
+ *  the report. Activity = any update, note, occurrence or escalation. */
+const STALE_DAYS = 2;
+
+const PRIORITY_RANK: Record<string, number> = { critical: 0, high: 1, medium: 2, low: 3 };
+const STATUS_LABEL: Record<string, string> = {
+  open: "Open",
+  waiting_on_it: "Waiting on IT",
+  in_progress: "In progress",
+  resolved: "Resolved"
+};
+const KIND_LABEL: Record<string, string> = {
+  created: "Reported",
+  occurrence: "Happened again",
+  note: "Note",
+  status: "Status changed",
+  ticket: "Ticket # added",
+  escalated: "Sent to IT support",
+  resolved: "Resolved",
+  reopened: "Reopened",
+  mx_request: "MaintainX request created",
+  priority: "Priority changed"
+};
+
+function fmt(iso: string | null): string {
+  if (!iso) return "-";
+  return new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/New_York",
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit"
+  }).format(new Date(iso));
+}
+
+function easternDate(now: Date): string {
+  return new Intl.DateTimeFormat("en-CA", { timeZone: "America/New_York" }).format(now);
+}
+
+function cap(s: string): string {
+  return s ? s[0]!.toUpperCase() + s.slice(1) : s;
+}
+
+function refs(issue: IssueRow): string {
+  const parts: string[] = [];
+  if (issue.it_ticket_no) parts.push(`IT ticket ${issue.it_ticket_no}`);
+  if (issue.mx_request_id) parts.push(`MaintainX request #${issue.mx_request_id}`);
+  return parts.join(" / ");
+}
+
+function eventLine(ev: EventRow): string {
+  const d = ev.details ?? {};
+  let what = KIND_LABEL[ev.kind] ?? ev.kind;
+  if (ev.kind === "status") what = `Status: ${STATUS_LABEL[String(d.to)] ?? d.to}`;
+  if (ev.kind === "priority") what = `Priority: ${cap(String(d.to))}`;
+  if (ev.kind === "ticket") what = `Ticket #: ${d.to}`;
+  if (ev.kind === "mx_request") what = `MaintainX request #${d.mx_request_id}`;
+  if (ev.kind === "occurrence" && d.error_text) what += ` (error: ${d.error_text})`;
+  const who = [ev.actor_name, ev.via === "email_link" ? "via email link" : ""].filter(Boolean).join(", ");
+  return `${fmt(ev.at)} - ${what}${who ? ` - ${who}` : ""}${ev.note ? `: ${ev.note}` : ""}`;
+}
+
+function button(url: string, label: string): string {
+  return (
+    `<table role="presentation" cellpadding="0" cellspacing="0" border="0"><tr>` +
+    `<td style="background:#1f6feb;border-radius:6px;">` +
+    `<a href="${escapeHtml(url)}" style="display:inline-block;padding:10px 18px;color:#ffffff;font-weight:bold;text-decoration:none;font-size:14px;">${escapeHtml(label)}</a>` +
+    `</td></tr></table>`
+  );
+}
+
+function detailRows(issue: IssueRow): Array<[string, string]> {
+  const rows: Array<[string, string]> = [
+    ["Site", issue.site_name],
+    ["Device", deviceLabel(issue)],
+    ["Problem", issue.problem],
+    ["Error message", issue.error_text ?? ""],
+    ["Customer impact", IMPACT_LABEL[issue.customer_impact]],
+    ["Priority", cap(issue.priority)],
+    ["Status", STATUS_LABEL[issue.status] ?? issue.status],
+    ["First reported", fmt(issue.first_reported_at)],
+    ["Times it has happened", String(issue.occurrence_count)],
+    ["Last happened", fmt(issue.last_occurred_at)],
+    ["Already tried", issue.troubleshooting ?? ""],
+    ["Reported by", `${issue.reporter_name}, ${issue.reporter_phone}`],
+    ["Ticket numbers", refs(issue)]
+  ];
+  return rows.filter(([, v]) => v !== "");
+}
+
+/* ============================================================
+ * Escalation
+ * ============================================================ */
+
+export async function sendEscalationEmail(
+  env: ItIssuesEnv,
+  issue: IssueRow,
+  events: EventRow[],
+  escalation: EventRow,
+  to: string[]
+): Promise<{ sent: string[]; failed: string[] }> {
+  const subject = `IT issue IT-${issue.ref_no} - ${issue.site_name}: ${deviceLabel(issue)} - ${issue.problem}`.slice(0, 200);
+  const result = { sent: [] as string[], failed: [] as string[] };
+
+  for (const recipient of to) {
+    const link = await mintIssueLink(env, issue.id, recipient);
+    const html = wrapInEmailShell(
+      [
+        `<h2 style="margin:0 0 6px;color:${NAVY};font-size:20px;">IT-${issue.ref_no}: ${escapeHtml(deviceLabel(issue))} at ${escapeHtml(issue.site_name)}</h2>`,
+        `<p style="margin:0 0 14px;color:${MUTED};font-size:13px;">Sent to IT support by ${escapeHtml(escalation.actor_name ?? "the site")} on ${escapeHtml(fmt(escalation.at))}.</p>`,
+        escalation.note
+          ? `<div style="background:#fff7e6;border-left:4px solid ${AMBER};padding:10px 12px;margin:0 0 14px;color:${NAVY};font-size:14px;">${escapeHtml(escalation.note).replace(/\n/g, "<br />")}</div>`
+          : "",
+        `<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="font-size:14px;color:${NAVY};margin-bottom:14px;">`,
+        detailRows(issue)
+          .map(
+            ([k, v]) =>
+              `<tr><td style="padding:4px 10px 4px 0;color:${MUTED};vertical-align:top;white-space:nowrap;">${escapeHtml(k)}</td>` +
+              `<td style="padding:4px 0;">${escapeHtml(v).replace(/\n/g, "<br />")}</td></tr>`
+          )
+          .join(""),
+        `</table>`,
+        `<div style="font-size:13px;font-weight:bold;color:${NAVY};margin:6px 0;">Timeline</div>`,
+        `<ul style="margin:0 0 16px;padding-left:18px;font-size:13px;color:${NAVY};">`,
+        events.map((e) => `<li style="margin-bottom:3px;">${escapeHtml(eventLine(e))}</li>`).join(""),
+        `</ul>`,
+        link ? button(link, "Open issue - add a ticket # or close it") : "",
+        link
+          ? `<p style="margin:10px 0 0;color:${MUTED};font-size:12px;">No sign-in needed. The link works until the issue is resolved.</p>`
+          : ""
+      ].join(""),
+      { title: subject, preheader: `${issue.site_name}: ${issue.problem}`.slice(0, 100) }
+    );
+    const text = [
+      `IT-${issue.ref_no}: ${deviceLabel(issue)} at ${issue.site_name}`,
+      `Sent to IT support by ${escalation.actor_name ?? "the site"} on ${fmt(escalation.at)}.`,
+      escalation.note ? `\n${escalation.note}\n` : "",
+      ...detailRows(issue).map(([k, v]) => `${k}: ${v}`),
+      "",
+      "Timeline:",
+      ...events.map((e) => `- ${eventLine(e)}`),
+      "",
+      link ? `Open issue (no sign-in): ${link}` : ""
+    ].join("\n");
+
+    try {
+      await enqueueOutboundEmail(env, {
+        source_worker: "workorders-worker",
+        source_kind: "it-issue-escalation",
+        // One email per press: the event id makes each escalation distinct.
+        source_id: `${issue.id}:${escalation.id}`,
+        recipient,
+        subject,
+        body_html: html,
+        body_text: text,
+        attachments: []
+      });
+      result.sent.push(recipient);
+    } catch (err) {
+      console.error(`[it-issues] escalation enqueue failed for ${recipient}:`, err);
+      result.failed.push(recipient);
+    }
+  }
+  return result;
+}
+
+/* ============================================================
+ * Daily report
+ * ============================================================ */
+
+export interface ItReportResult {
+  open: number;
+  attention: number;
+  resolvedRecently: number;
+  emailsQueued: number;
+  skipped: string | null;
+}
+
+function needsAttention(issue: IssueRow, now: number): string | null {
+  if (issue.priority === "critical") return "Critical";
+  const idle = (now - Date.parse(issue.updated_at)) / 86_400_000;
+  if (idle >= STALE_DAYS) return `No activity for ${Math.floor(idle)} days`;
+  return null;
+}
+
+function compareIssues(a: IssueRow, b: IssueRow): number {
+  return (
+    (PRIORITY_RANK[a.priority] ?? 9) - (PRIORITY_RANK[b.priority] ?? 9) ||
+    Date.parse(a.first_reported_at) - Date.parse(b.first_reported_at)
+  );
+}
+
+export async function runItIssuesDailyReport(env: ItIssuesEnv, now = new Date()): Promise<ItReportResult> {
+  const result: ItReportResult = { open: 0, attention: 0, resolvedRecently: 0, emailsQueued: 0, skipped: null };
+  const to = recipientsOf(env.IT_ISSUES_REPORT_TO);
+  if (to.length === 0) {
+    result.skipped = "IT_ISSUES_REPORT_TO unset";
+    return result;
+  }
+
+  const since = encodeURIComponent(new Date(now.getTime() - 86_400_000).toISOString());
+  const [openRes, doneRes] = await Promise.all([
+    pg<IssueRow[]>(env, "GET", "it_issues?select=*&status=neq.resolved&limit=1000"),
+    pg<IssueRow[]>(env, "GET", `it_issues?select=*&status=eq.resolved&resolved_at=gte.${since}&order=resolved_at.desc&limit=200`)
+  ]);
+  if (!openRes.ok || !doneRes.ok) {
+    result.skipped = "read failed";
+    return result;
+  }
+  const open = (openRes.data ?? []).sort(compareIssues);
+  const done = doneRes.data ?? [];
+  const nowMs = now.getTime();
+  const attention = open.filter((i) => needsAttention(i, nowMs));
+  const rest = open.filter((i) => !needsAttention(i, nowMs));
+  result.open = open.length;
+  result.attention = attention.length;
+  result.resolvedRecently = done.length;
+
+  // The same device type open at more than one site -- the pattern per-site
+  // spreadsheets hid (Binghamton and Fayetteville logged the same dead kiosk
+  // scanner on the same day). Sites cannot see each other's issues, so this
+  // is the only place it shows.
+  const byDevice = new Map<string, IssueRow[]>();
+  for (const i of open) byDevice.set(i.device, [...(byDevice.get(i.device) ?? []), i]);
+  const shared = [...byDevice.entries()]
+    .filter(([, list]) => new Set(list.map((i) => i.location_id)).size > 1)
+    .sort((a, b) => b[1].length - a[1].length);
+
+  const dateLabel = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/New_York",
+    weekday: "long",
+    month: "long",
+    day: "numeric"
+  }).format(now);
+  const subject =
+    open.length === 0
+      ? `IT issues ${dateLabel}: nothing open`
+      : `IT issues ${dateLabel}: ${open.length} open${attention.length ? `, ${attention.length} need attention` : ""}`;
+
+  const base = appsWebBase(env);
+  for (const recipient of to) {
+    // Links are per recipient, so they are minted inside the loop.
+    const links = new Map<string, string | null>();
+    for (const i of [...open, ...done]) links.set(i.id, await mintIssueLink(env, i.id, recipient));
+
+    const row = (i: IssueRow, flag: string | null) => {
+      const link = links.get(i.id);
+      const meta = [
+        `${cap(i.priority)}`,
+        STATUS_LABEL[i.status] ?? i.status,
+        `reported ${fmt(i.first_reported_at)}`,
+        i.occurrence_count > 1 ? `happened ${i.occurrence_count} times, last ${fmt(i.last_occurred_at)}` : "",
+        refs(i)
+      ]
+        .filter(Boolean)
+        .join(" &middot; ");
+      return (
+        `<tr><td style="padding:8px 0;border-bottom:1px solid ${RULE};font-size:14px;color:${NAVY};">` +
+        `<div><strong>IT-${i.ref_no}</strong> ${escapeHtml(i.site_name)} - ${escapeHtml(deviceLabel(i))}` +
+        (flag ? ` <span style="color:${RED};font-weight:bold;">(${escapeHtml(flag)})</span>` : "") +
+        `</div>` +
+        `<div style="margin:2px 0;">${escapeHtml(i.problem)}</div>` +
+        `<div style="font-size:12px;color:${MUTED};">${meta}` +
+        (link ? ` &middot; <a href="${escapeHtml(link)}" style="color:#1f6feb;">Open</a>` : "") +
+        `</div></td></tr>`
+      );
+    };
+    const section = (title: string, rows: string) =>
+      rows
+        ? `<div style="font-size:15px;font-weight:bold;color:${NAVY};margin:18px 0 4px;">${escapeHtml(title)}</div>` +
+          `<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%">${rows}</table>`
+        : "";
+
+    const sharedHtml = shared.length
+      ? `<div style="font-size:15px;font-weight:bold;color:${NAVY};margin:18px 0 4px;">Same device open at more than one site</div>` +
+        `<ul style="margin:0;padding-left:18px;font-size:14px;color:${NAVY};">` +
+        shared
+          .map(
+            ([device, list]) =>
+              `<li>${escapeHtml(device)}: ${list.map((i) => `${escapeHtml(i.site_name)} (IT-${i.ref_no})`).join(", ")}</li>`
+          )
+          .join("") +
+        `</ul>`
+      : "";
+
+    const html = wrapInEmailShell(
+      [
+        `<h2 style="margin:0 0 4px;color:${NAVY};font-size:20px;">IT issues - ${escapeHtml(dateLabel)}</h2>`,
+        `<p style="margin:0;color:${MUTED};font-size:13px;">${open.length} open, ${attention.length} need attention, ${done.length} resolved in the last day. ` +
+          `Each "Open" link works without signing in: add your ticket number, or close the issue with a note.</p>`,
+        open.length === 0 && done.length === 0
+          ? `<p style="margin:16px 0 0;color:${NAVY};font-size:14px;">No open IT issues.</p>`
+          : "",
+        section("Needs attention", attention.map((i) => row(i, needsAttention(i, nowMs))).join("")),
+        sharedHtml,
+        section(attention.length ? "Other open issues" : "Open issues", rest.map((i) => row(i, null)).join("")),
+        section("Resolved in the last day", done.map((i) => row(i, null)).join("")),
+        `<p style="margin:18px 0 0;font-size:12px;color:${MUTED};">All issues: <a href="${escapeHtml(base)}/admin/it-issues" style="color:#1f6feb;">${escapeHtml(base)}/admin/it-issues</a> (sign-in required).</p>`
+      ].join(""),
+      { title: subject, preheader: subject }
+    );
+
+    const textRow = (i: IssueRow, flag: string | null) =>
+      [
+        `IT-${i.ref_no} ${i.site_name} - ${deviceLabel(i)}${flag ? ` (${flag})` : ""}`,
+        `  ${i.problem}`,
+        `  ${cap(i.priority)}, ${STATUS_LABEL[i.status]}, reported ${fmt(i.first_reported_at)}` +
+          (i.occurrence_count > 1 ? `, happened ${i.occurrence_count} times` : "") +
+          (refs(i) ? `, ${refs(i)}` : ""),
+        links.get(i.id) ? `  ${links.get(i.id)}` : ""
+      ]
+        .filter(Boolean)
+        .join("\n");
+    const text = [
+      `IT issues - ${dateLabel}`,
+      `${open.length} open, ${attention.length} need attention, ${done.length} resolved in the last day.`,
+      attention.length ? `\nNEEDS ATTENTION\n${attention.map((i) => textRow(i, needsAttention(i, nowMs))).join("\n\n")}` : "",
+      shared.length
+        ? `\nSAME DEVICE AT MORE THAN ONE SITE\n${shared.map(([d, l]) => `${d}: ${l.map((i) => `${i.site_name} (IT-${i.ref_no})`).join(", ")}`).join("\n")}`
+        : "",
+      rest.length ? `\nOPEN\n${rest.map((i) => textRow(i, null)).join("\n\n")}` : "",
+      done.length ? `\nRESOLVED IN THE LAST DAY\n${done.map((i) => textRow(i, null)).join("\n\n")}` : "",
+      `\nAll issues: ${base}/admin/it-issues`
+    ]
+      .filter(Boolean)
+      .join("\n");
+
+    try {
+      await enqueueOutboundEmail(env, {
+        source_worker: "workorders-worker",
+        source_kind: "it-issues-daily-report",
+        // One per Eastern day: a re-run the same day is a no-op.
+        source_id: easternDate(now),
+        recipient,
+        subject,
+        body_html: html,
+        body_text: text,
+        attachments: []
+      });
+      result.emailsQueued += 1;
+    } catch (err) {
+      console.error(`[it-issues] daily report enqueue failed for ${recipient}:`, err);
+    }
+  }
+  return result;
+}

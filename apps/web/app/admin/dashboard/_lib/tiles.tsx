@@ -471,6 +471,17 @@ export const TILES: ReadonlyArray<Tile> = [
     visibleTo: allStaff
   },
   {
+    id: "it-issues",
+    group: "operations",
+    subgroup: "mechanical",
+    eyebrow: "IT",
+    title: "IT Issues",
+    description: "Log POS, kiosk, gate and network problems and track them until fixed.",
+    href: "/admin/it-issues",
+    icon: cogIcon,
+    visibleTo: allStaff
+  },
+  {
     id: "maintenance-tracker",
     group: "operations",
     subgroup: "mechanical",

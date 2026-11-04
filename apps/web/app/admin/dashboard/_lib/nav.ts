@@ -87,6 +87,7 @@ export const NAV = [
 
   // ---- Operations / Mechanical ----
   { id: "workorders", group: "operations", subgroup: "mechanical", title: "Work Orders", href: "/workorders" },
+  { id: "it-issues", group: "operations", subgroup: "mechanical", title: "IT Issues", href: "/admin/it-issues" },
   { id: "maintenance-tracker", group: "operations", subgroup: "mechanical", title: "Maintenance Tracker", href: "/admin/maintenance" },
   { id: "parts", group: "operations", subgroup: "mechanical", title: "Equipment Manuals", href: "/admin/parts" },
   { id: "parts-directory", group: "operations", subgroup: "mechanical", title: "Parts Directory", href: "/admin/parts/directory" },
