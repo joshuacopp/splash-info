@@ -29,7 +29,15 @@ export default function NewIssueForm({
   devices: string[];
   openIssues: Issue[];
 }) {
-  const [siteId, setSiteId] = useState<string>(sites.length === 1 ? String(sites[0]!.id) : "");
+  // Site lookup by the 3-digit site number, like every other form. A few
+  // numbers belong to two washes (an express and a hand wash share 019, 040,
+  // 068), so a number can match more than one site and the person picks.
+  const only = sites.length === 1 ? sites[0]! : null;
+  const [siteNum, setSiteNum] = useState(only?.site_number != null ? String(only.site_number).padStart(3, "0") : "");
+  const [picked, setPicked] = useState<string>(only ? String(only.id) : "");
+  const typed = Number.parseInt(siteNum, 10);
+  const matches = Number.isFinite(typed) ? sites.filter((s) => s.site_number === typed) : [];
+  const siteId = matches.length === 1 ? String(matches[0]!.id) : matches.some((m) => String(m.id) === picked) ? picked : "";
   const [device, setDevice] = useState("");
   const [impact, setImpact] = useState<Impact | "">("");
   const [priority, setPriority] = useState<Priority | "">("");
@@ -37,20 +45,43 @@ export default function NewIssueForm({
   // overwriting it.
   const [priorityTouched, setPriorityTouched] = useState(false);
 
-  const site = sites.find((s) => String(s.id) === siteId);
   const possibleDupes = openIssues.filter((i) => String(i.location_id) === siteId && i.device === device);
 
   return (
     <ActionForm action={createIssueAction} resetOnSuccess={false} className="space-y-5">
       <div className="grid gap-4 sm:grid-cols-2">
         <div>
-          <label className={label} htmlFor="location_id">Site</label>
-          <select id="location_id" name="location_id" required value={siteId} onChange={(e) => setSiteId(e.target.value)} className={input}>
-            <option value="">Pick your site…</option>
-            {sites.map((s) => (
-              <option key={s.id} value={s.id}>{s.label}</option>
-            ))}
-          </select>
+          <label className={label} htmlFor="site_number">Site number</label>
+          <input
+            id="site_number"
+            inputMode="numeric"
+            maxLength={3}
+            required
+            placeholder="e.g. 122"
+            value={siteNum}
+            onChange={(e) => setSiteNum(e.target.value.replace(/\D/g, ""))}
+            className={input}
+          />
+          <input type="hidden" name="location_id" value={siteId} />
+          {siteNum.length > 0 && matches.length === 0 && (
+            <p className="mt-1 text-xs text-racecar-red">
+              {siteNum.length < 3 ? "Enter all 3 digits." : `Site ${siteNum} isn't one of your sites.`}
+            </p>
+          )}
+          {matches.length === 1 && (
+            <p className="mt-1 text-sm font-semibold text-splash-success">{matches[0]!.name || matches[0]!.label}</p>
+          )}
+          {matches.length > 1 && (
+            <div className="mt-1 space-y-1 text-sm">
+              <p className="text-xs text-splash-navy/60">Two washes share this number - which one?</p>
+              {matches.map((m) => (
+                <label key={m.id} className="flex items-center gap-2">
+                  <input type="radio" checked={picked === String(m.id)} onChange={() => setPicked(String(m.id))} />
+                  {m.label}
+                </label>
+              ))}
+            </div>
+          )}
         </div>
         <div className="grid grid-cols-[1fr_90px] gap-2">
           <div>
@@ -168,16 +199,6 @@ export default function NewIssueForm({
         <label className={label} htmlFor="it_ticket_no">IT ticket # (if you already have one)</label>
         <input id="it_ticket_no" name="it_ticket_no" maxLength={60} className={input} />
       </div>
-
-      {site?.has_mx && (
-        <label className="flex items-start gap-2 text-sm text-splash-navy">
-          <input type="checkbox" name="create_mx" className="mt-1" />
-          <span>
-            Also create a MaintainX work request
-            <span className="block text-xs text-splash-navy/60">The request number is saved on this issue automatically.</span>
-          </span>
-        </label>
-      )}
 
       <SubmitButton
         pendingText="Saving…"

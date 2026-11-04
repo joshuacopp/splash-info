@@ -49,7 +49,8 @@ export interface IssueEvent {
 export interface SiteOption {
   id: number;
   label: string;
-  has_mx: boolean;
+  site_number: number | null;
+  name: string;
 }
 
 export interface IssueList {
@@ -64,6 +65,7 @@ export interface IssueDetail {
   events: IssueEvent[];
   escalate_to: string[];
   mx_available: boolean;
+  mx_blocked_reason: string | null;
   devices: string[];
 }
 

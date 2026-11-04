@@ -24,7 +24,7 @@ function refresh(id?: string) {
 }
 
 export async function createIssueAction(_prev: ActionResult | null, fd: FormData): Promise<ActionResult> {
-  const r = await itPost<{ id: string; ref_no: number; mx_warning: string | null }>("/workorders/api/it-issues", {
+  const r = await itPost<{ id: string; ref_no: number }>("/workorders/api/it-issues", {
     location_id: Number(s(fd, "location_id")),
     device: s(fd, "device"),
     device_unit: opt(fd, "device_unit"),
@@ -35,13 +35,11 @@ export async function createIssueAction(_prev: ActionResult | null, fd: FormData
     troubleshooting: opt(fd, "troubleshooting"),
     reporter_name: s(fd, "reporter_name"),
     reporter_phone: s(fd, "reporter_phone"),
-    it_ticket_no: opt(fd, "it_ticket_no"),
-    create_mx: fd.get("create_mx") === "on"
+    it_ticket_no: opt(fd, "it_ticket_no")
   });
   if (!r.ok) return { ok: false, error: r.error };
   refresh(r.data.id);
-  const qs = r.data.mx_warning ? `?mx_warning=${encodeURIComponent(r.data.mx_warning)}` : "";
-  return { ok: true, message: `Logged as IT-${r.data.ref_no}.`, redirectTo: `/admin/it-issues/${r.data.id}${qs}` };
+  return { ok: true, message: `Logged as IT-${r.data.ref_no}.`, redirectTo: `/admin/it-issues/${r.data.id}` };
 }
 
 export async function occurrenceAction(_prev: ActionResult | null, fd: FormData): Promise<ActionResult> {

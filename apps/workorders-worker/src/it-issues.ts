@@ -503,7 +503,11 @@ export async function handleItIssuesRequest(
         issue,
         events,
         escalate_to: recipientsOf(env.IT_ISSUES_ESCALATE_TO),
-        mx_available: !issue.mx_request_id && !!site?.maintainx_id && !!env.MAINTAINX_API_KEY,
+        mx_available:
+          !issue.mx_request_id && !!site?.maintainx_id && !!env.MAINTAINX_API_KEY && mxBlockedReason(issue) === null,
+        // Shown on the page so "where is the MaintainX button?" has an answer.
+        mx_blocked_reason:
+          !issue.mx_request_id && site?.maintainx_id && env.MAINTAINX_API_KEY ? mxBlockedReason(issue) : null,
         devices: DEVICES
       });
     }
@@ -568,6 +572,8 @@ export async function handleItIssuesRequest(
 
     if (action === "mx-request") {
       if (issue.mx_request_id) return jsonError(409, `Already linked to MaintainX request #${issue.mx_request_id}.`);
+      const blocked = mxBlockedReason(issue);
+      if (blocked) return jsonError(400, blocked);
       const made = await createMxRequest(env, issue, site!, session, actor);
       return made.ok ? json({ ok: true, mx_request_id: made.id }) : jsonError(502, made.error);
     }
@@ -581,7 +587,7 @@ export async function handleItIssuesRequest(
 
 async function listIssues(env: ItIssuesEnv, session: Session, url: URL): Promise<Response> {
   const { all, sites } = await accessibleSites(env, session);
-  const sitesOut = sites.map((s) => ({ id: s.id, label: siteLabel(s), has_mx: s.maintainx_id != null }));
+  const sitesOut = sites.map((s) => ({ id: s.id, label: siteLabel(s), site_number: s.site_number, name: s.site ?? "" }));
   if (sites.length === 0) return json({ issues: [], sites: [], all_sites: all, devices: DEVICES });
 
   const filters: string[] = [];
@@ -652,12 +658,23 @@ async function createIssue(request: Request, env: ItIssuesEnv, session: Session)
     details: { phone: row.reporter_phone }
   });
 
-  let mxWarning: string | null = null;
-  if (body.create_mx === true) {
-    const made = await createMxRequest(env, issue, site, session, actor);
-    if (!made.ok) mxWarning = made.error;
-  }
-  return json({ ok: true, id: issue.id, ref_no: issue.ref_no, mx_warning: mxWarning }, 201);
+  return json({ ok: true, id: issue.id, ref_no: issue.ref_no }, 201);
+}
+
+/**
+ * Why this issue may NOT be sent to MaintainX, or null when it may.
+ *
+ * Deliberately not offered when an issue is reported (operator, 2026-11-04):
+ * a checkbox on every report turns MaintainX into a copy of this log. A
+ * request is for something that has earned IT's attention -- serious, or
+ * repeating, or already escalated and still open.
+ */
+export function mxBlockedReason(issue: Pick<IssueRow, "status" | "priority" | "occurrence_count" | "last_escalated_at">): string | null {
+  if (issue.status === "resolved") return "The issue is resolved.";
+  if (issue.priority === "critical" || issue.priority === "high") return null;
+  if (issue.occurrence_count >= 2) return null;
+  if (issue.last_escalated_at) return null;
+  return "Only for High or Critical issues, issues that have happened more than once, or issues already sent to IT support.";
 }
 
 const MX_PRIORITY: Record<Priority, "HIGH" | "MEDIUM" | "LOW"> = {

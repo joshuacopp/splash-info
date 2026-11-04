@@ -14,25 +14,22 @@ export const dynamic = "force-dynamic";
 
 interface PageProps {
   params: Promise<{ id: string }>;
-  searchParams: Promise<Record<string, string | string[] | undefined>>;
 }
 
 const input = "w-full rounded-splash-sm border border-gray-light bg-white px-3 py-2 text-sm";
 const card = "rounded-splash-md border-[1.5px] border-splash-navy/15 bg-white p-4 shadow-splash-card";
 const btn = "rounded-splash-sm bg-splash-blue px-4 py-2 text-sm font-semibold text-white hover:bg-splash-navy disabled:opacity-60";
 
-export default async function ItIssuePage({ params, searchParams }: PageProps) {
+export default async function ItIssuePage({ params }: PageProps) {
   const { id } = await params;
-  const sp = await searchParams;
   const session = await getMe().catch(() => null);
   if (!session) return <NoAccessCard reason="signin" returnPath={`/admin/it-issues/${id}`} />;
 
   const data = await getIssueDetail(id);
   // Not found and not yours are the same answer.
   if (!data) notFound();
-  const { issue, events, escalate_to, mx_available } = data;
+  const { issue, events, escalate_to, mx_available, mx_blocked_reason } = data;
   const resolved = issue.status === "resolved";
-  const mxWarning = typeof sp.mx_warning === "string" ? sp.mx_warning : null;
 
   return (
     <section className="mx-auto w-full max-w-[1100px] px-5 py-9">
@@ -43,12 +40,6 @@ export default async function ItIssuePage({ params, searchParams }: PageProps) {
       </div>
 
       <IssueHeader issue={issue} />
-
-      {mxWarning && (
-        <p className="mb-4 rounded-splash-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">
-          The issue was saved, but the MaintainX request was not: {mxWarning}
-        </p>
-      )}
 
       <div className="grid gap-5 lg:grid-cols-[1fr_380px]">
         <div className="space-y-5">
@@ -143,11 +134,18 @@ export default async function ItIssuePage({ params, searchParams }: PageProps) {
             </ActionForm>
           </div>
 
+          {mx_blocked_reason && !resolved && (
+            <p className="px-1 text-xs text-splash-navy/60">
+              <span className="font-semibold">MaintainX work request:</span> {mx_blocked_reason}
+            </p>
+          )}
+
           {mx_available && (
             <div className={card}>
               <h2 className="mb-1 text-base font-bold text-splash-navy">MaintainX</h2>
               <p className="mb-3 text-xs text-splash-navy/60">
-                Create a MaintainX work request from this issue. Its number is saved here.
+                This issue is serious, repeating or already with IT, so it can go to MaintainX as a work request. Only
+                create one if IT needs it tracked there - the number is saved on this issue.
               </p>
               <ActionForm action={mxRequestAction} className="space-y-3">
                 <input type="hidden" name="id" value={issue.id} />
