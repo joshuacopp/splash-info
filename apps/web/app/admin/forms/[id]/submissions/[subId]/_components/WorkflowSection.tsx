@@ -180,17 +180,17 @@ function TransitionModal(p: TransitionModalProps) {
         resetOnSuccess
         className="space-y-3"
       >
-        {requires.note && (
-          <label className="block text-xs font-semibold uppercase tracking-wide text-splash-navy/70">
-            Note (required)
-            <textarea
-              name="note"
-              rows={3}
-              required
-              className="mt-1 block w-full rounded-splash-md border border-gray-light bg-white px-3 py-2 text-sm text-splash-navy"
-            />
-          </label>
-        )}
+        {/* Always offered: the worker records a note on any transition, and a
+            ticket closed without one is a ticket nobody can explain later. */}
+        <label className="block text-xs font-semibold uppercase tracking-wide text-splash-navy/70">
+          {requires.note ? "Note (required)" : "Note (optional)"}
+          <textarea
+            name="note"
+            rows={3}
+            required={!!requires.note}
+            className="mt-1 block w-full rounded-splash-md border border-gray-light bg-white px-3 py-2 text-sm text-splash-navy"
+          />
+        </label>
         {requires.typed_name && (
           <label className="block text-xs font-semibold uppercase tracking-wide text-splash-navy/70">
             Typed name (required)
@@ -220,11 +220,6 @@ function TransitionModal(p: TransitionModalProps) {
               required
             />
           </div>
-        )}
-        {!requires.note && !requires.typed_name && !requires.signature && (
-          <p className="text-xs text-splash-navy/60">
-            No additional fields required. Click Confirm to advance.
-          </p>
         )}
         <SubmitButton
           pendingText={pendingText}
