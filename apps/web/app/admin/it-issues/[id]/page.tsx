@@ -6,13 +6,14 @@ import { canUseItIssues } from "../_lib/access";
 import { BetaGate } from "../_components/BetaGate";
 import { ActionForm } from "../../_components/ActionForm";
 import { SubmitButton } from "../../_components/SubmitButton";
-import { escalateAction, mxRequestAction, occurrenceAction, updateIssueAction } from "../actions";
+import { escalateAction, mxRequestAction, occurrenceAction, providerContactAction, updateIssueAction } from "../actions";
 import { getIssueDetail } from "../_lib/worker-fetch";
 import { PRIORITY_OPTIONS, STATUS_OPTIONS, formatEt } from "../_lib/types";
 import { IssueDetails, IssueHeader, IssueTimeline } from "../_components/IssueSummary";
 import { NameInput } from "../_components/NameInput";
 import { OccurrenceFields } from "../_components/OccurrenceFields";
 import { PhotoInput } from "../_components/PhotoInput";
+import { ProviderContactFields } from "../_components/ProviderFields";
 
 export const dynamic = "force-dynamic";
 
@@ -82,6 +83,31 @@ export default async function ItIssuePage({ params, searchParams }: PageProps) {
               </SubmitButton>
             </ActionForm>
           </div>
+
+          {!resolved && (
+            <div className={card}>
+              <h2 className="mb-1 text-base font-bold text-splash-navy">Called the POS provider</h2>
+              <p className="mb-3 text-xs text-splash-navy/60">
+                Log each call to the POS company&apos;s tech support (Micrologic, DRB, ICS) - not our IT support. IT
+                sees every call on this issue and in their emails.
+              </p>
+              <ActionForm action={providerContactAction} className="space-y-3">
+                <input type="hidden" name="id" value={issue.id} />
+                <NameInput />
+                <ProviderContactFields
+                  inputClass={input}
+                  labelClass="mb-1 block text-sm font-semibold text-splash-navy"
+                  requireTicket={false}
+                  defaultProvider={issue.pos_provider}
+                  idPrefix="pos_call"
+                />
+                <textarea name="note" rows={2} maxLength={4000} placeholder="What did they say or do?" className={input} />
+                <SubmitButton pendingText="Logging…" className={btn}>
+                  Log call
+                </SubmitButton>
+              </ActionForm>
+            </div>
+          )}
 
           {!resolved && (
             <div className={card}>

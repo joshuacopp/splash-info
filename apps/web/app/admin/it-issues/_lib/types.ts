@@ -6,6 +6,9 @@ export type Impact = "none" | "single_customer" | "multiple_customers" | "site_w
 export type Priority = "critical" | "high" | "medium" | "low";
 export type Status = "open" | "waiting_on_it" | "in_progress" | "resolved";
 
+/** Suggested on the form; any other name is accepted. Mirrors the worker. */
+export const POS_PROVIDERS = ["Micrologic", "DRB", "ICS"] as const;
+
 export interface Issue {
   id: string;
   ref_no: number;
@@ -33,6 +36,13 @@ export interface Issue {
   last_escalated_at: string | null;
   first_escalated_at?: string | null;
   last_it_action_at?: string | null;
+  /** Ticket opened with the POS provider (their tech support, not ours)?
+   *  null/absent = not asked (older issue). */
+  pos_provider_opened?: boolean | null;
+  pos_provider?: string | null;
+  pos_provider_ticket_no?: string | null;
+  pos_provider_first_contact_at?: string | null;
+  pos_provider_last_contact_at?: string | null;
   resolved_at: string | null;
   resolution: string | null;
   resolved_by: string | null;
@@ -142,7 +152,8 @@ const EVENT_LABEL: Record<string, string> = {
   resolved: "Resolved",
   reopened: "Reopened",
   mx_request: "MaintainX request created",
-  priority: "Priority changed"
+  priority: "Priority changed",
+  provider_contact: "Called the POS provider"
 };
 
 /** One-line headline for a timeline entry. */
@@ -163,9 +174,27 @@ export function eventHeadline(e: IssueEvent): string {
       return d.error_text ? `Happened again - error: ${String(d.error_text)}` : "Happened again";
     case "reopened":
       return "Reopened";
+    case "provider_contact":
+      return `Called ${String(d.provider ?? "the POS provider")}${d.ticket_no ? ` - their ticket ${String(d.ticket_no)}` : ""}`;
     default:
       return EVENT_LABEL[e.kind] ?? e.kind;
   }
+}
+
+/** Has it been raised with the POS provider? Null for older issues never asked. */
+export function providerSummary(i: Issue): string | null {
+  if (i.pos_provider_opened === false) return "No ticket opened with the POS provider";
+  if (!i.pos_provider_opened) return null;
+  const first = i.pos_provider_first_contact_at;
+  const last = i.pos_provider_last_contact_at;
+  return [
+    i.pos_provider ?? "POS provider",
+    i.pos_provider_ticket_no ? `ticket ${i.pos_provider_ticket_no}` : "",
+    first ? `called ${formatEt(first)}` : "",
+    last && last !== first ? `last contact ${formatEt(last)}` : ""
+  ]
+    .filter(Boolean)
+    .join(" · ");
 }
 
 /** "Transaction ticket 123 · account 456" from an occurrence's details, or "". */

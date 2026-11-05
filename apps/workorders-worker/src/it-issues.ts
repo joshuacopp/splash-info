@@ -94,6 +94,8 @@ export const DEVICES = [
 export const IMPACTS = ["none", "single_customer", "multiple_customers", "site_wide"] as const;
 export const PRIORITIES = ["critical", "high", "medium", "low"] as const;
 export const STATUSES = ["open", "waiting_on_it", "in_progress", "resolved"] as const;
+/** Offered on the form; any other name is accepted (a site may use another). */
+export const POS_PROVIDERS = ["Micrologic", "DRB", "ICS"] as const;
 
 type Impact = (typeof IMPACTS)[number];
 type Priority = (typeof PRIORITIES)[number];
@@ -109,7 +111,8 @@ const LIMITS = {
   ticket: 60,
   customer: 60,
   /** Room for a list: one report can cover several failed transactions. */
-  transactions: 300
+  transactions: 300,
+  provider: 60
 };
 
 /** How far back "when did it happen?" may go. Past this it is a typo. */
@@ -150,6 +153,13 @@ export interface IssueRow {
   /** Latest action by IT (email link or an it_issues_it login), not counting
    *  an IT person pressing "Send to IT support". */
   last_it_action_at: string | null;
+  /** Ticket opened with the POS provider (their tech support, not ours)?
+   *  null = not asked (older issue). */
+  pos_provider_opened: boolean | null;
+  pos_provider: string | null;
+  pos_provider_ticket_no: string | null;
+  pos_provider_first_contact_at: string | null;
+  pos_provider_last_contact_at: string | null;
   resolved_at: string | null;
   resolution: string | null;
   resolved_by: string | null;
@@ -399,14 +409,69 @@ function easternOffsetMs(at: number): number {
  * (a few minutes of clock slack allowed) and not more than a year back.
  */
 export function occurredAt(body: Body, now: number = Date.now()): string {
-  const raw = body.occurred_at;
+  return pastTime(body, "occurred_at", "When it happened", now);
+}
+
+function pastTime(body: Body, key: string, label: string, now: number): string {
+  const raw = body[key];
   if (raw == null || raw === "") return new Date(now).toISOString();
   const iso = typeof raw === "string" ? easternLocalToIso(raw) : null;
-  if (!iso) throw new InputError("When it happened is not a valid date and time.");
+  if (!iso) throw new InputError(`${label} is not a valid date and time.`);
   const t = Date.parse(iso);
-  if (t > now + 5 * 60_000) throw new InputError("When it happened can't be in the future.");
-  if (t < now - MAX_BACKDATE_DAYS * 86_400_000) throw new InputError("When it happened is more than a year ago - check the date.");
+  if (t > now + 5 * 60_000) throw new InputError(`${label} can't be in the future.`);
+  if (t < now - MAX_BACKDATE_DAYS * 86_400_000) throw new InputError(`${label} is more than a year ago - check the date.`);
   return iso;
+}
+
+/** One call to the POS provider's tech support (Micrologic, DRB, ICS). */
+export interface ProviderContact {
+  provider: string;
+  ticket_no: string | null;
+  contacted_at: string;
+}
+
+/**
+ * The provider, when they were called and their ticket #. On the report form
+ * ("yes, a ticket has been opened") all three are required; a later follow-up
+ * call may leave the ticket # off when it is the same ticket.
+ */
+export function providerContact(body: Body, requireTicket: boolean, now: number = Date.now()): ProviderContact {
+  const provider = required(body, "pos_provider", LIMITS.provider, "POS provider");
+  if (requireTicket && !body.pos_provider_called_at) throw new InputError("When the POS provider was called is required.");
+  const contacted_at = pastTime(body, "pos_provider_called_at", "When the POS provider was called", now);
+  const ticket_no = requireTicket
+    ? required(body, "pos_provider_ticket_no", LIMITS.ticket, "POS provider's ticket #")
+    : str(body, "pos_provider_ticket_no", LIMITS.ticket, "POS provider's ticket #");
+  return { provider, ticket_no, contacted_at };
+}
+
+type ProviderSummary = Pick<
+  IssueRow,
+  | "pos_provider_opened"
+  | "pos_provider"
+  | "pos_provider_ticket_no"
+  | "pos_provider_first_contact_at"
+  | "pos_provider_last_contact_at"
+>;
+
+/** The issue's provider summary after one more call. A call without a ticket
+ *  # keeps the one already on file; a backdated call moves only the end of
+ *  the span it falls outside. */
+export function providerPatch(issue: Partial<ProviderSummary> | null, c: ProviderContact): ProviderSummary {
+  const t = Date.parse(c.contacted_at);
+  const first = issue?.pos_provider_first_contact_at;
+  const last = issue?.pos_provider_last_contact_at;
+  return {
+    pos_provider_opened: true,
+    pos_provider: c.provider,
+    pos_provider_ticket_no: c.ticket_no ?? issue?.pos_provider_ticket_no ?? null,
+    pos_provider_first_contact_at: first && Date.parse(first) <= t ? first : c.contacted_at,
+    pos_provider_last_contact_at: last && Date.parse(last) >= t ? last : c.contacted_at
+  };
+}
+
+function providerEventDetails(c: ProviderContact): Record<string, unknown> {
+  return c.ticket_no ? { provider: c.provider, ticket_no: c.ticket_no } : { provider: c.provider };
 }
 
 /** The optional customer references a report or occurrence can carry. */
@@ -711,6 +776,27 @@ export async function handleItIssuesRequest(
     const note = str(body, "note", LIMITS.text, "Note");
     const occurrence =
       action === "occurrence" ? { occurredAt: occurredAt(body), ...customerRefs(body) } : undefined;
+
+    if (action === "provider-contact") {
+      const c = providerContact(body, false);
+      const ev = await addEvent(env, {
+        issue_id: issue.id,
+        kind: "provider_contact",
+        actor_name: actor.name,
+        actor_email: actor.email,
+        via: "app",
+        by_it: actor.it,
+        note,
+        occurred_at: c.contacted_at,
+        details: providerEventDetails(c)
+      });
+      if (!ev) return jsonError(500, "Could not record the call. Try again.");
+      const patch: Partial<IssueRow> = providerPatch(issue, c);
+      if (actor.it) patch.last_it_action_at = new Date().toISOString();
+      const updated = await patchIssue(env, issue.id, patch);
+      return json({ ok: true, issue: updated ?? issue });
+    }
+
     const stored =
       (action === "occurrence" || action === "update") && files.length
         ? await storePhotos(env, issue.id, files)
@@ -846,6 +932,11 @@ async function createIssue(request: Request, env: ItIssuesEnv, session: Session)
   if (!priority) throw new InputError("Pick a priority.");
 
   const happened = occurredAt(body);
+  // Asked on every new report: has the site already opened a ticket with the
+  // POS provider's own tech support? IT needs that before calling them too.
+  const opened = oneOf(body, "pos_provider_opened", ["yes", "no"] as const, "POS provider ticket");
+  if (!opened) throw new InputError("Say whether a ticket has been opened with the POS provider.");
+  const contact = opened === "yes" ? providerContact(body, true) : null;
   const row = {
     location_id: site.id,
     site_number: site.site_number,
@@ -862,6 +953,7 @@ async function createIssue(request: Request, env: ItIssuesEnv, session: Session)
     created_by_email: (session.email ?? "").toLowerCase(),
     it_ticket_no: str(body, "it_ticket_no", LIMITS.ticket, "IT ticket #"),
     ...customerRefs(body),
+    ...(contact ? providerPatch(null, contact) : { pos_provider_opened: false }),
     first_reported_at: happened,
     last_occurred_at: happened
   };
@@ -885,6 +977,19 @@ async function createIssue(request: Request, env: ItIssuesEnv, session: Session)
     occurred_at: happened,
     details: stored.photos.length ? { phone: row.reporter_phone, photos: stored.photos } : { phone: row.reporter_phone }
   });
+  if (contact) {
+    await addEvent(env, {
+      issue_id: issue.id,
+      kind: "provider_contact",
+      actor_name: actor.name,
+      actor_email: actor.email,
+      via: "app",
+      by_it: actor.it,
+      note: null,
+      occurred_at: contact.contacted_at,
+      details: providerEventDetails(contact)
+    });
+  }
 
   return json({ ok: true, id: issue.id, ref_no: issue.ref_no, photo_warning: photoWarning(stored.rejected) }, 201);
 }

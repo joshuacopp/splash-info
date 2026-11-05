@@ -7,6 +7,7 @@ import { SubmitButton } from "../../_components/SubmitButton";
 import { createIssueAction } from "../actions";
 import { OccurrenceFields } from "../_components/OccurrenceFields";
 import { PhotoInput } from "../_components/PhotoInput";
+import { ProviderQuestion } from "../_components/ProviderFields";
 import {
   IMPACT_OPTIONS,
   PRIORITY_OPTIONS,
@@ -189,6 +190,8 @@ export default function NewIssueForm({
           placeholder="e.g. Restarted the kiosk, checked the cable" />
         <p className={hint}>Only approved troubleshooting - don&apos;t attempt repairs you&apos;re not authorized to do.</p>
       </div>
+
+      <ProviderQuestion inputClass={input} labelClass={label} />
 
       <div className="grid gap-4 sm:grid-cols-2">
         <div>

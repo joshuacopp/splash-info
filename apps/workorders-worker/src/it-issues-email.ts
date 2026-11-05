@@ -50,7 +50,8 @@ const KIND_LABEL: Record<string, string> = {
   resolved: "Resolved",
   reopened: "Reopened",
   mx_request: "MaintainX request created",
-  priority: "Priority changed"
+  priority: "Priority changed",
+  provider_contact: "Called the POS provider"
 };
 
 function fmt(iso: string | null): string {
@@ -75,8 +76,37 @@ function cap(s: string): string {
 function refs(issue: IssueRow): string {
   const parts: string[] = [];
   if (issue.it_ticket_no) parts.push(`IT ticket ${issue.it_ticket_no}`);
+  if (issue.pos_provider_ticket_no) parts.push(`${issue.pos_provider ?? "POS provider"} ticket ${issue.pos_provider_ticket_no}`);
   if (issue.mx_request_id) parts.push(`MaintainX request #${issue.mx_request_id}`);
   return parts.join(" / ");
+}
+
+/**
+ * Whether the site has raised it with the POS provider's own tech support
+ * (Micrologic, DRB, ICS) -- not Splash IT. "" for older issues never asked.
+ */
+export function providerSummary(
+  issue: Pick<
+    IssueRow,
+    | "pos_provider_opened"
+    | "pos_provider"
+    | "pos_provider_ticket_no"
+    | "pos_provider_first_contact_at"
+    | "pos_provider_last_contact_at"
+  >
+): string {
+  if (issue.pos_provider_opened === false) return "No ticket opened with the POS provider";
+  if (!issue.pos_provider_opened) return "";
+  const first = issue.pos_provider_first_contact_at;
+  const last = issue.pos_provider_last_contact_at;
+  return [
+    issue.pos_provider ?? "POS provider",
+    issue.pos_provider_ticket_no ? `ticket ${issue.pos_provider_ticket_no}` : "",
+    first ? `called ${fmt(first)}` : "",
+    last && last !== first ? `last contact ${fmt(last)}` : ""
+  ]
+    .filter(Boolean)
+    .join(", ");
 }
 
 /** "#" or "#s": the field takes a comma-separated list of ticket numbers. */
@@ -101,6 +131,9 @@ export function eventLine(ev: EventRow): string {
   if (ev.kind === "priority") what = `Priority: ${cap(String(d.to))}`;
   if (ev.kind === "ticket") what = `Ticket #: ${d.to}`;
   if (ev.kind === "mx_request") what = `MaintainX request #${d.mx_request_id}`;
+  if (ev.kind === "provider_contact") {
+    what = `Called ${String(d.provider ?? "the POS provider")}${d.ticket_no ? ` (their ticket ${String(d.ticket_no)})` : ""}`;
+  }
   if (ev.kind === "occurrence" && d.error_text) what += ` (error: ${d.error_text})`;
   const cust = ev.kind === "occurrence" ? customerRefsText(d.customer_ticket_no, d.customer_account_no) : "";
   if (cust) what += ` (${cust})`;
@@ -146,6 +179,7 @@ function detailRows(issue: IssueRow): Array<[string, string]> {
     ["Times it has happened", String(issue.occurrence_count)],
     ["Last happened", fmt(issue.last_occurred_at)],
     ["Already tried", issue.troubleshooting ?? ""],
+    ["POS provider", providerSummary(issue)],
     ["Reported by", `${issue.reporter_name}, ${issue.reporter_phone}`],
     ["Ticket numbers", refs(issue)]
   ];
@@ -358,7 +392,8 @@ export async function runItIssuesDailyReport(env: ItIssuesEnv, now = new Date())
         i.occurrence_count > 1 ? `happened ${i.occurrence_count} times, last ${fmt(i.last_occurred_at)}` : "",
         i.first_escalated_at ? `sent to IT ${fmt(i.first_escalated_at)}` : "",
         i.last_it_action_at ? `last IT action ${fmt(i.last_it_action_at)}` : "",
-        refs(i)
+        refs(i),
+        i.pos_provider_opened === false ? "not raised with the POS provider" : ""
       ]
         .filter(Boolean)
         .join(" &middot; ");
@@ -418,7 +453,8 @@ export async function runItIssuesDailyReport(env: ItIssuesEnv, now = new Date())
           (i.occurrence_count > 1 ? `, happened ${i.occurrence_count} times` : "") +
           (i.first_escalated_at ? `, sent to IT ${fmt(i.first_escalated_at)}` : "") +
           (i.last_it_action_at ? `, last IT action ${fmt(i.last_it_action_at)}` : "") +
-          (refs(i) ? `, ${refs(i)}` : ""),
+          (refs(i) ? `, ${refs(i)}` : "") +
+          (i.pos_provider_opened === false ? ", not raised with the POS provider" : ""),
         links.get(i.id) ? `  ${links.get(i.id)}` : ""
       ]
         .filter(Boolean)

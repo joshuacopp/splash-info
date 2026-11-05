@@ -13,11 +13,13 @@ import {
   occurredAt,
   occurrenceSpan,
   photosForMx,
+  providerContact,
+  providerPatch,
   recipientsOf,
   type IssueRow,
   type ItIssuesEnv
 } from "./it-issues";
-import { customerRefsText, digestBucket, escalationReplyTo, eventLine } from "./it-issues-email";
+import { customerRefsText, digestBucket, escalationReplyTo, eventLine, providerSummary } from "./it-issues-email";
 import { sniffImage } from "./it-issues-photos";
 
 const ENV = {
@@ -57,6 +59,11 @@ function issue(over: Partial<IssueRow> = {}): IssueRow {
     last_escalated_at: null,
     first_escalated_at: null,
     last_it_action_at: null,
+    pos_provider_opened: null,
+    pos_provider: null,
+    pos_provider_ticket_no: null,
+    pos_provider_first_contact_at: null,
+    pos_provider_last_contact_at: null,
     resolved_at: null,
     resolution: null,
     resolved_by: null,
@@ -319,5 +326,41 @@ describe("customerRefsText", () => {
   it("pluralises a comma-separated list of ticket numbers", () => {
     expect(customerRefsText("101", null)).toBe("transaction ticket 101");
     expect(customerRefsText("101, 102", "A-1")).toBe("transaction tickets 101, 102, account A-1");
+  });
+});
+
+describe("POS provider contacts", () => {
+  const NOW = Date.parse("2026-11-05T18:00:00Z");
+  it("requires provider, call time and their ticket # on the report form", () => {
+    expect(() => providerContact({ pos_provider: "DRB" }, true, NOW)).toThrow(/called is required/);
+    expect(() => providerContact({ pos_provider: "DRB", pos_provider_called_at: "2026-11-05T10:00" }, true, NOW)).toThrow(
+      /ticket # is required/
+    );
+    expect(
+      providerContact({ pos_provider: "DRB", pos_provider_called_at: "2026-11-05T10:00", pos_provider_ticket_no: "D-1" }, true, NOW)
+    ).toEqual({ provider: "DRB", ticket_no: "D-1", contacted_at: "2026-11-05T15:00:00.000Z" });
+  });
+  it("lets a follow-up call leave the ticket # off", () => {
+    expect(providerContact({ pos_provider: "ICS" }, false, NOW).ticket_no).toBeNull();
+  });
+  it("keeps the ticket on file and widens the span only outward", () => {
+    const before = { pos_provider_ticket_no: "D-1", pos_provider_first_contact_at: "2026-11-05T15:00:00Z", pos_provider_last_contact_at: "2026-11-05T15:00:00Z" };
+    const later = providerPatch(before, { provider: "DRB", ticket_no: null, contacted_at: "2026-11-05T17:00:00Z" });
+    expect(later.pos_provider_ticket_no).toBe("D-1");
+    expect(later.pos_provider_first_contact_at).toBe("2026-11-05T15:00:00Z");
+    expect(later.pos_provider_last_contact_at).toBe("2026-11-05T17:00:00Z");
+    const earlier = providerPatch(before, { provider: "DRB", ticket_no: "D-2", contacted_at: "2026-11-05T12:00:00Z" });
+    expect(earlier.pos_provider_first_contact_at).toBe("2026-11-05T12:00:00Z");
+    expect(earlier.pos_provider_last_contact_at).toBe("2026-11-05T15:00:00Z");
+    expect(earlier.pos_provider_ticket_no).toBe("D-2");
+  });
+  it("tells IT whether it has been raised with the provider", () => {
+    expect(providerSummary(issue())).toBe("");
+    expect(providerSummary(issue({ pos_provider_opened: false }))).toBe("No ticket opened with the POS provider");
+    expect(
+      providerSummary(
+        issue({ pos_provider_opened: true, pos_provider: "DRB", pos_provider_ticket_no: "D-1", pos_provider_first_contact_at: "2026-11-05T15:00:00Z", pos_provider_last_contact_at: "2026-11-05T15:00:00Z" })
+      )
+    ).toBe("DRB, ticket D-1, called Nov 5, 10:00 AM");
   });
 });

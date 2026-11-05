@@ -10,6 +10,7 @@ import {
   formatEt,
   impactLabel,
   priorityLabel,
+  providerSummary,
   statusLabel,
   type Issue,
   type IssueEvent
@@ -53,6 +54,7 @@ export function IssueDetails({ issue }: { issue: Issue }) {
     ["Times it has happened", String(issue.occurrence_count)],
     ["Last happened", formatEt(issue.last_occurred_at)],
     ["Already tried", issue.troubleshooting],
+    ["POS provider", providerSummary(issue)],
     ["Reported by", `${issue.reporter_name} · ${issue.reporter_phone}`],
     ["IT ticket #", issue.it_ticket_no],
     ["MaintainX request", issue.mx_request_id ? `#${issue.mx_request_id}` : null],

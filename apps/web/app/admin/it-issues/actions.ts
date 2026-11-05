@@ -57,7 +57,11 @@ export async function createIssueAction(_prev: ActionResult | null, fd: FormData
     it_ticket_no: opt(fd, "it_ticket_no"),
     occurred_at: opt(fd, "occurred_at"),
     customer_ticket_no: opt(fd, "customer_ticket_no"),
-    customer_account_no: opt(fd, "customer_account_no")
+    customer_account_no: opt(fd, "customer_account_no"),
+    pos_provider_opened: s(fd, "pos_provider_opened"),
+    pos_provider: opt(fd, "pos_provider"),
+    pos_provider_called_at: opt(fd, "pos_provider_called_at"),
+    pos_provider_ticket_no: opt(fd, "pos_provider_ticket_no")
   }));
   if (!r.ok) return { ok: false, error: r.error };
   refresh(r.data.id);
@@ -103,6 +107,21 @@ export async function updateIssueAction(_prev: ActionResult | null, fd: FormData
   if (!r.ok) return { ok: false, error: r.error };
   refresh(id);
   return { ok: true, message: withWarning("Saved.", r.data.photo_warning) };
+}
+
+/** A call to the POS provider's tech support (not our IT). */
+export async function providerContactAction(_prev: ActionResult | null, fd: FormData): Promise<ActionResult> {
+  const id = s(fd, "id");
+  const r = await itPost(`/workorders/api/it-issues/${encodeURIComponent(id)}/provider-contact`, {
+    actor_name: s(fd, "actor_name"),
+    pos_provider: s(fd, "pos_provider"),
+    pos_provider_called_at: opt(fd, "pos_provider_called_at"),
+    pos_provider_ticket_no: opt(fd, "pos_provider_ticket_no"),
+    note: opt(fd, "note")
+  });
+  if (!r.ok) return { ok: false, error: r.error };
+  refresh(id);
+  return { ok: true, message: "Call logged. IT will see it on this issue and in their emails." };
 }
 
 export async function escalateAction(_prev: ActionResult | null, fd: FormData): Promise<ActionResult> {
