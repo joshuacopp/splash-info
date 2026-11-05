@@ -45,6 +45,9 @@ export interface ItIssuesEnv {
   /** MaintainX team that approves requests made from an issue. Unset =
    *  MaintainX's default approvers. */
   IT_ISSUES_MX_APPROVER_TEAM_ID?: string;
+  /** "true" shows the Create MaintainX request button. Anything else = off;
+   *  IT support takes issues by email instead (2026-11-05). */
+  IT_ISSUES_MX_ENABLED?: string;
   /** Photos live here under it-issues/ (it-issues-photos.ts). */
   WORKORDER_FILES?: R2Bucket;
 }
@@ -576,10 +579,11 @@ export async function handleItIssuesRequest(
         events,
         escalate_to: recipientsOf(env.IT_ISSUES_ESCALATE_TO),
         mx_available:
+          mxEnabled(env) &&
           !issue.mx_request_id && !!site?.maintainx_id && !!env.MAINTAINX_API_KEY && mxBlockedReason(issue) === null,
         // Shown on the page so "where is the MaintainX button?" has an answer.
         mx_blocked_reason:
-          !issue.mx_request_id && site?.maintainx_id && env.MAINTAINX_API_KEY ? mxBlockedReason(issue) : null,
+          mxEnabled(env) && !issue.mx_request_id && site?.maintainx_id && env.MAINTAINX_API_KEY ? mxBlockedReason(issue) : null,
         devices: DEVICES
       });
     }
@@ -660,6 +664,7 @@ export async function handleItIssuesRequest(
     }
 
     if (action === "mx-request") {
+      if (!mxEnabled(env)) return jsonError(403, "MaintainX requests are turned off. Use Send to IT support.");
       if (issue.mx_request_id) return jsonError(409, `Already linked to MaintainX request #${issue.mx_request_id}.`);
       const blocked = mxBlockedReason(issue);
       if (blocked) return jsonError(400, blocked);
@@ -820,21 +825,22 @@ export function buildMxDescription(
     issue.occurrence_count > 1
       ? `Happened ${issue.occurrence_count} times (first ${easternDay(issue.first_reported_at)}, last ${easternDay(issue.last_occurred_at)})`
       : `First reported: ${easternDay(issue.first_reported_at)}`;
+  // Optional lines are null and dropped; "" is the one deliberate blank line.
   return [
     issue.problem,
-    issue.error_text ? `Error: ${issue.error_text}` : "",
+    issue.error_text ? `Error: ${issue.error_text}` : null,
     `Customer impact: ${IMPACT_LABEL[issue.customer_impact]}`,
     history,
-    issue.troubleshooting ? `Already tried: ${issue.troubleshooting}` : "",
+    issue.troubleshooting ? `Already tried: ${issue.troubleshooting}` : null,
     "",
     "---",
     `Reported by: ${issue.reporter_name}`,
     `Phone: ${issue.reporter_phone}`,
     `IT issue: IT-${issue.ref_no}`,
-    issue.it_ticket_no ? `IT ticket #: ${issue.it_ticket_no}` : "",
+    issue.it_ticket_no ? `IT ticket #: ${issue.it_ticket_no}` : null,
     `Submitted via: Splash IT Issues`
   ]
-    .filter((l, i, a) => l !== "" || (i > 0 && a[i - 1] !== ""))
+    .filter((l) => l !== null)
     .join("\n");
 }
 
@@ -855,6 +861,10 @@ export function photosForMx(events: Pick<EventRow, "details">[]): IssuePhoto[] {
 
 /** The configured approver team, or undefined (default routing) when unset or
  *  not a positive integer -- a typo must not block request creation. */
+export function mxEnabled(env: Pick<ItIssuesEnv, "IT_ISSUES_MX_ENABLED">): boolean {
+  return env.IT_ISSUES_MX_ENABLED?.trim().toLowerCase() === "true";
+}
+
 export function mxApproverTeamId(env: Pick<ItIssuesEnv, "IT_ISSUES_MX_APPROVER_TEAM_ID">): number | undefined {
   const n = Number(env.IT_ISSUES_MX_APPROVER_TEAM_ID?.trim());
   return Number.isInteger(n) && n > 0 ? n : undefined;

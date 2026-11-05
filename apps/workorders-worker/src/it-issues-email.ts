@@ -126,6 +126,14 @@ function detailRows(issue: IssueRow): Array<[string, string]> {
  * Escalation
  * ============================================================ */
 
+/** The escalating user's address, if it looks like one. A bad Reply-To can
+ *  make the whole send fail, and the mail flow pastes it into JSON unescaped,
+ *  so quotes, backslashes and anything else doubtful are left off. */
+export function escalationReplyTo(email: string | null | undefined): string | undefined {
+  const e = email?.trim().toLowerCase();
+  return e && /^[^@\s"\\<>,;]+@[^@\s"\\<>,;]+\.[a-z]{2,}$/.test(e) ? e : undefined;
+}
+
 export async function sendEscalationEmail(
   env: ItIssuesEnv,
   issue: IssueRow,
@@ -135,6 +143,7 @@ export async function sendEscalationEmail(
 ): Promise<{ sent: string[]; failed: string[] }> {
   const subject = `IT issue IT-${issue.ref_no} - ${issue.site_name}: ${deviceLabel(issue)} - ${issue.problem}`.slice(0, 200);
   const result = { sent: [] as string[], failed: [] as string[] };
+  const replyTo = escalationReplyTo(escalation.actor_email);
 
   for (const recipient of to) {
     const link = await mintIssueLink(env, issue.id, recipient);
@@ -184,6 +193,8 @@ export async function sendEscalationEmail(
         // One email per press: the event id makes each escalation distinct.
         source_id: `${issue.id}:${escalation.id}`,
         recipient,
+        // IT's reply goes to whoever pressed the button, not the no-reply sender.
+        ...(replyTo ? { reply_to: replyTo } : {}),
         subject,
         body_html: html,
         body_text: text,

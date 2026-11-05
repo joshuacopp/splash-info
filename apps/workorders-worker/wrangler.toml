@@ -225,6 +225,9 @@ IT_ISSUES_ESCALATE_TO = "josh.copp@splashcarwashes.com"
 # Supabase maintainx_teams). TESTING: 74229 = "4 Region - Josh Copp". Going
 # live = 72789 ("IT Team"). Empty = MaintainX's default approvers.
 IT_ISSUES_MX_APPROVER_TEAM_ID = "74229"
+# MaintainX requests from IT issues are OFF (2026-11-05): IT support wants
+# issues by email. "true" brings the button back; the code is untouched.
+IT_ISSUES_MX_ENABLED = "false"
 # CUTOVER 2026-09-14: /workorders now reads the local mirror, not live
 # MaintainX calls. Roll back by commenting this line and pushing -- the
 # MaintainX path is untouched and an unset value resolves back to it.

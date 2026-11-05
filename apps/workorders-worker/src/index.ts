@@ -124,6 +124,8 @@ interface Env extends SupabaseEnv {
   IT_ISSUES_ESCALATE_TO?: string;
   /** IT Issue Tracker MaintainX request approver team id. */
   IT_ISSUES_MX_APPROVER_TEAM_ID?: string;
+  /** IT Issue Tracker: "true" turns the MaintainX request button on. */
+  IT_ISSUES_MX_ENABLED?: string;
   /** MaintainX webhook signing secret, returned by POST /subscriptions and
    *  re-readable from GET /subscriptions/{id}/secret.
    *  `wrangler secret put MAINTAINX_WEBHOOK_SECRET`.

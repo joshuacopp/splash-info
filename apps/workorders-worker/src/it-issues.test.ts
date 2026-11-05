@@ -8,11 +8,13 @@ import {
   buildMxDescription,
   mxApproverTeamId,
   mxBlockedReason,
+  mxEnabled,
   photosForMx,
   recipientsOf,
   type IssueRow,
   type ItIssuesEnv
 } from "./it-issues";
+import { escalationReplyTo } from "./it-issues-email";
 import { sniffImage } from "./it-issues-photos";
 
 const ENV = {
@@ -155,6 +157,9 @@ describe("buildMxDescription", () => {
     expect(d).toContain("First reported: Nov 4, 2026");
     expect(d).toContain("IT issue: IT-7");
     expect(d).not.toContain("IT ticket #");
+    // Left-out optional lines must not leave blank lines behind.
+    expect(d).toContain("IT issue: IT-7\nSubmitted via");
+    expect(d.split("\n").filter((l) => l === "")).toHaveLength(1);
   });
   it("includes the repeat history and the IT ticket number when present", () => {
     const d = buildMxDescription(
@@ -183,5 +188,24 @@ describe("mxApproverTeamId", () => {
     expect(mxApproverTeamId({ IT_ISSUES_MX_APPROVER_TEAM_ID: "" })).toBeUndefined();
     expect(mxApproverTeamId({ IT_ISSUES_MX_APPROVER_TEAM_ID: "IT Team" })).toBeUndefined();
     expect(mxApproverTeamId({})).toBeUndefined();
+  });
+});
+
+describe("mxEnabled", () => {
+  it("is on only for an explicit true", () => {
+    expect(mxEnabled({ IT_ISSUES_MX_ENABLED: " TRUE " })).toBe(true);
+    expect(mxEnabled({ IT_ISSUES_MX_ENABLED: "false" })).toBe(false);
+    expect(mxEnabled({ IT_ISSUES_MX_ENABLED: "yes" })).toBe(false);
+    expect(mxEnabled({})).toBe(false);
+  });
+});
+
+describe("escalationReplyTo", () => {
+  it("uses the escalating user's address and drops anything doubtful", () => {
+    expect(escalationReplyTo(" Site@SplashCarWashes.com ")).toBe("site@splashcarwashes.com");
+    expect(escalationReplyTo(null)).toBeUndefined();
+    expect(escalationReplyTo("not an email")).toBeUndefined();
+    expect(escalationReplyTo('a"b@x.com')).toBeUndefined();
+    expect(escalationReplyTo("a\\b@x.com")).toBeUndefined();
   });
 });
