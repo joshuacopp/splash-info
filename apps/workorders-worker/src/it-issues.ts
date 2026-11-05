@@ -82,6 +82,7 @@ export const DEVICES = [
   "Tunnel controller / VQ",
   "Manager computer",
   "Server PC",
+  "Cameras - Security",
   "Network / internet",
   "Wi-Fi",
   "JotForm tablet",
