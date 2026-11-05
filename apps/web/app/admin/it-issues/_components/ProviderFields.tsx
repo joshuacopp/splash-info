@@ -13,13 +13,11 @@ const hint = "mt-1 text-xs text-splash-navy/60";
 export function ProviderContactFields({
   inputClass,
   labelClass,
-  requireTicket,
   defaultProvider,
   idPrefix = "pos"
 }: {
   inputClass: string;
   labelClass: string;
-  requireTicket: boolean;
   defaultProvider?: string | null;
   idPrefix?: string;
 }) {
@@ -68,29 +66,36 @@ export function ProviderContactFields({
           <p className={hint}>Eastern time.</p>
         </div>
         <div>
-          <label className={labelClass} htmlFor={`${idPrefix}_ticket_no`}>
-            Their ticket #{requireTicket ? "" : " (if new or different)"}
-          </label>
-          <input
-            id={`${idPrefix}_ticket_no`}
-            name="pos_provider_ticket_no"
-            required={requireTicket}
-            maxLength={60}
-            className={inputClass}
-          />
+          <label className={labelClass} htmlFor={`${idPrefix}_ticket_no`}>Their ticket # (if you have it)</label>
+          <input id={`${idPrefix}_ticket_no`} name="pos_provider_ticket_no" maxLength={60} className={inputClass} />
         </div>
       </div>
     </div>
   );
 }
 
-/** The report-form question, with the call details asked only on "Yes". */
-export function ProviderQuestion({ inputClass, labelClass }: { inputClass: string; labelClass: string }) {
+/**
+ * "Has a ticket been opened with the POS provider?" with the call details
+ * asked only on "Yes". Required on the report form; optional on "It happened
+ * again" for an issue not yet raised with the provider.
+ */
+export function ProviderQuestion({
+  inputClass,
+  labelClass,
+  required = true,
+  idPrefix = "pos"
+}: {
+  inputClass: string;
+  labelClass: string;
+  required?: boolean;
+  idPrefix?: string;
+}) {
   const [answer, setAnswer] = useState<"" | "yes" | "no">("");
   return (
     <fieldset className="space-y-3">
       <legend className={labelClass}>
         Has a ticket been opened with the POS provider? (e.g. Micrologic, DRB, ICS)
+        {required ? "" : " (optional)"}
       </legend>
       <p className="-mt-2 text-xs text-splash-navy/60">
         The POS company&apos;s own tech support - not our IT support.
@@ -98,12 +103,21 @@ export function ProviderQuestion({ inputClass, labelClass }: { inputClass: strin
       <div className="flex gap-5 text-sm text-splash-navy">
         {(["yes", "no"] as const).map((v) => (
           <label key={v} className="inline-flex items-center gap-2">
-            <input type="radio" name="pos_provider_opened" value={v} required checked={answer === v} onChange={() => setAnswer(v)} />
+            <input
+              type="radio"
+              name="pos_provider_opened"
+              value={v}
+              required={required}
+              checked={answer === v}
+              onChange={() => setAnswer(v)}
+            />
             {v === "yes" ? "Yes" : "No"}
           </label>
         ))}
       </div>
-      {answer === "yes" && <ProviderContactFields inputClass={inputClass} labelClass={labelClass} requireTicket />}
+      {answer === "yes" && (
+        <ProviderContactFields inputClass={inputClass} labelClass={labelClass} idPrefix={idPrefix} />
+      )}
     </fieldset>
   );
 }

@@ -80,7 +80,11 @@ export async function occurrenceAction(_prev: ActionResult | null, fd: FormData)
       error_text: opt(fd, "error_text"),
       occurred_at: opt(fd, "occurred_at"),
       customer_ticket_no: opt(fd, "customer_ticket_no"),
-      customer_account_no: opt(fd, "customer_account_no")
+      customer_account_no: opt(fd, "customer_account_no"),
+      pos_provider_opened: opt(fd, "pos_provider_opened"),
+      pos_provider: opt(fd, "pos_provider"),
+      pos_provider_called_at: opt(fd, "pos_provider_called_at"),
+      pos_provider_ticket_no: opt(fd, "pos_provider_ticket_no")
     })
   );
   if (!r.ok) return { ok: false, error: r.error };

@@ -431,17 +431,16 @@ export interface ProviderContact {
 }
 
 /**
- * The provider, when they were called and their ticket #. On the report form
- * ("yes, a ticket has been opened") all three are required; a later follow-up
- * call may leave the ticket # off when it is the same ticket.
+ * The provider, when they were called and their ticket #. Provider and time
+ * are required; the ticket # is not (operator): the provider may not have
+ * given one, or the caller may not have written it down -- the call is still
+ * worth recording.
  */
-export function providerContact(body: Body, requireTicket: boolean, now: number = Date.now()): ProviderContact {
+export function providerContact(body: Body, now: number = Date.now()): ProviderContact {
   const provider = required(body, "pos_provider", LIMITS.provider, "POS provider");
-  if (requireTicket && !body.pos_provider_called_at) throw new InputError("When the POS provider was called is required.");
+  if (!body.pos_provider_called_at) throw new InputError("When the POS provider was called is required.");
   const contacted_at = pastTime(body, "pos_provider_called_at", "When the POS provider was called", now);
-  const ticket_no = requireTicket
-    ? required(body, "pos_provider_ticket_no", LIMITS.ticket, "POS provider's ticket #")
-    : str(body, "pos_provider_ticket_no", LIMITS.ticket, "POS provider's ticket #");
+  const ticket_no = str(body, "pos_provider_ticket_no", LIMITS.ticket, "POS provider's ticket #");
   return { provider, ticket_no, contacted_at };
 }
 
@@ -472,6 +471,32 @@ export function providerPatch(issue: Partial<ProviderSummary> | null, c: Provide
 
 function providerEventDetails(c: ProviderContact): Record<string, unknown> {
   return c.ticket_no ? { provider: c.provider, ticket_no: c.ticket_no } : { provider: c.provider };
+}
+
+/** Record one call to the POS provider and update the issue's summary. Null
+ *  when the event could not be written (the summary is then left alone). */
+async function recordProviderCall(
+  env: ItIssuesEnv,
+  issue: IssueRow,
+  actor: Actor,
+  c: ProviderContact,
+  note: string | null
+): Promise<IssueRow | null> {
+  const ev = await addEvent(env, {
+    issue_id: issue.id,
+    kind: "provider_contact",
+    actor_name: actor.name,
+    actor_email: actor.email,
+    via: actor.via,
+    by_it: actor.it,
+    note,
+    occurred_at: c.contacted_at,
+    details: providerEventDetails(c)
+  });
+  if (!ev) return null;
+  const patch: Partial<IssueRow> = providerPatch(issue, c);
+  if (actor.it) patch.last_it_action_at = new Date().toISOString();
+  return (await patchIssue(env, issue.id, patch)) ?? issue;
 }
 
 /** The optional customer references a report or occurrence can carry. */
@@ -776,25 +801,16 @@ export async function handleItIssuesRequest(
     const note = str(body, "note", LIMITS.text, "Note");
     const occurrence =
       action === "occurrence" ? { occurredAt: occurredAt(body), ...customerRefs(body) } : undefined;
+    // "It happened again" may carry the first call to the POS provider.
+    const call =
+      action === "provider-contact" || (action === "occurrence" && body.pos_provider_opened === "yes")
+        ? providerContact(body)
+        : null;
 
-    if (action === "provider-contact") {
-      const c = providerContact(body, false);
-      const ev = await addEvent(env, {
-        issue_id: issue.id,
-        kind: "provider_contact",
-        actor_name: actor.name,
-        actor_email: actor.email,
-        via: "app",
-        by_it: actor.it,
-        note,
-        occurred_at: c.contacted_at,
-        details: providerEventDetails(c)
-      });
-      if (!ev) return jsonError(500, "Could not record the call. Try again.");
-      const patch: Partial<IssueRow> = providerPatch(issue, c);
-      if (actor.it) patch.last_it_action_at = new Date().toISOString();
-      const updated = await patchIssue(env, issue.id, patch);
-      return json({ ok: true, issue: updated ?? issue });
+    if (action === "provider-contact" && call) {
+      const updated = await recordProviderCall(env, issue, actor, call, note);
+      if (!updated) return jsonError(500, "Could not record the call. Try again.");
+      return json({ ok: true, issue: updated });
     }
 
     const stored =
@@ -813,9 +829,11 @@ export async function handleItIssuesRequest(
         occurrence
       );
       if (!updated) return jsonError(500, "Could not record it. Try again.");
+      const withCall = call ? await recordProviderCall(env, updated, actor, call, null) : updated;
+      if (!withCall) return jsonError(500, "Logged, but the POS provider call could not be saved. Add it in the POS provider box.");
       return json({
         ok: true,
-        issue: updated,
+        issue: withCall,
         reopened: issue.status === "resolved",
         photo_warning: photoWarning(stored.rejected)
       });
@@ -936,7 +954,7 @@ async function createIssue(request: Request, env: ItIssuesEnv, session: Session)
   // POS provider's own tech support? IT needs that before calling them too.
   const opened = oneOf(body, "pos_provider_opened", ["yes", "no"] as const, "POS provider ticket");
   if (!opened) throw new InputError("Say whether a ticket has been opened with the POS provider.");
-  const contact = opened === "yes" ? providerContact(body, true) : null;
+  const contact = opened === "yes" ? providerContact(body) : null;
   const row = {
     location_id: site.id,
     site_number: site.site_number,
@@ -978,7 +996,7 @@ async function createIssue(request: Request, env: ItIssuesEnv, session: Session)
     details: stored.photos.length ? { phone: row.reporter_phone, photos: stored.photos } : { phone: row.reporter_phone }
   });
   if (contact) {
-    await addEvent(env, {
+    const ev = await addEvent(env, {
       issue_id: issue.id,
       kind: "provider_contact",
       actor_name: actor.name,
@@ -989,6 +1007,8 @@ async function createIssue(request: Request, env: ItIssuesEnv, session: Session)
       occurred_at: contact.contacted_at,
       details: providerEventDetails(contact)
     });
+    // The summary columns already hold it; only the timeline entry is missing.
+    if (!ev) console.error(`[it-issues] IT-${issue.ref_no}: provider_contact event not written`);
   }
 
   return json({ ok: true, id: issue.id, ref_no: issue.ref_no, photo_warning: photoWarning(stored.rejected) }, 201);

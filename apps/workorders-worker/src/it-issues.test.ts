@@ -331,17 +331,15 @@ describe("customerRefsText", () => {
 
 describe("POS provider contacts", () => {
   const NOW = Date.parse("2026-11-05T18:00:00Z");
-  it("requires provider, call time and their ticket # on the report form", () => {
-    expect(() => providerContact({ pos_provider: "DRB" }, true, NOW)).toThrow(/called is required/);
-    expect(() => providerContact({ pos_provider: "DRB", pos_provider_called_at: "2026-11-05T10:00" }, true, NOW)).toThrow(
-      /ticket # is required/
-    );
+  it("requires provider and call time", () => {
+    expect(() => providerContact({ pos_provider_called_at: "2026-11-05T10:00" }, NOW)).toThrow(/POS provider is required/);
+    expect(() => providerContact({ pos_provider: "DRB" }, NOW)).toThrow(/called is required/);
     expect(
-      providerContact({ pos_provider: "DRB", pos_provider_called_at: "2026-11-05T10:00", pos_provider_ticket_no: "D-1" }, true, NOW)
+      providerContact({ pos_provider: "DRB", pos_provider_called_at: "2026-11-05T10:00", pos_provider_ticket_no: "D-1" }, NOW)
     ).toEqual({ provider: "DRB", ticket_no: "D-1", contacted_at: "2026-11-05T15:00:00.000Z" });
   });
-  it("lets a follow-up call leave the ticket # off", () => {
-    expect(providerContact({ pos_provider: "ICS" }, false, NOW).ticket_no).toBeNull();
+  it("never requires their ticket #", () => {
+    expect(providerContact({ pos_provider: "ICS", pos_provider_called_at: "2026-11-05T10:00" }, NOW).ticket_no).toBeNull();
   });
   it("keeps the ticket on file and widens the span only outward", () => {
     const before = { pos_provider_ticket_no: "D-1", pos_provider_first_contact_at: "2026-11-05T15:00:00Z", pos_provider_last_contact_at: "2026-11-05T15:00:00Z" };

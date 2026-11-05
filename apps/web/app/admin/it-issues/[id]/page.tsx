@@ -13,7 +13,7 @@ import { IssueDetails, IssueHeader, IssueTimeline } from "../_components/IssueSu
 import { NameInput } from "../_components/NameInput";
 import { OccurrenceFields } from "../_components/OccurrenceFields";
 import { PhotoInput } from "../_components/PhotoInput";
-import { ProviderContactFields } from "../_components/ProviderFields";
+import { ProviderContactFields, ProviderQuestion } from "../_components/ProviderFields";
 
 export const dynamic = "force-dynamic";
 
@@ -77,6 +77,14 @@ export default async function ItIssuePage({ params, searchParams }: PageProps) {
               <OccurrenceFields inputClass={input} labelClass="mb-1 block text-sm font-semibold text-splash-navy" />
               <input name="error_text" maxLength={1000} placeholder="Error message (if any)" className={input} />
               <textarea name="note" rows={2} maxLength={4000} placeholder="Anything different this time?" className={input} />
+              {!issue.pos_provider_opened && (
+                <ProviderQuestion
+                  inputClass={input}
+                  labelClass="mb-1 block text-sm font-semibold text-splash-navy"
+                  required={false}
+                  idPrefix="pos_again"
+                />
+              )}
               <PhotoInput />
               <SubmitButton pendingText="Logging…" className={btn}>
                 Log occurrence
@@ -86,10 +94,14 @@ export default async function ItIssuePage({ params, searchParams }: PageProps) {
 
           {!resolved && (
             <div className={card}>
-              <h2 className="mb-1 text-base font-bold text-splash-navy">Called the POS provider</h2>
+              <h2 className="mb-1 text-base font-bold text-splash-navy">
+                {issue.pos_provider_opened ? "Called the POS provider again" : "Called the POS provider"}
+              </h2>
               <p className="mb-3 text-xs text-splash-navy/60">
-                Log each call to the POS company&apos;s tech support (Micrologic, DRB, ICS) - not our IT support. IT
-                sees every call on this issue and in their emails.
+                {issue.pos_provider_ticket_no
+                  ? `Their ticket on file: ${issue.pos_provider ?? "POS provider"} ${issue.pos_provider_ticket_no}. Log each follow-up call here.`
+                  : "Log each call to the POS company's tech support (Micrologic, DRB, ICS)."}{" "}
+                That&apos;s their support, not our IT support - IT sees every call on this issue and in their emails.
               </p>
               <ActionForm action={providerContactAction} className="space-y-3">
                 <input type="hidden" name="id" value={issue.id} />
@@ -97,7 +109,6 @@ export default async function ItIssuePage({ params, searchParams }: PageProps) {
                 <ProviderContactFields
                   inputClass={input}
                   labelClass="mb-1 block text-sm font-semibold text-splash-navy"
-                  requireTicket={false}
                   defaultProvider={issue.pos_provider}
                   idPrefix="pos_call"
                 />

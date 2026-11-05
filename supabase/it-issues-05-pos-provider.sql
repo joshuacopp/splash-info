@@ -28,3 +28,11 @@ comment on column public.it_issues.pos_provider is
   'POS provider named on the latest provider_contact event.';
 comment on column public.it_issues.pos_provider_ticket_no is
   'The provider''s ticket # from the latest provider_contact event that gave one.';
+
+-- Applied separately as it_issues_06_provider_contact_kind, after the first
+-- push: the events kind CHECK did not list provider_contact, so every call
+-- failed with "Could not record the call".
+alter table public.it_issue_events drop constraint it_issue_events_kind_check;
+alter table public.it_issue_events add constraint it_issue_events_kind_check check (kind = any (array[
+  'created','occurrence','note','status','ticket','escalated','resolved','reopened','mx_request','priority','provider_contact'
+]));
