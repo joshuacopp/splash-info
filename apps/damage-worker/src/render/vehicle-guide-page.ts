@@ -26,6 +26,7 @@ import { ASSETS } from "@splash/storage-r2";
 import {
   ALL_MODELS_LABEL,
   parseYouTubeUrl,
+  reportLinkText,
   type VehicleIssue,
   vehicleIssueTypeLabel,
   youTubeEmbedUrl
@@ -59,6 +60,9 @@ export function renderVehicleGuidePage(input: VehicleGuidePageInput): string {
       bulletin: i.bulletin,
       // Worker only stores http(s) links; re-checked here before it becomes an href.
       bulletinUrl: i.bulletin_url && /^https?:\/\//i.test(i.bulletin_url) ? i.bulletin_url : null,
+      reports: i.report_links
+        .filter((l) => /^https?:\/\//i.test(l.url))
+        .map((l) => ({ text: reportLinkText(l), url: l.url })),
       yf: i.year_from,
       yt: i.year_to,
       type: i.issue_type,
@@ -153,6 +157,9 @@ h2.view{font-size:20px;margin:6px 2px 12px}
 .cat-tag{font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:#8a3b00}
 .bul{margin:10px 0 0;font-size:14px;font-weight:600}
 .bul a{color:#2b3491}
+.reps{margin:4px 0 0;padding-left:20px;font-size:14px}
+.reps li{margin:3px 0}
+.reps a{color:#2b3491;font-weight:600}
 .yrs{font-size:14px;color:#1c164e99;font-weight:600}
 .card h3{font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:#1c164e99;margin:12px 0 4px}
 .txt{margin:0;white-space:pre-wrap;word-wrap:break-word}
@@ -271,6 +278,11 @@ const CLIENT_JS = `
           ? '<a href="' + esc(i.bulletinUrl) + '" target="_blank" rel="noopener noreferrer">' + esc(i.bulletin || 'View bulletin') + ' \\u203a</a>'
           : esc(i.bulletin)) + '</p>'
       : '';
+    var reps = (i.reports || []).length
+      ? '<h3>Reported failures</h3><ul class="reps">' + i.reports.map(function(r){
+          return '<li><a href="' + esc(r.url) + '" target="_blank" rel="noopener noreferrer">' + esc(r.text) + '</a></li>';
+        }).join('') + '</ul>'
+      : '';
     return '<article class="card"><div class="card-head">' +
       (withVehicle ? '<div class="vehicle">' + esc(i.make) + ' ' + esc(i.model) + '</div>' : cover) +
       (veh ? '<span class="cat-tag">Vehicle issue</span>' : '') +
@@ -278,7 +290,7 @@ const CLIENT_JS = `
       '<span class="yrs">' + esc(yrLabel(i)) + '</span></div>' +
       '<h3>The problem</h3><p class="txt">' + esc(i.issue) + '</p>' +
       '<h3>' + (veh ? 'How to handle it' : 'What to do') + '</h3><p class="txt sol">' + esc(i.solution) + '</p>' +
-      bul +
+      bul + reps +
       (vids ? '<div class="yt">' + vids + '</div>' : '') +
       (media ? '<div class="media">' + media + '</div>' : '') +
       '</article>';
@@ -345,7 +357,8 @@ const CLIENT_JS = `
     setCrumbs([{ label: 'All makes', href: '#/' }, { label: 'Search' }]);
     var words = k(query).split(/\\s+/).filter(Boolean);
     var hits = ISSUES.filter(function(i){
-      var hay = k([i.make, i.model, i.typeLabel, i.issue, i.solution, i.bulletin || ''].join(' '));
+      var hay = k([i.make, i.model, i.typeLabel, i.issue, i.solution, i.bulletin || '']
+        .concat((i.reports || []).map(function(r){ return r.text; })).join(' '));
       return words.every(function(w){
         if (/^\\d{4}$/.test(w)) return covers(i, Number(w));
         return hay.indexOf(w) !== -1;

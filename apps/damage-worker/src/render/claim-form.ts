@@ -749,6 +749,20 @@ const FORM_SCRIPT = `(function () {
         }
         item.appendChild(bul);
       }
+      var reps = (m.report_links || []).filter(function (r) { return r && /^https?:/i.test(r.url); });
+      if (reps.length) {
+        var rp = kiEl('p', 'ki-text');
+        rp.appendChild(kiEl('span', 'ki-label', 'Reported failures: '));
+        reps.forEach(function (r, n) {
+          if (n) rp.appendChild(document.createTextNode(' · '));
+          var ra = kiEl('a', '', r.label || r.url.replace(/^https?:\\/\\/(www\\.)?/i, '').split('/')[0]);
+          ra.href = r.url;
+          ra.target = '_blank';
+          ra.rel = 'noopener noreferrer';
+          rp.appendChild(ra);
+        });
+        item.appendChild(rp);
+      }
       knownIssues.appendChild(item);
     });
     knownIssues.hidden = false;

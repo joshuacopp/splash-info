@@ -80,6 +80,7 @@ import {
 import { ActionForm } from "../../_components/ActionForm";
 import { getMe } from "../../../_lib/me";
 import type { Session } from "@splash/types/session";
+import { ReportLinks } from "../vehicles/_components/ReportLinks";
 import {
   formatVehicleYears,
   matchVehicleIssues,
@@ -489,6 +490,7 @@ function KnownVehicleIssuesCard({ issues }: { issues: VehicleIssue[] }) {
                 )}
               </p>
             ) : null}
+            <ReportLinks links={i.report_links} className="mt-1 text-splash-navy/80" />
           </div>
         ))}
       </div>

@@ -23,6 +23,7 @@ import {
 } from "@splash/types/vehicle-guide";
 import { RedirectForm } from "../../../_components/RedirectForm";
 import { ConfirmDeleteButton } from "./ConfirmDeleteButton";
+import { ReportLinks } from "./ReportLinks";
 import { deleteVehicleIssueAction } from "../actions";
 
 const LIST_PATH = "/admin/damage/vehicles";
@@ -40,7 +41,15 @@ const VEHICLE_PILL = "bg-orange-100 text-orange-900";
 const CARD_CLS = "rounded-splash-lg border border-gray-light bg-white p-5 shadow-splash-card";
 
 function matches(i: VehicleIssue, words: string[], openYear: number): boolean {
-  const hay = [i.make, i.model, vehicleIssueTypeLabel(i.issue_type), i.issue, i.solution, i.bulletin ?? ""]
+  const hay = [
+    i.make,
+    i.model,
+    vehicleIssueTypeLabel(i.issue_type),
+    i.issue,
+    i.solution,
+    i.bulletin ?? "",
+    ...i.report_links.map((l) => l.label)
+  ]
     .join(" ")
     .toLowerCase();
   return words.every((w) => {
@@ -189,6 +198,7 @@ export function VehicleList({
                               )}
                             </p>
                           ) : null}
+                          <ReportLinks links={i.report_links} className="mt-1.5 text-xs" />
                           <p className="mt-1.5 text-xs text-splash-navy/50">
                             {i.media.length
                               ? `${i.media.length} photo${i.media.length === 1 ? "" : "s"}/video${i.media.length === 1 ? "" : "s"} · `

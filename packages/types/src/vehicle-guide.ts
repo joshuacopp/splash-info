@@ -99,6 +99,10 @@ export interface VehicleIssue {
   bulletin: string | null;
   /** Link to the bulletin (https only), or null. */
   bulletin_url: string | null;
+  /** Evidence when there is no bulletin, or alongside one: owner complaints,
+   *  forum threads, news stories. In display order; empty when none. Stored
+   *  as a JSON array in vehicle_issues.report_links. */
+  report_links: ReportLink[];
   /** Canonical YouTube watch URLs (see parseYouTubeUrl), in display order.
    *  Empty when none. Stored as a JSON array in vehicle_issues.youtube_links. */
   youtube_links: string[];
@@ -117,6 +121,76 @@ export interface VehicleIssuesResponse {
   /** Path of the public page, or null when the token secret is unbound. Only
    *  returned to callers who can edit -- they are the ones who hand it out. */
   public_path: string | null;
+}
+
+/* ============================================================
+ * Reported-failure links
+ * ============================================================ */
+
+export interface ReportLink {
+  /** What the link is ("47 NHTSA complaints"). Empty = show the site name. */
+  label: string;
+  /** http(s) only. */
+  url: string;
+}
+
+/** Per entry. Enough to show a pattern; more is a research file, not a card. */
+export const MAX_REPORT_LINKS = 10;
+const REPORT_LABEL_MAX = 120;
+
+/** "www.nhtsa.gov" -> "nhtsa.gov": the fallback text for an unlabelled link. */
+export function reportLinkText(link: ReportLink): string {
+  if (link.label) return link.label;
+  try {
+    return new URL(link.url).hostname.replace(/^www\./, "");
+  } catch {
+    return link.url;
+  }
+}
+
+/**
+ * The admin textarea: one link per line, optionally with words around it --
+ * "47 NHTSA complaints https://..." or "https://... - owner forum thread".
+ * The first http(s):// (or www.) token on a line is the link; the rest is the
+ * label. Returns the links, or an error sentence naming the bad line.
+ */
+export function parseReportLinks(text: string): { links: ReportLink[] } | { error: string } {
+  const links: ReportLink[] = [];
+  const lines = text.split(/\r?\n/);
+  for (let n = 0; n < lines.length; n++) {
+    const line = lines[n]!.trim();
+    if (!line) continue;
+    const m = /(?:https?:\/\/|www\.)\S+/i.exec(line);
+    if (!m) return { error: `Line ${n + 1} of Reported failures has no link: "${line.slice(0, 60)}".` };
+    let url: URL;
+    try {
+      url = new URL(/^https?:\/\//i.test(m[0]) ? m[0] : `https://${m[0]}`);
+    } catch {
+      return { error: `Line ${n + 1} of Reported failures is not a valid link.` };
+    }
+    if (url.protocol !== "https:" && url.protocol !== "http:") {
+      return { error: `Line ${n + 1} of Reported failures must be a web link (https://...).` };
+    }
+    const label = (line.slice(0, m.index) + " " + line.slice(m.index + m[0].length))
+      .replace(/\s+/g, " ")
+      .trim()
+      .replace(/^[\s\-–—:|]+|[\s\-–—:|]+$/g, "");
+    if (label.length > REPORT_LABEL_MAX) {
+      return { error: `Keep each Reported failures description under ${REPORT_LABEL_MAX} characters (line ${n + 1}).` };
+    }
+    const href = url.toString();
+    if (href.length > 1000) return { error: `Line ${n + 1} of Reported failures is too long a link.` };
+    if (!links.some((l) => l.url === href)) links.push({ label, url: href });
+  }
+  if (links.length > MAX_REPORT_LINKS) {
+    return { error: `An entry can have at most ${MAX_REPORT_LINKS} reported-failure links.` };
+  }
+  return { links };
+}
+
+/** Back to the textarea form, so editing round-trips. */
+export function formatReportLinks(links: readonly ReportLink[]): string {
+  return links.map((l) => (l.label ? `${l.label} ${l.url}` : l.url)).join("\n");
 }
 
 export const ALL_MODELS_LABEL = "All models";

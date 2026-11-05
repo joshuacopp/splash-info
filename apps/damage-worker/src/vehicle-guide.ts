@@ -34,7 +34,9 @@ import {
   isVehicleIssueType,
   matchVehicleIssues,
   MAX_YOUTUBE_LINKS,
+  parseReportLinks,
   parseYouTubeUrl,
+  type ReportLink,
   vehicleIssueTypeCategory,
   vehicleIssueTypeLabel,
   vehicleModelsLabel,
@@ -123,6 +125,24 @@ function readYouTubeLinks(raw: string | null): string[] {
   }
 }
 
+/** vehicle_issues.report_links -> ReportLink[]. A bad value reads as none;
+ *  anything that is not an http(s) link is dropped rather than rendered. */
+function readReportLinks(raw: string | null): ReportLink[] {
+  if (!raw) return [];
+  try {
+    const v: unknown = JSON.parse(raw);
+    if (!Array.isArray(v)) return [];
+    return v.flatMap((x): ReportLink[] => {
+      if (!x || typeof x !== "object") return [];
+      const { label, url } = x as { label?: unknown; url?: unknown };
+      if (typeof url !== "string" || !/^https?:\/\//i.test(url)) return [];
+      return [{ label: typeof label === "string" ? label : "", url }];
+    });
+  } catch {
+    return [];
+  }
+}
+
 /** vehicle_issues.models -> string[]. NULL (rows from before migration 0004)
  *  is the single `model`; '[]' is every model. A bad value falls back to
  *  `model` rather than silently widening the entry to all models. */
@@ -137,8 +157,9 @@ function readModels(raw: string | null, model: string): string[] {
   return [model];
 }
 
-type IssueRow = Omit<VehicleIssue, "media" | "youtube_links" | "models" | "category"> & {
+type IssueRow = Omit<VehicleIssue, "media" | "youtube_links" | "models" | "category" | "report_links"> & {
   category: string | null;
+  report_links: string | null;
   models: string | null;
   youtube_links: string | null;
 };
@@ -148,7 +169,7 @@ async function listIssues(db: D1Database): Promise<VehicleIssue[]> {
     db
       .prepare(
         `SELECT id, category, make, model, models, year_from, year_to, issue_type, issue, solution,
-                bulletin, bulletin_url, youtube_links, created_by, created_at, updated_by, updated_at
+                bulletin, bulletin_url, report_links, youtube_links, created_by, created_at, updated_by, updated_at
            FROM vehicle_issues
           ORDER BY make COLLATE NOCASE, model COLLATE NOCASE, year_from DESC, id`
       )
@@ -171,6 +192,7 @@ async function listIssues(db: D1Database): Promise<VehicleIssue[]> {
     ...r,
     category: r.category === "vehicle" ? "vehicle" : "loading",
     models: readModels(r.models, r.model),
+    report_links: readReportLinks(r.report_links),
     youtube_links: readYouTubeLinks(r.youtube_links),
     media: byIssue.get(r.id) ?? []
   }));
@@ -255,6 +277,7 @@ function parseBulletinUrl(raw: string): string | null | undefined {
  * Fields: category, make, models (comma or newline separated; ignored when
  * all_models=1), year_from, year_to (blank = "and newer"), issue_type (must
  * belong to the category), issue, solution, bulletin, bulletin_url,
+ * report_links (optional; one link per line, words around it are its label),
  * youtube_links (optional; one link per line).
  */
 export async function handleUpsertVehicleIssue(
@@ -348,6 +371,10 @@ export async function handleUpsertVehicleIssue(
   if (bulletinUrl === undefined) return jsonError(400, "The bulletin link must be a web address (https://…).");
   if (bulletinUrl && bulletinUrl.length > 1000) return jsonError(400, "That bulletin link is too long.");
 
+  const reports = parseReportLinks(form.get("report_links") ?? "");
+  if ("error" in reports) return jsonError(400, reports.error);
+  const reportsJson = reports.links.length ? JSON.stringify(reports.links) : null;
+
   const canon = await canonicalMakeModels(env.DB, make, models);
   const modelLabel = vehicleModelsLabel(canon.models);
   const modelsJson = JSON.stringify(canon.models);
@@ -357,13 +384,13 @@ export async function handleUpsertVehicleIssue(
     const row = await env.DB.prepare(
       `INSERT INTO vehicle_issues
          (category, make, model, models, year_from, year_to, issue_type, issue, solution,
-          bulletin, bulletin_url, youtube_links, created_by, updated_by)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          bulletin, bulletin_url, report_links, youtube_links, created_by, updated_by)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        RETURNING id`
     )
       .bind(
         category, canon.make, modelLabel, modelsJson, yearFrom, yearTo, issueType, issue, solution,
-        bulletin, bulletinUrl, linksJson, actor, actor
+        bulletin, bulletinUrl, reportsJson, linksJson, actor, actor
       )
       .first<{ id: number }>();
     return json({ ok: true, id: row?.id ?? null }, 201);
@@ -372,13 +399,13 @@ export async function handleUpsertVehicleIssue(
   const res = await env.DB.prepare(
     `UPDATE vehicle_issues
         SET category = ?, make = ?, model = ?, models = ?, year_from = ?, year_to = ?, issue_type = ?,
-            issue = ?, solution = ?, bulletin = ?, bulletin_url = ?, youtube_links = ?,
+            issue = ?, solution = ?, bulletin = ?, bulletin_url = ?, report_links = ?, youtube_links = ?,
             updated_by = ?, updated_at = datetime('now')
       WHERE id = ?`
   )
     .bind(
       category, canon.make, modelLabel, modelsJson, yearFrom, yearTo, issueType, issue, solution,
-      bulletin, bulletinUrl, linksJson, actor, id
+      bulletin, bulletinUrl, reportsJson, linksJson, actor, id
     )
     .run();
   if ((res.meta?.changes ?? 0) === 0) return jsonError(404, "That entry no longer exists. Reload the page.");
@@ -618,6 +645,7 @@ export interface VehicleIssueMatch {
   solution: string;
   bulletin: string | null;
   bulletin_url: string | null;
+  report_links: ReportLink[];
 }
 
 /** GET /claims-api/vehicle-issues/match?make=&model=&year= */
@@ -636,7 +664,8 @@ export async function handleMatchVehicleIssues(url: URL, env: VehicleGuideEnv): 
       issue: i.issue,
       solution: i.solution,
       bulletin: i.bulletin,
-      bulletin_url: i.bulletin_url
+      bulletin_url: i.bulletin_url,
+      report_links: i.report_links
     }));
   }
   return new Response(JSON.stringify({ matches }), {

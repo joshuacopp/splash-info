@@ -59,6 +59,7 @@ export async function saveVehicleIssueAction(formData: FormData): Promise<Redire
     solution: strField(formData, "solution"),
     bulletin: strField(formData, "bulletin"),
     bulletin_url: strField(formData, "bulletin_url"),
+    report_links: strField(formData, "report_links"),
     youtube_links: strField(formData, "youtube_links")
   };
   if (id) body.id = id;

@@ -19,7 +19,9 @@
 
 import Link from "next/link";
 import {
+  MAX_REPORT_LINKS,
   MAX_YOUTUBE_LINKS,
+  formatReportLinks,
   VEHICLE_ISSUE_CATEGORIES,
   parseYouTubeUrl,
   youTubeEmbedUrl,
@@ -260,6 +262,21 @@ export default async function VehicleGuideAdminPage({ searchParams }: PageProps)
                   placeholder="https://…"
                   className={INPUT_CLS}
                 />
+              </label>
+              <label className="flex flex-col gap-1 sm:col-span-2 lg:col-span-4">
+                <span className={LABEL_CLS}>Reported failures</span>
+                <textarea
+                  name="report_links"
+                  rows={3}
+                  defaultValue={editing ? formatReportLinks(editing.report_links) : ""}
+                  placeholder={"47 NHTSA complaints https://www.nhtsa.gov/…\nOwner forum thread https://…"}
+                  className={INPUT_CLS}
+                />
+                <span className="text-xs text-splash-navy/60">
+                  Optional, up to {MAX_REPORT_LINKS}. Use when there&rsquo;s no bulletin but owners
+                  report the same failure (complaints, forum threads, news). One link per line; words
+                  on the line before or after the link become its description.
+                </span>
               </label>
               <label className="flex flex-col gap-1 sm:col-span-2 lg:col-span-4">
                 <span className={LABEL_CLS}>YouTube videos</span>
