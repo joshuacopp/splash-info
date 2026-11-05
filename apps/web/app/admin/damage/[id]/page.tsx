@@ -81,6 +81,13 @@ import { ActionForm } from "../../_components/ActionForm";
 import { getMe } from "../../../_lib/me";
 import type { Session } from "@splash/types/session";
 import {
+  formatVehicleYears,
+  matchVehicleIssues,
+  vehicleIssueTypeLabel,
+  type VehicleIssue,
+  type VehicleIssuesResponse
+} from "@splash/types/vehicle-guide";
+import {
   type ActivityType,
   type ClaimActivityRow,
   type ClaimDetermination,
@@ -247,11 +254,14 @@ export default async function DamageClaimDetailPage({ params, searchParams }: Pa
 
   // Fetch claim + session in parallel. getMe() is React-cached so the root
   // layout's call (for the Header) and this one share a single fetch.
-  const [result, session] = await Promise.all([
+  // The Vehicle Guide is fetched alongside so known vehicle issues for this
+  // car can be shown; any failure there just means no box, never a broken page.
+  const [result, session, guide] = await Promise.all([
     damageGetJsonOrStatus<DetailResponse>(
       `/manage/api/claim/${encodeURIComponent(id)}`
     ),
-    getMe().catch(() => null)
+    getMe().catch(() => null),
+    damageGetJsonOrStatus<VehicleIssuesResponse>("/manage/api/vehicle-issues").catch(() => null)
   ]);
 
   if ("status" in result) {
@@ -321,6 +331,13 @@ export default async function DamageClaimDetailPage({ params, searchParams }: Pa
   }
 
   const { claim, photos, activity } = result.data;
+  const knownIssues =
+    guide && "data" in guide
+      ? matchVehicleIssues(
+          guide.data.issues.filter((i) => i.category === "vehicle"),
+          { make: claim.vehicle_make, model: claim.vehicle_model, year: claim.vehicle_year }
+        )
+      : [];
 
   // Defensive: filter soft-deleted photos. Worker may or may not include them.
   const livePhotos = photos.filter((p) => !p.deleted_at);
@@ -378,6 +395,7 @@ export default async function DamageClaimDetailPage({ params, searchParams }: Pa
         activity={activity}
         canEditCustomer={dcRole !== null}
       />
+      {knownIssues.length ? <KnownVehicleIssuesCard issues={knownIssues} /> : null}
       {/* Brief 172 — Cause / fault attribution. Render for any caller with
        *  a damage role; worker re-validates dc_role on POST. Pre-migration
        *  D1 (column not yet added by operator) surfaces as `null` here and
@@ -410,6 +428,70 @@ export default async function DamageClaimDetailPage({ params, searchParams }: Pa
       {dcRole === "super_admin" ? (
         <DangerZoneCard claimId={claim.claim_id} />
       ) : null}
+    </section>
+  );
+}
+
+/* ============================================================
+ * Known vehicle issues (Vehicle Guide, category "vehicle")
+ *
+ * Parts known to break on this make / model / year regardless of the wash,
+ * often with a manufacturer bulletin. Shown so the reviewer sees it while
+ * deciding responsibility; matching rule is matchVehicleIssues, the same one
+ * the claim form uses. Read-only; entries are edited on the Vehicle Guide tab.
+ * ============================================================ */
+
+function KnownVehicleIssuesCard({ issues }: { issues: VehicleIssue[] }) {
+  return (
+    <section
+      aria-label="Known vehicle issues"
+      className="mb-6 rounded-splash-lg border border-orange-300 border-l-[6px] border-l-orange-500 bg-orange-50 p-5 shadow-splash-card"
+    >
+      <div className="mb-2 flex flex-wrap items-baseline justify-between gap-2">
+        <h2 className="text-base font-bold text-orange-900">
+          {issues.length === 1
+            ? "Known issue for this vehicle"
+            : `${issues.length} known issues for this vehicle`}
+        </h2>
+        <Link
+          href="/admin/damage/vehicles?tab=vehicle"
+          className="text-xs font-semibold text-splash-blue underline"
+        >
+          Vehicle Guide
+        </Link>
+      </div>
+      <div className="flex flex-col divide-y divide-orange-200">
+        {issues.map((i) => (
+          <div key={i.id} className="py-3 text-sm first:pt-0 last:pb-0">
+            <p className="font-bold text-splash-navy">
+              {vehicleIssueTypeLabel(i.issue_type)} · {i.make} {i.model} (
+              {formatVehicleYears(i.year_from, i.year_to)})
+            </p>
+            <p className="mt-1 whitespace-pre-wrap text-splash-navy">{i.issue}</p>
+            <p className="mt-1 whitespace-pre-wrap text-splash-navy/80">
+              <span className="font-semibold">How to handle it: </span>
+              {i.solution}
+            </p>
+            {i.bulletin || i.bulletin_url ? (
+              <p className="mt-1 text-splash-navy/80">
+                <span className="font-semibold">Bulletin: </span>
+                {i.bulletin_url ? (
+                  <a
+                    href={i.bulletin_url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="font-semibold text-splash-blue underline"
+                  >
+                    {i.bulletin || "View bulletin"}
+                  </a>
+                ) : (
+                  i.bulletin
+                )}
+              </p>
+            ) : null}
+          </div>
+        ))}
+      </div>
     </section>
   );
 }

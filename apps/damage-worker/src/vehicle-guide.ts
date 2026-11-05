@@ -14,17 +14,30 @@
 //   ADMIN — /manage/api/vehicle-issues*  (behind the "claims" tool gate)
 //     Read by anyone with a damage role; written only by damage RM and above.
 //
+//   CLAIM FORM — GET /claims-api/vehicle-issues/match?make=&model=&year=
+//     The public claim form's staff section asks this for known VEHICLE
+//     issues (category 'vehicle') on the car being claimed. Public like the
+//     rest of /claims-api: it answers only for the exact vehicle asked about,
+//     only vehicle-category entries, and no media -- the browsable guide stays
+//     behind its token.
+//
 // DATA: D1 tables vehicle_issues + vehicle_issue_media
-// (migrations/0002_vehicle_issues.sql). Bytes in R2 under vehicle-guide/.
+// (migrations/0002, 0003, 0004). Bytes in R2 under vehicle-guide/.
 
 import type { Session } from "@splash/auth";
 import { isOriginAllowed, json, jsonError, readForm } from "@splash/http";
 import { type ImagesBinding, isHeicContentType } from "@splash/storage-r2";
 import {
   canonicalYouTubeUrl,
+  formatVehicleYears,
+  isVehicleIssueCategory,
   isVehicleIssueType,
+  matchVehicleIssues,
   MAX_YOUTUBE_LINKS,
   parseYouTubeUrl,
+  vehicleIssueTypeCategory,
+  vehicleIssueTypeLabel,
+  vehicleModelsLabel,
   type VehicleIssue,
   type VehicleIssueMedia,
   type VehicleIssuesResponse
@@ -110,16 +123,36 @@ function readYouTubeLinks(raw: string | null): string[] {
   }
 }
 
+/** vehicle_issues.models -> string[]. NULL (rows from before migration 0004)
+ *  is the single `model`; '[]' is every model. A bad value falls back to
+ *  `model` rather than silently widening the entry to all models. */
+function readModels(raw: string | null, model: string): string[] {
+  if (raw === null) return [model];
+  try {
+    const v: unknown = JSON.parse(raw);
+    if (Array.isArray(v)) return v.filter((x): x is string => typeof x === "string" && x.trim() !== "");
+  } catch {
+    /* fall through */
+  }
+  return [model];
+}
+
+type IssueRow = Omit<VehicleIssue, "media" | "youtube_links" | "models" | "category"> & {
+  category: string | null;
+  models: string | null;
+  youtube_links: string | null;
+};
+
 async function listIssues(db: D1Database): Promise<VehicleIssue[]> {
   const [issuesRes, mediaRes] = await Promise.all([
     db
       .prepare(
-        `SELECT id, make, model, year_from, year_to, issue_type, issue, solution,
-                youtube_links, created_by, created_at, updated_by, updated_at
+        `SELECT id, category, make, model, models, year_from, year_to, issue_type, issue, solution,
+                bulletin, bulletin_url, youtube_links, created_by, created_at, updated_by, updated_at
            FROM vehicle_issues
           ORDER BY make COLLATE NOCASE, model COLLATE NOCASE, year_from DESC, id`
       )
-      .all<Omit<VehicleIssue, "media" | "youtube_links"> & { youtube_links: string | null }>(),
+      .all<IssueRow>(),
     db
       .prepare(
         `SELECT id, issue_id, kind, mime, size_bytes, original_filename, created_by, created_at
@@ -136,6 +169,8 @@ async function listIssues(db: D1Database): Promise<VehicleIssue[]> {
   }
   return (issuesRes.results ?? []).map((r) => ({
     ...r,
+    category: r.category === "vehicle" ? "vehicle" : "loading",
+    models: readModels(r.models, r.model),
     youtube_links: readYouTubeLinks(r.youtube_links),
     media: byIssue.get(r.id) ?? []
   }));
@@ -177,32 +212,50 @@ function clean(s: string | null): string {
  * Reuse the spelling already on file when a make (or a model within a make)
  * matches case-insensitively. The public page groups by make then model, so
  * "chevrolet" and "Chevrolet" must land in one bucket -- fixing it at write
- * time keeps every reader simple.
+ * time keeps every reader simple. Models are compared against every model of
+ * every entry for the make, not just single-model entries.
  */
-async function canonicalMakeModel(
+async function canonicalMakeModels(
   db: D1Database,
   make: string,
-  model: string
-): Promise<{ make: string; model: string }> {
-  const m = await db
-    .prepare(`SELECT make FROM vehicle_issues WHERE make = ? COLLATE NOCASE LIMIT 1`)
+  models: string[]
+): Promise<{ make: string; models: string[] }> {
+  const rows = await db
+    .prepare(`SELECT make, model, models FROM vehicle_issues WHERE make = ? COLLATE NOCASE`)
     .bind(make)
-    .first<{ make: string }>();
-  const canonMake = m?.make ?? make;
-  const mo = await db
-    .prepare(
-      `SELECT model FROM vehicle_issues
-        WHERE make = ? COLLATE NOCASE AND model = ? COLLATE NOCASE LIMIT 1`
-    )
-    .bind(canonMake, model)
-    .first<{ model: string }>();
-  return { make: canonMake, model: mo?.model ?? model };
+    .all<{ make: string; model: string; models: string | null }>();
+  const list = rows.results ?? [];
+  const canonMake = list[0]?.make ?? make;
+  const known = new Map<string, string>();
+  for (const r of list) {
+    for (const m of readModels(r.models, r.model)) {
+      if (!known.has(m.toLowerCase())) known.set(m.toLowerCase(), m);
+    }
+  }
+  return { make: canonMake, models: models.map((m) => known.get(m.toLowerCase()) ?? m) };
+}
+
+/** Bulletin link: blank (null), an http(s) URL, or undefined when it is
+ *  neither. The staff page links to it, so javascript: / data: are refused
+ *  rather than rendered. */
+function parseBulletinUrl(raw: string): string | null | undefined {
+  const v = raw.trim();
+  if (!v) return null;
+  try {
+    const u = new URL(/^[a-z][a-z0-9+.-]*:/i.test(v) ? v : `https://${v}`);
+    if (u.protocol !== "https:" && u.protocol !== "http:") return undefined;
+    return u.toString();
+  } catch {
+    return undefined;
+  }
 }
 
 /**
  * POST /manage/api/vehicle-issues — create (no id) or update (id given).
- * Fields: make, model, year_from, year_to (blank = "and newer"), issue_type,
- * issue, solution, youtube_links (optional; one link per line).
+ * Fields: category, make, models (comma or newline separated; ignored when
+ * all_models=1), year_from, year_to (blank = "and newer"), issue_type (must
+ * belong to the category), issue, solution, bulletin, bulletin_url,
+ * youtube_links (optional; one link per line).
  */
 export async function handleUpsertVehicleIssue(
   request: Request,
@@ -222,10 +275,27 @@ export async function handleUpsertVehicleIssue(
     id = n;
   }
 
+  const category = clean(form.get("category")) || "loading";
+  if (!isVehicleIssueCategory(category)) return jsonError(400, "Pick loading issue or vehicle issue.");
+
   const make = clean(form.get("make"));
-  const model = clean(form.get("model"));
   if (!make || make.length > 60) return jsonError(400, "Enter a make (up to 60 characters).");
-  if (!model || model.length > 80) return jsonError(400, "Enter a model (up to 80 characters).");
+
+  // Models: comma or line separated, de-duplicated case-insensitively.
+  // `model` (singular) is still accepted from older callers.
+  const allModels = clean(form.get("all_models")) === "1";
+  const models: string[] = [];
+  if (!allModels) {
+    const raw = form.get("models") ?? form.get("model") ?? "";
+    for (const piece of raw.split(/[,\n]+/)) {
+      const m = clean(piece);
+      if (!m) continue;
+      if (m.length > 80) return jsonError(400, `"${m.slice(0, 40)}…" is too long for a model (up to 80 characters).`);
+      if (!models.some((x) => x.toLowerCase() === m.toLowerCase())) models.push(m);
+    }
+    if (models.length === 0) return jsonError(400, "Enter at least one model, or tick All models.");
+    if (models.length > 30) return jsonError(400, "An entry can list at most 30 models.");
+  }
 
   const maxYear = new Date().getUTCFullYear() + 2;
   const yearFrom = Number(clean(form.get("year_from")));
@@ -243,7 +313,9 @@ export async function handleUpsertVehicleIssue(
   }
 
   const issueType = clean(form.get("issue_type"));
-  if (!isVehicleIssueType(issueType)) return jsonError(400, "Pick an issue type.");
+  if (!isVehicleIssueType(issueType) || vehicleIssueTypeCategory(issueType) !== category) {
+    return jsonError(400, "Pick an issue type.");
+  }
 
   // Issue + solution keep their line breaks: they are read as instructions,
   // and a numbered list typed on separate lines should stay one.
@@ -270,28 +342,44 @@ export async function handleUpsertVehicleIssue(
   }
   const linksJson = links.length ? JSON.stringify(links) : null;
 
-  const canon = await canonicalMakeModel(env.DB, make, model);
+  const bulletin = clean(form.get("bulletin")) || null;
+  if (bulletin && bulletin.length > 200) return jsonError(400, "Keep the bulletin reference under 200 characters.");
+  const bulletinUrl = parseBulletinUrl(form.get("bulletin_url") ?? "");
+  if (bulletinUrl === undefined) return jsonError(400, "The bulletin link must be a web address (https://…).");
+  if (bulletinUrl && bulletinUrl.length > 1000) return jsonError(400, "That bulletin link is too long.");
+
+  const canon = await canonicalMakeModels(env.DB, make, models);
+  const modelLabel = vehicleModelsLabel(canon.models);
+  const modelsJson = JSON.stringify(canon.models);
   const actor = session.email || null;
 
   if (id === null) {
     const row = await env.DB.prepare(
       `INSERT INTO vehicle_issues
-         (make, model, year_from, year_to, issue_type, issue, solution, youtube_links, created_by, updated_by)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         (category, make, model, models, year_from, year_to, issue_type, issue, solution,
+          bulletin, bulletin_url, youtube_links, created_by, updated_by)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        RETURNING id`
     )
-      .bind(canon.make, canon.model, yearFrom, yearTo, issueType, issue, solution, linksJson, actor, actor)
+      .bind(
+        category, canon.make, modelLabel, modelsJson, yearFrom, yearTo, issueType, issue, solution,
+        bulletin, bulletinUrl, linksJson, actor, actor
+      )
       .first<{ id: number }>();
     return json({ ok: true, id: row?.id ?? null }, 201);
   }
 
   const res = await env.DB.prepare(
     `UPDATE vehicle_issues
-        SET make = ?, model = ?, year_from = ?, year_to = ?, issue_type = ?,
-            issue = ?, solution = ?, youtube_links = ?, updated_by = ?, updated_at = datetime('now')
+        SET category = ?, make = ?, model = ?, models = ?, year_from = ?, year_to = ?, issue_type = ?,
+            issue = ?, solution = ?, bulletin = ?, bulletin_url = ?, youtube_links = ?,
+            updated_by = ?, updated_at = datetime('now')
       WHERE id = ?`
   )
-    .bind(canon.make, canon.model, yearFrom, yearTo, issueType, issue, solution, linksJson, actor, id)
+    .bind(
+      category, canon.make, modelLabel, modelsJson, yearFrom, yearTo, issueType, issue, solution,
+      bulletin, bulletinUrl, linksJson, actor, id
+    )
     .run();
   if ((res.meta?.changes ?? 0) === 0) return jsonError(404, "That entry no longer exists. Reload the page.");
   return json({ ok: true, id });
@@ -515,6 +603,49 @@ export async function serveVehicleMedia(
   if (!obj) return new Response("Not found", { status: 404 });
   headers.set("Content-Length", String(obj.size));
   return new Response(request.method === "HEAD" ? null : obj.body, { status: 200, headers });
+}
+
+/* ============================================================
+ * Claim form lookup
+ * ============================================================ */
+
+/** One known vehicle issue, as the claim form shows it. No ids, no media. */
+export interface VehicleIssueMatch {
+  type_label: string;
+  vehicle: string;
+  years: string;
+  issue: string;
+  solution: string;
+  bulletin: string | null;
+  bulletin_url: string | null;
+}
+
+/** GET /claims-api/vehicle-issues/match?make=&model=&year= */
+export async function handleMatchVehicleIssues(url: URL, env: VehicleGuideEnv): Promise<Response> {
+  const make = clean(url.searchParams.get("make")).slice(0, 60);
+  const model = clean(url.searchParams.get("model")).slice(0, 80);
+  const yearRaw = Number(clean(url.searchParams.get("year")));
+  const year = Number.isInteger(yearRaw) && yearRaw >= 1900 && yearRaw <= 2100 ? yearRaw : null;
+  let matches: VehicleIssueMatch[] = [];
+  if (make && model) {
+    const vehicleIssues = (await listIssues(env.DB)).filter((i) => i.category === "vehicle");
+    matches = matchVehicleIssues(vehicleIssues, { make, model, year }).map((i) => ({
+      type_label: vehicleIssueTypeLabel(i.issue_type),
+      vehicle: `${i.make} ${i.model}`,
+      years: formatVehicleYears(i.year_from, i.year_to),
+      issue: i.issue,
+      solution: i.solution,
+      bulletin: i.bulletin,
+      bulletin_url: i.bulletin_url
+    }));
+  }
+  return new Response(JSON.stringify({ matches }), {
+    headers: {
+      "Content-Type": "application/json",
+      "Cache-Control": "no-store",
+      "X-Robots-Tag": "noindex"
+    }
+  });
 }
 
 /* ============================================================

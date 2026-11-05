@@ -18,7 +18,8 @@ import { useEffect, useState } from "react";
 import {
   formatVehicleYears,
   vehicleIssueTypeLabel,
-  type VehicleIssue
+  type VehicleIssue,
+  type VehicleIssueCategory
 } from "@splash/types/vehicle-guide";
 import { RedirectForm } from "../../../_components/RedirectForm";
 import { ConfirmDeleteButton } from "./ConfirmDeleteButton";
@@ -33,11 +34,13 @@ const TYPE_PILL: Record<string, string> = {
   safety: "bg-splash-deny/10 text-splash-deny",
   other: "bg-splash-navy/10 text-splash-navy/80"
 };
+// Every vehicle-issue type shares one colour; the label says which part.
+const VEHICLE_PILL = "bg-orange-100 text-orange-900";
 
 const CARD_CLS = "rounded-splash-lg border border-gray-light bg-white p-5 shadow-splash-card";
 
 function matches(i: VehicleIssue, words: string[], openYear: number): boolean {
-  const hay = [i.make, i.model, vehicleIssueTypeLabel(i.issue_type), i.issue, i.solution]
+  const hay = [i.make, i.model, vehicleIssueTypeLabel(i.issue_type), i.issue, i.solution, i.bulletin ?? ""]
     .join(" ")
     .toLowerCase();
   return words.every((w) => {
@@ -49,7 +52,15 @@ function matches(i: VehicleIssue, words: string[], openYear: number): boolean {
   });
 }
 
-export function VehicleList({ issues, canEdit }: { issues: VehicleIssue[]; canEdit: boolean }) {
+export function VehicleList({
+  issues,
+  canEdit,
+  category
+}: {
+  issues: VehicleIssue[];
+  canEdit: boolean;
+  category: VehicleIssueCategory;
+}) {
   const [q, setQ] = useState("");
 
   useEffect(() => {
@@ -70,7 +81,9 @@ export function VehicleList({ issues, canEdit }: { issues: VehicleIssue[]; canEd
   const shown = words.length ? issues.filter((i) => matches(i, words, openYear)) : issues;
 
   // Group by make, then model. The worker stores one spelling per make/model
-  // (it reuses whatever is on file), so plain string keys are safe here.
+  // (it reuses whatever is on file), so plain string keys are safe here. A
+  // several-model entry is listed once, under its joined label ("Telluride,
+  // Sorento"), so editing it is one place, not several.
   const byMake = new Map<string, Map<string, VehicleIssue[]>>();
   for (const i of shown) {
     const models = byMake.get(i.make) ?? new Map<string, VehicleIssue[]>();
@@ -84,7 +97,10 @@ export function VehicleList({ issues, canEdit }: { issues: VehicleIssue[]; canEd
   if (issues.length === 0) {
     return (
       <div className={CARD_CLS}>
-        <p className="text-splash-navy/80">No vehicles yet.{canEdit ? " Add the first one above." : ""}</p>
+        <p className="text-splash-navy/80">
+          {category === "vehicle" ? "No vehicle issues yet." : "No loading issues yet."}
+          {canEdit ? " Add the first one above." : ""}
+        </p>
       </div>
     );
   }
@@ -144,7 +160,9 @@ export function VehicleList({ issues, canEdit }: { issues: VehicleIssue[]; canEd
                             {formatVehicleYears(i.year_from, i.year_to)}
                           </div>
                           <span
-                            className={`mt-1 inline-block rounded-full px-2 py-0.5 text-[11px] font-bold ${TYPE_PILL[i.issue_type] ?? TYPE_PILL.other}`}
+                            className={`mt-1 inline-block rounded-full px-2 py-0.5 text-[11px] font-bold ${
+                              i.category === "vehicle" ? VEHICLE_PILL : TYPE_PILL[i.issue_type] ?? TYPE_PILL.other
+                            }`}
                           >
                             {vehicleIssueTypeLabel(i.issue_type)}
                           </span>
@@ -154,6 +172,23 @@ export function VehicleList({ issues, canEdit }: { issues: VehicleIssue[]; canEd
                           <p className="mt-1.5 whitespace-pre-wrap border-l-4 border-splash-success/60 pl-3 text-splash-navy/80">
                             {i.solution}
                           </p>
+                          {i.bulletin || i.bulletin_url ? (
+                            <p className="mt-1.5 text-xs font-semibold text-splash-navy/80">
+                              Bulletin:{" "}
+                              {i.bulletin_url ? (
+                                <a
+                                  href={i.bulletin_url}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="text-splash-blue underline"
+                                >
+                                  {i.bulletin || "View bulletin"}
+                                </a>
+                              ) : (
+                                i.bulletin
+                              )}
+                            </p>
+                          ) : null}
                           <p className="mt-1.5 text-xs text-splash-navy/50">
                             {i.media.length
                               ? `${i.media.length} photo${i.media.length === 1 ? "" : "s"}/video${i.media.length === 1 ? "" : "s"} · `
@@ -175,6 +210,7 @@ export function VehicleList({ issues, canEdit }: { issues: VehicleIssue[]; canEd
                             </Link>
                             <RedirectForm action={deleteVehicleIssueAction}>
                               <input type="hidden" name="id" value={i.id} />
+                              <input type="hidden" name="tab" value={i.category} />
                               <ConfirmDeleteButton
                                 confirmText={`Delete ${i.make} ${i.model} (${formatVehicleYears(i.year_from, i.year_to)}) and its photos and videos? This can't be undone.`}
                               />

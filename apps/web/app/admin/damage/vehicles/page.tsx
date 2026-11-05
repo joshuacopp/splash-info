@@ -9,6 +9,10 @@
 // enforces it and reports `can_edit`, which is the only thing this page uses
 // to decide whether to show the forms.
 //
+// `?tab=loading|vehicle` picks the list: loading issues (how to get the car
+// through) or vehicle issues (parts known to break on it). One form serves
+// both; its category starts on the open tab. Editing an entry opens its tab.
+//
 // `?edit={id}` swaps the add form for that entry's edit form plus its photo
 // and video manager. New entries land there automatically so media can be
 // attached straight away.
@@ -16,9 +20,10 @@
 import Link from "next/link";
 import {
   MAX_YOUTUBE_LINKS,
-  VEHICLE_ISSUE_TYPES,
+  VEHICLE_ISSUE_CATEGORIES,
   parseYouTubeUrl,
   youTubeEmbedUrl,
+  type VehicleIssueCategory,
   type VehicleIssuesResponse
 } from "@splash/types/vehicle-guide";
 import { damageGetJsonOrStatus } from "../_lib/worker-fetch";
@@ -26,6 +31,7 @@ import { DamageTabs } from "../_components/DamageTabs";
 import { RedirectForm } from "../../_components/RedirectForm";
 import { SaveCarCountButton as SaveButton } from "../car-counts/_components/SaveCarCountButton";
 import { ConfirmDeleteButton } from "./_components/ConfirmDeleteButton";
+import { CategoryTypeFields, ModelsField } from "./_components/IssueFields";
 import { MediaUploader } from "./_components/MediaUploader";
 import { PublicLinkCard } from "./_components/PublicLinkCard";
 import { VehicleList } from "./_components/VehicleList";
@@ -91,10 +97,16 @@ export default async function VehicleGuideAdminPage({ searchParams }: PageProps)
 
   const { issues, can_edit: canEdit, public_path: publicPath } = res.data;
   const editing = editId ? issues.find((i) => i.id === editId) ?? null : null;
+  const tab: VehicleIssueCategory =
+    editing?.category ?? (firstParam(sp.tab) === "vehicle" ? "vehicle" : "loading");
+  const tabIssues = issues.filter((i) => i.category === tab);
 
-  // For the make / model datalists on the form.
+  // For the make / model datalists on the form (both categories: a car that
+  // is hard to load is often the one with the fragile antenna too).
   const makes = Array.from(new Set(issues.map((i) => i.make))).sort((a, b) => a.localeCompare(b));
-  const allModels = Array.from(new Set(issues.map((i) => i.model))).sort((a, b) => a.localeCompare(b));
+  const allModels = Array.from(new Set(issues.flatMap((i) => i.models))).sort((a, b) =>
+    a.localeCompare(b)
+  );
 
   return (
     <Shell>
@@ -109,12 +121,37 @@ export default async function VehicleGuideAdminPage({ searchParams }: PageProps)
         </div>
       ) : null}
 
+      <nav aria-label="Vehicle Guide lists" className="mb-5 flex flex-wrap gap-2 border-b border-gray-light">
+        {VEHICLE_ISSUE_CATEGORIES.map((c) => {
+          const active = tab === c.value;
+          const n = issues.filter((i) => i.category === c.value).length;
+          return (
+            <Link
+              key={c.value}
+              href={`${LIST_PATH}?tab=${c.value}`}
+              aria-current={active ? "page" : undefined}
+              className={`-mb-px border-b-2 px-3 py-2 text-sm font-bold ${
+                active
+                  ? "border-splash-blue text-splash-navy"
+                  : "border-transparent text-splash-navy/60 hover:text-splash-navy"
+              }`}
+            >
+              {c.plural} <span className="font-semibold text-splash-navy/50">({n})</span>
+            </Link>
+          );
+        })}
+      </nav>
+
       {canEdit ? (
         <div className={`mb-6 ${CARD_CLS}`} id="editor">
           <div className="mb-4 flex items-start justify-between gap-3">
             <div>
               <h2 className="text-lg font-bold text-splash-navy">
-                {editing ? `Edit: ${editing.make} ${editing.model}` : "Add a vehicle"}
+                {editing
+                  ? `Edit: ${editing.make} ${editing.model}`
+                  : tab === "vehicle"
+                    ? "Add a vehicle issue"
+                    : "Add a loading issue"}
               </h2>
               <p className="text-sm text-splash-navy/70">
                 Years are a range: a 2017–2022 entry shows under every one of those years. Leave
@@ -122,7 +159,7 @@ export default async function VehicleGuideAdminPage({ searchParams }: PageProps)
               </p>
             </div>
             {editing ? (
-              <Link href={LIST_PATH} className="text-sm font-semibold text-splash-blue underline">
+              <Link href={`${LIST_PATH}?tab=${tab}`} className="text-sm font-semibold text-splash-blue underline">
                 Cancel
               </Link>
             ) : null}
@@ -135,6 +172,7 @@ export default async function VehicleGuideAdminPage({ searchParams }: PageProps)
           >
             {editing ? <input type="hidden" name="id" value={editing.id} /> : null}
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+              <CategoryTypeFields defaultCategory={tab} defaultType={editing?.issue_type ?? ""} />
               <label className="flex flex-col gap-1">
                 <span className={LABEL_CLS}>Make *</span>
                 <input
@@ -147,18 +185,7 @@ export default async function VehicleGuideAdminPage({ searchParams }: PageProps)
                   className={INPUT_CLS}
                 />
               </label>
-              <label className="flex flex-col gap-1">
-                <span className={LABEL_CLS}>Model *</span>
-                <input
-                  name="model"
-                  required
-                  maxLength={80}
-                  list="vg-models"
-                  defaultValue={editing?.model ?? ""}
-                  placeholder="Prius"
-                  className={INPUT_CLS}
-                />
-              </label>
+              <ModelsField defaultModels={editing?.models ?? null} />
               <label className="flex flex-col gap-1">
                 <span className={LABEL_CLS}>Year from *</span>
                 <input
@@ -186,24 +213,6 @@ export default async function VehicleGuideAdminPage({ searchParams }: PageProps)
                   className={INPUT_CLS}
                 />
               </label>
-              <label className="flex flex-col gap-1 sm:col-span-2 lg:col-span-4">
-                <span className={LABEL_CLS}>Issue type *</span>
-                <select
-                  name="issue_type"
-                  required
-                  defaultValue={editing?.issue_type ?? ""}
-                  className={INPUT_CLS}
-                >
-                  <option value="" disabled>
-                    Select…
-                  </option>
-                  {VEHICLE_ISSUE_TYPES.map((t) => (
-                    <option key={t.value} value={t.value}>
-                      {t.label}
-                    </option>
-                  ))}
-                </select>
-              </label>
               <label className="flex flex-col gap-1 sm:col-span-2">
                 <span className={LABEL_CLS}>Issue *</span>
                 <textarea
@@ -217,7 +226,7 @@ export default async function VehicleGuideAdminPage({ searchParams }: PageProps)
                 />
               </label>
               <label className="flex flex-col gap-1 sm:col-span-2">
-                <span className={LABEL_CLS}>Solution *</span>
+                <span className={LABEL_CLS}>Solution / how to handle it *</span>
                 <textarea
                   name="solution"
                   required
@@ -225,6 +234,30 @@ export default async function VehicleGuideAdminPage({ searchParams }: PageProps)
                   rows={5}
                   defaultValue={editing?.solution ?? ""}
                   placeholder={"What to tell the driver, step by step.\n1. Engine running, foot on brake\n2. …"}
+                  className={INPUT_CLS}
+                />
+              </label>
+              <label className="flex flex-col gap-1 sm:col-span-2">
+                <span className={LABEL_CLS}>Service bulletin #</span>
+                <input
+                  name="bulletin"
+                  maxLength={200}
+                  defaultValue={editing?.bulletin ?? ""}
+                  placeholder="e.g. TSB 23-BE-004H"
+                  className={INPUT_CLS}
+                />
+                <span className="text-xs text-splash-navy/60">
+                  Optional. A manufacturer bulletin or recall that backs this up.
+                </span>
+              </label>
+              <label className="flex flex-col gap-1 sm:col-span-2">
+                <span className={LABEL_CLS}>Bulletin link</span>
+                <input
+                  name="bulletin_url"
+                  type="url"
+                  maxLength={1000}
+                  defaultValue={editing?.bulletin_url ?? ""}
+                  placeholder="https://…"
                   className={INPUT_CLS}
                 />
               </label>
@@ -255,7 +288,7 @@ export default async function VehicleGuideAdminPage({ searchParams }: PageProps)
               ))}
             </datalist>
             <div>
-              <SaveButton>{editing ? "Save changes" : "Add vehicle"}</SaveButton>
+              <SaveButton>{editing ? "Save changes" : "Add entry"}</SaveButton>
             </div>
           </RedirectForm>
 
@@ -336,7 +369,7 @@ export default async function VehicleGuideAdminPage({ searchParams }: PageProps)
         </p>
       )}
 
-      <VehicleList issues={issues} canEdit={canEdit} />
+      <VehicleList key={tab} issues={tabIssues} canEdit={canEdit} category={tab} />
     </Shell>
   );
 }
@@ -351,7 +384,7 @@ function Shell({ children }: { children: React.ReactNode }) {
         </p>
         <h1 className="text-2xl font-bold text-splash-navy">Vehicle Guide</h1>
         <p className="mt-1 text-sm text-splash-navy/70">
-          Vehicles that give the tunnel trouble, and what to tell the driver.
+          Vehicles that give the tunnel trouble, and parts known to break on them.
         </p>
       </div>
       {children}

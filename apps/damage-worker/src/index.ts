@@ -31,6 +31,8 @@
 //                                                            pointing at OOB-uploaded R2 keys.)
 //   POST /claims-api/upload                                 — Brief 146 OOB per-photo upload
 //                                                            (multipart, returns r2_key)
+//   GET  /claims-api/vehicle-issues/match?make=&model=&year= — known vehicle issues for the
+//                                                            claim form's staff section
 //   GET  /claims/vehicles/{token}[/media/{id}]              — Vehicle Guide public page;
 //                                                            token-gated (VEHICLE_GUIDE_TOKEN)
 //   GET  /claims-api/photo/{r2-key-suffix...}               — serve R2 photo (handles both
@@ -215,6 +217,7 @@ import {
   handleDeleteVehicleIssue,
   handleDeleteVehicleMedia,
   handleListVehicleIssues,
+  handleMatchVehicleIssues,
   handleUploadVehicleMedia,
   handleUpsertVehicleIssue,
   handleVehicleGuidePublic,
@@ -419,6 +422,12 @@ export default {
         method === "GET"
       ) {
         return handleServeClaimSummary(env, decodeURIComponent(parts[2]));
+      }
+
+      // Known vehicle issues for the car on the claim form's staff section.
+      // See handleMatchVehicleIssues for what it does (and doesn't) expose.
+      if (path === "claims-api/vehicle-issues/match" && method === "GET") {
+        return handleMatchVehicleIssues(url, env);
       }
 
       // Vehicle Guide public page: /claims/vehicles/{token}[/media/{id}].

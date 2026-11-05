@@ -183,6 +183,23 @@ const SHARED_STYLES = `
     font-size: 14px; line-height: 1.4;
   }
   .banner-offline[hidden] { display: none; }
+  .known-issues {
+    margin: 0 0 18px;
+    padding: 14px 16px;
+    border: 1px solid #f5b37a;
+    border-left: 5px solid #d9690f;
+    border-radius: 8px;
+    background: #fff4ea;
+    color: #4a2a0a;
+    font-size: 14px;
+  }
+  .known-issues h3 { margin: 0 0 4px; font-size: 15px; color: #8a3b00; }
+  .known-issues .ki-sub { margin: 0 0 10px; color: #6b4a2a; }
+  .known-issues .ki-item { border-top: 1px solid #f5d2b3; padding-top: 10px; margin-top: 10px; }
+  .known-issues .ki-head { font-weight: 700; }
+  .known-issues .ki-text { margin: 4px 0 0; white-space: pre-wrap; }
+  .known-issues .ki-label { font-weight: 700; }
+  .known-issues a { color: #1e3a8a; font-weight: 600; }
   .staff-warning {
     margin: 0 0 14px; padding: 10px 14px;
     background: #fef3c7; border: 1px solid #fbbf24;
@@ -438,6 +455,9 @@ export function renderClaimForm(args: RenderClaimFormArgs): string {
           <h2 class="section-title">2. Staff Assessment</h2>
           <p class="section-sub">For Splash employees only.</p>
           <div class="staff-warning">⚠️ This section must be completed by a Splash employee.</div>
+          <!-- Known vehicle issues for this car (Vehicle Guide, category
+               'vehicle'). Filled after the PIN, so the customer never sees it. -->
+          <div class="known-issues" id="knownIssues" hidden aria-live="polite"></div>
 
           <div class="form-group">
             <label for="incidentDate">Date &amp; Time Damage Occurred <span class="required">*</span>
@@ -686,12 +706,82 @@ const FORM_SCRIPT = `(function () {
   function closePinModal() {
     pinOverlay.hidden = true;
   }
+  // Known vehicle issues (Vehicle Guide) for the car on this claim, shown at
+  // the top of the staff section. Looked up when the section unlocks and
+  // again if the year / make / model change. Informational only: nothing is
+  // submitted from it, and a failed lookup just shows nothing.
+  var knownIssues = document.getElementById('knownIssues');
+  var knownSeq = 0;
+  var knownTimer = null;
+  function kiEl(tag, cls, text) {
+    var el = document.createElement(tag);
+    if (cls) el.className = cls;
+    if (text) el.textContent = text;
+    return el;
+  }
+  function renderKnownIssues(matches) {
+    knownIssues.innerHTML = '';
+    if (!matches || !matches.length) { knownIssues.hidden = true; return; }
+    knownIssues.appendChild(kiEl('h3', '', matches.length === 1
+      ? 'Known issue for this vehicle'
+      : matches.length + ' known issues for this vehicle'));
+    knownIssues.appendChild(kiEl('p', 'ki-sub',
+      'From the Vehicle Guide. Check whether the damage matches before choosing a determination.'));
+    matches.forEach(function (m) {
+      var item = kiEl('div', 'ki-item');
+      item.appendChild(kiEl('div', 'ki-head', m.type_label + ' · ' + m.vehicle + ' (' + m.years + ')'));
+      item.appendChild(kiEl('p', 'ki-text', m.issue));
+      var sol = kiEl('p', 'ki-text');
+      sol.appendChild(kiEl('span', 'ki-label', 'How to handle it: '));
+      sol.appendChild(document.createTextNode(m.solution));
+      item.appendChild(sol);
+      if (m.bulletin || m.bulletin_url) {
+        var bul = kiEl('p', 'ki-text');
+        bul.appendChild(kiEl('span', 'ki-label', 'Bulletin: '));
+        if (m.bulletin_url && /^https?:/i.test(m.bulletin_url)) {
+          var a = kiEl('a', '', m.bulletin || 'View bulletin');
+          a.href = m.bulletin_url;
+          a.target = '_blank';
+          a.rel = 'noopener noreferrer';
+          bul.appendChild(a);
+        } else {
+          bul.appendChild(document.createTextNode(m.bulletin));
+        }
+        item.appendChild(bul);
+      }
+      knownIssues.appendChild(item);
+    });
+    knownIssues.hidden = false;
+  }
+  function checkKnownIssues() {
+    if (!knownIssues || employeeSection.hidden || !window.fetch) return;
+    var mk = (document.getElementById('vehicleMake') || {}).value || '';
+    var mo = (document.getElementById('vehicleModel') || {}).value || '';
+    var yr = (document.getElementById('vehicleYear') || {}).value || '';
+    var seq = ++knownSeq;
+    if (!mk.trim() || !mo.trim()) { renderKnownIssues([]); return; }
+    fetch('/claims-api/vehicle-issues/match?make=' + encodeURIComponent(mk.trim()) +
+      '&model=' + encodeURIComponent(mo.trim()) + '&year=' + encodeURIComponent(yr.trim()))
+      .then(function (r) { return r.ok ? r.json() : { matches: [] }; })
+      .then(function (body) { if (seq === knownSeq) renderKnownIssues(body && body.matches); })
+      .catch(function () { /* offline or worker hiccup: show nothing */ });
+  }
+  ['vehicleMake', 'vehicleModel', 'vehicleYear'].forEach(function (id) {
+    var el = document.getElementById(id);
+    if (!el) return;
+    el.addEventListener('change', function () {
+      clearTimeout(knownTimer);
+      knownTimer = setTimeout(checkKnownIssues, 300);
+    });
+  });
+
   function unlockEmployeeSection() {
     employeeSection.hidden = false;
     submitRow.hidden = false;
     btnContinue.parentElement.style.display = 'none';
     if (employeeNameInput) employeeNameInput.required = true;
     employeeSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    checkKnownIssues();
   }
   if (btnContinue) {
     btnContinue.addEventListener('click', function () {

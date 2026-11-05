@@ -9,12 +9,22 @@
 // Navigation lives in the URL hash (#/toyota/camry/2019) so the phone's back
 // button steps back one level instead of leaving the page.
 //
+// Two categories share the tree: loading issues (how to get the car through)
+// and vehicle issues (parts known to break on that car). A filter above the
+// search box narrows to one; the default shows both, because whoever is
+// looking up a car wants to know about either.
+//
+// An entry covering several models shows under each of them; an "all models"
+// entry shows under its own "All models" row AND inside every model of that
+// make, so drilling into a Telluride still finds a Kia-wide bulletin.
+//
 // Every entry is embedded as JSON and filtered in the browser. Fine for the
 // hundreds of entries this will plausibly ever hold; past a few thousand it
 // would want a server-side search instead.
 
 import { ASSETS } from "@splash/storage-r2";
 import {
+  ALL_MODELS_LABEL,
   parseYouTubeUrl,
   type VehicleIssue,
   vehicleIssueTypeLabel,
@@ -39,10 +49,16 @@ export function renderVehicleGuidePage(input: VehicleGuidePageInput): string {
     // Last year an open-ended ("2019+") entry lists. Next year, not this one:
     // dealers sell next model year's cars from late summer.
     year: new Date().getUTCFullYear() + 1,
+    allModels: ALL_MODELS_LABEL,
     issues: input.issues.map((i) => ({
       id: i.id,
+      cat: i.category,
       make: i.make,
       model: i.model,
+      models: i.models,
+      bulletin: i.bulletin,
+      // Worker only stores http(s) links; re-checked here before it becomes an href.
+      bulletinUrl: i.bulletin_url && /^https?:\/\//i.test(i.bulletin_url) ? i.bulletin_url : null,
       yf: i.year_from,
       yt: i.year_to,
       type: i.issue_type,
@@ -78,6 +94,11 @@ export function renderVehicleGuidePage(input: VehicleGuidePageInput): string {
   <span class="bar-title">Vehicle Guide</span>
 </header>
 <main class="wrap">
+  <div class="cats" id="cats" role="group" aria-label="Show">
+    <button type="button" data-cat="">All</button>
+    <button type="button" data-cat="loading">Loading issues</button>
+    <button type="button" data-cat="vehicle">Vehicle issues</button>
+  </div>
   <label class="search">
     <span class="sr">Search</span>
     <input id="q" type="search" placeholder="Search make, model, year or problem" autocomplete="off" enterkeyhint="search">
@@ -101,6 +122,9 @@ body{margin:0;background:#f4f5f9;color:#1c164e;font:16px/1.45 -apple-system,Blin
 .bar-title{font-weight:700;font-size:17px;letter-spacing:.01em}
 .wrap{max-width:1040px;margin:0 auto;padding:16px 16px calc(32px + env(safe-area-inset-bottom,0px))}
 .sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}
+.cats{display:flex;gap:6px;margin-bottom:10px;background:#fff;border:1px solid #dbdbdb;border-radius:12px;padding:4px}
+.cats button{flex:1;border:0;background:transparent;border-radius:9px;padding:10px 6px;font:inherit;font-size:15px;font-weight:700;color:#1c164ebb;min-height:44px}
+.cats button[aria-pressed="true"]{background:#1c164e;color:#fff}
 .search input{width:100%;font-size:17px;padding:14px 16px;border:2px solid #dbdbdb;border-radius:12px;background:#fff;color:inherit}
 .search input:focus{outline:none;border-color:#2b3491}
 .crumbs{margin:14px 2px 10px;font-size:15px;color:#1c164e99;display:flex;flex-wrap:wrap;gap:6px;align-items:center}
@@ -125,6 +149,10 @@ h2.view{font-size:20px;margin:6px 2px 12px}
 .t-park{background:#fdf0c4;color:#7a5a00}
 .t-safety{background:#fde2e2;color:#a11d1d}
 .t-other{background:#ececf2;color:#1c164ecc}
+.t-vehicle{background:#ffe7d1;color:#8a3b00}
+.cat-tag{font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:#8a3b00}
+.bul{margin:10px 0 0;font-size:14px;font-weight:600}
+.bul a{color:#2b3491}
 .yrs{font-size:14px;color:#1c164e99;font-weight:600}
 .card h3{font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:#1c164e99;margin:12px 0 4px}
 .txt{margin:0;white-space:pre-wrap;word-wrap:break-word}
@@ -151,10 +179,14 @@ h2.view{font-size:20px;margin:6px 2px 12px}
 const CLIENT_JS = `
 (function(){
   var DATA = JSON.parse(document.getElementById('vg-data').textContent);
-  var ISSUES = DATA.issues, BASE = DATA.base, NOW = DATA.year;
+  var ALL = DATA.issues, BASE = DATA.base, NOW = DATA.year, ALLMODELS = DATA.allModels;
+  var ISSUES = ALL;
   var app = document.getElementById('app');
   var crumbs = document.getElementById('crumbs');
   var q = document.getElementById('q');
+  var cats = document.getElementById('cats');
+  var CAT = '';
+  try { CAT = sessionStorage.getItem('vg.cat') || ''; } catch (e) {}
 
   function k(s){ return String(s).trim().toLowerCase(); }
   function esc(s){
@@ -170,15 +202,34 @@ const CLIENT_JS = `
   function covers(i, y){ return y >= i.yf && y <= (i.yt === null ? NOW : i.yt); }
   function href(parts){ return '#/' + parts.map(encodeURIComponent).join('/'); }
 
-  // make key -> { name, count, models: { model key -> { name, issues } } }
+  // make key -> { name, count, wide: [all-models issues],
+  //               models: { model key -> { name, issues } } }
+  // An entry with several models is pushed into each model's bucket; an
+  // all-models entry sits in its own "All models" bucket and in M.wide, which
+  // every model view adds in.
   var makes = {};
-  ISSUES.forEach(function(i){
-    var mk = k(i.make), mo = k(i.model);
-    var M = makes[mk] || (makes[mk] = { name: i.make, count: 0, models: {} });
-    M.count++;
-    var MO = M.models[mo] || (M.models[mo] = { name: i.model, issues: [] });
-    MO.issues.push(i);
-  });
+  function build(){
+    ISSUES = CAT ? ALL.filter(function(i){ return i.cat === CAT; }) : ALL;
+    makes = {};
+    ISSUES.forEach(function(i){
+      var mk = k(i.make);
+      var M = makes[mk] || (makes[mk] = { name: i.make, count: 0, wide: [], models: {} });
+      M.count++;
+      var names = i.models.length ? i.models : [ALLMODELS];
+      if (!i.models.length) M.wide.push(i);
+      names.forEach(function(name){
+        var mo = k(name);
+        var MO = M.models[mo] || (M.models[mo] = { name: name, issues: [] });
+        MO.issues.push(i);
+      });
+    });
+  }
+  // A model's issues plus the make-wide ones (the All models bucket already
+  // is the make-wide list, so it is not doubled).
+  function issuesFor(M, mo){
+    var MO = M.models[mo];
+    return k(MO.name) === k(ALLMODELS) ? MO.issues : MO.issues.concat(M.wide);
+  }
   function sorted(o){
     return Object.keys(o).sort(function(a, b){ return o[a].name.localeCompare(o[b].name); });
   }
@@ -212,12 +263,22 @@ const CLIENT_JS = `
         ' allowfullscreen></iframe>' +
         '<a href="' + esc(v.url) + '" target="_blank" rel="noopener noreferrer">Open in YouTube \\u203a</a></div>';
     }).join('');
+    var veh = i.cat === 'vehicle';
+    // Several models, or a make-wide entry: say which, even inside a model view.
+    var cover = i.models.length !== 1 ? '<div class="yrs" style="width:100%">' + esc(i.make) + ' ' + esc(i.model) + '</div>' : '';
+    var bul = i.bulletin || i.bulletinUrl
+      ? '<p class="bul">Bulletin: ' + (i.bulletinUrl
+          ? '<a href="' + esc(i.bulletinUrl) + '" target="_blank" rel="noopener noreferrer">' + esc(i.bulletin || 'View bulletin') + ' \\u203a</a>'
+          : esc(i.bulletin)) + '</p>'
+      : '';
     return '<article class="card"><div class="card-head">' +
-      (withVehicle ? '<div class="vehicle">' + esc(i.make) + ' ' + esc(i.model) + '</div>' : '') +
-      '<span class="pill t-' + esc(i.type) + '">' + esc(i.typeLabel) + '</span>' +
+      (withVehicle ? '<div class="vehicle">' + esc(i.make) + ' ' + esc(i.model) + '</div>' : cover) +
+      (veh ? '<span class="cat-tag">Vehicle issue</span>' : '') +
+      '<span class="pill ' + (veh ? 't-vehicle' : 't-' + esc(i.type)) + '">' + esc(i.typeLabel) + '</span>' +
       '<span class="yrs">' + esc(yrLabel(i)) + '</span></div>' +
       '<h3>The problem</h3><p class="txt">' + esc(i.issue) + '</p>' +
-      '<h3>What to do</h3><p class="txt sol">' + esc(i.solution) + '</p>' +
+      '<h3>' + (veh ? 'How to handle it' : 'What to do') + '</h3><p class="txt sol">' + esc(i.solution) + '</p>' +
+      bul +
       (vids ? '<div class="yt">' + vids + '</div>' : '') +
       (media ? '<div class="media">' + media + '</div>' : '') +
       '</article>';
@@ -226,7 +287,10 @@ const CLIENT_JS = `
   function viewMakes(){
     setCrumbs([]);
     var keys = sorted(makes);
-    if (!keys.length) { app.innerHTML = '<div class="empty">No vehicles have been added yet.</div>'; return; }
+    if (!keys.length) {
+      app.innerHTML = '<div class="empty">' + (CAT ? 'Nothing in this list yet.' : 'No vehicles have been added yet.') + '</div>';
+      return;
+    }
     app.innerHTML = '<h2 class="view">Pick a make</h2><div class="grid">' + keys.map(function(mk){
       return '<a class="tile" href="' + href([mk]) + '">' + esc(makes[mk].name) +
         '<span class="count">' + makes[mk].count + '</span></a>';
@@ -238,7 +302,7 @@ const CLIENT_JS = `
     setCrumbs([{ label: 'All makes', href: '#/' }, { label: M.name }]);
     app.innerHTML = '<h2 class="view">' + esc(M.name) + ' \\u2014 pick a model</h2><div class="list">' +
       sorted(M.models).map(function(mo){
-        var is = M.models[mo].issues;
+        var is = issuesFor(M, mo);
         var lo = Math.min.apply(null, is.map(function(i){ return i.yf; }));
         var open = is.some(function(i){ return i.yt === null; });
         var hi = Math.max.apply(null, is.map(function(i){ return i.yt === null ? i.yf : i.yt; }));
@@ -250,10 +314,10 @@ const CLIENT_JS = `
   }
 
   function viewYears(mk, mo){
-    var M = makes[mk], MO = M.models[mo];
+    var M = makes[mk], MO = M.models[mo], IS = issuesFor(M, mo);
     setCrumbs([{ label: 'All makes', href: '#/' }, { label: M.name, href: href([mk]) }, { label: MO.name }]);
     var set = {};
-    MO.issues.forEach(function(i){
+    IS.forEach(function(i){
       for (var y = i.yf; y <= (i.yt === null ? NOW : i.yt); y++) set[y] = (set[y] || 0) + 1;
     });
     var years = Object.keys(set).map(Number).sort(function(a, b){ return b - a; });
@@ -262,14 +326,14 @@ const CLIENT_JS = `
         return '<a class="tile" href="' + href([mk, mo, String(y)]) + '">' + y + '</a>';
       }).join('') + '</div>' +
       '<a class="alllink" href="' + href([mk, mo, 'all']) + '">Not sure of the year? Show all ' +
-      MO.issues.length + (MO.issues.length === 1 ? ' issue' : ' issues') + ' \\u203a</a>';
+      IS.length + (IS.length === 1 ? ' issue' : ' issues') + ' \\u203a</a>';
   }
 
   function viewInfo(mk, mo, yr){
     var M = makes[mk], MO = M.models[mo];
     var all = yr === 'all';
     var y = Number(yr);
-    var list = MO.issues.filter(function(i){ return all || covers(i, y); });
+    var list = issuesFor(M, mo).filter(function(i){ return all || covers(i, y); });
     setCrumbs([{ label: 'All makes', href: '#/' }, { label: M.name, href: href([mk]) },
                { label: MO.name, href: href([mk, mo]) }, { label: all ? 'All years' : String(y) }]);
     app.innerHTML = '<h2 class="view">' + (all ? '' : y + ' ') + esc(M.name) + ' ' + esc(MO.name) + '</h2>' +
@@ -281,7 +345,7 @@ const CLIENT_JS = `
     setCrumbs([{ label: 'All makes', href: '#/' }, { label: 'Search' }]);
     var words = k(query).split(/\\s+/).filter(Boolean);
     var hits = ISSUES.filter(function(i){
-      var hay = k([i.make, i.model, i.typeLabel, i.issue, i.solution].join(' '));
+      var hay = k([i.make, i.model, i.typeLabel, i.issue, i.solution, i.bulletin || ''].join(' '));
       return words.every(function(w){
         if (/^\\d{4}$/.test(w)) return covers(i, Number(w));
         return hay.indexOf(w) !== -1;
@@ -304,8 +368,22 @@ const CLIENT_JS = `
     else viewMakes();
   }
 
+  function paintCats(){
+    var bs = cats.querySelectorAll('button');
+    for (var n = 0; n < bs.length; n++) bs[n].setAttribute('aria-pressed', String(bs[n].getAttribute('data-cat') === CAT));
+  }
+  cats.addEventListener('click', function(e){
+    var b = e.target.closest ? e.target.closest('button') : null;
+    if (!b) return;
+    CAT = b.getAttribute('data-cat') || '';
+    try { sessionStorage.setItem('vg.cat', CAT); } catch (err) {}
+    paintCats(); build();
+    // The drill-down path may not exist in the narrower list: start over.
+    if (location.hash && location.hash !== '#/') location.hash = '#/'; else render();
+  });
+
   q.addEventListener('input', render);
   window.addEventListener('hashchange', function(){ q.value = ''; render(); window.scrollTo(0, 0); });
-  render();
+  paintCats(); build(); render();
 })();
 `;

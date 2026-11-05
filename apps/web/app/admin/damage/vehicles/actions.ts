@@ -24,10 +24,17 @@ function strField(formData: FormData, name: string): string {
   return typeof v === "string" ? v : "";
 }
 
+/** ?tab= for the list the user was on; anything unknown is the default list. */
+function tabParam(formData: FormData): string {
+  return strField(formData, "category") === "vehicle" || strField(formData, "tab") === "vehicle"
+    ? "&tab=vehicle"
+    : "";
+}
+
 /** Returns, does not throw: every call site needs its own `return`. */
-function fail(message: string, editId?: string): RedirectResult {
+function fail(message: string, editId?: string, tab = ""): RedirectResult {
   const edit = editId ? `&edit=${encodeURIComponent(editId)}` : "";
-  return { redirectTo: `${LIST_PATH}?action_error=${encodeURIComponent(message)}${edit}` };
+  return { redirectTo: `${LIST_PATH}?action_error=${encodeURIComponent(message)}${edit}${tab}` };
 }
 
 function bodyFrom(fields: Record<string, string>): FormData {
@@ -39,20 +46,25 @@ function bodyFrom(fields: Record<string, string>): FormData {
 /** Create (no id) or update (id) one entry. */
 export async function saveVehicleIssueAction(formData: FormData): Promise<RedirectResult> {
   const id = strField(formData, "id").trim();
+  const tab = tabParam(formData);
   const body: Record<string, string> = {
+    category: strField(formData, "category"),
     make: strField(formData, "make"),
-    model: strField(formData, "model"),
+    models: strField(formData, "models"),
+    all_models: strField(formData, "all_models"),
     year_from: strField(formData, "year_from"),
     year_to: strField(formData, "year_to"),
     issue_type: strField(formData, "issue_type"),
     issue: strField(formData, "issue"),
     solution: strField(formData, "solution"),
+    bulletin: strField(formData, "bulletin"),
+    bulletin_url: strField(formData, "bulletin_url"),
     youtube_links: strField(formData, "youtube_links")
   };
   if (id) body.id = id;
 
   const result = await damagePostForm("/manage/api/vehicle-issues", bodyFrom(body));
-  if (!result.ok) return fail(result.error, id || undefined);
+  if (!result.ok) return fail(result.error, id || undefined, tab);
 
   revalidatePath(LIST_PATH);
   // A new entry lands in edit mode so photos and videos can be added straight
@@ -64,16 +76,17 @@ export async function saveVehicleIssueAction(formData: FormData): Promise<Redire
   if (newId) {
     return { redirectTo: `${LIST_PATH}?success=created&edit=${encodeURIComponent(newId)}#media` };
   }
-  return { redirectTo: `${LIST_PATH}?success=saved` };
+  return { redirectTo: `${LIST_PATH}?success=saved${tab}` };
 }
 
 export async function deleteVehicleIssueAction(formData: FormData): Promise<RedirectResult> {
   const id = strField(formData, "id").trim();
-  if (!id) return fail("That entry could not be identified. Reload the page.");
+  const tab = tabParam(formData);
+  if (!id) return fail("That entry could not be identified. Reload the page.", undefined, tab);
   const result = await damagePostForm("/manage/api/vehicle-issues/delete", bodyFrom({ id }));
-  if (!result.ok) return fail(result.error);
+  if (!result.ok) return fail(result.error, undefined, tab);
   revalidatePath(LIST_PATH);
-  return { redirectTo: `${LIST_PATH}?success=deleted` };
+  return { redirectTo: `${LIST_PATH}?success=deleted${tab}` };
 }
 
 export async function deleteVehicleMediaAction(formData: FormData): Promise<RedirectResult> {
