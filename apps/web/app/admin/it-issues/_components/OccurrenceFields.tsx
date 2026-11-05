@@ -35,12 +35,12 @@ export function OccurrenceFields({ inputClass, labelClass }: { inputClass: strin
       </div>
       <div className="grid gap-3 sm:grid-cols-2">
         <div>
-          <label className={labelClass} htmlFor="customer_ticket_no">Transaction ticket # (optional)</label>
+          <label className={labelClass} htmlFor="customer_ticket_no">Transaction ticket # (if transaction related)</label>
           <input id="customer_ticket_no" name="customer_ticket_no" maxLength={300} className={inputClass} />
           <p className="mt-1 text-xs text-splash-navy/60">Separate several with commas.</p>
         </div>
         <div>
-          <label className={labelClass} htmlFor="customer_account_no">Customer account # (optional)</label>
+          <label className={labelClass} htmlFor="customer_account_no">Customer account # (if account related)</label>
           <input id="customer_account_no" name="customer_account_no" maxLength={60} className={inputClass} />
         </div>
       </div>
