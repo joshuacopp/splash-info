@@ -24,6 +24,8 @@ export interface Issue {
   reporter_phone: string;
   created_by_email: string;
   it_ticket_no: string | null;
+  customer_ticket_no: string | null;
+  customer_account_no: string | null;
   mx_request_id: number | null;
   first_reported_at: string;
   last_occurred_at: string;
@@ -38,7 +40,10 @@ export interface Issue {
 export interface IssueEvent {
   id: number;
   kind: string;
+  /** When it was logged. */
   at: string;
+  /** When it actually happened (created / occurrence); null on older rows. */
+  occurred_at?: string | null;
   actor_name: string | null;
   actor_email?: string | null;
   via: "app" | "email_link" | "system";
@@ -157,6 +162,33 @@ export function eventHeadline(e: IssueEvent): string {
     default:
       return EVENT_LABEL[e.kind] ?? e.kind;
   }
+}
+
+/** "Customer ticket 123 · account 456" from an occurrence's details, or "". */
+export function customerRefs(ticket: unknown, account: unknown): string {
+  const parts: string[] = [];
+  if (typeof ticket === "string" && ticket) parts.push(`Customer ticket ${ticket}`);
+  if (typeof account === "string" && account) parts.push(`account ${account}`);
+  return parts.join(" · ");
+}
+
+/** Now (or `at`) as a datetime-local value in Eastern time, which is how the
+ *  worker reads it -- whatever time zone the device happens to be set to. */
+export function etLocalInput(at: Date = new Date()): string {
+  const p = Object.fromEntries(
+    new Intl.DateTimeFormat("en-US", {
+      timeZone: "America/New_York",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      hourCycle: "h23"
+    })
+      .formatToParts(at)
+      .map((x) => [x.type, x.value])
+  );
+  return `${p.year}-${p.month}-${p.day}T${p.hour}:${p.minute}`;
 }
 
 export function formatEt(iso: string | null | undefined): string {

@@ -11,6 +11,7 @@ import { getIssueDetail } from "../_lib/worker-fetch";
 import { PRIORITY_OPTIONS, STATUS_OPTIONS, formatEt } from "../_lib/types";
 import { IssueDetails, IssueHeader, IssueTimeline } from "../_components/IssueSummary";
 import { NameInput } from "../_components/NameInput";
+import { OccurrenceFields } from "../_components/OccurrenceFields";
 import { PhotoInput } from "../_components/PhotoInput";
 
 export const dynamic = "force-dynamic";
@@ -72,6 +73,7 @@ export default async function ItIssuePage({ params, searchParams }: PageProps) {
             <ActionForm action={occurrenceAction} className="space-y-3">
               <input type="hidden" name="id" value={issue.id} />
               <NameInput />
+              <OccurrenceFields inputClass={input} labelClass="mb-1 block text-sm font-semibold text-splash-navy" />
               <input name="error_text" maxLength={1000} placeholder="Error message (if any)" className={input} />
               <textarea name="note" rows={2} maxLength={4000} placeholder="Anything different this time?" className={input} />
               <PhotoInput />

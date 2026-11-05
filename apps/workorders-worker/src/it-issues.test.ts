@@ -6,15 +6,18 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   applyChange,
   buildMxDescription,
+  easternLocalToIso,
   mxApproverTeamId,
   mxBlockedReason,
   mxEnabled,
+  occurredAt,
+  occurrenceSpan,
   photosForMx,
   recipientsOf,
   type IssueRow,
   type ItIssuesEnv
 } from "./it-issues";
-import { escalationReplyTo } from "./it-issues-email";
+import { escalationReplyTo, eventLine } from "./it-issues-email";
 import { sniffImage } from "./it-issues-photos";
 
 const ENV = {
@@ -45,6 +48,8 @@ function issue(over: Partial<IssueRow> = {}): IssueRow {
     reporter_phone: "555",
     created_by_email: "site@example.com",
     it_ticket_no: null,
+    customer_ticket_no: null,
+    customer_account_no: null,
     mx_request_id: null,
     first_reported_at: "2026-11-04T12:00:00Z",
     last_occurred_at: "2026-11-04T12:00:00Z",
@@ -207,5 +212,63 @@ describe("escalationReplyTo", () => {
     expect(escalationReplyTo("not an email")).toBeUndefined();
     expect(escalationReplyTo('a"b@x.com')).toBeUndefined();
     expect(escalationReplyTo("a\\b@x.com")).toBeUndefined();
+  });
+});
+
+describe("easternLocalToIso", () => {
+  it("reads the typed time as Eastern, on both sides of daylight saving", () => {
+    expect(easternLocalToIso("2026-07-04T15:30")).toBe("2026-07-04T19:30:00.000Z"); // EDT, UTC-4
+    expect(easternLocalToIso("2026-11-05T09:00")).toBe("2026-11-05T14:00:00.000Z"); // EST, UTC-5
+  });
+  it("rejects shapes and dates that do not exist", () => {
+    expect(easternLocalToIso("2026-02-30T10:00")).toBeNull();
+    expect(easternLocalToIso("11/05/2026 9:00")).toBeNull();
+    expect(easternLocalToIso("2026-11-05T25:00")).toBeNull();
+  });
+});
+
+describe("occurredAt", () => {
+  const now = Date.parse("2026-11-05T15:00:00Z"); // 10:00 AM Eastern
+  it("blank means now", () => {
+    expect(occurredAt({}, now)).toBe(new Date(now).toISOString());
+    expect(occurredAt({ occurred_at: "" }, now)).toBe(new Date(now).toISOString());
+  });
+  it("accepts an earlier time and refuses the future or a year-old typo", () => {
+    expect(occurredAt({ occurred_at: "2026-11-05T08:15" }, now)).toBe("2026-11-05T13:15:00.000Z");
+    expect(() => occurredAt({ occurred_at: "2026-11-05T11:00" }, now)).toThrow(/future/);
+    expect(() => occurredAt({ occurred_at: "2025-10-01T08:00" }, now)).toThrow(/year/);
+    expect(() => occurredAt({ occurred_at: "yesterday" }, now)).toThrow(/valid/);
+  });
+});
+
+describe("occurrenceSpan", () => {
+  const i = { first_reported_at: "2026-11-04T12:00:00.000Z", last_occurred_at: "2026-11-05T12:00:00.000Z" };
+  it("a backdated occurrence does not pull 'last happened' backwards", () => {
+    expect(occurrenceSpan(i, "2026-11-04T20:00:00.000Z")).toEqual(i);
+  });
+  it("moves first or last outward", () => {
+    expect(occurrenceSpan(i, "2026-11-03T08:00:00.000Z").first_reported_at).toBe("2026-11-03T08:00:00.000Z");
+    expect(occurrenceSpan(i, "2026-11-05T14:00:00.000Z").last_occurred_at).toBe("2026-11-05T14:00:00.000Z");
+  });
+});
+
+describe("eventLine", () => {
+  const ev = {
+    id: 1,
+    issue_id: "x",
+    kind: "occurrence",
+    at: "2026-11-05T16:00:00.000Z",
+    occurred_at: "2026-11-05T13:15:00.000Z",
+    actor_name: "Pat",
+    actor_email: null,
+    via: "app" as const,
+    note: null,
+    details: { customer_ticket_no: "T-9", customer_account_no: "A-1" }
+  };
+  it("leads with when it happened, notes a late log, and carries the customer refs", () => {
+    const line = eventLine(ev);
+    expect(line).toMatch(/^Nov 5, 8:15 AM|^Nov 5, 8:15 AM/);
+    expect(line).toContain("(logged Nov 5, 11:00");
+    expect(line).toContain("customer ticket T-9, account A-1");
   });
 });

@@ -54,7 +54,10 @@ export async function createIssueAction(_prev: ActionResult | null, fd: FormData
     troubleshooting: opt(fd, "troubleshooting"),
     reporter_name: s(fd, "reporter_name"),
     reporter_phone: s(fd, "reporter_phone"),
-    it_ticket_no: opt(fd, "it_ticket_no")
+    it_ticket_no: opt(fd, "it_ticket_no"),
+    occurred_at: opt(fd, "occurred_at"),
+    customer_ticket_no: opt(fd, "customer_ticket_no"),
+    customer_account_no: opt(fd, "customer_account_no")
   }));
   if (!r.ok) return { ok: false, error: r.error };
   refresh(r.data.id);
@@ -70,7 +73,10 @@ export async function occurrenceAction(_prev: ActionResult | null, fd: FormData)
     withPhotos(fd, {
       actor_name: s(fd, "actor_name"),
       note: opt(fd, "note"),
-      error_text: opt(fd, "error_text")
+      error_text: opt(fd, "error_text"),
+      occurred_at: opt(fd, "occurred_at"),
+      customer_ticket_no: opt(fd, "customer_ticket_no"),
+      customer_account_no: opt(fd, "customer_account_no")
     })
   );
   if (!r.ok) return { ok: false, error: r.error };

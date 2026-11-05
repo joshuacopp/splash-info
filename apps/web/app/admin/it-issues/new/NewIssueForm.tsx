@@ -5,6 +5,7 @@ import { useState } from "react";
 import { ActionForm } from "../../_components/ActionForm";
 import { SubmitButton } from "../../_components/SubmitButton";
 import { createIssueAction } from "../actions";
+import { OccurrenceFields } from "../_components/OccurrenceFields";
 import { PhotoInput } from "../_components/PhotoInput";
 import {
   IMPACT_OPTIONS,
@@ -129,6 +130,8 @@ export default function NewIssueForm({
         <textarea id="error_text" name="error_text" rows={2} maxLength={1000} className={input}
           placeholder="Copy it exactly as it appears on screen" />
       </div>
+
+      <OccurrenceFields inputClass={input} labelClass={label} />
 
       <PhotoInput hint="A photo of the error on screen, or of the equipment, helps IT more than a description." />
 

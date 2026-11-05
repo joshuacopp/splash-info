@@ -4,6 +4,7 @@
 import {
   PRIORITY_PILL,
   STATUS_PILL,
+  customerRefs,
   deviceLabel,
   eventHeadline,
   formatEt,
@@ -46,7 +47,9 @@ export function IssueDetails({ issue }: { issue: Issue }) {
     ["Device", deviceLabel(issue)],
     ["Error message", issue.error_text],
     ["Customer impact", impactLabel(issue.customer_impact)],
-    ["First reported", formatEt(issue.first_reported_at)],
+    ["Customer ticket #", issue.customer_ticket_no],
+    ["Customer account #", issue.customer_account_no],
+    ["First happened", formatEt(issue.first_reported_at)],
     ["Times it has happened", String(issue.occurrence_count)],
     ["Last happened", formatEt(issue.last_occurred_at)],
     ["Already tried", issue.troubleshooting],
@@ -85,6 +88,14 @@ function photosOf(e: IssueEvent): PhotoRef[] {
  * `photoBase` is the URL prefix photos are served under -- the signed-in
  * proxy or the email-link proxy -- so both pages render the same timeline.
  */
+/** When it happened leads; the logged time follows only when a site logged it
+ *  well after the fact. */
+function eventWhen(e: IssueEvent): string {
+  const happened = e.occurred_at ?? e.at;
+  const late = Math.abs(Date.parse(e.at) - Date.parse(happened)) >= 15 * 60_000;
+  return late ? `${formatEt(happened)} · logged ${formatEt(e.at)}` : formatEt(happened);
+}
+
 export function IssueTimeline({ events, photoBase }: { events: IssueEvent[]; photoBase: string }) {
   return (
     <div className="rounded-splash-md border-[1.5px] border-splash-navy/15 bg-white p-4 shadow-splash-card">
@@ -94,10 +105,15 @@ export function IssueTimeline({ events, photoBase }: { events: IssueEvent[]; pho
           <li key={e.id} className="text-sm">
             <div className="font-semibold text-splash-navy">{eventHeadline(e)}</div>
             <div className="text-xs text-splash-navy/60">
-              {formatEt(e.at)}
+              {eventWhen(e)}
               {e.actor_name ? ` · ${e.actor_name}` : ""}
               {e.via === "email_link" ? " · via email link" : ""}
             </div>
+            {e.kind === "occurrence" && customerRefs(e.details?.customer_ticket_no, e.details?.customer_account_no) && (
+              <p className="mt-1 text-splash-navy/90">
+                {customerRefs(e.details?.customer_ticket_no, e.details?.customer_account_no)}
+              </p>
+            )}
             {e.note && <p className="mt-1 whitespace-pre-wrap text-splash-navy/90">{e.note}</p>}
             {photosOf(e).length > 0 && (
               <div className="mt-2 flex flex-wrap gap-2">

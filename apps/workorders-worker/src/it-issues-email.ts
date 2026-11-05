@@ -79,7 +79,15 @@ function refs(issue: IssueRow): string {
   return parts.join(" / ");
 }
 
-function eventLine(ev: EventRow): string {
+/** "Customer ticket 123 / account 456", or "" when neither was given. */
+export function customerRefsText(ticket: unknown, account: unknown): string {
+  const parts: string[] = [];
+  if (typeof ticket === "string" && ticket) parts.push(`customer ticket ${ticket}`);
+  if (typeof account === "string" && account) parts.push(`account ${account}`);
+  return parts.join(", ");
+}
+
+export function eventLine(ev: EventRow): string {
   const d = ev.details ?? {};
   let what = KIND_LABEL[ev.kind] ?? ev.kind;
   if (ev.kind === "status") what = `Status: ${STATUS_LABEL[String(d.to)] ?? d.to}`;
@@ -87,11 +95,18 @@ function eventLine(ev: EventRow): string {
   if (ev.kind === "ticket") what = `Ticket #: ${d.to}`;
   if (ev.kind === "mx_request") what = `MaintainX request #${d.mx_request_id}`;
   if (ev.kind === "occurrence" && d.error_text) what += ` (error: ${d.error_text})`;
+  const cust = ev.kind === "occurrence" ? customerRefsText(d.customer_ticket_no, d.customer_account_no) : "";
+  if (cust) what += ` (${cust})`;
   if (Array.isArray(d.photos) && d.photos.length) {
     what += ` [${d.photos.length} photo${d.photos.length === 1 ? "" : "s"} - open the issue to see]`;
   }
   const who = [ev.actor_name, ev.via === "email_link" ? "via email link" : ""].filter(Boolean).join(", ");
-  return `${fmt(ev.at)} - ${what}${who ? ` - ${who}` : ""}${ev.note ? `: ${ev.note}` : ""}`;
+  // The time it HAPPENED leads; the time it was logged follows only when the
+  // two differ enough to matter (a site logging an hour later).
+  const happened = ev.occurred_at ?? ev.at;
+  const late = Math.abs(Date.parse(ev.at) - Date.parse(happened)) >= 15 * 60_000;
+  const logged = late ? ` (logged ${fmt(ev.at)})` : "";
+  return `${fmt(happened)} - ${what}${logged}${who ? ` - ${who}` : ""}${ev.note ? `: ${ev.note}` : ""}`;
 }
 
 function button(url: string, label: string): string {
@@ -112,7 +127,9 @@ function detailRows(issue: IssueRow): Array<[string, string]> {
     ["Customer impact", IMPACT_LABEL[issue.customer_impact]],
     ["Priority", cap(issue.priority)],
     ["Status", STATUS_LABEL[issue.status] ?? issue.status],
-    ["First reported", fmt(issue.first_reported_at)],
+    ["Customer ticket #", issue.customer_ticket_no ?? ""],
+    ["Customer account #", issue.customer_account_no ?? ""],
+    ["First happened", fmt(issue.first_reported_at)],
     ["Times it has happened", String(issue.occurrence_count)],
     ["Last happened", fmt(issue.last_occurred_at)],
     ["Already tried", issue.troubleshooting ?? ""],

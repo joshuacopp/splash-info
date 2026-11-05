@@ -99,8 +99,12 @@ const LIMITS = {
   problem: 300,
   error: 1000,
   text: 4000,
-  ticket: 60
+  ticket: 60,
+  customer: 60
 };
+
+/** How far back "when did it happen?" may go. Past this it is a typo. */
+const MAX_BACKDATE_DAYS = 365;
 
 /** A link minted today keeps working this long. Long, because an issue can
  *  sit open for weeks; every later email carries a fresh one anyway. */
@@ -124,7 +128,10 @@ export interface IssueRow {
   reporter_phone: string;
   created_by_email: string;
   it_ticket_no: string | null;
+  customer_ticket_no: string | null;
+  customer_account_no: string | null;
   mx_request_id: number | null;
+  /** Earliest time it actually happened (not when it was typed in). */
   first_reported_at: string;
   last_occurred_at: string;
   occurrence_count: number;
@@ -140,7 +147,11 @@ export interface EventRow {
   id: number;
   issue_id: string;
   kind: string;
+  /** When the event was logged. */
   at: string;
+  /** When the problem actually happened -- created / occurrence only; null on
+   *  older rows, which read as `at`. */
+  occurred_at: string | null;
   actor_name: string | null;
   actor_email: string | null;
   via: "app" | "email_link" | "system";
@@ -198,7 +209,7 @@ export async function getEvents(env: ItIssuesEnv, issueId: string): Promise<Even
 
 async function addEvent(
   env: ItIssuesEnv,
-  ev: Omit<EventRow, "id" | "at" | "details"> & { details?: Record<string, unknown> }
+  ev: Omit<EventRow, "id" | "at" | "details" | "occurred_at"> & { details?: Record<string, unknown>; occurred_at?: string }
 ): Promise<EventRow | null> {
   const r = await pg<EventRow[]>(env, "POST", "it_issue_events", { ...ev, details: ev.details ?? {} }, {
     Prefer: "return=representation"
@@ -329,6 +340,58 @@ function oneOf<T extends string>(body: Body, key: string, allowed: readonly T[],
 
 class InputError extends Error {}
 
+/**
+ * "YYYY-MM-DDTHH:MM" read as Eastern wall-clock time (what a datetime-local
+ * input sends from a site in this time zone), to a UTC ISO string. Null if it
+ * is not that shape or not a real date.
+ */
+export function easternLocalToIso(v: string): string | null {
+  const m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/.exec(v.trim());
+  if (!m) return null;
+  const [y, mo, d, h, mi] = m.slice(1).map(Number) as [number, number, number, number, number];
+  const wall = Date.UTC(y, mo - 1, d, h, mi);
+  const check = new Date(wall);
+  if (check.getUTCMonth() !== mo - 1 || check.getUTCDate() !== d || h > 23 || mi > 59) return null;
+  // Offset at the guessed instant, then once more at the corrected one so a
+  // time near a DST change lands on the right side of it.
+  let utc = wall - easternOffsetMs(wall);
+  utc = wall - easternOffsetMs(utc);
+  return new Date(utc).toISOString();
+}
+
+function easternOffsetMs(at: number): number {
+  const name = new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York", timeZoneName: "shortOffset" })
+    .formatToParts(new Date(at))
+    .find((p) => p.type === "timeZoneName")?.value ?? "GMT-5";
+  const m = /GMT([+-])(\d{1,2})(?::(\d{2}))?/.exec(name);
+  if (!m) return -5 * 3_600_000;
+  const sign = m[1] === "-" ? -1 : 1;
+  return sign * (Number(m[2]) * 3_600_000 + Number(m[3] ?? 0) * 60_000);
+}
+
+/**
+ * When the problem actually happened. Blank means now. Not in the future
+ * (a few minutes of clock slack allowed) and not more than a year back.
+ */
+export function occurredAt(body: Body, now: number = Date.now()): string {
+  const raw = body.occurred_at;
+  if (raw == null || raw === "") return new Date(now).toISOString();
+  const iso = typeof raw === "string" ? easternLocalToIso(raw) : null;
+  if (!iso) throw new InputError("When it happened is not a valid date and time.");
+  const t = Date.parse(iso);
+  if (t > now + 5 * 60_000) throw new InputError("When it happened can't be in the future.");
+  if (t < now - MAX_BACKDATE_DAYS * 86_400_000) throw new InputError("When it happened is more than a year ago - check the date.");
+  return iso;
+}
+
+/** The optional customer references a report or occurrence can carry. */
+function customerRefs(body: Body): { customer_ticket_no: string | null; customer_account_no: string | null } {
+  return {
+    customer_ticket_no: str(body, "customer_ticket_no", LIMITS.customer, "Customer ticket #"),
+    customer_account_no: str(body, "customer_account_no", LIMITS.customer, "Customer account #")
+  };
+}
+
 /* ============================================================
  * Shared change path (in-app + email link)
  * ============================================================ */
@@ -437,7 +500,12 @@ async function recordOccurrence(
   actor: Actor,
   note: string | null,
   errorText: string | null,
-  photos: IssuePhoto[] = []
+  photos: IssuePhoto[] = [],
+  extra: { occurredAt: string; customer_ticket_no: string | null; customer_account_no: string | null } = {
+    occurredAt: new Date().toISOString(),
+    customer_ticket_no: null,
+    customer_account_no: null
+  }
 ): Promise<IssueRow | null> {
   const base = { issue_id: issue.id, actor_name: actor.name, actor_email: actor.email, via: actor.via };
   const reopening = issue.status === "resolved";
@@ -447,19 +515,34 @@ async function recordOccurrence(
   const details: Record<string, unknown> = {};
   if (errorText) details.error_text = errorText;
   if (photos.length) details.photos = photos;
-  await addEvent(env, { ...base, kind: "occurrence", note, details });
+  if (extra.customer_ticket_no) details.customer_ticket_no = extra.customer_ticket_no;
+  if (extra.customer_account_no) details.customer_account_no = extra.customer_account_no;
+  await addEvent(env, { ...base, kind: "occurrence", note, details, occurred_at: extra.occurredAt });
 
   const counted = await pg<unknown[]>(env, "GET", `it_issue_events?issue_id=eq.${issue.id}&kind=eq.occurrence&select=id`, undefined, {
     Prefer: "count=exact",
     Range: "0-0"
   });
   const total = Number(counted.headers.get("content-range")?.split("/")[1] ?? NaN);
+  // A backdated occurrence must not drag "last happened" backwards, and one
+  // older than the first report becomes the new first.
   const patch: Partial<IssueRow> = {
-    last_occurred_at: new Date().toISOString(),
+    ...occurrenceSpan(issue, extra.occurredAt),
     occurrence_count: Number.isFinite(total) ? total + 1 : issue.occurrence_count + 1
   };
   if (reopening) Object.assign(patch, { status: "open", resolved_at: null, resolution: null, resolved_by: null });
   return patchIssue(env, issue.id, patch);
+}
+
+export function occurrenceSpan(
+  issue: Pick<IssueRow, "first_reported_at" | "last_occurred_at">,
+  at: string
+): Pick<IssueRow, "first_reported_at" | "last_occurred_at"> {
+  const t = Date.parse(at);
+  return {
+    first_reported_at: t < Date.parse(issue.first_reported_at) ? at : issue.first_reported_at,
+    last_occurred_at: t > Date.parse(issue.last_occurred_at) ? at : issue.last_occurred_at
+  };
 }
 
 /* ============================================================
@@ -596,6 +679,8 @@ export async function handleItIssuesRequest(
     // Validate the text before storing anything, so a rejected form leaves no
     // orphan photos behind.
     const note = str(body, "note", LIMITS.text, "Note");
+    const occurrence =
+      action === "occurrence" ? { occurredAt: occurredAt(body), ...customerRefs(body) } : undefined;
     const stored =
       (action === "occurrence" || action === "update") && files.length
         ? await storePhotos(env, issue.id, files)
@@ -608,7 +693,8 @@ export async function handleItIssuesRequest(
         actor,
         note,
         str(body, "error_text", LIMITS.error, "Error message"),
-        stored.photos
+        stored.photos,
+        occurrence
       );
       if (!updated) return jsonError(500, "Could not record it. Try again.");
       return json({
@@ -723,6 +809,7 @@ async function createIssue(request: Request, env: ItIssuesEnv, session: Session)
   const priority = oneOf(body, "priority", PRIORITIES, "Priority");
   if (!priority) throw new InputError("Pick a priority.");
 
+  const happened = occurredAt(body);
   const row = {
     location_id: site.id,
     site_number: site.site_number,
@@ -737,7 +824,10 @@ async function createIssue(request: Request, env: ItIssuesEnv, session: Session)
     reporter_name: required(body, "reporter_name", LIMITS.name, "Your name"),
     reporter_phone: required(body, "reporter_phone", LIMITS.phone, "Your phone"),
     created_by_email: (session.email ?? "").toLowerCase(),
-    it_ticket_no: str(body, "it_ticket_no", LIMITS.ticket, "IT ticket #")
+    it_ticket_no: str(body, "it_ticket_no", LIMITS.ticket, "IT ticket #"),
+    ...customerRefs(body),
+    first_reported_at: happened,
+    last_occurred_at: happened
   };
 
   const ins = await pg<IssueRow[]>(env, "POST", "it_issues", row, { Prefer: "return=representation" });
@@ -755,6 +845,7 @@ async function createIssue(request: Request, env: ItIssuesEnv, session: Session)
     actor_email: actor.email,
     via: "app",
     note: null,
+    occurred_at: happened,
     details: stored.photos.length ? { phone: row.reporter_phone, photos: stored.photos } : { phone: row.reporter_phone }
   });
 
