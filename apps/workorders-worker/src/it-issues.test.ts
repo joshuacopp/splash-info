@@ -17,7 +17,7 @@ import {
   type IssueRow,
   type ItIssuesEnv
 } from "./it-issues";
-import { escalationReplyTo, eventLine } from "./it-issues-email";
+import { customerRefsText, digestBucket, escalationReplyTo, eventLine } from "./it-issues-email";
 import { sniffImage } from "./it-issues-photos";
 
 const ENV = {
@@ -27,7 +27,7 @@ const ENV = {
   APPS_WEB_BASE_URL: "https://splashcarwashes.info"
 } as ItIssuesEnv;
 
-const ACTOR = { name: "Pat", email: "site@example.com", via: "app" as const };
+const ACTOR = { name: "Pat", email: "site@example.com", via: "app" as const, it: false };
 
 function issue(over: Partial<IssueRow> = {}): IssueRow {
   return {
@@ -55,6 +55,8 @@ function issue(over: Partial<IssueRow> = {}): IssueRow {
     last_occurred_at: "2026-11-04T12:00:00Z",
     occurrence_count: 1,
     last_escalated_at: null,
+    first_escalated_at: null,
+    last_it_action_at: null,
     resolved_at: null,
     resolution: null,
     resolved_by: null,
@@ -262,6 +264,7 @@ describe("eventLine", () => {
     actor_name: "Pat",
     actor_email: null,
     via: "app" as const,
+    by_it: false,
     note: null,
     details: { customer_ticket_no: "T-9", customer_account_no: "A-1" }
   };
@@ -269,6 +272,52 @@ describe("eventLine", () => {
     const line = eventLine(ev);
     expect(line).toMatch(/^Nov 5, 8:15 AM|^Nov 5, 8:15 AM/);
     expect(line).toContain("(logged Nov 5, 11:00");
-    expect(line).toContain("customer ticket T-9, account A-1");
+    expect(line).toContain("transaction ticket T-9, account A-1");
+  });
+});
+
+describe("applyChange by IT", () => {
+  it("marks the events as IT's and stamps last_it_action_at", async () => {
+    const calls = stubDb(issue());
+    await applyChange(ENV, issue(), { note: "Looking into it" }, { ...ACTOR, it: true });
+    expect(calls.find((c) => c.method === "PATCH")!.body.last_it_action_at).toEqual(expect.any(String));
+    expect(calls.find((c) => c.method === "POST")!.body).toMatchObject({ kind: "note", by_it: true });
+  });
+  it("a site's action does not count as IT's", async () => {
+    const calls = stubDb(issue());
+    await applyChange(ENV, issue(), { note: "Still broken" }, ACTOR);
+    expect(calls.find((c) => c.method === "PATCH")!.body).not.toHaveProperty("last_it_action_at");
+    expect(calls.find((c) => c.method === "POST")!.body).toMatchObject({ by_it: false });
+  });
+});
+
+describe("digestBucket", () => {
+  const now = Date.parse("2026-11-10T12:00:00Z");
+  const ago = (d: number) => new Date(now - d * 86_400_000).toISOString();
+  const b = (over: Partial<IssueRow>) => digestBucket({ ...issue(), ...over }, now);
+
+  it("never sent to IT is the site's to monitor, however old or quiet", () => {
+    expect(b({ first_escalated_at: null })).toEqual({ bucket: "site", flag: null });
+  });
+  it("flags a critical issue nobody sent to IT", () => {
+    expect(b({ priority: "critical" }).flag).toBe("Critical, not sent to IT");
+  });
+  it("needs attention only when sent 2+ days ago AND IT quiet 2+ days", () => {
+    expect(b({ first_escalated_at: ago(3) })).toEqual({
+      bucket: "attention",
+      flag: "Sent to IT 3 days ago, no IT action yet"
+    });
+    expect(b({ first_escalated_at: ago(5), last_it_action_at: ago(2) }).flag).toBe("No IT action for 2 days");
+  });
+  it("is just 'passed to IT' when recent or IT has acted recently", () => {
+    expect(b({ first_escalated_at: ago(1) }).bucket).toBe("with_it");
+    expect(b({ first_escalated_at: ago(5), last_it_action_at: ago(1) }).bucket).toBe("with_it");
+  });
+});
+
+describe("customerRefsText", () => {
+  it("pluralises a comma-separated list of ticket numbers", () => {
+    expect(customerRefsText("101", null)).toBe("transaction ticket 101");
+    expect(customerRefsText("101, 102", "A-1")).toBe("transaction tickets 101, 102, account A-1");
   });
 });

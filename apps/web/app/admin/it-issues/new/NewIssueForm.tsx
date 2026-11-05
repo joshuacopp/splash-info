@@ -126,7 +126,7 @@ export default function NewIssueForm({
       </div>
 
       <div>
-        <label className={label} htmlFor="error_text">Error message or transaction # (if any)</label>
+        <label className={label} htmlFor="error_text">Error message (if any)</label>
         <textarea id="error_text" name="error_text" rows={2} maxLength={1000} className={input}
           placeholder="Copy it exactly as it appears on screen" />
       </div>

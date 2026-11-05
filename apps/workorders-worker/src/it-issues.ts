@@ -18,6 +18,11 @@
 // Sites never see each other's issues (operator decision); the cross-site
 // "same device failing at several sites" view lives in the IT report instead.
 //
+// IT STAFF (2026-11-05). The `it_issues_it` tool grant marks a login as IT
+// support: it sees every site, and what it does is recorded as IT's (by_it),
+// exactly like an action from an emailed link. That is what lets the daily
+// digest tell "IT has not responded" apart from "the site has gone quiet".
+//
 // NAMES ARE TYPED, NOT LOOKED UP. Users are not mapped to people (many sites
 // sign in with a shared account), so every action carries a typed actor name
 // alongside the login email. That is what replaced "JMS" in the spreadsheet.
@@ -63,19 +68,20 @@ export const DEVICES = [
   "POS",
   "POS printer",
   "Cash drawer",
-  "Tablet",
+  "POS tablet",
   "Kiosk",
   "Kiosk printer",
   "Kiosk scanner",
-  "LPR camera",
-  "RFID reader",
-  "Gate",
+  "Kiosk menu board",
+  "Kiosk gate",
   "Exit gate",
-  "Manager computer",
-  "Menu board",
-  "Tunnel entrance board",
-  "Tunnel exit board",
+  "LPR",
+  "RFID reader",
+  "Entrance management screen",
+  "Exit management screen",
   "Tunnel controller / VQ",
+  "Manager computer",
+  "Server PC",
   "Network / internet",
   "Wi-Fi",
   "JotForm tablet",
@@ -100,7 +106,9 @@ const LIMITS = {
   error: 1000,
   text: 4000,
   ticket: 60,
-  customer: 60
+  customer: 60,
+  /** Room for a list: one report can cover several failed transactions. */
+  transactions: 300
 };
 
 /** How far back "when did it happen?" may go. Past this it is a typo. */
@@ -136,6 +144,11 @@ export interface IssueRow {
   last_occurred_at: string;
   occurrence_count: number;
   last_escalated_at: string | null;
+  /** First "Send to IT support". Re-sending never moves it. */
+  first_escalated_at: string | null;
+  /** Latest action by IT (email link or an it_issues_it login), not counting
+   *  an IT person pressing "Send to IT support". */
+  last_it_action_at: string | null;
   resolved_at: string | null;
   resolution: string | null;
   resolved_by: string | null;
@@ -155,6 +168,8 @@ export interface EventRow {
   actor_name: string | null;
   actor_email: string | null;
   via: "app" | "email_link" | "system";
+  /** Done by IT: an emailed-link action, or an it_issues_it login. */
+  by_it: boolean;
   note: string | null;
   details: Record<string, unknown>;
 }
@@ -209,7 +224,11 @@ export async function getEvents(env: ItIssuesEnv, issueId: string): Promise<Even
 
 async function addEvent(
   env: ItIssuesEnv,
-  ev: Omit<EventRow, "id" | "at" | "details" | "occurred_at"> & { details?: Record<string, unknown>; occurred_at?: string }
+  ev: Omit<EventRow, "id" | "at" | "details" | "occurred_at" | "by_it"> & {
+    details?: Record<string, unknown>;
+    occurred_at?: string;
+    by_it?: boolean;
+  }
 ): Promise<EventRow | null> {
   const r = await pg<EventRow[]>(env, "POST", "it_issue_events", { ...ev, details: ev.details ?? {} }, {
     Prefer: "return=representation"
@@ -240,7 +259,12 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
  * Mirrored in apps/web (tile + pages); this is the one that counts.
  */
 export function canUseItIssues(session: Session): boolean {
-  return session.role === "super_admin" || (session.tools as readonly string[]).includes("it_issues");
+  return session.role === "super_admin" || isItStaff(session) || (session.tools as readonly string[]).includes("it_issues");
+}
+
+/** IT support: sees every site, and its actions count as IT's. */
+export function isItStaff(session: Session): boolean {
+  return (session.tools as readonly string[]).includes("it_issues_it");
 }
 
 function isAdminTier(session: Session): boolean {
@@ -249,7 +273,7 @@ function isAdminTier(session: Session): boolean {
 
 async function accessibleSites(env: ItIssuesEnv, session: Session): Promise<{ all: boolean; sites: SiteRow[] }> {
   const select = "select=id,site,site_number,maintainx_id&order=site_number.asc,site.asc&limit=500";
-  if (isAdminTier(session)) {
+  if (isAdminTier(session) || isItStaff(session)) {
     const r = await pg<SiteRow[]>(env, "GET", `locations?${select}`);
     return { all: true, sites: r.data ?? [] };
   }
@@ -387,7 +411,7 @@ export function occurredAt(body: Body, now: number = Date.now()): string {
 /** The optional customer references a report or occurrence can carry. */
 function customerRefs(body: Body): { customer_ticket_no: string | null; customer_account_no: string | null } {
   return {
-    customer_ticket_no: str(body, "customer_ticket_no", LIMITS.customer, "Customer ticket #"),
+    customer_ticket_no: str(body, "customer_ticket_no", LIMITS.transactions, "Transaction ticket #"),
     customer_account_no: str(body, "customer_account_no", LIMITS.customer, "Customer account #")
   };
 }
@@ -400,6 +424,8 @@ export interface Actor {
   name: string;
   email: string | null;
   via: "app" | "email_link";
+  /** IT support acting (email link, or an it_issues_it login). */
+  it: boolean;
 }
 
 export interface Change {
@@ -428,7 +454,7 @@ export async function applyChange(
 ): Promise<{ ok: true; issue: IssueRow; events: EventRow[] } | { ok: false; error: string }> {
   const patch: Partial<IssueRow> = {};
   const events: Array<Parameters<typeof addEvent>[1]> = [];
-  const base = { issue_id: issue.id, actor_name: actor.name, actor_email: actor.email, via: actor.via };
+  const base = { issue_id: issue.id, actor_name: actor.name, actor_email: actor.email, via: actor.via, by_it: actor.it };
 
   if (change.it_ticket_no !== undefined && change.it_ticket_no !== issue.it_ticket_no && change.it_ticket_no) {
     patch.it_ticket_no = change.it_ticket_no;
@@ -468,6 +494,7 @@ export async function applyChange(
   }
 
   if (events.length === 0) return { ok: false, error: "Nothing to save -- nothing was changed." };
+  if (actor.it) patch.last_it_action_at = new Date().toISOString();
 
   let updated = issue;
   if (Object.keys(patch).length > 0) {
@@ -507,7 +534,7 @@ async function recordOccurrence(
     customer_account_no: null
   }
 ): Promise<IssueRow | null> {
-  const base = { issue_id: issue.id, actor_name: actor.name, actor_email: actor.email, via: actor.via };
+  const base = { issue_id: issue.id, actor_name: actor.name, actor_email: actor.email, via: actor.via, by_it: actor.it };
   const reopening = issue.status === "resolved";
   if (reopening) {
     await addEvent(env, { ...base, kind: "reopened", note: null, details: { to: "open", previous_resolution: issue.resolution } });
@@ -531,6 +558,7 @@ async function recordOccurrence(
     occurrence_count: Number.isFinite(total) ? total + 1 : issue.occurrence_count + 1
   };
   if (reopening) Object.assign(patch, { status: "open", resolved_at: null, resolution: null, resolved_by: null });
+  if (actor.it) patch.last_it_action_at = new Date().toISOString();
   return patchIssue(env, issue.id, patch);
 }
 
@@ -623,7 +651,8 @@ function actorFromBody(body: Body, session: Session): Actor {
   return {
     name: required(body, "actor_name", LIMITS.name, "Your name"),
     email: session.email?.toLowerCase() ?? null,
-    via: "app"
+    via: "app",
+    it: isItStaff(session)
   };
 }
 
@@ -719,6 +748,8 @@ export async function handleItIssuesRequest(
         },
         actor
       );
+      // IT acting in the app tells the site, same as acting from the email link.
+      if (result.ok && actor.it && result.events.length) await sendSiteUpdateEmail(env, result.issue, result.events);
       return result.ok
         ? json({ ok: true, issue: result.issue, photo_warning: photoWarning(stored.rejected) })
         : jsonError(400, result.error);
@@ -734,11 +765,15 @@ export async function handleItIssuesRequest(
         actor_name: actor.name,
         actor_email: actor.email,
         via: "app",
+        by_it: actor.it,
         note,
         details: { to }
       });
       if (!ev) return jsonError(500, "Could not record the escalation. Try again.");
+      // first_escalated_at starts the "is IT responding?" clock and is never
+      // moved, so pressing the button again cannot reset it.
       const patch: Partial<IssueRow> = { last_escalated_at: ev.at };
+      if (!issue.first_escalated_at) patch.first_escalated_at = ev.at;
       // Sent to IT and nobody there has picked it up yet.
       if (issue.status === "open") patch.status = "waiting_on_it";
       const updated = (await patchIssue(env, issue.id, patch)) ?? issue;
@@ -837,13 +872,14 @@ async function createIssue(request: Request, env: ItIssuesEnv, session: Session)
   // Photos need the issue id for their key, so they are stored after the
   // issue row and recorded on the "created" event.
   const stored = await storePhotos(env, issue.id, files);
-  const actor: Actor = { name: row.reporter_name, email: row.created_by_email || null, via: "app" };
+  const actor: Actor = { name: row.reporter_name, email: row.created_by_email || null, via: "app", it: isItStaff(session) };
   await addEvent(env, {
     issue_id: issue.id,
     kind: "created",
     actor_name: actor.name,
     actor_email: actor.email,
     via: "app",
+    by_it: actor.it,
     note: null,
     occurred_at: happened,
     details: stored.photos.length ? { phone: row.reporter_phone, photos: stored.photos } : { phone: row.reporter_phone }
@@ -1041,6 +1077,7 @@ async function createMxRequest(
     actor_name: actor.name,
     actor_email: actor.email,
     via: "app",
+    by_it: actor.it,
     note: null,
     details: {
       mx_request_id: requestId,
@@ -1101,7 +1138,9 @@ export async function handleItIssueLink(
       // A shared inbox can't identify a person, so the name is required.
       name: required(body, "actor_name", LIMITS.name, "Your name"),
       email: null,
-      via: "email_link"
+      via: "email_link",
+      // Only IT receives these links.
+      it: true
     };
     const result = await applyChange(
       env,
@@ -1115,8 +1154,8 @@ export async function handleItIssueLink(
       actor
     );
     if (!result.ok) return jsonError(400, result.error);
-    // Tell the site what IT just did. The site's own actions (in the app)
-    // never trigger this -- only IT, acting from an emailed link.
+    // Tell the site what IT just did. The site's own actions never trigger
+    // this -- only IT, from an emailed link or an it_issues_it login.
     if (result.events.length) await sendSiteUpdateEmail(env, result.issue, result.events);
     return json({ ok: true, ...publicView(result.issue, await getEvents(env, issue.id)) });
   } catch (err) {

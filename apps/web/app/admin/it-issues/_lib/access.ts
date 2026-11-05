@@ -6,5 +6,6 @@ import type { Session } from "@splash/types/session";
 
 export function canUseItIssues(session: Session | null): boolean {
   if (!session) return false;
-  return session.role === "super_admin" || (session.tools as readonly string[]).includes("it_issues");
+  const tools = session.tools as readonly string[];
+  return session.role === "super_admin" || tools.includes("it_issues") || tools.includes("it_issues_it");
 }

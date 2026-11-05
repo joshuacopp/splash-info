@@ -2,8 +2,8 @@
 // "Send to IT support now" escalation. Both go through the shared
 // outbound_emails queue and both carry no-sign-in links (it-issues.ts
 // mintIssueLink) so IT can add a ticket number or close an issue from the
-// email without ever signing in -- the operator's expectation is that IT will
-// not work inside this tool, only read times, dates and ticket numbers.
+// email without ever signing in. IT staff who do sign in hold the
+// `it_issues_it` grant, so their in-app actions count as IT's too.
 //
 // RECIPIENTS ARE [vars], not code: IT_ISSUES_REPORT_TO / IT_ISSUES_ESCALATE_TO
 // in wrangler.toml. During testing both point at the operator so IT is not
@@ -29,9 +29,9 @@ const RULE = "#e3e8ef";
 const RED = "#b42318";
 const AMBER = "#b54708";
 
-/** An unresolved issue with no activity for this long is flagged at the top of
- *  the report. Activity = any update, note, occurrence or escalation. */
-const STALE_DAYS = 2;
+/** Sent to IT at least this long ago, with no IT action for at least this
+ *  long, puts an issue in "Needs attention". */
+export const IT_RESPONSE_DAYS = 2;
 
 const PRIORITY_RANK: Record<string, number> = { critical: 0, high: 1, medium: 2, low: 3 };
 const STATUS_LABEL: Record<string, string> = {
@@ -79,10 +79,17 @@ function refs(issue: IssueRow): string {
   return parts.join(" / ");
 }
 
-/** "Customer ticket 123 / account 456", or "" when neither was given. */
+/** "#" or "#s": the field takes a comma-separated list of ticket numbers. */
+export function ticketLabel(v: string | null | undefined): string {
+  return v && /[,;]/.test(v) ? "Transaction ticket #s" : "Transaction ticket #";
+}
+
+/** "transaction ticket 123, account 456", or "" when neither was given. */
 export function customerRefsText(ticket: unknown, account: unknown): string {
   const parts: string[] = [];
-  if (typeof ticket === "string" && ticket) parts.push(`customer ticket ${ticket}`);
+  if (typeof ticket === "string" && ticket) {
+    parts.push(`${/[,;]/.test(ticket) ? "transaction tickets" : "transaction ticket"} ${ticket}`);
+  }
   if (typeof account === "string" && account) parts.push(`account ${account}`);
   return parts.join(", ");
 }
@@ -100,7 +107,13 @@ export function eventLine(ev: EventRow): string {
   if (Array.isArray(d.photos) && d.photos.length) {
     what += ` [${d.photos.length} photo${d.photos.length === 1 ? "" : "s"} - open the issue to see]`;
   }
-  const who = [ev.actor_name, ev.via === "email_link" ? "via email link" : ""].filter(Boolean).join(", ");
+  const who = [
+    ev.actor_name,
+    ev.by_it && ev.via !== "email_link" ? "IT" : "",
+    ev.via === "email_link" ? "IT, via email link" : ""
+  ]
+    .filter(Boolean)
+    .join(", ");
   // The time it HAPPENED leads; the time it was logged follows only when the
   // two differ enough to matter (a site logging an hour later).
   const happened = ev.occurred_at ?? ev.at;
@@ -127,7 +140,7 @@ function detailRows(issue: IssueRow): Array<[string, string]> {
     ["Customer impact", IMPACT_LABEL[issue.customer_impact]],
     ["Priority", cap(issue.priority)],
     ["Status", STATUS_LABEL[issue.status] ?? issue.status],
-    ["Customer ticket #", issue.customer_ticket_no ?? ""],
+    [ticketLabel(issue.customer_ticket_no), issue.customer_ticket_no ?? ""],
     ["Customer account #", issue.customer_account_no ?? ""],
     ["First happened", fmt(issue.first_reported_at)],
     ["Times it has happened", String(issue.occurrence_count)],
@@ -238,11 +251,39 @@ export interface ItReportResult {
   skipped: string | null;
 }
 
-function needsAttention(issue: IssueRow, now: number): string | null {
-  if (issue.priority === "critical") return "Critical";
-  const idle = (now - Date.parse(issue.updated_at)) / 86_400_000;
-  if (idle >= STALE_DAYS) return `No activity for ${Math.floor(idle)} days`;
-  return null;
+export type DigestBucket = "attention" | "with_it" | "site";
+
+/**
+ * Where an open issue goes in the digest, and the flag shown beside it.
+ *
+ *   attention -- sent to IT IT_RESPONSE_DAYS+ ago and IT has done nothing for
+ *                IT_RESPONSE_DAYS+. The ONLY thing that means "needs
+ *                attention": a one-off glitch that never came back is not a
+ *                problem, IT not answering is.
+ *   with_it   -- sent to IT, not overdue.
+ *   site      -- never sent to IT; the site is monitoring it. Critical ones
+ *                carry a flag, because a critical issue nobody sent is the
+ *                one case here IT would want to hear about.
+ */
+export function digestBucket(
+  issue: Pick<IssueRow, "first_escalated_at" | "last_it_action_at" | "priority">,
+  now: number
+): { bucket: DigestBucket; flag: string | null } {
+  if (!issue.first_escalated_at) {
+    return { bucket: "site", flag: issue.priority === "critical" ? "Critical, not sent to IT" : null };
+  }
+  const days = (iso: string) => Math.floor((now - Date.parse(iso)) / 86_400_000);
+  const sent = days(issue.first_escalated_at);
+  const quiet = issue.last_it_action_at ? days(issue.last_it_action_at) : sent;
+  if (sent >= IT_RESPONSE_DAYS && quiet >= IT_RESPONSE_DAYS) {
+    return {
+      bucket: "attention",
+      flag: issue.last_it_action_at
+        ? `No IT action for ${quiet} day${quiet === 1 ? "" : "s"}`
+        : `Sent to IT ${sent} day${sent === 1 ? "" : "s"} ago, no IT action yet`
+    };
+  }
+  return { bucket: "with_it", flag: null };
 }
 
 function compareIssues(a: IssueRow, b: IssueRow): number {
@@ -272,8 +313,11 @@ export async function runItIssuesDailyReport(env: ItIssuesEnv, now = new Date())
   const open = (openRes.data ?? []).sort(compareIssues);
   const done = doneRes.data ?? [];
   const nowMs = now.getTime();
-  const attention = open.filter((i) => needsAttention(i, nowMs));
-  const rest = open.filter((i) => !needsAttention(i, nowMs));
+  const placed = new Map(open.map((i) => [i.id, digestBucket(i, nowMs)]));
+  const flagOf = (i: IssueRow) => placed.get(i.id)?.flag ?? null;
+  const attention = open.filter((i) => placed.get(i.id)?.bucket === "attention");
+  const withIt = open.filter((i) => placed.get(i.id)?.bucket === "with_it");
+  const atSite = open.filter((i) => placed.get(i.id)?.bucket === "site");
   result.open = open.length;
   result.attention = attention.length;
   result.resolvedRecently = done.length;
@@ -312,6 +356,8 @@ export async function runItIssuesDailyReport(env: ItIssuesEnv, now = new Date())
         STATUS_LABEL[i.status] ?? i.status,
         `reported ${fmt(i.first_reported_at)}`,
         i.occurrence_count > 1 ? `happened ${i.occurrence_count} times, last ${fmt(i.last_occurred_at)}` : "",
+        i.first_escalated_at ? `sent to IT ${fmt(i.first_escalated_at)}` : "",
+        i.last_it_action_at ? `last IT action ${fmt(i.last_it_action_at)}` : "",
         refs(i)
       ]
         .filter(Boolean)
@@ -349,13 +395,15 @@ export async function runItIssuesDailyReport(env: ItIssuesEnv, now = new Date())
       [
         `<h2 style="margin:0 0 4px;color:${NAVY};font-size:20px;">IT issues - ${escapeHtml(dateLabel)}</h2>`,
         `<p style="margin:0;color:${MUTED};font-size:13px;">${open.length} open, ${attention.length} need attention, ${done.length} resolved in the last day. ` +
+          `"Needs attention" = sent to IT ${IT_RESPONSE_DAYS}+ days ago with no IT action for ${IT_RESPONSE_DAYS}+ days. ` +
           `Each "Open" link works without signing in: add your ticket number, or close the issue with a note.</p>`,
         open.length === 0 && done.length === 0
           ? `<p style="margin:16px 0 0;color:${NAVY};font-size:14px;">No open IT issues.</p>`
           : "",
-        section("Needs attention", attention.map((i) => row(i, needsAttention(i, nowMs))).join("")),
+        section("Needs attention - passed to IT, no response", attention.map((i) => row(i, flagOf(i))).join("")),
+        section("Open - passed to IT", withIt.map((i) => row(i, flagOf(i))).join("")),
+        section("Open - monitoring at site", atSite.map((i) => row(i, flagOf(i))).join("")),
         sharedHtml,
-        section(attention.length ? "Other open issues" : "Open issues", rest.map((i) => row(i, null)).join("")),
         section("Resolved in the last day", done.map((i) => row(i, null)).join("")),
         `<p style="margin:18px 0 0;font-size:12px;color:${MUTED};">All issues: <a href="${escapeHtml(base)}/admin/it-issues" style="color:#1f6feb;">${escapeHtml(base)}/admin/it-issues</a> (sign-in required).</p>`
       ].join(""),
@@ -368,6 +416,8 @@ export async function runItIssuesDailyReport(env: ItIssuesEnv, now = new Date())
         `  ${i.problem}`,
         `  ${cap(i.priority)}, ${STATUS_LABEL[i.status]}, reported ${fmt(i.first_reported_at)}` +
           (i.occurrence_count > 1 ? `, happened ${i.occurrence_count} times` : "") +
+          (i.first_escalated_at ? `, sent to IT ${fmt(i.first_escalated_at)}` : "") +
+          (i.last_it_action_at ? `, last IT action ${fmt(i.last_it_action_at)}` : "") +
           (refs(i) ? `, ${refs(i)}` : ""),
         links.get(i.id) ? `  ${links.get(i.id)}` : ""
       ]
@@ -376,11 +426,12 @@ export async function runItIssuesDailyReport(env: ItIssuesEnv, now = new Date())
     const text = [
       `IT issues - ${dateLabel}`,
       `${open.length} open, ${attention.length} need attention, ${done.length} resolved in the last day.`,
-      attention.length ? `\nNEEDS ATTENTION\n${attention.map((i) => textRow(i, needsAttention(i, nowMs))).join("\n\n")}` : "",
+      attention.length ? `\nNEEDS ATTENTION - PASSED TO IT, NO RESPONSE\n${attention.map((i) => textRow(i, flagOf(i))).join("\n\n")}` : "",
+      withIt.length ? `\nOPEN - PASSED TO IT\n${withIt.map((i) => textRow(i, flagOf(i))).join("\n\n")}` : "",
+      atSite.length ? `\nOPEN - MONITORING AT SITE\n${atSite.map((i) => textRow(i, flagOf(i))).join("\n\n")}` : "",
       shared.length
         ? `\nSAME DEVICE AT MORE THAN ONE SITE\n${shared.map(([d, l]) => `${d}: ${l.map((i) => `${i.site_name} (IT-${i.ref_no})`).join(", ")}`).join("\n")}`
         : "",
-      rest.length ? `\nOPEN\n${rest.map((i) => textRow(i, null)).join("\n\n")}` : "",
       done.length ? `\nRESOLVED IN THE LAST DAY\n${done.map((i) => textRow(i, null)).join("\n\n")}` : "",
       `\nAll issues: ${base}/admin/it-issues`
     ]

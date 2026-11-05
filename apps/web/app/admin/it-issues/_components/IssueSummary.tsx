@@ -47,7 +47,7 @@ export function IssueDetails({ issue }: { issue: Issue }) {
     ["Device", deviceLabel(issue)],
     ["Error message", issue.error_text],
     ["Customer impact", impactLabel(issue.customer_impact)],
-    ["Customer ticket #", issue.customer_ticket_no],
+    [issue.customer_ticket_no && /[,;]/.test(issue.customer_ticket_no) ? "Transaction ticket #s" : "Transaction ticket #", issue.customer_ticket_no],
     ["Customer account #", issue.customer_account_no],
     ["First happened", formatEt(issue.first_reported_at)],
     ["Times it has happened", String(issue.occurrence_count)],
@@ -56,7 +56,9 @@ export function IssueDetails({ issue }: { issue: Issue }) {
     ["Reported by", `${issue.reporter_name} · ${issue.reporter_phone}`],
     ["IT ticket #", issue.it_ticket_no],
     ["MaintainX request", issue.mx_request_id ? `#${issue.mx_request_id}` : null],
+    ["First sent to IT", issue.first_escalated_at ? formatEt(issue.first_escalated_at) : null],
     ["Last sent to IT", issue.last_escalated_at ? formatEt(issue.last_escalated_at) : null],
+    ["Last IT action", issue.last_it_action_at ? formatEt(issue.last_it_action_at) : null],
     ["Resolved", issue.resolved_at ? `${formatEt(issue.resolved_at)} by ${issue.resolved_by ?? "-"}` : null],
     ["Resolution", issue.resolution]
   ];
@@ -107,6 +109,7 @@ export function IssueTimeline({ events, photoBase }: { events: IssueEvent[]; pho
             <div className="text-xs text-splash-navy/60">
               {eventWhen(e)}
               {e.actor_name ? ` · ${e.actor_name}` : ""}
+              {e.by_it || e.via === "email_link" ? " · IT" : ""}
               {e.via === "email_link" ? " · via email link" : ""}
             </div>
             {e.kind === "occurrence" && customerRefs(e.details?.customer_ticket_no, e.details?.customer_account_no) && (

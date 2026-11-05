@@ -83,7 +83,8 @@ export type ToolName =
   | "inventory"
   | "inventory_view"
   | "inventory_admin"
-  | "it_issues";
+  | "it_issues"
+  | "it_issues_it";
 
 export const VALID_TOOLS: readonly ToolName[] = [
   "pricing",
@@ -94,7 +95,9 @@ export const VALID_TOOLS: readonly ToolName[] = [
   "inventory_view",
   "inventory",
   "inventory_admin",
-  "it_issues"
+  "it_issues",
+  // IT support in the IT Issue Tracker: every site, actions count as IT's.
+  "it_issues_it"
 ] as const;
 
 /**

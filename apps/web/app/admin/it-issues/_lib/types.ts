@@ -31,6 +31,8 @@ export interface Issue {
   last_occurred_at: string;
   occurrence_count: number;
   last_escalated_at: string | null;
+  first_escalated_at?: string | null;
+  last_it_action_at?: string | null;
   resolved_at: string | null;
   resolution: string | null;
   resolved_by: string | null;
@@ -47,6 +49,8 @@ export interface IssueEvent {
   actor_name: string | null;
   actor_email?: string | null;
   via: "app" | "email_link" | "system";
+  /** Done by IT: an emailed-link action or an IT-tagged login. */
+  by_it?: boolean;
   note: string | null;
   details: Record<string, unknown>;
 }
@@ -164,10 +168,12 @@ export function eventHeadline(e: IssueEvent): string {
   }
 }
 
-/** "Customer ticket 123 · account 456" from an occurrence's details, or "". */
+/** "Transaction ticket 123 · account 456" from an occurrence's details, or "". */
 export function customerRefs(ticket: unknown, account: unknown): string {
   const parts: string[] = [];
-  if (typeof ticket === "string" && ticket) parts.push(`Customer ticket ${ticket}`);
+  if (typeof ticket === "string" && ticket) {
+    parts.push(`${/[,;]/.test(ticket) ? "Transaction tickets" : "Transaction ticket"} ${ticket}`);
+  }
   if (typeof account === "string" && account) parts.push(`account ${account}`);
   return parts.join(" · ");
 }
