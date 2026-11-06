@@ -36,14 +36,18 @@ export function renderPicker({ locationCode, rows, prefix }: PickerRenderArgs): 
     })
     .join("");
 
-  const fallbackHtml = `<div style="grid-column: 1 / -1; text-align: center; color: #64748b;">No packages configured for ${escHtml(locationCode)}.</div>`;
+  // Heading uses pricing_simple.location_pretty ("Port Jefferson"), not the
+  // URL slug — cap("port_jefferson") rendered "Port_jefferson".
+  const displayName = rows[0]?.location_pretty?.trim() || cap(locationCode);
+
+  const fallbackHtml =`<div style="grid-column: 1 / -1; text-align: center; color: #64748b;">No packages configured for ${escHtml(locationCode)}.</div>`;
 
   return `<!doctype html>
 <html lang="en"><head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
 <link rel="icon" type="image/png" href="${ASSETS.favicon}"/>
-<title>${escHtml(cap(locationCode))} – Choose Package</title>
+<title>${escHtml(displayName)} – Choose Package</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Asap:wght@400;500;600;700;800&display=swap" rel="stylesheet">
@@ -59,7 +63,7 @@ ${PICKER_CSS}
     <div class="container">
       <div class="header">
         <img class="logo" src="${ASSETS.logoWhite}" alt="Splash Car Wash"/>
-        <div class="location-title">${escHtml(cap(locationCode))}</div>
+        <div class="location-title">${escHtml(displayName)}</div>
       </div>
       <div class="content">
         <div class="subtitle">Select your MaxPass package</div>
