@@ -47,6 +47,8 @@ export const VEHICLE_ISSUE_TYPES = [
   { value: "trim", label: "Trim", category: "vehicle" },
   { value: "glass", label: "Glass", category: "vehicle" },
   { value: "wiper", label: "Wiper", category: "vehicle" },
+  { value: "paint", label: "Paint & finish", category: "vehicle" },
+  { value: "handle", label: "Door handle", category: "vehicle" },
   { value: "vehicle_other", label: "Other", category: "vehicle" }
 ] as const;
 
