@@ -131,6 +131,22 @@ const SHARED_STYLES = `
   }
   .pill-warn { background: #f59e0b; color: white; }
 
+  /* Vehicle Make / Model dropdown (combo in FORM_SCRIPT). */
+  .combo { position: relative; }
+  .combo-list {
+    position: absolute; left: 0; right: 0; top: calc(100% + 4px); z-index: 20;
+    max-height: 360px; overflow-y: auto; margin: 0; padding: 4px 0; list-style: none;
+    background: white; border: 2px solid #e2e8f0; border-radius: 8px;
+    box-shadow: 0 12px 32px rgba(15, 23, 42, 0.18); -webkit-overflow-scrolling: touch;
+  }
+  .combo-list li {
+    padding: 12px 14px; min-height: 44px; font-size: 16px; line-height: 20px;
+    cursor: pointer; color: #0f172a;
+  }
+  .combo-list li + li { border-top: 1px solid #f1f5f9; }
+  .combo-list li.active, .combo-list li:hover { background: #eff6ff; }
+  .combo-list li b { font-weight: 700; color: #1e3a8a; }
+
   .seg-toggle { display: inline-flex; border: 2px solid #e2e8f0; border-radius: 999px; overflow: hidden; }
   .seg-toggle label {
     margin: 0; padding: 8px 18px; font-size: 14px; font-weight: 600;
@@ -426,13 +442,11 @@ export function renderClaimForm(args: RenderClaimFormArgs): string {
           <div class="form-row">
             <div class="form-group">
               <label for="vehicleMake">Vehicle Make <span class="required">*</span></label>
-              <input type="text" id="vehicleMake" name="vehicleMake" required placeholder="e.g., Toyota" list="vehicleMakeList" autocomplete="off">
-              <datalist id="vehicleMakeList"></datalist>
+              <input type="text" id="vehicleMake" name="vehicleMake" required placeholder="e.g., Toyota" autocomplete="off">
             </div>
             <div class="form-group">
               <label for="vehicleModel">Vehicle Model <span class="required">*</span></label>
-              <input type="text" id="vehicleModel" name="vehicleModel" required placeholder="e.g., Camry" list="vehicleModelList" autocomplete="off">
-              <datalist id="vehicleModelList"></datalist>
+              <input type="text" id="vehicleModel" name="vehicleModel" required placeholder="e.g., Camry" autocomplete="off">
             </div>
           </div>
 
@@ -708,29 +722,19 @@ const FORM_SCRIPT = `(function () {
   function closePinModal() {
     pinOverlay.hidden = true;
   }
-  // Vehicle Make / Model suggestions from /claims-api/vehicle-catalog (NHTSA
-  // make -> models). Suggestions only: anything typed is still accepted. A
-  // make or model that matches a list entry ignoring case (or a common make
-  // nickname) is rewritten to the list's spelling on change, so the Vehicle
-  // Guide lookup and reports see one spelling. A failed fetch just means no
-  // suggestions.
+  // Vehicle Make / Model suggestions: our own dropdown under each box, so it
+  // looks the same on every phone (iOS Safari would otherwise squeeze a
+  // <datalist> into 2-3 slots above the keyboard). Suggestions only: anything
+  // typed is still accepted. A make or model that matches a list entry
+  // ignoring case (or a common make nickname) is rewritten to the list's
+  // spelling on change, so the Vehicle Guide lookup and reports see one
+  // spelling. No catalog (fetch failed) = no dropdown, plain text boxes.
   var vehicleCatalog = null;
   var MAKE_NICKNAMES = { chevy: 'Chevrolet', vw: 'Volkswagen', mercedes: 'Mercedes-Benz',
     'mercedes benz': 'Mercedes-Benz', benz: 'Mercedes-Benz', landrover: 'Land Rover',
     'range rover': 'Land Rover', alfa: 'Alfa Romeo', caddy: 'Cadillac' };
   var makeInput = document.getElementById('vehicleMake');
   var modelInput = document.getElementById('vehicleModel');
-  var makeList = document.getElementById('vehicleMakeList');
-  var modelList = document.getElementById('vehicleModelList');
-  function fillList(listEl, values) {
-    if (!listEl) return;
-    listEl.textContent = '';
-    values.forEach(function (v) {
-      var o = document.createElement('option');
-      o.value = v;
-      listEl.appendChild(o);
-    });
-  }
   function findIgnoringCase(values, typed) {
     var t = typed.trim().toLowerCase();
     if (!t) return null;
@@ -741,27 +745,126 @@ const FORM_SCRIPT = `(function () {
   }
   function catalogMake(typed) {
     if (!vehicleCatalog) return null;
-    var t = typed.trim().toLowerCase().split('  ').join(' ');
+    var t = typed.trim().toLowerCase();
     return MAKE_NICKNAMES[t] || findIgnoringCase(Object.keys(vehicleCatalog), t);
   }
   function setVehicleValue(input, value) {
     if (!input || input.value === value) return;
     input.value = value;
-    // Let the draft autosave see the rewritten value.
+    // Let the draft autosave and the known-issues lookup see the new value.
     input.dispatchEvent(new Event('input', { bubbles: true }));
+    input.dispatchEvent(new Event('change', { bubbles: true }));
   }
-  function refreshModelList() {
-    var make = makeInput ? catalogMake(makeInput.value || '') : null;
-    fillList(modelList, make ? vehicleCatalog[make] : []);
+  // Names starting with the typed text first, then names with a word starting
+  // with it ("rover" -> Land Rover). Empty text = every option (Model's
+  // browse-the-list case).
+  function rankMatches(options, typed) {
+    var t = typed.trim().toLowerCase();
+    if (!t) return options.slice();
+    var starts = [], words = [];
+    options.forEach(function (o) {
+      var l = o.toLowerCase();
+      if (l.indexOf(t) === 0) starts.push(o);
+      else if (l.indexOf(' ' + t) > 0 || l.indexOf('-' + t) > 0) words.push(o);
+    });
+    return starts.concat(words);
+  }
+  function makeCombo(input, getOptions, nextFieldId) {
+    var wrap = input.parentNode;
+    wrap.classList.add('combo');
+    var list = document.createElement('ul');
+    list.className = 'combo-list';
+    list.id = input.id + 'Options';
+    list.setAttribute('role', 'listbox');
+    list.hidden = true;
+    wrap.appendChild(list);
+    input.setAttribute('role', 'combobox');
+    input.setAttribute('aria-autocomplete', 'list');
+    input.setAttribute('aria-controls', list.id);
+    input.setAttribute('aria-expanded', 'false');
+    var items = [];
+    var active = -1;
+
+    function close() {
+      list.hidden = true;
+      input.setAttribute('aria-expanded', 'false');
+      input.removeAttribute('aria-activedescendant');
+      active = -1;
+    }
+    function highlight(n) {
+      if (active >= 0 && items[active]) items[active].classList.remove('active');
+      active = n;
+      if (n >= 0 && items[n]) {
+        items[n].classList.add('active');
+        input.setAttribute('aria-activedescendant', items[n].id);
+        items[n].scrollIntoView({ block: 'nearest' });
+      } else {
+        input.removeAttribute('aria-activedescendant');
+      }
+    }
+    function choose(value) {
+      setVehicleValue(input, value);
+      close();
+      var next = nextFieldId && document.getElementById(nextFieldId);
+      if (next) next.focus();
+    }
+    function open() {
+      var options = getOptions();
+      var typed = input.value || '';
+      var matches = options.length ? rankMatches(options, typed) : [];
+      // Nothing useful to show: no list, or the box already holds the only match.
+      if (!matches.length || (matches.length === 1 && matches[0].toLowerCase() === typed.trim().toLowerCase())) {
+        close();
+        return;
+      }
+      list.textContent = '';
+      items = [];
+      active = -1;
+      var t = typed.trim();
+      matches.forEach(function (m, n) {
+        var li = document.createElement('li');
+        li.id = list.id + '-' + n;
+        li.setAttribute('role', 'option');
+        var at = t ? m.toLowerCase().indexOf(t.toLowerCase()) : -1;
+        if (at >= 0) {
+          li.appendChild(document.createTextNode(m.slice(0, at)));
+          var b = document.createElement('b');
+          b.textContent = m.slice(at, at + t.length);
+          li.appendChild(b);
+          li.appendChild(document.createTextNode(m.slice(at + t.length)));
+        } else {
+          li.textContent = m;
+        }
+        // pointerdown + preventDefault keeps focus in the box, so blur doesn't
+        // close the list before the tap lands.
+        li.addEventListener('pointerdown', function (e) { e.preventDefault(); });
+        li.addEventListener('click', function () { choose(m); });
+        list.appendChild(li);
+        items.push(li);
+      });
+      list.scrollTop = 0;
+      list.hidden = false;
+      input.setAttribute('aria-expanded', 'true');
+    }
+    input.addEventListener('input', open);
+    input.addEventListener('focus', open);
+    input.addEventListener('blur', function () { setTimeout(close, 120); });
+    input.addEventListener('keydown', function (e) {
+      if (list.hidden) {
+        if (e.key === 'ArrowDown') { open(); e.preventDefault(); }
+        return;
+      }
+      if (e.key === 'ArrowDown') { highlight(Math.min(active + 1, items.length - 1)); e.preventDefault(); }
+      else if (e.key === 'ArrowUp') { highlight(Math.max(active - 1, -1)); e.preventDefault(); }
+      else if (e.key === 'Enter' && active >= 0) { choose(items[active].textContent); e.preventDefault(); }
+      else if (e.key === 'Escape') { close(); e.preventDefault(); }
+    });
+    return { close: close };
   }
   if (makeInput && modelInput && window.fetch) {
-    makeInput.addEventListener('input', refreshModelList);
-    // Resumed drafts set values without events; catch up when Model is used.
-    modelInput.addEventListener('focus', refreshModelList);
     makeInput.addEventListener('change', function () {
       var make = catalogMake(makeInput.value || '');
       if (make) setVehicleValue(makeInput, make);
-      refreshModelList();
     });
     modelInput.addEventListener('change', function () {
       var make = catalogMake(makeInput.value || '');
@@ -773,11 +876,14 @@ const FORM_SCRIPT = `(function () {
       .then(function (body) {
         if (!body || typeof body !== 'object') return;
         vehicleCatalog = body;
-        fillList(makeList, Object.keys(body).sort());
-        // A resumed draft may already have a make filled in.
-        refreshModelList();
+        var makes = Object.keys(body).sort();
+        makeCombo(makeInput, function () { return makes; }, 'vehicleModel');
+        makeCombo(modelInput, function () {
+          var make = catalogMake(makeInput.value || '');
+          return make ? vehicleCatalog[make] : [];
+        }, 'vehicleColor');
       })
-      .catch(function () { /* offline or worker hiccup: no suggestions */ });
+      .catch(function () { /* offline or worker hiccup: plain text boxes */ });
   }
 
   // Known vehicle issues (Vehicle Guide) for the car on this claim, shown at
