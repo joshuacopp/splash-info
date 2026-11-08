@@ -223,6 +223,7 @@ import {
   handleVehicleGuidePublic,
   serveVehicleMedia
 } from "./vehicle-guide.js";
+import { VEHICLE_CATALOG } from "./vehicle-catalog.js";
 
 interface Env extends SupabaseEnv {
   DB: D1Database;
@@ -428,6 +429,18 @@ export default {
       // See handleMatchVehicleIssues for what it does (and doesn't) expose.
       if (path === "claims-api/vehicle-issues/match" && method === "GET") {
         return handleMatchVehicleIssues(url, env);
+      }
+
+      // Make -> models for the claim form's Vehicle Make / Model suggestions.
+      // Static (src/vehicle-catalog.ts, generated from NHTSA), so cacheable.
+      if (path === "claims-api/vehicle-catalog" && method === "GET") {
+        return new Response(JSON.stringify(VEHICLE_CATALOG), {
+          headers: {
+            "Content-Type": "application/json",
+            "Cache-Control": "public, max-age=86400",
+            "X-Robots-Tag": "noindex"
+          }
+        });
       }
 
       // Vehicle Guide public page: /claims/vehicles/{token}[/media/{id}].

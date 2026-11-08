@@ -426,11 +426,13 @@ export function renderClaimForm(args: RenderClaimFormArgs): string {
           <div class="form-row">
             <div class="form-group">
               <label for="vehicleMake">Vehicle Make <span class="required">*</span></label>
-              <input type="text" id="vehicleMake" name="vehicleMake" required placeholder="e.g., Toyota">
+              <input type="text" id="vehicleMake" name="vehicleMake" required placeholder="e.g., Toyota" list="vehicleMakeList" autocomplete="off">
+              <datalist id="vehicleMakeList"></datalist>
             </div>
             <div class="form-group">
               <label for="vehicleModel">Vehicle Model <span class="required">*</span></label>
-              <input type="text" id="vehicleModel" name="vehicleModel" required placeholder="e.g., Camry">
+              <input type="text" id="vehicleModel" name="vehicleModel" required placeholder="e.g., Camry" list="vehicleModelList" autocomplete="off">
+              <datalist id="vehicleModelList"></datalist>
             </div>
           </div>
 
@@ -706,6 +708,78 @@ const FORM_SCRIPT = `(function () {
   function closePinModal() {
     pinOverlay.hidden = true;
   }
+  // Vehicle Make / Model suggestions from /claims-api/vehicle-catalog (NHTSA
+  // make -> models). Suggestions only: anything typed is still accepted. A
+  // make or model that matches a list entry ignoring case (or a common make
+  // nickname) is rewritten to the list's spelling on change, so the Vehicle
+  // Guide lookup and reports see one spelling. A failed fetch just means no
+  // suggestions.
+  var vehicleCatalog = null;
+  var MAKE_NICKNAMES = { chevy: 'Chevrolet', vw: 'Volkswagen', mercedes: 'Mercedes-Benz',
+    'mercedes benz': 'Mercedes-Benz', benz: 'Mercedes-Benz', landrover: 'Land Rover',
+    'range rover': 'Land Rover', alfa: 'Alfa Romeo', caddy: 'Cadillac' };
+  var makeInput = document.getElementById('vehicleMake');
+  var modelInput = document.getElementById('vehicleModel');
+  var makeList = document.getElementById('vehicleMakeList');
+  var modelList = document.getElementById('vehicleModelList');
+  function fillList(listEl, values) {
+    if (!listEl) return;
+    listEl.textContent = '';
+    values.forEach(function (v) {
+      var o = document.createElement('option');
+      o.value = v;
+      listEl.appendChild(o);
+    });
+  }
+  function findIgnoringCase(values, typed) {
+    var t = typed.trim().toLowerCase();
+    if (!t) return null;
+    for (var i = 0; i < values.length; i++) {
+      if (values[i].toLowerCase() === t) return values[i];
+    }
+    return null;
+  }
+  function catalogMake(typed) {
+    if (!vehicleCatalog) return null;
+    var t = typed.trim().toLowerCase().split('  ').join(' ');
+    return MAKE_NICKNAMES[t] || findIgnoringCase(Object.keys(vehicleCatalog), t);
+  }
+  function setVehicleValue(input, value) {
+    if (!input || input.value === value) return;
+    input.value = value;
+    // Let the draft autosave see the rewritten value.
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  }
+  function refreshModelList() {
+    var make = makeInput ? catalogMake(makeInput.value || '') : null;
+    fillList(modelList, make ? vehicleCatalog[make] : []);
+  }
+  if (makeInput && modelInput && window.fetch) {
+    makeInput.addEventListener('input', refreshModelList);
+    // Resumed drafts set values without events; catch up when Model is used.
+    modelInput.addEventListener('focus', refreshModelList);
+    makeInput.addEventListener('change', function () {
+      var make = catalogMake(makeInput.value || '');
+      if (make) setVehicleValue(makeInput, make);
+      refreshModelList();
+    });
+    modelInput.addEventListener('change', function () {
+      var make = catalogMake(makeInput.value || '');
+      var model = make ? findIgnoringCase(vehicleCatalog[make], modelInput.value || '') : null;
+      if (model) setVehicleValue(modelInput, model);
+    });
+    fetch('/claims-api/vehicle-catalog')
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (body) {
+        if (!body || typeof body !== 'object') return;
+        vehicleCatalog = body;
+        fillList(makeList, Object.keys(body).sort());
+        // A resumed draft may already have a make filled in.
+        refreshModelList();
+      })
+      .catch(function () { /* offline or worker hiccup: no suggestions */ });
+  }
+
   // Known vehicle issues (Vehicle Guide) for the car on this claim, shown at
   // the top of the staff section. Looked up when the section unlocks and
   // again if the year / make / model change. Informational only: nothing is
