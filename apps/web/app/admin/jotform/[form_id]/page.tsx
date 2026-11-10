@@ -128,8 +128,14 @@ export default async function JotformFormPage({
   //   - RM/RD/GM + today only           → grouped view (no filter req'd)
   //   - RM/RD/GM + beyond today + no f. → count-only summary
   //   - RM/RD/GM + beyond today + f.    → grouped view
-  const renderCountOnly =
+  //
+  // The role rule above only decides whether to COUNT first. If the count
+  // comes back small enough to list (SMALL_RESULT_MAX), the rows render
+  // anyway — a one-site location admin with 40 rows for the month was
+  // being told to "narrow it down" with nothing left to narrow.
+  const countFirst =
     (adminTier && !hasFilter) || (!adminTier && !isTodayOnly && !hasFilter);
+  let renderCountOnly = countFirst;
 
   let grouped: JotformSubmissionsGroupedResponse | null = null;
   let countOnly: JotformSubmissionsCountOnlyResponse | null = null;
@@ -144,11 +150,15 @@ export default async function JotformFormPage({
       rmEmail,
       locationCode
     };
-    if (renderCountOnly) {
+    if (countFirst) {
       [countOnly, roster] = await Promise.all([
         listSubmissionsCount(form_id, fetchParams),
         getRoster()
       ]);
+      if (countOnly && countOnly.total_rows <= SMALL_RESULT_MAX) {
+        grouped = await listSubmissionsGrouped(form_id, fetchParams);
+        if (grouped) renderCountOnly = false;
+      }
     } else {
       [grouped, roster] = await Promise.all([
         listSubmissionsGrouped(form_id, fetchParams),
@@ -264,6 +274,9 @@ export default async function JotformFormPage({
     </section>
   );
 }
+
+/** Results at or under this size list in full even without a filter. */
+const SMALL_RESULT_MAX = 500;
 
 function buildDateRangeCopy(fromYmd: string, toYmd: string): string {
   if (fromYmd === toYmd) {

@@ -198,7 +198,12 @@ async function fetchPrettyMap(env, locationsRows) {
   const sites = new Set();
   for (const r of locationsRows) {
     if (typeof r.site_number === "number" && Number.isFinite(r.site_number)) {
-      sites.add(String(r.site_number));
+      // pricing_simple.site is zero-padded for sites under 100 ("084"),
+      // unpadded otherwise -- ask for both, or every sub-100 site falls
+      // back to the "Site 84" placeholder.
+      const s = String(r.site_number);
+      sites.add(s);
+      sites.add(s.padStart(3, "0"));
     }
   }
   if (sites.size === 0) return out;
