@@ -717,8 +717,10 @@ URL-based — service bindings don't apply to those.
   and a table of the same numbers. Not Tremor: `@tremor/react` peers React 18.
   TanStack Table pinned 8.21.3; Recharts 2.15.4. Scoping stays in each worker --
   the kit standardises how a report looks, never who sees which rows. On the
-  kit: Fleet, Signups, Damage Reporting. Not yet: jotform, forms submissions,
-  damage list, maintenance, expenses, greeters, performance.
+  kit: Fleet, Signups, Damage Reporting, JotForm (per-form answer columns live
+  in `reports/jotform.ts`; its CSV is a schema union built from the rows by
+  `jotformExportReport`). Not yet: forms submissions, damage list,
+  maintenance, expenses, greeters, performance.
 
 - **Impersonation / "View as user"** (2026-10-30) - A super_admin can see, and
   optionally act, as another user from /admin/sysadmin. `authenticate()` in

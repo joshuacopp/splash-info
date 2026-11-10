@@ -16,6 +16,7 @@
     "@splash/db-supabase": "workspace:*",
     "@splash/email-shell": "workspace:*",
     "@splash/http": "workspace:*",
+    "@splash/report-kit": "workspace:*",
     "@splash/xlsx": "workspace:*"
   },
   "devDependencies": {

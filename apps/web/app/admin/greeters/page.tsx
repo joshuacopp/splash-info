@@ -585,6 +585,12 @@ export default async function GreetersPage({ searchParams }: PageProps) {
   const actionsLocationDayId = firstParam(sp.actions_location_day).trim();
 
   const actionError = firstParam(sp.action_error).trim() || null;
+
+  // How "Daily rows" orders each site's block: by greeter (each person's days
+  // together — the default) or by date (each day's greeters together, newest
+  // day first). Display only, so it never reaches a worker read.
+  const dailyBy: "name" | "date" =
+    firstParam(sp.daily_by).trim() === "date" ? "date" : "name";
   const successKey = firstParam(sp.success).trim();
   const successBase = SUCCESS_COPY[successKey] ?? null;
   // Only the two goal outcomes carry a re-grading tail, and only the three
@@ -835,8 +841,17 @@ export default async function GreetersPage({ searchParams }: PageProps) {
     id: string
   ): string {
     const p = new URLSearchParams(qs);
+    if (dailyBy === "date") p.set("daily_by", "date");
     p.set(key, id);
     return `/admin/greeters?${p.toString()}`;
+  }
+
+  /** The current filters with "Daily rows" grouped the given way. */
+  function dailyByHref(mode: "name" | "date"): string {
+    const p = new URLSearchParams(qs);
+    if (mode === "date") p.set("daily_by", "date");
+    const s = p.toString();
+    return `/admin/greeters${s ? `?${s}` : ""}`;
   }
 
   // The row being corrected, found in what the page already fetched rather than
@@ -940,6 +955,12 @@ export default async function GreetersPage({ searchParams }: PageProps) {
   });
 
   const dayGroups = groupBySite(dayList, (a, b) => {
+    // Grouped by date: newest day first, then that day's greeters in the same
+    // best-capture-first order the by-name view uses, so a day reads the same
+    // way a site's people do.
+    if (dailyBy === "date" && a.business_date !== b.business_date) {
+      return b.business_date.localeCompare(a.business_date);
+    }
     const byCapture = compareCaptureDesc(
       captureByGreeterSite.get(`${a.beekeeper_user_id}|${a.site_number}`) ??
         null,
@@ -1299,6 +1320,11 @@ export default async function GreetersPage({ searchParams }: PageProps) {
 
           <ManagerFilters rosters={rosters} rd={rd} rm={rm} />
         </div>
+        {/* Carried through Apply so changing a filter doesn't silently flip
+            "Daily rows" back to grouped-by-greeter. */}
+        {dailyBy === "date" ? (
+          <input type="hidden" name="daily_by" value="date" />
+        ) : null}
 
         <div className="mt-4 flex items-center gap-3">
           <button
@@ -1626,7 +1652,36 @@ export default async function GreetersPage({ searchParams }: PageProps) {
       />
 
       {/* Daily rows */}
-      <Card title="Daily rows">
+      <Card
+        title="Daily rows"
+        action={
+          <div
+            role="group"
+            aria-label="Group daily rows by"
+            className="inline-flex shrink-0 overflow-hidden rounded-splash-sm border border-gray-light text-xs font-semibold"
+          >
+            {(
+              [
+                ["name", "By greeter"],
+                ["date", "By date"]
+              ] as const
+            ).map(([mode, label]) => (
+              <Link
+                key={mode}
+                href={dailyByHref(mode)}
+                aria-current={dailyBy === mode ? "true" : undefined}
+                className={
+                  dailyBy === mode
+                    ? "bg-splash-navy px-3 py-1.5 text-white"
+                    : "bg-white px-3 py-1.5 text-splash-navy/70 hover:bg-gray-light"
+                }
+              >
+                {label}
+              </Link>
+            ))}
+          </div>
+        }
+      >
         {dayList.length === 0 ? (
           <EmptyNote>Nothing logged for these filters yet.</EmptyNote>
         ) : (
@@ -1679,7 +1734,7 @@ export default async function GreetersPage({ searchParams }: PageProps) {
                   </tr>
                 </thead>
                 <tbody className={TBODY_CLS}>
-                  {group.rows.map((r) => (
+                  {group.rows.map((r, i) => (
                     // Tinted rather than faded for a voided row. `opacity` on
                     // the <tr> would take the date link down with the numbers,
                     // and that link is the only route to Restore.
@@ -1687,11 +1742,23 @@ export default async function GreetersPage({ searchParams }: PageProps) {
                     // The tint is on the <tr>, so the FROZEN cells have to
                     // repaint it as an opaque hex themselves — a translucent
                     // sticky cell lets the scrolling columns show through it.
+                    //
+                    // The heavier top rule marks where one block starts: a new
+                    // day when grouped by date, a new greeter when by greeter.
                     <tr
                       key={r.id}
-                      className={
-                        r.voided_at ? "bg-splash-deny/[0.04]" : undefined
-                      }
+                      className={[
+                        r.voided_at ? "bg-splash-deny/[0.04]" : "",
+                        i > 0 &&
+                        (dailyBy === "date"
+                          ? group.rows[i - 1]?.business_date !== r.business_date
+                          : group.rows[i - 1]?.beekeeper_user_id !==
+                            r.beekeeper_user_id)
+                          ? "border-t-2 border-t-splash-navy/20"
+                          : ""
+                      ]
+                        .filter(Boolean)
+                        .join(" ") || undefined}
                     >
                       <FrozenTd
                         left="left-0"
@@ -2127,19 +2194,25 @@ function FrozenTd({
 function Card({
   title,
   subtitle,
+  action,
   children
 }: {
   title: string;
   subtitle?: string;
+  /** Rendered at the right of the header, e.g. a view toggle. */
+  action?: ReactNode;
   children: ReactNode;
 }) {
   return (
     <div className="mb-6 overflow-hidden rounded-splash-lg border border-gray-light bg-white shadow-splash-card">
-      <div className="border-b border-gray-light px-5 py-4">
-        <h2 className="text-lg font-bold text-splash-navy">{title}</h2>
-        {subtitle ? (
-          <p className="mt-1 text-xs text-splash-navy/60">{subtitle}</p>
-        ) : null}
+      <div className="flex flex-wrap items-start justify-between gap-3 border-b border-gray-light px-5 py-4">
+        <div className="min-w-0">
+          <h2 className="text-lg font-bold text-splash-navy">{title}</h2>
+          {subtitle ? (
+            <p className="mt-1 text-xs text-splash-navy/60">{subtitle}</p>
+          ) : null}
+        </div>
+        {action}
       </div>
       {children}
     </div>

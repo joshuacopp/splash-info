@@ -12,16 +12,33 @@
 //   - Brief 110's per-page grouping replaced with full-scope grouping;
 //     per-day sub-buckets dropped since the date range is now narrow
 //     by default and group counts are accurate over the full scope.
+//
+// On the report kit (2026-11-10): the date range is the shared JotForm
+// report definition (@splash/report-kit/reports/jotform), parsed by the same
+// function the worker uses, with preset chips from ReportRangeBar. Each
+// location's rows render through the kit's ReportTable (sortable columns),
+// with the per-form answer columns defined in the kit. The page always sends
+// the worker an explicit from/to.
 
 import Link from "next/link";
 import { notFound } from "next/navigation";
 
+import {
+  easternYmd,
+  formatRangeLabel,
+  isAdminTier,
+  parseReportParams,
+  ymdToString,
+  type ResolvedRange
+} from "@splash/report-kit";
+import { jotformReport } from "@splash/report-kit/reports/jotform";
+
 import { getMe } from "../../../_lib/me";
-import { DateRangePicker } from "../../../_components/DateRangePicker";
 import { CsvExportButton } from "../../../_components/CsvExportButton";
+import { ReportRangeBar } from "../../../_components/report/ReportRangeBar";
 import NoAccessCard from "../_components/NoAccessCard";
 import { FilterBar } from "./_components/FilterBar";
-import { columnsFor, type FormColumn } from "./_lib/form-columns";
+import { JotformTable } from "./_components/JotformTable";
 import {
   csvExportUrl,
   getRoster,
@@ -30,7 +47,6 @@ import {
   listSubmissionsGrouped,
   type JotformForm,
   type JotformRoster,
-  type JotformSubmissionRow,
   type JotformSubmissionsGroup,
   type JotformSubmissionsGroupedResponse,
   type JotformSubmissionsCountOnlyResponse
@@ -50,39 +66,13 @@ function readStringParam(
   return raw;
 }
 
-/**
- * Today's date in America/New_York wall-clock as YYYY-MM-DD. The worker
- * defaults to this when no `from` / `to` is passed, and the apps/web URL
- * defaults match so the DateRangePicker shows "today" out of the box.
- */
-function todayEstYmd(): string {
-  const parts = new Intl.DateTimeFormat("en-CA", {
-    timeZone: "America/New_York",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit"
-  }).formatToParts(new Date());
-  const map = Object.fromEntries(parts.map((p) => [p.type, p.value]));
-  return `${map.year}-${map.month}-${map.day}`;
-}
-
-function isAdminTier(session: Awaited<ReturnType<typeof getMe>>): boolean {
-  if (!session) return false;
-  return (
-    session.role === "super_admin" ||
-    session.dcRole === "admin" ||
-    session.dcRole === "super_admin"
-  );
-}
-
 export default async function JotformFormPage({
   params,
   searchParams
 }: PageProps) {
   const { form_id } = await params;
   const sp = await searchParams;
-  const fromParam = readStringParam(sp.from);
-  const toParam = readStringParam(sp.to);
+  const { range } = parseReportParams(jotformReport, sp);
   const amEmail = readStringParam(sp.am_email);
   const rmEmail = readStringParam(sp.rm_email);
   const locationCode = readStringParam(sp.location_code);
@@ -113,10 +103,8 @@ export default async function JotformFormPage({
     /* Non-fatal — drop through. */
   }
 
-  const today = todayEstYmd();
-  const effectiveFrom = fromParam ?? today;
-  const effectiveTo = toParam ?? today;
-  const isTodayOnly = effectiveFrom === today && effectiveTo === today;
+  const today = ymdToString(easternYmd());
+  const isTodayOnly = range.fromYmd === today && range.toYmd === today;
   const hasFilter = !!(amEmail || rmEmail || locationCode);
   const adminTier = isAdminTier(session);
 
@@ -144,8 +132,8 @@ export default async function JotformFormPage({
 
   try {
     const fetchParams = {
-      from: fromParam,
-      to: toParam,
+      from: range.fromYmd,
+      to: range.toYmd,
       amEmail,
       rmEmail,
       locationCode
@@ -181,14 +169,14 @@ export default async function JotformFormPage({
   }
 
   const csvUrl = csvExportUrl(form_id, {
-    from: fromParam,
-    to: toParam,
+    from: range.fromYmd,
+    to: range.toYmd,
     amEmail,
     rmEmail,
     locationCode
   });
   const title = formMeta?.display_name ?? form_id;
-  const dateRangeCopy = buildDateRangeCopy(effectiveFrom, effectiveTo);
+  const dateRangeCopy = buildDateRangeCopy(range, today);
 
   return (
     <section className="mx-auto w-full max-w-[1100px] px-5 py-9">
@@ -218,8 +206,8 @@ export default async function JotformFormPage({
         </div>
       )}
 
-      <div className="mb-5 flex flex-wrap items-end justify-between gap-3">
-        <DateRangePicker defaultFromYmd={today} defaultToYmd={today} />
+      <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
+        <ReportRangeBar presets={jotformReport.presets} range={range} searchParams={sp} />
         <CsvExportButton href={csvUrl} />
       </div>
 
@@ -263,11 +251,7 @@ export default async function JotformFormPage({
           {grouped.groups.length === 0 ? (
             <EmptyState scope={grouped.scope} />
           ) : (
-            <GroupedSubmissions
-              formId={form_id}
-              columns={columnsFor(form_id)}
-              groups={grouped.groups}
-            />
+            <GroupedSubmissions formId={form_id} groups={grouped.groups} />
           )}
         </>
       )}
@@ -278,24 +262,11 @@ export default async function JotformFormPage({
 /** Results at or under this size list in full even without a filter. */
 const SMALL_RESULT_MAX = 500;
 
-function buildDateRangeCopy(fromYmd: string, toYmd: string): string {
-  if (fromYmd === toYmd) {
-    const today = todayEstYmd();
-    if (fromYmd === today) return "today";
-    return `on ${formatYmd(fromYmd)}`;
-  }
-  return `between ${formatYmd(fromYmd)} and ${formatYmd(toYmd)}`;
-}
-
-function formatYmd(ymd: string): string {
-  const d = new Date(`${ymd}T12:00:00Z`);
-  if (Number.isNaN(d.getTime())) return ymd;
-  return d.toLocaleDateString("en-US", {
-    month: "short",
-    day: "numeric",
-    year: "numeric",
-    timeZone: "UTC"
-  });
+function buildDateRangeCopy(range: ResolvedRange, today: string): string {
+  if (range.fromYmd === today && range.toYmd === today) return "today";
+  return range.fromYmd === range.toYmd
+    ? `on ${formatRangeLabel(range)}`
+    : formatRangeLabel(range);
 }
 
 /* ============================================================
@@ -346,22 +317,15 @@ function CountOnlySummary({
 
 function GroupedSubmissions({
   formId,
-  columns,
   groups
 }: {
   formId: string;
-  columns: FormColumn[];
   groups: JotformSubmissionsGroup[];
 }) {
   return (
     <div className="space-y-5">
       {groups.map((g) => (
-        <LocationGroup
-          key={`${g.site}-${g.site_number}`}
-          formId={formId}
-          columns={columns}
-          group={g}
-        />
+        <LocationGroup key={`${g.site}-${g.site_number}`} formId={formId} group={g} />
       ))}
     </div>
   );
@@ -369,11 +333,9 @@ function GroupedSubmissions({
 
 function LocationGroup({
   formId,
-  columns,
   group
 }: {
   formId: string;
-  columns: FormColumn[];
   group: JotformSubmissionsGroup;
 }) {
   const headerSuffix = group.rm_name ? ` — Regional Manager: ${group.rm_name}` : "";
@@ -394,60 +356,8 @@ function LocationGroup({
           </span>
         )}
       </h2>
-      <SubmissionsTable formId={formId} columns={columns} rows={group.rows} />
+      <JotformTable formId={formId} rows={group.rows} />
     </section>
-  );
-}
-
-function SubmissionsTable({
-  formId,
-  columns,
-  rows
-}: {
-  formId: string;
-  columns: FormColumn[];
-  rows: JotformSubmissionRow[];
-}) {
-  return (
-    <div className="overflow-x-auto rounded-splash-md border border-gray-light">
-      <table className="w-full border-collapse text-sm">
-        <thead className="bg-sudsy-blue-soft/40 text-left text-xs uppercase tracking-wide text-splash-navy/70">
-          <tr>
-            {columns.map((col) => (
-              <th key={col.key} className="px-3 py-2 font-semibold">
-                {col.label}
-              </th>
-            ))}
-            <th className="px-3 py-2 font-semibold"></th>
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((r) => (
-            <tr
-              key={r.id}
-              className="border-t border-gray-light hover:bg-sudsy-blue-soft/20"
-            >
-              {columns.map((col) => (
-                <td
-                  key={col.key}
-                  className="px-3 py-2 align-top text-splash-navy"
-                >
-                  {col.render(r)}
-                </td>
-              ))}
-              <td className="px-3 py-2 align-top">
-                <Link
-                  href={`/admin/jotform/${encodeURIComponent(formId)}/${encodeURIComponent(r.id)}`}
-                  className="text-splash-blue hover:underline"
-                >
-                  View →
-                </Link>
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
   );
 }
 

@@ -47,6 +47,13 @@
 //     (Brief 113)
 
 import { isOriginAllowed, jsonError } from "@splash/http";
+import { csvResponseHeaders, parseReportParams, toCsv } from "@splash/report-kit";
+import {
+  jotformCsvFilename,
+  jotformExportReport,
+  jotformReport,
+  sortJotformExportRows
+} from "@splash/report-kit/reports/jotform";
 import {
   authenticateForAdminApi,
   authenticateSuperAdmin,
@@ -778,117 +785,20 @@ async function handleBackfill(request, env, formId) {
  * Date / pagination / filter parsing
  * ============================================================ */
 
-const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
-
-// Brief 115 — defaults flip from "last 30 days UTC" to "today EST". The
-// viewer's day-to-day operator scan is "what came in today"; pulling
-// 30 days at first load was both wrong-by-default and the cause of the
-// per-page grouping incoherence Brief 110 surfaced.
+// The date range is the shared JotForm report definition's
+// (@splash/report-kit/reports/jotform), read by the same parser the
+// /admin/jotform/{form_id} page uses, so "today" is the same Eastern day on
+// both sides. `range` / `from` / `to`; default today. Malformed input falls
+// back to the default rather than a 400, as every kit report does.
 function parseDateRange(url) {
-  const fromRaw = url.searchParams.get("from");
-  const toRaw = url.searchParams.get("to");
-  const today = todayInEastern();
-
-  let fromDate;
-  let fromYmd;
-  if (fromRaw == null || fromRaw === "") {
-    fromDate = new Date(easternWallClockToUtcMs(today.y, today.mo, today.d, 0, 0, 0));
-    fromYmd = `${today.y}-${pad2(today.mo)}-${pad2(today.d)}`;
-  } else {
-    if (!DATE_RE.test(fromRaw)) {
-      return { ok: false, response: jsonError(400, "Invalid 'from' (expected YYYY-MM-DD)") };
-    }
-    const [yy, mm, dd] = fromRaw.split("-").map((s) => Number.parseInt(s, 10));
-    const ms = easternWallClockToUtcMs(yy, mm, dd, 0, 0, 0);
-    fromDate = new Date(ms);
-    if (Number.isNaN(fromDate.getTime())) {
-      return { ok: false, response: jsonError(400, "Invalid 'from' date") };
-    }
-    fromYmd = fromRaw;
-  }
-
-  let toDate;
-  let toYmd;
-  if (toRaw == null || toRaw === "") {
-    toDate = new Date(easternWallClockToUtcMs(today.y, today.mo, today.d, 23, 59, 59) + 999);
-    toYmd = `${today.y}-${pad2(today.mo)}-${pad2(today.d)}`;
-  } else {
-    if (!DATE_RE.test(toRaw)) {
-      return { ok: false, response: jsonError(400, "Invalid 'to' (expected YYYY-MM-DD)") };
-    }
-    const [yy, mm, dd] = toRaw.split("-").map((s) => Number.parseInt(s, 10));
-    const ms = easternWallClockToUtcMs(yy, mm, dd, 23, 59, 59) + 999;
-    toDate = new Date(ms);
-    if (Number.isNaN(toDate.getTime())) {
-      return { ok: false, response: jsonError(400, "Invalid 'to' date") };
-    }
-    toYmd = toRaw;
-  }
-
-  if (fromDate.getTime() > toDate.getTime()) {
-    return { ok: false, response: jsonError(400, "'from' must be on or before 'to'") };
-  }
-
+  const { range } = parseReportParams(jotformReport, url.searchParams);
   return {
     ok: true,
-    fromIso: fromDate.toISOString(),
-    toIso: toDate.toISOString(),
-    fromYmd,
-    toYmd
+    fromIso: range.fromIso,
+    toIso: range.toIso,
+    fromYmd: range.fromYmd,
+    toYmd: range.toYmd
   };
-}
-
-function pad2(n) {
-  return String(n).padStart(2, "0");
-}
-
-/**
- * Return today's date in America/New_York wall-clock as {y, mo, d}.
- * DST-aware via Intl.DateTimeFormat. The Brief 114 helper pattern.
- */
-function todayInEastern() {
-  const now = new Date();
-  const parts = new Intl.DateTimeFormat("en-US", {
-    timeZone: "America/New_York",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit"
-  }).formatToParts(now);
-  const map = Object.fromEntries(parts.map((p) => [p.type, p.value]));
-  return {
-    y: Number.parseInt(map.year, 10),
-    mo: Number.parseInt(map.month, 10),
-    d: Number.parseInt(map.day, 10)
-  };
-}
-
-/**
- * Convert an America/New_York wall-clock moment (y, mo, d, h, mi, s) to
- * UTC epoch ms. DST-aware: probes Intl for the zone offset at that
- * wall-clock and subtracts. Mirrors `parseJotformDate` in normalize.js
- * (the Brief 114 helper pattern).
- */
-function easternWallClockToUtcMs(y, mo, d, h, mi, s) {
-  const probe = new Date(Date.UTC(y, mo - 1, d, h, mi, s));
-  const formatter = new Intl.DateTimeFormat("en-US", {
-    timeZone: "America/New_York",
-    hour: "numeric",
-    timeZoneName: "shortOffset"
-  });
-  const parts = formatter.formatToParts(probe);
-  const tz = parts.find((p) => p.type === "timeZoneName")?.value;
-  let offsetMinutes = -300; // default EST
-  if (tz) {
-    const m = tz.match(/GMT([+-])(\d{1,2})(?::(\d{2}))?/);
-    if (m) {
-      const sign = m[1] === "+" ? 1 : -1;
-      const hours = Number.parseInt(m[2], 10);
-      const mins = m[3] ? Number.parseInt(m[3], 10) : 0;
-      offsetMinutes = sign * (hours * 60 + mins);
-    }
-  }
-  const wallAsIfUtc = Date.UTC(y, mo - 1, d, h, mi, s);
-  return wallAsIfUtc - offsetMinutes * 60_000;
 }
 
 function parseLimit(url, defaultVal, maxVal) {
@@ -923,136 +833,16 @@ function sanitizeSiteNumber(raw) {
  * CSV rendering (schema-union across the date range)
  * ============================================================ */
 
+// Schema-union CSV (every answer key in any row becomes a column), built by
+// the shared report definition and written by the kit's CSV writer: BOM, CRLF,
+// formula guard. Same column order, headers and filename as before the kit.
 function renderCsv(rows, range, slug) {
-  // Group by site: sort rows so same-site submissions are contiguous. Blank
-  // site sinks to the bottom; jotform_created_at is a stable secondary key.
-  // Copy first — never mutate the caller's array.
-  const sorted = [...rows].sort((a, b) => {
-    const sa = (a?.site ?? "").toString();
-    const sb = (b?.site ?? "").toString();
-    if (sa === "" && sb !== "") return 1;
-    if (sb === "" && sa !== "") return -1;
-    const c = sa.localeCompare(sb, undefined, { sensitivity: "base" });
-    if (c !== 0) return c;
-    return (a?.jotform_created_at ?? "")
-      .toString()
-      .localeCompare((b?.jotform_created_at ?? "").toString());
-  });
-
-  // `site` pulled to the front so the grouping reads as contiguous blocks
-  // while the sheet stays a single clean table (Excel filter/pivot-friendly).
-  const headerBase = [
-    "site",
-    "id",
-    "jotform_created_at",
-    "jotform_updated_at",
-    "site_number",
-    "site_email",
-    "jotform_status"
-  ];
-
-  // Union of every answer key present in any row (schema-union, the Brief 96
-  // pattern). For each key, resolve a human column header from the JotForm
-  // entry's `text` (the question label authored in the builder), falling back
-  // to the field `name`, then the raw key. Empty answers payloads contribute
-  // zero keys.
-  const keyLabel = new Map();
-  for (const r of sorted) {
-    const a = r && r.answers && typeof r.answers === "object" ? r.answers : null;
-    if (!a) continue;
-    for (const k of Object.keys(a)) {
-      if (keyLabel.get(k)) continue; // already resolved a non-empty label
-      const entry = a[k];
-      let label = "";
-      if (entry && typeof entry === "object") {
-        if (typeof entry.text === "string" && entry.text.trim()) {
-          label = entry.text.trim();
-        } else if (typeof entry.name === "string" && entry.name.trim()) {
-          label = entry.name.trim();
-        }
-      }
-      keyLabel.set(k, label);
-    }
-  }
-  const sortedKeys = [...keyLabel.keys()].sort();
-
-  // Disambiguate duplicate labels by appending the key, so two questions that
-  // happen to share wording stay distinct columns.
-  const labelCounts = new Map();
-  for (const k of sortedKeys) {
-    const label = keyLabel.get(k) || k;
-    labelCounts.set(label, (labelCounts.get(label) ?? 0) + 1);
-  }
-  const headerFor = (k) => {
-    const label = keyLabel.get(k) || k;
-    return (labelCounts.get(label) ?? 0) > 1 ? `${label} (${k})` : label;
-  };
-
-  const header = [...headerBase, ...sortedKeys.map(headerFor)];
-
-  const lines = [header.map(csvEscape).join(",")];
-  for (const r of sorted) {
-    const base = headerBase.map((k) => csvEscape(stringifyForCsv(r?.[k])));
-    const answerCells = sortedKeys.map((k) => {
-      const entry = r?.answers?.[k];
-      if (!entry || typeof entry !== "object") return "";
-      const pretty = entry.prettyFormat;
-      const answer = entry.answer;
-      let cellValue;
-      if (typeof pretty === "string" && pretty) {
-        cellValue = pretty;
-      } else if (typeof answer === "string" || typeof answer === "number") {
-        cellValue = String(answer);
-      } else if (answer != null) {
-        try {
-          cellValue = JSON.stringify(answer);
-        } catch {
-          cellValue = "";
-        }
-      } else {
-        cellValue = "";
-      }
-      return csvEscape(cellValue);
-    });
-    lines.push([...base, ...answerCells].join(","));
-  }
-
-  const csv = lines.join("\n") + (sorted.length > 0 ? "\n" : "");
-  const filename = `${slug}-${range.fromYmd}-to-${range.toYmd}.csv`;
+  const sorted = sortJotformExportRows(rows);
+  const csv = toCsv(jotformExportReport(sorted), sorted);
   return new Response(csv, {
     status: 200,
-    headers: {
-      "Content-Type": "text/csv; charset=utf-8",
-      "Content-Disposition": `attachment; filename="${filename}"`,
-      "Cache-Control": "no-store"
-    }
+    headers: csvResponseHeaders(jotformCsvFilename(slug, range.fromYmd, range.toYmd))
   });
-}
-
-// Excel runs a cell starting with = + - @ (or tab / CR) as a formula, and
-// JotForm answers are typed by the public, so such cells get a leading
-// apostrophe. A plain number ("-5.00") is left alone so it stays a number.
-// Same rule as @splash/report-kit csvField.
-const CSV_FORMULA_START = /^[=+\-@\t\r]/;
-const CSV_PLAIN_NUMBER = /^-?\d+(\.\d+)?$/;
-
-function csvEscape(v) {
-  const raw = v == null ? "" : String(v);
-  const s =
-    CSV_FORMULA_START.test(raw) && !CSV_PLAIN_NUMBER.test(raw) ? `'${raw}` : raw;
-  return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
-}
-
-function stringifyForCsv(v) {
-  if (v == null) return "";
-  if (typeof v === "object") {
-    try {
-      return JSON.stringify(v);
-    } catch {
-      return "";
-    }
-  }
-  return String(v);
 }
 
 /* ============================================================

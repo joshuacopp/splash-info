@@ -305,6 +305,9 @@ importers:
       '@splash/http':
         specifier: workspace:*
         version: link:../../packages/http
+      '@splash/report-kit':
+        specifier: workspace:*
+        version: link:../../packages/report-kit
       '@splash/xlsx':
         specifier: workspace:*
         version: link:../../packages/xlsx
