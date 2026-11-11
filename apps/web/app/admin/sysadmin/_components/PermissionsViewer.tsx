@@ -59,6 +59,31 @@ interface Permissions {
   account_created_at: string | null;
   /** False when the worker couldn't read the auth record (show "unknown"). */
   sign_in_known: boolean;
+  /** Stamped on every password set since 2026-11-11; null before that. */
+  password_changed_at: string | null;
+  password_changed_by: string | null;
+  mfa_factors: MfaFactorInfo[];
+  /** Admin password / MFA resets from sysadmin_audit_log, newest first. */
+  security_events: SecurityEvent[];
+  security_events_known: boolean;
+}
+
+interface MfaFactorInfo {
+  status: string;
+  factor_type: string;
+  friendly_name: string | null;
+  enrolled_at: string | null;
+  last_used_at: string | null;
+}
+
+interface SecurityEvent {
+  action: string;
+  at: string;
+  actor_email: string | null;
+}
+
+function str(v: unknown): string | null {
+  return typeof v === "string" ? v : null;
 }
 
 /** auth_unified array columns can come back as a real array or a JSON string. */
@@ -91,7 +116,30 @@ function normalize(raw: Record<string, unknown>): Permissions {
     last_sign_in_at: typeof raw.last_sign_in_at === "string" ? raw.last_sign_in_at : null,
     account_created_at:
       typeof raw.account_created_at === "string" ? raw.account_created_at : null,
-    sign_in_known: raw.sign_in_known === true
+    sign_in_known: raw.sign_in_known === true,
+    password_changed_at: str(raw.password_changed_at),
+    password_changed_by: str(raw.password_changed_by),
+    mfa_factors: Array.isArray(raw.mfa_factors)
+      ? raw.mfa_factors
+          .filter((f): f is Record<string, unknown> => typeof f === "object" && f !== null)
+          .map((f) => ({
+            status: str(f.status) ?? "unverified",
+            factor_type: str(f.factor_type) ?? "totp",
+            friendly_name: str(f.friendly_name),
+            enrolled_at: str(f.enrolled_at),
+            last_used_at: str(f.last_used_at)
+          }))
+      : [],
+    security_events: Array.isArray(raw.security_events)
+      ? raw.security_events
+          .filter((e): e is Record<string, unknown> => typeof e === "object" && e !== null)
+          .flatMap((e) => {
+            const action = str(e.action);
+            const at = str(e.at);
+            return action && at ? [{ action, at, actor_email: str(e.actor_email) }] : [];
+          })
+      : [],
+    security_events_known: raw.security_events_known === true
   };
 }
 
@@ -600,15 +648,172 @@ function LastLogin({ perms }: { perms: Permissions }) {
     );
   }
   return (
-    <div className="-mt-3 text-sm text-splash-navy">
-      <span className="text-splash-navy/70">Last login: </span>
-      {value}
-      {created ? (
-        <span className="text-xs text-splash-navy/50"> &middot; account created {created}</span>
-      ) : null}
-      <div className="text-xs text-splash-navy/50">
-        Updates when they sign in with a password; staying signed in doesn&rsquo;t change it.
+    <div className="-mt-3 space-y-2 text-sm text-splash-navy">
+      <div>
+        <span className="text-splash-navy/70">Last login: </span>
+        {value}
+        {created ? (
+          <span className="text-xs text-splash-navy/50"> &middot; account created {created}</span>
+        ) : null}
+        <div className="text-xs text-splash-navy/50">
+          Updates when they sign in with a password; staying signed in doesn&rsquo;t change it.
+        </div>
       </div>
+      {perms.sign_in_known ? (
+        <>
+          <PasswordActivity perms={perms} />
+          <MfaActivity perms={perms} />
+        </>
+      ) : null}
+      <AdminSecurityHistory perms={perms} />
     </div>
+  );
+}
+
+/** Date tracking of password changes began; earlier changes were never
+ *  recorded (Supabase logs them as an anonymous "user modified"). */
+const PASSWORD_TRACKING_SINCE = "Nov 11, 2026";
+
+function when(iso: string): React.ReactNode {
+  const f = formatEst(iso);
+  return (
+    <>
+      <span className="font-semibold">{f.absolute}</span>
+      {f.relative && f.relative !== f.absolute ? (
+        <span className="text-splash-navy/60"> &middot; {f.relative}</span>
+      ) : null}
+    </>
+  );
+}
+
+function PasswordActivity({ perms }: { perms: Permissions }) {
+  const lastReset = perms.security_events.find((e) => e.action === "reset_password") ?? null;
+  let value: React.ReactNode;
+  if (perms.password_changed_at) {
+    // An admin reset writes both the stamp and an audit row; the audit row is
+    // where the admin's name lives.
+    const byAdmin = perms.password_changed_by === "admin";
+    value = (
+      <span>
+        {when(perms.password_changed_at)}
+        <span className="text-splash-navy/60">
+          {" "}
+          &middot;{" "}
+          {byAdmin
+            ? `reset by ${lastReset?.actor_email ?? "an admin"}`
+            : "changed by the user"}
+        </span>
+      </span>
+    );
+  } else if (lastReset) {
+    value = (
+      <span>
+        {when(lastReset.at)}
+        <span className="text-splash-navy/60">
+          {" "}
+          &middot; reset by {lastReset.actor_email ?? "an admin"}
+        </span>
+      </span>
+    );
+  } else {
+    value = (
+      <span className="text-splash-navy/50">
+        no change recorded (tracked since {PASSWORD_TRACKING_SINCE})
+      </span>
+    );
+  }
+  return (
+    <div>
+      <span className="text-splash-navy/70">Password last changed: </span>
+      {value}
+    </div>
+  );
+}
+
+function MfaActivity({ perms }: { perms: Permissions }) {
+  const verified = perms.mfa_factors.filter((f) => f.status === "verified");
+  const pending = perms.mfa_factors.filter((f) => f.status !== "verified");
+  const lastMfaReset = perms.security_events.find((e) => e.action === "reset_mfa") ?? null;
+  let value: React.ReactNode;
+  if (verified.length > 0) {
+    value = (
+      <span>
+        {verified.map((f, i) => (
+          <span key={i} className="block">
+            <span className="inline-flex rounded-full border border-emerald-300 bg-emerald-50 px-2 py-0.5 text-[0.6875rem] font-semibold text-emerald-800">
+              Enrolled
+            </span>{" "}
+            {f.enrolled_at ? when(f.enrolled_at) : null}
+            {f.last_used_at ? (
+              <span className="text-xs text-splash-navy/50">
+                {" "}
+                &middot; last code {formatEst(f.last_used_at).absolute}
+              </span>
+            ) : null}
+          </span>
+        ))}
+      </span>
+    );
+  } else if (pending.length > 0) {
+    const started = pending[0]?.enrolled_at ?? null;
+    value = (
+      <span>
+        <span className="inline-flex rounded-full border border-amber-300 bg-amber-50 px-2 py-0.5 text-[0.6875rem] font-semibold text-amber-800">
+          Started, not finished
+        </span>
+        {started ? <span className="text-splash-navy/60"> &middot; began {formatEst(started).absolute}</span> : null}
+      </span>
+    );
+  } else {
+    value = (
+      <span className="inline-flex rounded-full border border-gray-light bg-white px-2 py-0.5 text-[0.6875rem] font-semibold text-splash-navy/70">
+        Not enrolled
+      </span>
+    );
+  }
+  return (
+    <div>
+      <span className="text-splash-navy/70">Two-factor (MFA): </span>
+      {value}
+      {lastMfaReset ? (
+        <div className="text-xs text-splash-navy/50">
+          Last reset by {lastMfaReset.actor_email ?? "an admin"} on{" "}
+          {formatEst(lastMfaReset.at).absolute}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+const SECURITY_ACTION_LABEL: Record<string, string> = {
+  reset_password: "Password reset",
+  reset_mfa: "MFA reset"
+};
+
+/** Every admin password / MFA reset on record, not just the latest. */
+function AdminSecurityHistory({ perms }: { perms: Permissions }) {
+  if (!perms.security_events_known) {
+    return (
+      <div className="text-xs text-splash-navy/50">
+        Admin reset history unavailable (couldn&rsquo;t read the activity log).
+      </div>
+    );
+  }
+  if (perms.security_events.length === 0) return null;
+  return (
+    <details className="text-xs text-splash-navy/70">
+      <summary className="cursor-pointer select-none">
+        Admin resets ({perms.security_events.length}
+        {perms.security_events.length >= 10 ? "+" : ""})
+      </summary>
+      <ul className="mt-1 space-y-0.5 pl-4">
+        {perms.security_events.map((e, i) => (
+          <li key={i}>
+            {SECURITY_ACTION_LABEL[e.action] ?? e.action} &middot; {formatEst(e.at).absolute}
+            {e.actor_email ? <span className="text-splash-navy/50"> &middot; by {e.actor_email}</span> : null}
+          </li>
+        ))}
+      </ul>
+    </details>
   );
 }

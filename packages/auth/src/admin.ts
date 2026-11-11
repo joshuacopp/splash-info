@@ -141,7 +141,7 @@ export async function adminResetPassword(
   assertValidPassword(newPassword);
   const sb = createServiceClient(env);
   await setMustChangePassword(sb, userId, true);
-  await setSupabasePassword(env, userId, newPassword);
+  await setSupabasePassword(env, userId, newPassword, "admin");
 }
 
 /**
@@ -170,7 +170,7 @@ export async function userCompleteForcedReset(
   newPassword: string
 ): Promise<void> {
   assertValidPassword(newPassword);
-  await setSupabasePassword(env, session.userId, newPassword);
+  await setSupabasePassword(env, session.userId, newPassword, "self");
   const sb = createServiceClient(env);
   await setMustChangePassword(sb, session.userId, false);
 }
@@ -220,8 +220,16 @@ export async function userChangePassword(
 async function setSupabasePassword(
   env: SupabaseEnv,
   userId: string,
-  newPassword: string
+  newPassword: string,
+  changedBy: "self" | "admin"
 ): Promise<void> {
+  // The change is stamped onto app_metadata in the SAME request as the
+  // password, so the stamp can't exist without the change or vice versa.
+  // Supabase records nothing usable on its own: every password set here goes
+  // through the service role and lands in auth.audit_log_entries as a bare
+  // `user_modified`, indistinguishable from a metadata edit. sysadmin's
+  // permissions card reads these two keys. app_metadata merges on update, so
+  // must_change_password and anything else stored there survive.
   const r = await fetch(`${env.SUPABASE_URL}/auth/v1/admin/users/${userId}`, {
     method: "PUT",
     headers: {
@@ -229,7 +237,13 @@ async function setSupabasePassword(
       Authorization: `Bearer ${env.SUPABASE_SERVICE_KEY}`,
       "Content-Type": "application/json"
     },
-    body: JSON.stringify({ password: newPassword })
+    body: JSON.stringify({
+      password: newPassword,
+      app_metadata: {
+        password_changed_at: new Date().toISOString(),
+        password_changed_by: changedBy
+      }
+    })
   });
   if (!r.ok) {
     const err = (await r.json().catch(() => ({}))) as { msg?: string; message?: string };

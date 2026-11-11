@@ -2118,16 +2118,52 @@ async function handleGetUserPermissions(env: Env, userId: string): Promise<Respo
   // last_sign_in_at moves on a PASSWORD login only. The sliding-session
   // refresh (supabaseRefreshSession) does not touch it, so a user who stays
   // signed in shows the last time they typed a password, not last activity.
+  //
+  // The same user record carries the password-change stamp (app_metadata,
+  // written by @splash/auth setSupabasePassword since 2026-11-11 -- earlier
+  // changes were never recorded anywhere) and the MFA factors. Admin resets
+  // come from sysadmin_audit_log, which has history from before the stamp.
   let lastSignInAt: string | null = null;
   let accountCreatedAt: string | null = null;
   let signInKnown = false;
-  try {
-    const authUser = await adminGetUser(env, userId);
+  let passwordChangedAt: string | null = null;
+  let passwordChangedBy: string | null = null;
+  let mfaFactors: Array<{
+    status: string;
+    factor_type: string;
+    friendly_name: string | null;
+    enrolled_at: string | null;
+    last_used_at: string | null;
+  }> = [];
+  let securityEvents: Array<{ action: string; at: string; actor_email: string | null }> = [];
+  let securityEventsKnown = false;
+  const [authResult, eventsResult] = await Promise.allSettled([
+    adminGetUser(env, userId),
+    fetchSecurityAuditEvents(env, userId)
+  ]);
+  if (authResult.status === "fulfilled") {
+    const authUser = authResult.value;
     lastSignInAt = authUser.last_sign_in_at ?? null;
     accountCreatedAt = authUser.created_at ?? null;
     signInKnown = true;
-  } catch (err) {
-    console.error("[sysadmin] last sign-in read failed", err);
+    const meta = authUser.app_metadata ?? {};
+    if (typeof meta.password_changed_at === "string") passwordChangedAt = meta.password_changed_at;
+    if (typeof meta.password_changed_by === "string") passwordChangedBy = meta.password_changed_by;
+    mfaFactors = (authUser.factors ?? []).map((f) => ({
+      status: f.status === "verified" ? "verified" : "unverified",
+      factor_type: f.factor_type ?? "totp",
+      friendly_name: f.friendly_name ?? null,
+      enrolled_at: f.created_at ?? null,
+      last_used_at: f.last_challenged_at ?? null
+    }));
+  } else {
+    console.error("[sysadmin] last sign-in read failed", authResult.reason);
+  }
+  if (eventsResult.status === "fulfilled") {
+    securityEvents = eventsResult.value;
+    securityEventsKnown = true;
+  } else {
+    console.error("[sysadmin] security audit read failed", eventsResult.reason);
   }
 
   return json({
@@ -2136,7 +2172,12 @@ async function handleGetUserPermissions(env: Env, userId: string): Promise<Respo
     grantable_form_access_tags: grantableFormAccessTags,
     last_sign_in_at: lastSignInAt,
     account_created_at: accountCreatedAt,
-    sign_in_known: signInKnown
+    sign_in_known: signInKnown,
+    password_changed_at: passwordChangedAt,
+    password_changed_by: passwordChangedBy,
+    mfa_factors: mfaFactors,
+    security_events: securityEvents,
+    security_events_known: securityEventsKnown
   });
 }
 
@@ -3356,6 +3397,34 @@ const FORM_ACCESS_TAG_RE = /^[a-z][a-z0-9_]*$/;
 const MAX_FORM_ACCESS_TAGS = 20;
 
 /** Tags a user currently holds. */
+/** Admin-side security actions taken ON this user (password resets, MFA
+ *  resets), newest first. These rows go back to when the actions were first
+ *  audited, so they cover history the app_metadata stamp can't. */
+async function fetchSecurityAuditEvents(
+  env: Env,
+  userId: string
+): Promise<Array<{ action: string; at: string; actor_email: string | null }>> {
+  const url = new URL("/rest/v1/sysadmin_audit_log", env.SUPABASE_URL);
+  url.searchParams.set("target_id", `eq.${userId}`);
+  url.searchParams.set("action", "in.(reset_password,reset_mfa)");
+  url.searchParams.set("select", "action,occurred_at,actor_email");
+  url.searchParams.set("order", "occurred_at.desc");
+  url.searchParams.set("limit", "10");
+  const resp = await fetch(url.toString(), {
+    headers: {
+      apikey: env.SUPABASE_SERVICE_KEY,
+      Authorization: `Bearer ${env.SUPABASE_SERVICE_KEY}`
+    }
+  });
+  if (!resp.ok) throw new Error(`fetchSecurityAuditEvents: ${resp.status}`);
+  const rows = (await resp.json()) as Array<{
+    action: string;
+    occurred_at: string;
+    actor_email: string | null;
+  }>;
+  return rows.map((r) => ({ action: r.action, at: r.occurred_at, actor_email: r.actor_email }));
+}
+
 async function fetchFormAccessTags(
   env: Env,
   userId: string

@@ -142,6 +142,20 @@ export interface AuthUser {
   email: string;
   created_at?: string | null;
   last_sign_in_at?: string | null;
+  /** Admin-only server metadata. Splash keys: must_change_password,
+   *  password_changed_at (ISO), password_changed_by ("self" | "admin"). */
+  app_metadata?: Record<string, unknown> | null;
+  /** MFA factors as GoTrue returns them on the user object. `created_at` is
+   *  the enrollment; `updated_at` moves on every challenge, so it isn't. */
+  factors?: Array<{
+    id?: string;
+    status?: string;
+    factor_type?: string;
+    friendly_name?: string | null;
+    created_at?: string | null;
+    updated_at?: string | null;
+    last_challenged_at?: string | null;
+  }> | null;
 }
 
 /**
