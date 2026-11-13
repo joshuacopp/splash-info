@@ -85,10 +85,33 @@ export async function generateCheckRequestPdf(
   const pdfDoc = await PDFDocument.load(templateBytes);
   const form = pdfDoc.getForm();
 
+  // The template's fields carry a FIXED font size, so a long value (an email
+  // in "Signature of Requestor") ran past the box edge and was clipped. For
+  // single-line fields, shrink the size just enough to fit -- never grow it,
+  // so short values look exactly as before. Measured in Helvetica, the font
+  // pdf-lib uses when it regenerates the appearance at flatten.
+  const measureFont = await pdfDoc.embedFont(StandardFonts.Helvetica);
+  const MIN_FONT_SIZE = 6;
+  const fitToWidth = (field: ReturnType<typeof form.getTextField>, text: string) => {
+    if (!text || field.isMultiline()) return;
+    const widget = field.acroField.getWidgets()[0];
+    if (!widget) return;
+    const da = field.acroField.getDefaultAppearance() ?? "";
+    const current = Number(/([\d.]+)\s+Tf/.exec(da)?.[1] ?? "0");
+    if (!current) return; // 0 = auto-size; the viewer already fits it
+    const usable = widget.getRectangle().width - 4; // pdf-lib's 2pt padding each side
+    const needed = measureFont.widthOfTextAtSize(text, current);
+    if (needed <= usable) return;
+    const fitted = Math.max(MIN_FONT_SIZE, Math.floor((current * usable) / needed * 10) / 10);
+    field.setFontSize(fitted);
+  };
+
   const setIf = (name: string, value: string | null | undefined) => {
     if (value === null || value === undefined) return;
     try {
-      form.getTextField(name).setText(String(value));
+      const field = form.getTextField(name);
+      field.setText(String(value));
+      fitToWidth(field, String(value));
     } catch (err) {
       console.warn(
         `generateCheckRequestPdf: could not set field "${name}":`,
@@ -481,6 +504,17 @@ function splitAddressLines(address: string | null | undefined): string[] {
 }
 
 /**
+ * "6074831925" -> "(607) 483-1925" (also "16074831925" / "+1 607..."). Any
+ * other shape is returned as typed -- better an odd number than a mangled one.
+ */
+export function formatPhone(raw: string): string {
+  const digits = raw.replace(/\D/g, "");
+  const ten = digits.length === 11 && digits.startsWith("1") ? digits.slice(1) : digits;
+  if (ten.length !== 10) return raw.trim();
+  return `(${ten.slice(0, 3)}) ${ten.slice(3, 6)}-${ten.slice(6)}`;
+}
+
+/**
  * Field-level overrides for the historic check-request backfill. Every live
  * call site omits this and behaves exactly as before.
  */
@@ -566,7 +600,7 @@ export function buildCheckRequestFields(
     date: overrides?.date || dateStr,
     location: overrides?.location || claim.location_pretty || "",
     email: overrides?.email || claim.customer_email || "",
-    phone: overrides?.phone || claim.customer_phone || "",
+    phone: formatPhone(overrides?.phone || claim.customer_phone || ""),
     amount:
       quote.amount !== null && quote.amount !== undefined
         ? Number(quote.amount).toFixed(2)
