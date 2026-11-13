@@ -40,7 +40,7 @@ export default async function SupplyOrdersPage({ searchParams }: PageProps) {
       <div className="mb-5 flex flex-wrap items-end justify-between gap-3">
         <div>
           <p className="mb-1 text-xs font-semibold uppercase tracking-[0.18em] text-sudsy-blue">Operations</p>
-          <h1 className="text-2xl font-bold text-splash-navy">Supply Orders</h1>
+          <h1 className="text-2xl font-bold text-splash-navy">Kleen-Rite Orders</h1>
           <p className="mt-1 text-sm text-splash-navy/70">
             Order from Kleen-Rite. GM orders go to the site&apos;s Regional Manager for approval, then straight to
             Kleen-Rite.

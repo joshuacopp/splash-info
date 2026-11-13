@@ -49,7 +49,7 @@ import {
   DEPARTMENTS,
   KR_ORIGIN,
   isProductPath,
-  pricesFor,
+  productInfoFor,
   searchCatalog
 } from "./supply-orders-catalog.js";
 import { sendApprovalRequestEmail, sendDecisionEmail, buildVendorEmail } from "./supply-orders-email.js";
@@ -480,7 +480,7 @@ export async function handleSupplyOrdersRequest(
   if (first === "meta" && request.method === "GET") return meta(env, session);
 
   if (first === "catalog") {
-    if (!canOrder(session)) return jsonError(403, "Supply ordering is not turned on for your login.");
+    if (!canOrder(session)) return jsonError(403, "Kleen-Rite ordering is not turned on for your login.");
     if (!action && request.method === "GET") {
       const page = await searchCatalog(
         (url.searchParams.get("q") ?? "").trim(),
@@ -493,7 +493,11 @@ export async function handleSupplyOrdersRequest(
     if (action === "prices" && request.method === "POST") {
       const body = await readJson(request);
       const paths = Array.isArray(body?.paths) ? body!.paths.filter((p): p is string => typeof p === "string") : [];
-      return json({ prices: await pricesFor(paths) });
+      const info = await productInfoFor(paths);
+      // `prices` kept alongside `info` so a page from before item details
+      // existed keeps working through a deploy.
+      const prices = Object.fromEntries(Object.entries(info).map(([k, v]) => [k, v.cents]));
+      return json({ prices, info });
     }
     return jsonError(405, "method not allowed");
   }
@@ -558,12 +562,35 @@ async function meta(env: SupplyOrdersEnv, session: Session): Promise<Response> {
   });
 }
 
+/** Company-wide "Commonly ordered at Splash" (supply-orders-02 seed). */
+async function commonItems(env: SupplyOrdersEnv): Promise<
+  Array<{ sku: string; name: string; uom: string | null; image_url: string | null; product_path: string | null; typical_qty: number; times: number }>
+> {
+  const r = await pg<
+    Array<{ sku: string; name: string; uom: string | null; image_url: string | null; product_path: string | null; typical_qty: number; times_ordered: number }>
+  >(
+    env,
+    "GET",
+    `supply_order_common_items?vendor=eq.${VENDOR}&active=is.true&select=sku,name,uom,image_url,product_path,typical_qty,times_ordered&order=times_ordered.desc,name.asc&limit=300`
+  );
+  return (r.data ?? []).map(({ times_ordered, ...c }) => ({
+    ...c,
+    product_path: c.product_path && isProductPath(c.product_path) ? c.product_path : null,
+    times: times_ordered
+  }));
+}
+
+/**
+ * The "Ordered before" tab: `items` = this site's own history (last 25 sent
+ * orders), `common` = the company-wide list minus anything already in
+ * `items`. A site with no orders yet still gets a useful list.
+ */
 async function recentItems(env: SupplyOrdersEnv, session: Session, url: URL): Promise<Response> {
-  if (!canOrder(session)) return jsonError(403, "Supply ordering is not turned on for your login.");
+  if (!canOrder(session)) return jsonError(403, "Kleen-Rite ordering is not turned on for your login.");
   const id = Number.parseInt(url.searchParams.get("location_id") ?? "", 10);
-  if (!Number.isInteger(id)) return json({ items: [] });
   const member = await memberSites(env, session);
-  if (!member.sites.some((s) => s.id === id)) return json({ items: [] });
+  const common = await commonItems(env);
+  if (!Number.isInteger(id) || !member.sites.some((s) => s.id === id)) return json({ items: [], common });
   // Items on this site's last 25 sent orders, most-ordered first.
   const orders = await pg<Array<{ id: string; sent_at: string }>>(
     env,
@@ -571,7 +598,7 @@ async function recentItems(env: SupplyOrdersEnv, session: Session, url: URL): Pr
     `supply_orders?location_id=eq.${id}&status=eq.sent&select=id,sent_at&order=sent_at.desc&limit=25`
   );
   const ids = (orders.data ?? []).map((o) => o.id);
-  if (ids.length === 0) return json({ items: [] });
+  if (ids.length === 0) return json({ items: [], common });
   const lines = await pg<LineRow[]>(env, "GET", `supply_order_lines?order_id=in.(${ids.join(",")})&select=*`);
   const bySku = new Map<string, LineRow & { times: number; last_qty: number }>();
   const rank = new Map(ids.map((oid, i) => [oid, i]));
@@ -593,7 +620,8 @@ async function recentItems(env: SupplyOrdersEnv, session: Session, url: URL): Pr
       last_qty: l.last_qty,
       times: l.times
     }));
-  return json({ items });
+  const mine = new Set(items.map((i) => i.sku.toUpperCase()));
+  return json({ items, common: common.filter((c) => !mine.has(c.sku.toUpperCase())) });
 }
 
 async function listOrders(env: SupplyOrdersEnv, session: Session, url: URL): Promise<Response> {
@@ -642,7 +670,7 @@ export function estimate(lines: Array<{ qty: number; unit_price_cents: number | 
 }
 
 async function createOrder(request: Request, env: SupplyOrdersEnv, session: Session, ctx: ExecutionContext): Promise<Response> {
-  if (!canOrder(session)) return jsonError(403, "Supply ordering is not turned on for your login.");
+  if (!canOrder(session)) return jsonError(403, "Kleen-Rite ordering is not turned on for your login.");
   const body = await readJson(request);
   if (!body) return jsonError(400, "Could not read the order.");
 

@@ -19,10 +19,10 @@ export default async function NewSupplyOrderPage() {
     <section className="mx-auto w-full max-w-[1280px] px-5 py-9">
       <div className="mb-2 text-sm">
         <Link href="/admin/supply-orders" className="text-splash-blue hover:underline">
-          ← Supply Orders
+          ← Kleen-Rite Orders
         </Link>
       </div>
-      <p className="mb-1 text-xs font-semibold uppercase tracking-[0.18em] text-sudsy-blue">Supply Orders</p>
+      <p className="mb-1 text-xs font-semibold uppercase tracking-[0.18em] text-sudsy-blue">Kleen-Rite Orders</p>
       <h1 className="mb-5 text-2xl font-bold text-splash-navy">New Kleen-Rite order</h1>
 
       {!canOrderSupplies(session) ? (

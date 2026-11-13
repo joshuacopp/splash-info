@@ -15,7 +15,9 @@ import {
   type CartLine,
   type CatalogItem,
   type CatalogPage,
+  type CommonItem,
   type Meta,
+  type ProductInfo,
   type RecentItem
 } from "../_lib/types";
 
@@ -54,7 +56,7 @@ export default function OrderBuilder({ meta }: { meta: Meta }) {
   const [cart, setCart] = useState<CartLine[]>([]);
   const [cartLoaded, setCartLoaded] = useState(false);
   const [tab, setTab] = useState<Tab>("search");
-  const [prices, setPrices] = useState<Record<string, number | null>>({});
+  const [info, setInfo] = useState<Record<string, ProductInfo>>({});
 
   // Site change: suggest that site's initials, and bring back its saved cart.
   useEffect(() => {
@@ -79,8 +81,8 @@ export default function OrderBuilder({ meta }: { meta: Meta }) {
     });
   }, []);
 
-  const notePrices = useCallback((p: Record<string, number | null>) => {
-    setPrices((prev) => ({ ...prev, ...p }));
+  const noteInfo = useCallback((p: Record<string, ProductInfo>) => {
+    setInfo((prev) => ({ ...prev, ...p }));
   }, []);
 
   const total = useMemo(() => {
@@ -193,9 +195,9 @@ export default function OrderBuilder({ meta }: { meta: Meta }) {
               ))}
             </div>
             {tab === "search" && (
-              <CatalogSearch departments={meta.departments} prices={prices} onPrices={notePrices} onAdd={addToCart} />
+              <CatalogSearch departments={meta.departments} info={info} onInfo={noteInfo} onAdd={addToCart} />
             )}
-            {tab === "recent" && <RecentItems siteId={site.id} onAdd={addToCart} />}
+            {tab === "recent" && <RecentItems siteId={site.id} info={info} onInfo={noteInfo} onAdd={addToCart} />}
             {tab === "manual" && <ManualAdd onAdd={addToCart} />}
           </div>
 
@@ -317,13 +319,13 @@ export default function OrderBuilder({ meta }: { meta: Meta }) {
 
 function CatalogSearch({
   departments,
-  prices,
-  onPrices,
+  info,
+  onInfo,
   onAdd
 }: {
   departments: string[];
-  prices: Record<string, number | null>;
-  onPrices: (p: Record<string, number | null>) => void;
+  info: Record<string, ProductInfo>;
+  onInfo: (p: Record<string, ProductInfo>) => void;
   onAdd: (l: CartLine) => void;
 }) {
   const [q, setQ] = useState("");
@@ -356,15 +358,15 @@ function CatalogSearch({
           return;
         }
         setResult(body);
-        const missing = body.items.map((i) => i.product_path).filter((p) => !(p in prices));
+        const missing = body.items.map((i) => i.product_path).filter((p) => !(p in info));
         if (missing.length) {
           fetch("/admin/supply-orders/api/prices", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ paths: missing })
           })
-            .then((r) => (r.ok ? (r.json() as Promise<{ prices: Record<string, number | null> }>) : null))
-            .then((p) => p && onPrices(p.prices))
+            .then((r) => (r.ok ? (r.json() as Promise<{ info?: Record<string, ProductInfo> }>) : null))
+            .then((p) => p?.info && onInfo(p.info))
             .catch(() => undefined);
         }
       } catch {
@@ -373,7 +375,7 @@ function CatalogSearch({
         if (id === reqId.current) setLoading(false);
       }
     },
-    [prices, onPrices]
+    [info, onInfo]
   );
 
   return (
@@ -390,7 +392,7 @@ function CatalogSearch({
           type="search"
           value={q}
           onChange={(e) => setQ(e.target.value)}
-          placeholder="Item # or keywords, e.g. GUSS50 or thumb gun"
+          placeholder="Kleen-Rite item # (e.g. GUSS50) or a product name"
           className={input}
           aria-label="Search Kleen-Rite"
         />
@@ -434,7 +436,7 @@ function CatalogSearch({
       {error && <p className="mb-3 rounded-splash-md border border-racecar-red bg-white px-3 py-2 text-sm text-racecar-red">{error}</p>}
       {loading && <p className="py-6 text-center text-sm text-splash-navy/60">Searching Kleen-Rite…</p>}
       {!loading && !result && !error && (
-        <p className="py-6 text-center text-sm italic text-splash-navy/60">Search by item # or keyword, or pick a department.</p>
+        <p className="py-6 text-center text-sm italic text-splash-navy/60">Search by Kleen-Rite item # (most reliable) or the product's name, or pick a department. Kleen-Rite's search matches words in product names, so everyday names like "thumb gun" may not find the item.</p>
       )}
 
       {!loading && result && (
@@ -450,7 +452,7 @@ function CatalogSearch({
           ) : (
             <ul className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
               {result.items.map((item) => (
-                <ProductCard key={item.sku} item={item} price={prices[item.product_path]} onAdd={onAdd} />
+                <ProductCard key={item.sku} item={item} info={info[item.product_path]} onAdd={onAdd} />
               ))}
             </ul>
           )}
@@ -490,13 +492,16 @@ function CatalogSearch({
 
 function ProductCard({
   item,
-  price,
+  info,
   onAdd
 }: {
   item: CatalogItem;
-  price: number | null | undefined;
+  /** Undefined while the product page is still being read. */
+  info: ProductInfo | undefined;
   onAdd: (l: CartLine) => void;
 }) {
+  const price = info === undefined ? undefined : info.cents;
+  const details = info?.details ?? [];
   const [qty, setQty] = useState(item.min_qty);
   const [added, setAdded] = useState(false);
   return (
@@ -522,6 +527,7 @@ function ProductCard({
         {price === undefined ? "Price…" : price === null ? (item.call_to_order ? "Call for price" : "No price listed") : money(price)}
         {item.uom ? ` · ${item.uom}` : ""}
       </p>
+      {details.length > 0 && <ItemDetails details={details} />}
       <div className="mt-auto flex items-center gap-2">
         <input
           type="number"
@@ -557,56 +563,205 @@ function ProductCard({
   );
 }
 
+/** Kleen-Rite's "Item Details" bullets: the first few, the rest behind a toggle. */
+function ItemDetails({ details }: { details: string[] }) {
+  const SHOWN = 4;
+  const [open, setOpen] = useState(false);
+  const list = open ? details : details.slice(0, SHOWN);
+  return (
+    <div className="mb-2">
+      <p className="text-[0.6875rem] font-semibold uppercase tracking-wide text-splash-navy/60">Item details</p>
+      <ul className="list-disc pl-4 text-xs leading-snug text-splash-navy/80">
+        {list.map((d, i) => (
+          <li key={i}>{d}</li>
+        ))}
+      </ul>
+      {details.length > SHOWN && (
+        <button
+          type="button"
+          onClick={() => setOpen((v) => !v)}
+          className="mt-0.5 text-xs font-semibold text-splash-blue hover:underline"
+        >
+          {open ? "Show less" : `Show all ${details.length}`}
+        </button>
+      )}
+    </div>
+  );
+}
+
 /* ------------------------------------------------------------------ recent */
 
-function RecentItems({ siteId, onAdd }: { siteId: number; onAdd: (l: CartLine) => void }) {
-  const [items, setItems] = useState<RecentItem[] | null>(null);
+function RecentItems({
+  siteId,
+  info,
+  onInfo,
+  onAdd
+}: {
+  siteId: number;
+  info: Record<string, ProductInfo>;
+  onInfo: (p: Record<string, ProductInfo>) => void;
+  onAdd: (l: CartLine) => void;
+}) {
+  const [data, setData] = useState<{ items: RecentItem[]; common: CommonItem[] } | null>(null);
+  const [filter, setFilter] = useState("");
   useEffect(() => {
     let live = true;
-    setItems(null);
+    setData(null);
     fetch(`/admin/supply-orders/api/recent?location_id=${siteId}`, { cache: "no-store" })
-      .then((r) => (r.ok ? (r.json() as Promise<{ items: RecentItem[] }>) : { items: [] }))
-      .then((b) => live && setItems(b.items))
-      .catch(() => live && setItems([]));
+      .then((r) => (r.ok ? (r.json() as Promise<{ items?: RecentItem[]; common?: CommonItem[] }>) : {}))
+      .then((b: { items?: RecentItem[]; common?: CommonItem[] }) => {
+        if (live) setData({ items: b.items ?? [], common: b.common ?? [] });
+      })
+      .catch(() => {
+        if (live) setData({ items: [], common: [] });
+      });
     return () => {
       live = false;
     };
   }, [siteId]);
 
-  if (items === null) return <p className="py-6 text-center text-sm text-splash-navy/60">Loading…</p>;
-  if (items.length === 0) {
-    return (
-      <p className="py-6 text-center text-sm italic text-splash-navy/60">
-        This site hasn&apos;t ordered through here yet. Items show up here after its first order is sent.
-      </p>
+  // Today's price for both lists, 24 product pages per request.
+  const infoRef = useRef(info);
+  infoRef.current = info;
+  useEffect(() => {
+    if (!data) return;
+    const paths = [...data.items.map((i) => i.product_path), ...data.common.map((c) => c.product_path)].filter(
+      (p): p is string => !!p && !(p in infoRef.current)
     );
-  }
+    for (let i = 0; i < paths.length; i += 24) {
+      fetch("/admin/supply-orders/api/prices", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ paths: paths.slice(i, i + 24) })
+      })
+        .then((r) => (r.ok ? (r.json() as Promise<{ info?: Record<string, ProductInfo> }>) : null))
+        .then((p) => {
+          if (p?.info) onInfo(p.info);
+        })
+        .catch(() => undefined);
+    }
+  }, [data, onInfo]);
+
+  if (data === null) return <p className="py-6 text-center text-sm text-splash-navy/60">Loading…</p>;
+  const f = filter.trim().toLowerCase();
+  const match = (x: { sku: string; name: string }) => !f || x.sku.toLowerCase().includes(f) || x.name.toLowerCase().includes(f);
+  const items = data.items.filter(match);
+  const common = data.common.filter(match);
   return (
-    <ul className="divide-y divide-gray-light rounded-splash-md border border-gray-light bg-white">
-      {items.map((it) => (
-        <RecentRow key={it.sku} item={it} onAdd={onAdd} />
-      ))}
-    </ul>
+    <div className="space-y-4">
+      <input
+        type="search"
+        value={filter}
+        onChange={(e) => setFilter(e.target.value)}
+        placeholder="Filter this list by item # or name"
+        aria-label="Filter previously ordered items"
+        className="w-full rounded-splash-sm border border-gray-light bg-white px-3 py-2 text-sm"
+      />
+      <div>
+        <h3 className="mb-1 text-sm font-bold text-splash-navy">Ordered at this site</h3>
+        {data.items.length === 0 ? (
+          <p className="text-sm italic text-splash-navy/60">
+            Nothing yet. Items show up here after this site&apos;s first order is sent.
+          </p>
+        ) : items.length === 0 ? (
+          <p className="text-sm italic text-splash-navy/60">No match.</p>
+        ) : (
+          <ul className="divide-y divide-gray-light rounded-splash-md border border-gray-light bg-white">
+            {items.map((it) => (
+              <RecentRow
+                key={it.sku}
+                sku={it.sku}
+                name={it.name}
+                uom={it.uom}
+                imageUrl={it.image_url}
+                productPath={it.product_path}
+                startQty={it.last_qty}
+                priceCents={it.product_path && info[it.product_path] ? info[it.product_path]!.cents : it.unit_price_cents}
+                note={`Ordered ${it.times}× here · last time ${it.last_qty}`}
+                onAdd={onAdd}
+              />
+            ))}
+          </ul>
+        )}
+      </div>
+      {data.common.length > 0 && (
+        <div>
+          <h3 className="mb-1 text-sm font-bold text-splash-navy">Commonly ordered at Splash</h3>
+          {common.length === 0 ? (
+            <p className="text-sm italic text-splash-navy/60">No match.</p>
+          ) : (
+            <ul className="divide-y divide-gray-light rounded-splash-md border border-gray-light bg-white">
+              {common.map((it) => (
+                <RecentRow
+                  key={it.sku}
+                  sku={it.sku}
+                  name={it.name}
+                  uom={it.uom}
+                  imageUrl={it.image_url}
+                  productPath={it.product_path}
+                  startQty={it.typical_qty}
+                  priceCents={it.product_path ? info[it.product_path]?.cents : null}
+                  note={`Usual order ${it.typical_qty}${it.times > 1 ? ` · ordered ${it.times}× before` : ""}`}
+                  onAdd={onAdd}
+                />
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
+    </div>
   );
 }
 
-function RecentRow({ item, onAdd }: { item: RecentItem; onAdd: (l: CartLine) => void }) {
-  const [qty, setQty] = useState(item.last_qty);
+function RecentRow({
+  sku,
+  name,
+  uom,
+  imageUrl,
+  productPath,
+  startQty,
+  priceCents,
+  note,
+  onAdd
+}: {
+  sku: string;
+  name: string;
+  uom: string | null;
+  imageUrl: string | null;
+  productPath: string | null;
+  startQty: number;
+  /** Undefined while today's price is still loading. */
+  priceCents: number | null | undefined;
+  note: string;
+  onAdd: (l: CartLine) => void;
+}) {
+  const [qty, setQty] = useState(startQty);
   const [added, setAdded] = useState(false);
   return (
     <li className="flex items-center gap-3 px-3 py-2">
-      {item.image_url ? (
+      {imageUrl ? (
         // eslint-disable-next-line @next/next/no-img-element
-        <img src={item.image_url} alt="" loading="lazy" className="h-12 w-12 flex-none object-contain" />
+        <img src={imageUrl} alt="" loading="lazy" className="h-12 w-12 flex-none object-contain" />
       ) : (
         <span className="h-12 w-12 flex-none" />
       )}
       <div className="min-w-0 flex-1">
-        <p className="font-mono text-xs font-semibold text-splash-navy">{item.sku}</p>
-        <p className="text-sm leading-snug text-splash-navy/90">{item.name}</p>
+        <p className="font-mono text-xs font-semibold text-splash-navy">{sku}</p>
+        {productPath ? (
+          <a
+            href={`https://www.kleen-ritecorp.com/${productPath}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-sm leading-snug text-splash-navy/90 hover:text-splash-blue hover:underline"
+          >
+            {name}
+          </a>
+        ) : (
+          <p className="text-sm leading-snug text-splash-navy/90">{name}</p>
+        )}
         <p className="text-xs text-splash-navy/60">
-          Ordered {item.times}× · last time {item.last_qty}
-          {item.unit_price_cents != null ? ` · ${money(item.unit_price_cents)} ea then` : ""}
+          {note}
+          {priceCents === undefined ? "" : priceCents === null ? " · no price listed" : ` · ${money(priceCents)} ea`}
         </p>
       </div>
       <input
@@ -614,7 +769,7 @@ function RecentRow({ item, onAdd }: { item: RecentItem; onAdd: (l: CartLine) => 
         min={1}
         max={9999}
         value={qty}
-        aria-label={`Quantity of ${item.sku}`}
+        aria-label={`Quantity of ${sku}`}
         onChange={(e) => setQty(Math.max(1, Math.min(9999, Number.parseInt(e.target.value, 10) || 1)))}
         className="w-16 rounded-splash-sm border border-gray-light px-2 py-1 text-right text-sm"
       />
@@ -622,14 +777,14 @@ function RecentRow({ item, onAdd }: { item: RecentItem; onAdd: (l: CartLine) => 
         type="button"
         onClick={() => {
           onAdd({
-            sku: item.sku,
-            name: item.name,
-            uom: item.uom,
+            sku,
+            name,
+            uom,
             qty,
-            unit_price_cents: item.unit_price_cents,
-            product_path: item.product_path,
-            image_url: item.image_url,
-            source: item.product_path ? "catalog" : "manual"
+            unit_price_cents: priceCents ?? null,
+            product_path: productPath,
+            image_url: imageUrl,
+            source: productPath ? "catalog" : "manual"
           });
           setAdded(true);
           window.setTimeout(() => setAdded(false), 1500);

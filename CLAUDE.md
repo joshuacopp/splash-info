@@ -3346,7 +3346,9 @@ URL-based — service bindings don't apply to those.
   and notes. With a site or date filter on, a duplicate's twin is fetched
   separately, because the twin is usually at another site or day.
 - **Supply Orders** (2026-11-13) - Kleen-Rite ordering at
-  `/admin/supply-orders`, served by splash-workorders
+  `/admin/supply-orders`, shown to users as "Kleen-Rite Orders" (never
+  "Supply Orders" in UI copy -- operator found it misleading; the URL, the
+  `supply_orders` grant and the table names keep the internal name), served by splash-workorders
   (`src/supply-orders*.ts`). Catalog search calls Kleen-Rite's PUBLIC
   Searchspring endpoint (site `mubrxa`) -- not an API they gave us; if it
   stops answering, "Add by item #" still works. Prices come from product-page
@@ -3359,7 +3361,9 @@ URL-based — service bindings don't apply to those.
   CC `site_email`. `SUPPLY_ORDERS_MODE` (wrangler.toml) must be `"live"` to
   reach Kleen-Rite; anything else redirects to `SUPPLY_ORDERS_TEST_TO`.
   Ship-to is `locations.ship_to_address` when set (Oswego), else
-  `locations.location`.
+  `locations.location`. `supply_order_common_items` is a company-wide
+  "Commonly ordered at Splash" list (seeded from the operator's past orders;
+  no site on that source) shown under each site's own history.
 - **outbound_emails table** (Brief 127) - Shared queue of fully-rendered
   outbound emails. Single Power Automate flow polls every 5 minutes
   and drains the queue regardless of which worker enqueued the row.

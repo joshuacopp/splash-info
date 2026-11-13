@@ -16,7 +16,7 @@ import {
   shipToFor
 } from "./supply-orders";
 import { buildVendorEmail, vendorLine } from "./supply-orders-email";
-import { mapResult, priceFromProductHtml } from "./supply-orders-catalog";
+import { detailsFromProductHtml, mapResult, priceFromProductHtml } from "./supply-orders-catalog";
 import type { Session } from "@splash/auth";
 
 function session(over: Partial<Session> = {}): Session {
@@ -194,5 +194,30 @@ describe("catalog parsing", () => {
       `<script type="application/ld+json">{"@context":"https://schema.org","@type":"Product","offers":{"@type":"Offer","price":204.31}}</script>`;
     expect(priceFromProductHtml(html)).toBe(20431);
     expect(priceFromProductHtml("<html></html>")).toBeNull();
+  });
+  it("reads the Item Details bullets", () => {
+    const html =
+      "<p>Intro</p><h3>Item Details</h3><ul><li>Green color</li><li>30 ft. length</li>" +
+      "<li>1/4 in. inner diameter</li><li><strong>Compatible</strong> with all Excel air machines</li>" +
+      "<li>Polyurethane &amp; nylon</li><li> </li></ul><h3>Can Be Used with These Models</h3><ul><li>SC05-SS</li></ul>";
+    expect(detailsFromProductHtml(html)).toEqual([
+      "Green color",
+      "30 ft. length",
+      "1/4 in. inner diameter",
+      "Compatible with all Excel air machines",
+      "Polyurethane & nylon"
+    ]);
+    expect(detailsFromProductHtml("<h3>Overview</h3><ul><li>x</li></ul>")).toEqual([]);
+  });
+  it("falls back to Specifications, dropping lines that repeat the item #", () => {
+    const html =
+      "<h3>Benefits:</h3><ul><li>Light</li></ul><h3>Specifications:</h3><ul>" +
+      "<li><strong>Spraying Systems Product Number:</strong> 22650-PP-1/4</li><li><strong>KR Product Number:</strong> GUSS50</li>" +
+      "<li><strong>GTIN:</strong> 736354732891</li><li><strong>Maximum Flow:</strong> 2.0 GPM</li></ul>";
+    expect(detailsFromProductHtml(html)).toEqual(["Maximum Flow: 2.0 GPM"]);
+  });
+  it("falls back to the description when there is no list", () => {
+    const html = `<script type="application/ld+json">{"@type":"Product","description":"A sturdy &amp; light gun."}</script>`;
+    expect(detailsFromProductHtml(html)).toEqual(["A sturdy & light gun."]);
   });
 });

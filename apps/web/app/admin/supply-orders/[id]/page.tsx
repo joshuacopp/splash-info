@@ -60,7 +60,7 @@ export default async function SupplyOrderPage({ params, searchParams }: PageProp
     <section className="mx-auto w-full max-w-[1100px] px-5 py-9">
       <div className="mb-2 text-sm">
         <Link href="/admin/supply-orders" className="text-splash-blue hover:underline">
-          ← Supply Orders
+          ← Kleen-Rite Orders
         </Link>
       </div>
 

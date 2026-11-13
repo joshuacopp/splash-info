@@ -43,6 +43,12 @@ export interface CatalogPage {
   categories: Array<{ label: string; count: number }>;
 }
 
+/** Price + "Item Details" bullets read off the product page. */
+export interface ProductInfo {
+  cents: number | null;
+  details: string[];
+}
+
 export interface RecentItem {
   sku: string;
   name: string;
@@ -51,6 +57,17 @@ export interface RecentItem {
   product_path: string | null;
   unit_price_cents: number | null;
   last_qty: number;
+  times: number;
+}
+
+/** Company-wide "Commonly ordered at Splash" entry. */
+export interface CommonItem {
+  sku: string;
+  name: string;
+  uom: string | null;
+  image_url: string | null;
+  product_path: string | null;
+  typical_qty: number;
   times: number;
 }
 

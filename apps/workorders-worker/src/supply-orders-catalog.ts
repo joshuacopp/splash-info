@@ -199,40 +199,103 @@ export function priceFromProductHtml(html: string): number | null {
   return null;
 }
 
-async function priceFor(path: string): Promise<number | null> {
+/** Headings whose bullet list describes the item, best first. Newer
+ *  Kleen-Rite pages use "Item Details"; older ones "Specifications:" /
+ *  "Features:" / "Benefits:". */
+const DETAIL_HEADINGS = ["item details", "specifications", "features", "benefits"];
+
+/** Spec lines that only repeat what the card already shows. */
+const REDUNDANT_LINE = /^(kr product number|gtin|upc)\b|product number:/i;
+
+function listAfterHeading(html: string, heading: string): string[] {
+  const re = new RegExp(String.raw`<h[2-4][^>]*>\s*${heading}\s*:?\s*</h[2-4]>\s*<ul[^>]*>([\s\S]*?)</ul>`, "i");
+  const m = re.exec(html);
+  if (!m) return [];
+  const out: string[] = [];
+  const li = /<li[^>]*>([\s\S]*?)<\/li>/gi;
+  let x: RegExpExecArray | null;
+  while ((x = li.exec(m[1]!)) && out.length < 12) {
+    const text = decodeEntities(x[1]!.replace(/<[^>]*>/g, " ").replace(/&nbsp;/g, " "))
+      .replace(/\s+/g, " ")
+      .replace(/\s+([:,.])/g, "$1")
+      .trim();
+    if (text && !REDUNDANT_LINE.test(text)) out.push(text.slice(0, 200));
+  }
+  return out;
+}
+
+/** schema.org Product description, for pages with no detail list at all. */
+function ldDescription(html: string): string | null {
+  const re = /<script[^>]*type="application\/ld\+json"[^>]*>([\s\S]*?)<\/script>/gi;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(html))) {
+    try {
+      const n = JSON.parse(m[1]!) as { "@type"?: unknown; description?: unknown };
+      if (n && n["@type"] === "Product" && typeof n.description === "string" && n.description.trim()) {
+        const d = decodeEntities(n.description).replace(/\s+/g, " ").trim();
+        return d.length > 240 ? `${d.slice(0, 237).replace(/\s+\S*$/, "")}…` : d;
+      }
+    } catch {
+      // not JSON; keep looking
+    }
+  }
+  return null;
+}
+
+/**
+ * Bullet points describing the item, from the product page: the first of the
+ * DETAIL_HEADINGS lists present, else the one-paragraph description, else [].
+ * Capped so one odd page cannot flood a result card.
+ */
+export function detailsFromProductHtml(html: string): string[] {
+  for (const h of DETAIL_HEADINGS) {
+    const list = listAfterHeading(html, h);
+    if (list.length) return list;
+  }
+  const d = ldDescription(html);
+  return d ? [d] : [];
+}
+
+export interface ProductInfo {
+  /** Public price in cents; null = none listed. */
+  cents: number | null;
+  /** "Item Details" bullets; [] = none on the page. */
+  details: string[];
+}
+
+async function infoFor(path: string): Promise<ProductInfo | null> {
   const url = `${KR_ORIGIN}/${path}`;
   const cache = edgeCache();
-  // Cache the extracted price, not the 300 KB page.
-  const key = new Request(`https://supply-orders-price.internal/${encodeURIComponent(path)}`);
+  // Cache what we extracted, not the 300 KB page. v3: details fallbacks.
+  const key = new Request(`https://supply-orders-product.internal/v3/${encodeURIComponent(path)}`);
   const hit = cache ? await cache.match(key).catch(() => undefined) : undefined;
-  if (hit) {
-    const v = (await hit.json()) as { cents: number | null };
-    return v.cents;
-  }
-  let cents: number | null = null;
+  if (hit) return (await hit.json()) as ProductInfo;
+  let info: ProductInfo;
   try {
     const res = await fetch(url, { headers: { "User-Agent": UA }, signal: AbortSignal.timeout(8000) });
     if (!res.ok) return null;
-    cents = priceFromProductHtml(await res.text());
+    const html = await res.text();
+    info = { cents: priceFromProductHtml(html), details: detailsFromProductHtml(html) };
   } catch (err) {
-    console.error(`[supply-orders] price fetch failed for ${path}:`, err);
+    console.error(`[supply-orders] product page fetch failed for ${path}:`, err);
     return null;
   }
   if (cache) {
     await cache
-      .put(key, new Response(JSON.stringify({ cents }), { headers: { "Cache-Control": `max-age=${PRICE_TTL_SECONDS}` } }))
+      .put(key, new Response(JSON.stringify(info), { headers: { "Cache-Control": `max-age=${PRICE_TTL_SECONDS}` } }))
       .catch(() => undefined);
   }
-  return cents;
+  return info;
 }
 
-/** Prices for up to MAX_PRICE_BATCH product paths; missing = unknown. */
-export async function pricesFor(paths: string[]): Promise<Record<string, number | null>> {
+/** Price + item details for up to MAX_PRICE_BATCH product paths. A path that
+ *  could not be read comes back as {cents: null, details: []}. */
+export async function productInfoFor(paths: string[]): Promise<Record<string, ProductInfo>> {
   const unique = [...new Set(paths.filter(isProductPath))].slice(0, MAX_PRICE_BATCH);
-  const out: Record<string, number | null> = {};
+  const out: Record<string, ProductInfo> = {};
   await Promise.all(
     unique.map(async (p) => {
-      out[p] = await priceFor(p);
+      out[p] = (await infoFor(p)) ?? { cents: null, details: [] };
     })
   );
   return out;
