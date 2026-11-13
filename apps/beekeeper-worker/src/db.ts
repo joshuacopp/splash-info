@@ -9,6 +9,7 @@ import {
 import type { Env } from "./env.js";
 import {
   customFieldNumber,
+  customField,
   customFieldString,
   type BeekeeperSchedule,
   type BeekeeperUser
@@ -38,6 +39,11 @@ export interface BeekeeperUserRow {
   suspended: boolean | null;
   /** Beekeeper `employmentStatus` custom field. Observed: "Active", null. */
   employment_status: string | null;
+  /** Beekeeper `position` custom field (free-text job title). */
+  position: string | null;
+  /** Beekeeper user id of the "Direct manager" (`reports_to`). Often null --
+   *  informational only, never an access-control input. */
+  reports_to_id: string | null;
   /** Last time the sync touched this row. Written on every upsert, so a row
    *  that stops advancing is a user who fell out of the tenant listing. */
   synced_at: string | null;
@@ -54,7 +60,7 @@ export interface BeekeeperUserRow {
  *  `data as BeekeeperUserRow[]` cast at every call site (TS2352 — fails the
  *  Cloudflare deploy typecheck gate). */
 const USER_COLUMNS =
-  "id,tenantuserid,display_name,firstname,lastname,org_unit_ids,rate,pay_type,suspended,employment_status,synced_at";
+  "id,tenantuserid,display_name,firstname,lastname,org_unit_ids,rate,pay_type,suspended,employment_status,position,reports_to_id,synced_at";
 
 export interface BeekeeperScheduleRow {
   schedule_id: string;
@@ -271,6 +277,10 @@ export async function upsertBeekeeperUsers(
       rate: customFieldNumber(u, "rate"),
       pay_type: customFieldString(u, "payType"),
       employment_status: customFieldString(u, "employmentStatus"),
+      // Requires supabase/beekeeper-users-position-01.sql to have run first --
+      // an unknown column fails the whole upsert batch.
+      position: customFieldString(u, "position"),
+      reports_to_id: reportsToId(u),
       // Top-level, not a custom field — Beekeeper's own deactivation flag.
       // Defaults to false rather than null so an older payload shape does not
       // read as "unknown" and quietly change roster eligibility.
@@ -287,6 +297,17 @@ export async function upsertBeekeeperUsers(
     if (error) throw new Error(`upsertBeekeeperUsers: ${error.message}`);
   }
   return rows.length;
+}
+
+/** The "Direct manager" user_select's user id, or null. Its value is an object
+ *  ({id, display_name, ...}) when set and null otherwise. */
+function reportsToId(u: BeekeeperUser): string | null {
+  const v = customField(u, "reports_to")?.value;
+  if (v && typeof v === "object" && "id" in v) {
+    const id = (v as { id?: unknown }).id;
+    return typeof id === "string" && id ? id : null;
+  }
+  return null;
 }
 
 /** Upsert Beekeeper-owned schedule columns. NEVER writes location_code — that
