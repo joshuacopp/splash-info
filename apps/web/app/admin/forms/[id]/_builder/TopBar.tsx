@@ -7,6 +7,7 @@ type SaveState = "idle" | "saving" | "saved" | "error";
 type PublishState = "idle" | "publishing" | "done" | "error";
 
 interface Props {
+  formId: string;
   formMeta: FormMetaState;
   status: "draft" | "published" | "archived";
   currentVersionNumber: number | null;
@@ -20,6 +21,7 @@ interface Props {
 }
 
 export default function TopBar({
+  formId,
   formMeta,
   status,
   currentVersionNumber,
@@ -83,7 +85,13 @@ export default function TopBar({
           </span>
         )}
         {status === "published" && (
-          <FormQrButton slug={formMeta.slug} title={formMeta.title} size="md" />
+          <FormQrButton
+            formId={formId}
+            slug={formMeta.slug}
+            title={formMeta.title}
+            audience={formMeta.audience}
+            size="md"
+          />
         )}
         <button
           type="button"

@@ -1,6 +1,7 @@
 "use client";
 
-// QR code for a published form's public URL (/forms/{slug}).
+// Share dialog for a published form's public URL (/forms/{slug}): QR code
+// (download / print) plus "Send by email" (ShareByEmail).
 //
 // Shown next to "Copy link" on /admin/forms and in the builder top bar. The
 // code is drawn from the module matrix as SVG (on screen and on the print
@@ -13,10 +14,13 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import qrcode from "qrcode-generator";
+import ShareByEmail from "./ShareByEmail";
 
 interface Props {
+  formId: string;
   slug: string;
   title: string;
+  audience: string;
   /** "sm" matches the Copy link pill on the list; "md" matches the builder's buttons. */
   size?: "sm" | "md";
 }
@@ -66,7 +70,7 @@ function escapeHtml(s: string): string {
     .replace(/'/g, "&#39;");
 }
 
-export default function FormQrButton({ slug, title, size = "sm" }: Props) {
+export default function FormQrButton({ formId, slug, title, audience, size = "sm" }: Props) {
   const [open, setOpen] = useState(false);
   const [url, setUrl] = useState("");
 
@@ -155,27 +159,27 @@ export default function FormQrButton({ slug, title, size = "sm" }: Props) {
         type="button"
         onClick={() => setOpen(true)}
         className={buttonCls}
-        aria-label={`Show QR code for form ${slug}`}
+        aria-label={`Share form ${slug} by QR code or email`}
       >
-        QR code
+        Share
       </button>
       {open && (
         <div
           role="dialog"
           aria-modal="true"
-          aria-label={`QR code for ${displayTitle}`}
+          aria-label={`Share ${displayTitle}`}
           className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/60 p-4"
           onClick={() => setOpen(false)}
         >
           <div
-            className="w-full max-w-sm rounded-splash-md bg-white p-6 text-center shadow-xl"
+            className="max-h-[90vh] w-full max-w-md overflow-y-auto rounded-splash-md bg-white p-6 text-center shadow-xl"
             onClick={(e) => e.stopPropagation()}
           >
             <h2 className="text-lg font-bold text-splash-navy">{displayTitle}</h2>
             <p className="mt-1 text-xs text-splash-navy/60">
               Scan with a phone camera to open the form.
             </p>
-            <div className="mx-auto mt-4 w-full max-w-[260px]">
+            <div className="mx-auto mt-4 w-full max-w-[220px]">
               {matrix && (
                 <svg
                   viewBox={`0 0 ${dim} ${dim}`}
@@ -205,6 +209,9 @@ export default function FormQrButton({ slug, title, size = "sm" }: Props) {
               >
                 Print
               </button>
+            </div>
+            <ShareByEmail formId={formId} audience={audience} />
+            <div className="mt-5 flex justify-center">
               <button
                 type="button"
                 onClick={() => setOpen(false)}

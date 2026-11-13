@@ -213,7 +213,7 @@ function FormsTable({ items }: { items: FormListItem[] }) {
                 {f.status === "published" ? (
                   <div className="flex flex-wrap gap-1">
                     <CopyLinkButton slug={f.slug} />
-                    <FormQrButton slug={f.slug} title={f.title} />
+                    <FormQrButton formId={f.id} slug={f.slug} title={f.title} audience={f.audience} />
                   </div>
                 ) : (
                   <span className="text-xs text-splash-navy/40">—</span>

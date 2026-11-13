@@ -255,6 +255,7 @@ export default function BuilderClient({
   return (
     <div className="flex flex-col gap-4">
       <TopBar
+        formId={formId}
         formMeta={state.formMeta}
         status={initial.form.status}
         currentVersionNumber={initial.currentVersionNumber}

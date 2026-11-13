@@ -27,6 +27,7 @@
 //   POST   /forms/admin/api/forms/{id}/publish        — Brief 94: publish draft
 //   POST   /forms/admin/api/forms/{id}/unpublish      — Brief 94: archive
 //   POST   /forms/admin/api/forms/{id}/republish      — Brief 94: re-publish from archived
+//   POST   /forms/admin/api/forms/{id}/share-email    — 2026-11-13: email the public link
 //   POST   /forms/admin/api/forms/{id}/assets         — Brief 94: upload in-form image
 //   DELETE /forms/admin/api/forms/{id}/assets/{assetId} — Brief 94: delete in-form image
 //   GET    /forms/admin/api/forms/{id}/submissions    — Brief 96: list submissions
@@ -102,6 +103,7 @@ import { handleListVersions } from "./admin/versions.js";
 import { handlePendingApprovals } from "./admin/pending-approvals.js";
 import { handleMyRequests } from "./admin/my-requests.js";
 import { handleUserSearch } from "./admin/users-search.js";
+import { handleShareFormEmail } from "./admin/share-email.js";
 import { handleListActionItemQuestions } from "./admin/action-item-questions.js";
 import { handleTransitionSignatureUpload } from "./admin/transition-signatures.js";
 import {
@@ -468,6 +470,14 @@ export default {
     );
     if (republishMatch && republishMatch[1] && req.method === "POST") {
       return handleStatusChange(env, req, republishMatch[1], "published");
+    }
+
+    // /forms/admin/api/forms/{id}/share-email
+    const shareEmailMatch = url.pathname.match(
+      /^\/forms\/admin\/api\/forms\/([^/]+)\/share-email$/
+    );
+    if (shareEmailMatch && shareEmailMatch[1] && req.method === "POST") {
+      return handleShareFormEmail(env, req, shareEmailMatch[1]);
     }
 
     // /forms/admin/api/forms/{id}/assets
