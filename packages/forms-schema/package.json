@@ -7,7 +7,8 @@
   "types": "./src/index.ts",
   "exports": {
     ".": "./src/index.ts",
-    "./package-price": "./src/package-price.ts"
+    "./package-price": "./src/package-price.ts",
+    "./employee": "./src/employee.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

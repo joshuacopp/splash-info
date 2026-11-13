@@ -31,6 +31,7 @@ import * as signature from "./signature";
 import * as locationMod from "./location";
 import * as lookup from "./lookup";
 import * as packagePriceGrid from "./package-price-grid";
+import * as employee from "./employee";
 
 export interface InspectorProps {
   field: Field;
@@ -70,7 +71,8 @@ export const FIELD_TYPE_REGISTRY: FieldTypeModule[] = [
   signature,
   locationMod,
   lookup,
-  packagePriceGrid
+  packagePriceGrid,
+  employee
 ] as unknown as FieldTypeModule[];
 
 export function defaultConfigFor(type: FieldType): Omit<Field, "id" | "key"> {

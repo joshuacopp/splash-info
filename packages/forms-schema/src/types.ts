@@ -17,6 +17,7 @@ export type FieldType =
   | "lookup"
   | "location"
   | "package_price_grid"
+  | "employee"
   | "hidden"
   | "heading"      // display-only, no payload
   | "image";       // display-only, no payload
@@ -329,6 +330,30 @@ export interface PackagePriceGridField extends FieldBase {
   multiSite?: boolean;
 }
 
+/**
+ * Employee picker (PLAN_FORMS_PERSONNEL.md phase 2). Searches the Beekeeper
+ * roster of the site another field names -- or the 011 / 101 office groups --
+ * and stores who the form is about. Opt-in: it appears only on forms where
+ * someone adds it.
+ *
+ * Office staff whose placement says they work at an office or regionally are
+ * left out of a site's list even when Beekeeper files them at that site. When
+ * nobody at the site matches, matches elsewhere are offered, and when nobody
+ * matches at all the filler may type a name (`allowTyped`, default true); the
+ * worker refuses a typed name that closely matches a real employee.
+ *
+ * Payload is `EmployeeValue` (see employee.ts). Never offered on public-
+ * audience forms: the roster search refuses them.
+ */
+export interface EmployeeField extends FieldBase {
+  type: "employee";
+  /** KEY of the field naming the site (same convention as the price grid). */
+  keyFieldKey: string;
+  keyColumn: LookupKeyColumn;
+  /** Allow a typed name when nobody matches. Defaults to true. */
+  allowTyped?: boolean;
+}
+
 // -----------------------------------------------------------------------------
 // The full discriminated union.
 // -----------------------------------------------------------------------------
@@ -351,7 +376,8 @@ export type Field =
   | SignatureField
   | LocationField
   | LookupField
-  | PackagePriceGridField;
+  | PackagePriceGridField
+  | EmployeeField;
 
 // Form schema = ordered list of fields. Order is implicit (array index).
 // Brief 120 adds an optional `workflow` block — forms without a workflow

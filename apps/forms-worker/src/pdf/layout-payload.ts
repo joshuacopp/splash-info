@@ -30,7 +30,12 @@ import type {
   LookupField,
   SubmissionPayload
 } from "@splash/forms-schema";
-import { formatPriceGridValue, isPriceGridValue } from "@splash/forms-schema";
+import {
+  formatEmployeeValue,
+  formatPriceGridValue,
+  isEmployeeValue,
+  isPriceGridValue
+} from "@splash/forms-schema";
 
 import {
   CONTENT_WIDTH,
@@ -159,6 +164,16 @@ export async function drawPayload(
     }
     if (field.type === "dropdown" || field.type === "radio" || field.type === "multi") {
       renderChoice(doc, cursor, fonts, field, value);
+      continue;
+    }
+    if (field.type === "employee") {
+      drawLabelValue(
+        doc,
+        cursor,
+        fonts,
+        field.label,
+        isEmployeeValue(value) ? formatEmployeeValue(value) : "-"
+      );
       continue;
     }
     if (field.type === "package_price_grid") {

@@ -18,6 +18,7 @@
 //   GET    /forms/admin/api/my-requests               — Brief 126: cross-form "submitted by me"
 //   GET    /forms/admin/api/users/search?q=           — Brief 125: org-directory autosuggest
 //   POST   /forms/api/packages/{slug}                 — package names for a price grid
+//   POST   /forms/api/employees/{slug}                — roster search for an Employee field
 //   GET    /forms/approve/{token}                     — emailed no-sign-in approval page
 //   POST   /forms/approve/{token}                     — record an emailed approval/denial
 //   GET    /forms/admin/api/forms                     — Brief 94: list forms
@@ -75,6 +76,7 @@ import { handlePublicAssetServe } from "./uploads/asset-serve.js";
 import { handleStaticAsset } from "./uploads/static.js";
 import { handleLookupResolve } from "./lookup/resolve.js";
 import { handlePackagesForSite } from "./lookup/packages.js";
+import { handleEmployeeSearch } from "./lookup/employees.js";
 import {
   handleApprovalLinkFile,
   handleApprovalLinkPage,
@@ -251,6 +253,12 @@ export default {
     const lookupMatch = url.pathname.match(/^\/forms\/api\/lookup\/([^/]+)$/);
     if (lookupMatch && lookupMatch[1] && req.method === "POST") {
       return handleLookupResolve(env, req, lookupMatch[1]);
+    }
+
+    // POST /forms/api/employees/{slug} — roster search for an Employee field.
+    const employeesMatch = url.pathname.match(/^\/forms\/api\/employees\/([^/]+)$/);
+    if (employeesMatch && employeesMatch[1] && req.method === "POST") {
+      return handleEmployeeSearch(env, req, employeesMatch[1]);
     }
 
     // POST /forms/api/packages/{slug} — package names for a price grid.

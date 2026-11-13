@@ -259,7 +259,9 @@ const OWNED_POST_PATHS = new Set([
 const OWNED_PATCH_PATHS = new Set([
   "/sysadmin/api/pricing-simple/package",
   "/sysadmin/api/pricing-simple/packages-bulk",
-  "/sysadmin/api/locations"
+  "/sysadmin/api/locations",
+  // Personnel placements (PLAN_FORMS_PERSONNEL.md phase 1).
+  "/sysadmin/api/personnel"
 ]);
 
 const OWNED_GET_PATHS = new Set([
@@ -268,6 +270,7 @@ const OWNED_GET_PATHS = new Set([
   "/sysadmin/api/pricing-simple/locations",
   "/sysadmin/api/pricing-simple/regions",
   "/sysadmin/api/locations/search",
+  "/sysadmin/api/personnel/search",
   "/sysadmin/api/audit-log",
   // Tags any form currently carries -- what there is to grant. Sourced from
   // the forms themselves, so tagging a form is the only step needed to make a
@@ -376,6 +379,9 @@ export default {
         if (path === "/sysadmin/api/audit-log") {
           return await handleSearchAuditLog(env, url);
         }
+        if (path === "/sysadmin/api/personnel/search") {
+          return await handleSearchPersonnel(env, url);
+        }
         if (path === "/sysadmin/api/form-access-tags") {
           // Fail-soft: an empty list renders as "no tags yet", which is the
           // honest state before any form is tagged. Failing the whole request
@@ -448,6 +454,8 @@ export default {
           return await handleUpdatePackagesBulk(env, body, actor);
         case "/sysadmin/api/locations":
           return await handleUpdateLocation(env, body, actor);
+        case "/sysadmin/api/personnel":
+          return await handleUpdatePlacement(env, body, actor);
       }
     } catch (err) {
       console.error("sysadmin handler failed:", path, err);
@@ -3549,6 +3557,7 @@ const ALLOWED_AUDIT_ACTIONS: ReadonlySet<string> = new Set([
   "update_package",
   "update_packages_bulk",
   "update_location",
+  "update_personnel_placement",
   "impersonation_start",
   "impersonation_mode",
   "impersonation_stop"
@@ -3563,7 +3572,8 @@ const ALLOWED_AUDIT_TARGET_TYPES: ReadonlySet<string> = new Set([
   "form_access_grants",
   "auth_impersonation",
   "pricing_simple",
-  "locations"
+  "locations",
+  "personnel_placements"
 ]);
 
 // auth_impersonation rows carry the TARGET's user id in target_id, so
@@ -3743,4 +3753,240 @@ function nonNegativeNumber(v: unknown): number | null {
   }
   if (!Number.isFinite(n) || n < 0) return null;
   return n;
+}
+
+/* ============================================================
+ * Personnel placements (PLAN_FORMS_PERSONNEL.md phase 1)
+ *
+ * GET   /sysadmin/api/personnel/search?q=<name>
+ * PATCH /sysadmin/api/personnel
+ *
+ * A placement overrides what personnel_effective works out from the
+ * Beekeeper title: org level (1-8), department, and where the person really
+ * works (Beekeeper files office staff at sites). Level grants nothing on its
+ * own -- it decides who sits above whom for confidential forms.
+ *
+ * Search reads personnel_effective, skips suspended people and anyone the
+ * Beekeeper sync has not touched in 2 days (the sync never deletes, so a
+ * stale row is someone who has left), and names their Beekeeper locations.
+ * Saving with every field empty deletes the placement, so the person falls
+ * back to their title's level.
+ * ============================================================ */
+
+const PLACEMENT_DEPARTMENTS: ReadonlySet<string> = new Set([
+  "Executive", "HR", "Finance", "CRD", "IT", "Maintenance", "Marketing",
+  "Retail", "Incidents", "Legal", "Site Operations", "Other"
+]);
+const PLACEMENT_WORKS_AT: ReadonlySet<string> = new Set([
+  "site", "office_011", "office_101", "regional", "left"
+]);
+
+function sbHeaders(env: Env, extra: Record<string, string> = {}): Record<string, string> {
+  return {
+    apikey: env.SUPABASE_SERVICE_KEY,
+    Authorization: `Bearer ${env.SUPABASE_SERVICE_KEY}`,
+    ...extra
+  };
+}
+
+interface PersonnelEffectiveRow {
+  beekeeper_user_id: string;
+  display_name: string | null;
+  position: string | null;
+  level: number;
+  level_source: "placement" | "title" | "default";
+  department: string | null;
+  works_at: string;
+  org_unit_ids: string[] | null;
+}
+
+interface PlacementRow {
+  beekeeper_user_id: string;
+  level: number | null;
+  department: string | null;
+  works_at: string | null;
+  notes: string | null;
+  updated_at?: string;
+  updated_by?: string | null;
+}
+
+async function handleSearchPersonnel(env: Env, url: URL): Promise<Response> {
+  const raw = (url.searchParams.get("q") ?? "").trim();
+  const escaped = raw.replace(/[%_,()*]/g, "");
+  if (escaped.length < 2) return json([]);
+
+  const freshSince = new Date(Date.now() - 2 * 86_400_000).toISOString();
+  const restUrl =
+    `${env.SUPABASE_URL}/rest/v1/personnel_effective` +
+    `?display_name=ilike.${encodeURIComponent(`*${escaped}*`)}` +
+    `&suspended=is.false` +
+    `&synced_at=gte.${encodeURIComponent(freshSince)}` +
+    `&order=display_name.asc&limit=25` +
+    `&select=beekeeper_user_id,display_name,position,level,level_source,department,works_at,org_unit_ids`;
+  const resp = await fetch(restUrl, { headers: sbHeaders(env) });
+  if (!resp.ok) {
+    const t = await resp.text().catch(() => "");
+    return jsonError(500, `Search failed: ${resp.status} ${t}`);
+  }
+  const rows = (await resp.json().catch(() => [])) as PersonnelEffectiveRow[];
+  if (rows.length === 0) return json([]);
+
+  const ids = rows.map((r) => r.beekeeper_user_id);
+  const ouIds = [...new Set(rows.flatMap((r) => r.org_unit_ids ?? []))];
+
+  const [placementsResp, locationsResp] = await Promise.all([
+    fetch(
+      `${env.SUPABASE_URL}/rest/v1/personnel_placements?beekeeper_user_id=in.(${ids.join(",")})&select=*`,
+      { headers: sbHeaders(env) }
+    ),
+    ouIds.length
+      ? fetch(
+          `${env.SUPABASE_URL}/rest/v1/beekeeper_locations?org_unit_id=in.(${ouIds.join(",")})&select=org_unit_id,name,site_number`,
+          { headers: sbHeaders(env) }
+        )
+      : Promise.resolve(null)
+  ]);
+  const placements = placementsResp.ok
+    ? ((await placementsResp.json().catch(() => [])) as PlacementRow[])
+    : [];
+  const locs =
+    locationsResp && locationsResp.ok
+      ? ((await locationsResp.json().catch(() => [])) as {
+          org_unit_id: string;
+          name: string | null;
+          site_number: number | null;
+        }[])
+      : [];
+  const locName = new Map(
+    locs.map((l) => [
+      l.org_unit_id,
+      l.site_number != null
+        ? `${String(l.site_number).padStart(3, "0")} ${l.name ?? ""}`.trim()
+        : (l.name ?? "Unnamed location")
+    ])
+  );
+  const placementById = new Map(placements.map((p) => [p.beekeeper_user_id, p]));
+
+  return json(
+    rows.map((r) => ({
+      beekeeper_user_id: r.beekeeper_user_id,
+      display_name: r.display_name,
+      position: r.position,
+      level: r.level,
+      level_source: r.level_source,
+      department: r.department,
+      works_at: r.works_at,
+      locations: (r.org_unit_ids ?? []).map((id) => locName.get(id) ?? "Unnamed location"),
+      placement: placementById.get(r.beekeeper_user_id) ?? null
+    }))
+  );
+}
+
+async function handleUpdatePlacement(
+  env: Env,
+  body: Record<string, unknown>,
+  actor: { id: string; email: string }
+): Promise<Response> {
+  const id = stringOrNull(body.beekeeper_user_id);
+  if (!id || !UUID_RE.test(id)) return jsonError(400, "beekeeper_user_id must be a UUID");
+
+  let level: number | null = null;
+  if (body.level !== null && body.level !== undefined && body.level !== "") {
+    const n = Number(body.level);
+    if (!Number.isInteger(n) || n < 1 || n > 8) return jsonError(400, "Level must be 1-8 or empty");
+    level = n;
+  }
+  const department = stringOrNull(body.department);
+  if (department && !PLACEMENT_DEPARTMENTS.has(department)) {
+    return jsonError(400, `Unknown department: ${department}`);
+  }
+  const worksAt = stringOrNull(body.works_at);
+  if (worksAt && !PLACEMENT_WORKS_AT.has(worksAt)) {
+    return jsonError(400, `Unknown "works at" value: ${worksAt}`);
+  }
+  const notesRaw = stringOrNull(body.notes);
+  const notes = notesRaw ? notesRaw.slice(0, 1000) : null;
+
+  // The person must exist in the Beekeeper cache -- stops a bad id from
+  // creating a placement nobody can ever see.
+  const personResp = await fetch(
+    `${env.SUPABASE_URL}/rest/v1/beekeeper_users?id=eq.${id}&select=id,display_name`,
+    { headers: sbHeaders(env) }
+  );
+  const person = personResp.ok
+    ? (((await personResp.json().catch(() => [])) as { id: string; display_name: string | null }[])[0] ?? null)
+    : null;
+  if (!person) return jsonError(404, "No Beekeeper employee with that id");
+
+  const beforeResp = await fetch(
+    `${env.SUPABASE_URL}/rest/v1/personnel_placements?beekeeper_user_id=eq.${id}&select=*`,
+    { headers: sbHeaders(env) }
+  );
+  if (!beforeResp.ok) {
+    const t = await beforeResp.text().catch(() => "");
+    return jsonError(500, `Read failed: ${beforeResp.status} ${t}`);
+  }
+  const before = ((await beforeResp.json().catch(() => [])) as PlacementRow[])[0] ?? null;
+
+  const sb = createServiceClient(env);
+  const allEmpty = level === null && !department && !worksAt && !notes;
+
+  if (allEmpty) {
+    if (before) {
+      const del = await fetch(
+        `${env.SUPABASE_URL}/rest/v1/personnel_placements?beekeeper_user_id=eq.${id}`,
+        { method: "DELETE", headers: sbHeaders(env) }
+      );
+      if (!del.ok) {
+        const t = await del.text().catch(() => "");
+        return jsonError(500, `Delete failed: ${del.status} ${t}`);
+      }
+      await logSysadminAudit(sb, {
+        actor,
+        action: "update_personnel_placement",
+        target_type: "personnel_placements",
+        target_id: id,
+        before,
+        after: null,
+        notes: `Cleared placement for ${person.display_name ?? id}`
+      });
+    }
+    return json({ ok: true, cleared: true, changed: before !== null });
+  }
+
+  const row = {
+    beekeeper_user_id: id,
+    level,
+    department: department || null,
+    works_at: worksAt || null,
+    notes,
+    updated_at: new Date().toISOString(),
+    updated_by: actor.email
+  };
+  const up = await fetch(
+    `${env.SUPABASE_URL}/rest/v1/personnel_placements?on_conflict=beekeeper_user_id`,
+    {
+      method: "POST",
+      headers: sbHeaders(env, {
+        "Content-Type": "application/json",
+        Prefer: "resolution=merge-duplicates,return=representation"
+      }),
+      body: JSON.stringify(row)
+    }
+  );
+  if (!up.ok) {
+    const t = await up.text().catch(() => "");
+    return jsonError(500, `Save failed: ${up.status} ${t}`);
+  }
+  const after = ((await up.json().catch(() => [])) as PlacementRow[])[0] ?? row;
+  await logSysadminAudit(sb, {
+    actor,
+    action: "update_personnel_placement",
+    target_type: "personnel_placements",
+    target_id: id,
+    before,
+    after,
+    notes: `Placement for ${person.display_name ?? id}`
+  });
+  return json({ ok: true, cleared: false, placement: after });
 }

@@ -3311,6 +3311,19 @@ URL-based — service bindings don't apply to those.
   `{category: "lube"|"detail", name, current, new}` -- one price each. Rows
   may be EMPTY when a site's changes are only new packages / services. All
   four are display records: nothing writes pricing_simple.
+- **Employee field** (2026-11-13, PLAN_FORMS_PERSONNEL.md phase 2) - form
+  field type `employee`: searches the Beekeeper roster of the site another
+  field names (011 / 101 = office groups) via `POST /forms/api/employees/{slug}`.
+  The roster logic is SQL (`supabase/personnel-placements-03-employee-search.sql`)
+  because it needs jsonb containment inside `or()`. Those functions return
+  names and titles, so EXECUTE is revoked from PUBLIC/anon/authenticated --
+  any new function over personnel data must do the same (Postgres grants new
+  functions to PUBLIC by default). Refused on public-audience forms. Submit
+  re-reads a picked person from the roster and refuses a typed name that
+  near-matches a real employee (the typed-name path exists for new hires,
+  not for dodging someone's org level). Placements (`personnel_placements`,
+  edited on /admin/sysadmin) override Beekeeper's location for office staff
+  Beekeeper files at sites.
 - **Multi-file uploads** (2026-10-27) - `file` fields with
   `allowMultiple: true` now actually work (before, only the first picked file
   uploaded). Payload is a LIST of the usual file objects; the hidden

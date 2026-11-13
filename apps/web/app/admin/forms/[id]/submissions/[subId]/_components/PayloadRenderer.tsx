@@ -16,6 +16,7 @@ import {
   serviceCategoryLabel,
   siteLabel
 } from "@splash/forms-schema/package-price";
+import { formatEmployeeValue, isEmployeeValue } from "@splash/forms-schema/employee";
 import type { SubmissionFile } from "../../../../_lib/worker-fetch";
 
 interface Props {
@@ -151,6 +152,20 @@ function FieldValue({
 
     case "signature":
       return <SignatureValue files={files} value={value} />;
+
+    case "employee":
+      return isEmployeeValue(value) ? (
+        <span>
+          {formatEmployeeValue(value)}
+          {value.unverified && (
+            <span className="ml-2 rounded-full bg-amber-100 px-2 py-0.5 text-xs font-semibold text-amber-900">
+              Unverified
+            </span>
+          )}
+        </span>
+      ) : (
+        <span className="text-splash-navy/50">—</span>
+      );
 
     case "package_price_grid":
       if (isPackagePriceSites(value)) {

@@ -207,6 +207,15 @@ export const packagePriceGridFieldSchema = z.object({
   multiSite: z.boolean().optional()
 });
 
+export const employeeFieldSchema = z.object({
+  ...fieldBaseSchema,
+  type: z.literal("employee"),
+  // Must name a real field; enforced in formSchemaSchema's superRefine.
+  keyFieldKey: z.string(),
+  keyColumn: z.enum(["pricing_simple.location_code", "pricing_simple.site"]),
+  allowTyped: z.boolean().optional()
+});
+
 // -----------------------------------------------------------------------------
 // Discriminated union + form schema
 // -----------------------------------------------------------------------------
@@ -229,7 +238,8 @@ export const fieldSchema = z.discriminatedUnion("type", [
   signatureFieldSchema,
   locationFieldSchema,
   lookupFieldSchema,
-  packagePriceGridFieldSchema
+  packagePriceGridFieldSchema,
+  employeeFieldSchema
 ]);
 
 // -----------------------------------------------------------------------------
@@ -409,6 +419,19 @@ export const formSchemaSchema = z
           code: z.ZodIssueCode.custom,
           path: ["fields", i, "keyFieldKey"],
           message: `price grid "${f.key}" must name the site field it reads packages from`
+        });
+      }
+    }
+
+    // An employee picker with no site field could never list anyone.
+    for (let i = 0; i < data.fields.length; i++) {
+      const f = data.fields[i];
+      if (!f || f.type !== "employee") continue;
+      if (!visibilityKeys.has(f.keyFieldKey) || f.keyFieldKey === f.key) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["fields", i, "keyFieldKey"],
+          message: `employee field "${f.key}" must name the site field it searches`
         });
       }
     }
@@ -739,6 +762,15 @@ const lookupFieldSchemaDraft = z.object({
   nullBehavior: z.enum(["allow_empty", "block_submit"])
 });
 
+const employeeFieldSchemaDraft = z.object({
+  ...fieldBaseSchemaDraft,
+  type: z.literal("employee"),
+  // Empty until the operator picks which field names the site.
+  keyFieldKey: z.string(),
+  keyColumn: z.enum(["pricing_simple.location_code", "pricing_simple.site"]),
+  allowTyped: z.boolean().optional()
+});
+
 const packagePriceGridFieldSchemaDraft = z.object({
   ...fieldBaseSchemaDraft,
   type: z.literal("package_price_grid"),
@@ -766,7 +798,8 @@ export const fieldSchemaDraft = z.discriminatedUnion("type", [
   signatureFieldSchemaDraft,
   locationFieldSchemaDraft,
   lookupFieldSchemaDraft,
-  packagePriceGridFieldSchemaDraft
+  packagePriceGridFieldSchemaDraft,
+  employeeFieldSchemaDraft
 ]);
 
 // Brief 120 — draft variant accepts a partial workflow (operator may save

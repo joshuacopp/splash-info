@@ -56,6 +56,7 @@ const ALLOWED_ACTIONS = [
   "update_package",
   "update_packages_bulk",
   "update_location",
+  "update_personnel_placement",
   "impersonation_start",
   "impersonation_mode",
   "impersonation_stop"
@@ -69,7 +70,8 @@ const ALLOWED_TARGET_TYPES = [
   "promo_user_roles",
   "auth_impersonation",
   "pricing_simple",
-  "locations"
+  "locations",
+  "personnel_placements"
 ] as const;
 
 interface AuditLogPanelProps {

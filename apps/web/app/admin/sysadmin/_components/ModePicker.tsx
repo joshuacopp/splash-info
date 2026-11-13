@@ -46,7 +46,7 @@ export function ModePicker({ activeMode, searchParams }: ModePickerProps) {
       />
       <ModeButton
         title="Manage Tables"
-        operationCount={3}
+        operationCount={4}
         active={activeMode === "tables"}
         href={buildModeHref("tables", searchParams)}
       />

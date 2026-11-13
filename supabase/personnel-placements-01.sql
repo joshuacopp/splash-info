@@ -178,7 +178,8 @@ select
        else 'default' end                     as level_source,
   p.department,
   coalesce(p.works_at, 'site')                as works_at,
-  u.org_unit_ids
+  u.org_unit_ids,
+  u.synced_at   -- the sync never deletes; stale synced_at = left the company
 from public.beekeeper_users u
 left join public.personnel_placements  p on p.beekeeper_user_id = u.id
 left join public.personnel_title_levels t on t.position = u.position;

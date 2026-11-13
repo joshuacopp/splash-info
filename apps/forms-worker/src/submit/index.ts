@@ -51,6 +51,7 @@ import {
 } from "../db/forms.js";
 import { parseSubmitFormData } from "./parse.js";
 import { resolvePriceGrids } from "./price-grids.js";
+import { resolveEmployees } from "../lookup/employees.js";
 import { verifyTurnstile } from "./turnstile.js";
 import { renderSuccessPage } from "./success.js";
 import { impersonationBannerHtml } from "../render/impersonation-banner.js";
@@ -373,6 +374,18 @@ export async function handleSubmit(
     return new Response(
       JSON.stringify({ error: "validation_failed", fields: grids.fields }),
       { status: grids.status, headers: { "Content-Type": "application/json" } }
+    );
+  }
+
+  // -----------------------------------------------------------------
+  // Employee fields — re-read a picked person from the roster, refuse a
+  // typed name that closely matches a real employee. Rewrites in place.
+  // -----------------------------------------------------------------
+  const employees = await resolveEmployees(env, version.schema, payload);
+  if (!employees.ok) {
+    return new Response(
+      JSON.stringify({ error: "validation_failed", fields: employees.fields }),
+      { status: employees.status, headers: { "Content-Type": "application/json" } }
     );
   }
 

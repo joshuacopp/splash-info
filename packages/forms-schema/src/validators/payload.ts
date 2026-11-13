@@ -144,6 +144,19 @@ export function payloadValidatorFor(field: Field): z.ZodTypeAny | null {
       return field.required ? sigSchema : sigSchema.nullable().optional();
     }
 
+    case "employee": {
+      // The submit handler (resolveEmployees) has already re-read a picked
+      // person from the roster or vetted a typed name; this is the shape check.
+      const value = z.object({
+        id: z.string().uuid().nullable(),
+        name: z.string().trim().min(2, "Enter a name").max(100),
+        title: z.string().max(200).nullable(),
+        site: z.string().max(200).nullable(),
+        unverified: z.boolean()
+      });
+      return field.required ? value : value.nullable().optional();
+    }
+
     case "package_price_grid": {
       // The submit handler has already normalised prices, filled blank new
       // prices from current, and checked every package exists at the site --

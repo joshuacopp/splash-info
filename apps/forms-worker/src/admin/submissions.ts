@@ -29,7 +29,9 @@ import type {
   WorkflowStage
 } from "@splash/forms-schema";
 import {
+  formatEmployeeValue,
   formatPriceGridValue,
+  isEmployeeValue,
   isPriceGridValue
 } from "@splash/forms-schema";
 import {
@@ -722,6 +724,8 @@ function displayText(field: Field, value: unknown): string {
     }
     case "package_price_grid":
       return isPriceGridValue(value) ? formatPriceGridValue(value) : "";
+    case "employee":
+      return isEmployeeValue(value) ? formatEmployeeValue(value) : "";
     default:
       return String(value);
   }
@@ -1003,6 +1007,7 @@ function stringifyPayloadValue(
   if (v == null) return "";
   if (typeof v === "string") return options?.get(v) ?? v;
   if (typeof v === "number" || typeof v === "boolean") return String(v);
+  if (isEmployeeValue(v)) return formatEmployeeValue(v);
   // One CSV cell: the multi-line rendering flattened to "; "-separated.
   if (isPriceGridValue(v)) {
     return formatPriceGridValue(v)

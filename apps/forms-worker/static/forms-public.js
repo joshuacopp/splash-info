@@ -32,6 +32,7 @@
       });
       wireLookups(formEl, slug);
       wirePriceGrids(formEl, slug);
+      wireEmployees(formEl, slug);
       wireMultiMax(formEl);
       wireConditionals(formEl);
 
@@ -1144,6 +1145,207 @@
     return String(code).split(/[_\s]+/).filter(Boolean).map(function (w) {
       return w.charAt(0).toUpperCase() + w.slice(1);
     }).join(" ");
+  }
+
+  // ---- Employee field (PLAN_FORMS_PERSONNEL.md phase 2) ------------------
+  // Searches the roster of the site another field names. The answer is ONE
+  // hidden input of JSON ({id, name}); the search box has no name, so a
+  // half-typed search is never submitted. Picking someone hides the box and
+  // shows them with a "Change" button. When nobody at the site matches,
+  // matches elsewhere are offered; when nobody matches at all (and the form
+  // allows it) the typed name can be used as-is -- the server refuses one
+  // that closely matches a real employee.
+  function wireEmployees(formEl, slug) {
+    var wraps = formEl.querySelectorAll('[data-field-type="employee"]');
+    Array.prototype.forEach.call(wraps, function (wrap) {
+      wireEmployee(formEl, slug, wrap);
+    });
+  }
+
+  function wireEmployee(formEl, slug, wrap) {
+    var fieldKey = wrap.getAttribute("data-field-key");
+    var keyName = wrap.getAttribute("data-emp-key-field");
+    var allowTyped = wrap.getAttribute("data-emp-allow-typed") === "1";
+    var hidden = wrap.querySelector('[data-emp-value="1"]');
+    var chosenEl = wrap.querySelector('[data-emp-chosen="1"]');
+    var search = wrap.querySelector('[data-emp-search="1"]');
+    var results = wrap.querySelector('[data-emp-results="1"]');
+    var msg = wrap.querySelector('[data-emp-msg="1"]');
+    if (!fieldKey || !keyName || !hidden || !chosenEl || !search || !results || !msg) return;
+
+    var seq = 0;
+    var debounce;
+
+    function keyValue() {
+      var els = formEl.querySelectorAll('[name="' + cssAttrEscape(keyName) + '"]');
+      for (var i = 0; i < els.length; i++) {
+        var el = els[i];
+        if ((el.type === "radio" || el.type === "checkbox") && !el.checked) continue;
+        return (el.value || "").trim();
+      }
+      return "";
+    }
+    function say(text) {
+      msg.textContent = text || "";
+      msg.hidden = !text;
+    }
+    function clearResults() {
+      results.innerHTML = "";
+      results.hidden = true;
+    }
+    function current() {
+      try {
+        var v = JSON.parse(hidden.value || "null");
+        return v && typeof v.name === "string" ? v : null;
+      } catch (e) {
+        return null;
+      }
+    }
+    function showChosen() {
+      var v = current();
+      chosenEl.innerHTML = "";
+      if (!v) {
+        chosenEl.hidden = true;
+        search.hidden = false;
+        return;
+      }
+      var name = document.createElement("strong");
+      name.textContent = v.name;
+      chosenEl.appendChild(name);
+      var extra = v.id ? (v.label || "") : "typed name (not in the employee list)";
+      if (extra) {
+        var span = document.createElement("span");
+        span.className = "emp-chosen-extra";
+        span.textContent = " — " + extra;
+        chosenEl.appendChild(span);
+      }
+      var change = document.createElement("button");
+      change.type = "button";
+      change.className = "emp-change-btn";
+      change.textContent = "Change";
+      change.addEventListener("click", function () {
+        setValue(null);
+        search.value = "";
+        search.focus();
+      });
+      chosenEl.appendChild(change);
+      chosenEl.hidden = false;
+      search.hidden = true;
+      clearResults();
+      say("");
+    }
+    function setValue(v) {
+      hidden.value = v ? JSON.stringify(v) : "";
+      // Bubbles to the form root so autosave (Brief 122) records it.
+      hidden.dispatchEvent(new Event("change", { bubbles: true }));
+    }
+    function option(person) {
+      var b = document.createElement("button");
+      b.type = "button";
+      b.className = "emp-option";
+      b.setAttribute("role", "option");
+      var n = document.createElement("span");
+      n.className = "emp-option-name";
+      n.textContent = person.display_name;
+      b.appendChild(n);
+      var bits = [person.job_title, person.location_label].filter(Boolean).join(" · ");
+      if (bits) {
+        var d = document.createElement("span");
+        d.className = "emp-option-detail";
+        d.textContent = bits;
+        b.appendChild(d);
+      }
+      b.addEventListener("click", function () {
+        setValue({
+          id: person.beekeeper_user_id,
+          name: person.display_name,
+          label: bits
+        });
+      });
+      return b;
+    }
+    function heading(text) {
+      var p = document.createElement("p");
+      p.className = "emp-results-heading";
+      p.textContent = text;
+      return p;
+    }
+    function render(j, q) {
+      results.innerHTML = "";
+      var matches = Array.isArray(j.matches) ? j.matches : [];
+      var elsewhere = Array.isArray(j.elsewhere) ? j.elsewhere : [];
+      matches.forEach(function (p) { results.appendChild(option(p)); });
+      if (matches.length === 0 && elsewhere.length > 0) {
+        results.appendChild(heading("No one by that name at " + (j.site_label || "this site") + ". Elsewhere:"));
+        elsewhere.forEach(function (p) { results.appendChild(option(p)); });
+      }
+      if (matches.length === 0 && elsewhere.length === 0) {
+        results.appendChild(heading("No employee matches “" + q + "”."));
+      }
+      if (allowTyped && matches.length === 0 && q.length >= 2) {
+        var typed = document.createElement("button");
+        typed.type = "button";
+        typed.className = "emp-option emp-option-typed";
+        typed.textContent = "Use “" + q + "” (not in the list)";
+        typed.addEventListener("click", function () {
+          setValue({ id: null, name: q });
+        });
+        results.appendChild(typed);
+      }
+      results.hidden = false;
+    }
+    function runSearch() {
+      var q = (search.value || "").replace(/\s+/g, " ").trim();
+      var kv = keyValue();
+      if (!kv) {
+        clearResults();
+        say("Choose a site above first.");
+        return;
+      }
+      say("");
+      if (q.length < 2) {
+        clearResults();
+        return;
+      }
+      var mySeq = ++seq;
+      fetch("/forms/api/employees/" + encodeURIComponent(slug), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ field_key: fieldKey, key_value: kv, q: q })
+      })
+        .then(function (r) {
+          return r.json().then(function (j) {
+            if (!r.ok) throw new Error("employees");
+            return j;
+          });
+        })
+        .then(function (j) {
+          if (mySeq !== seq) return;
+          if (!j.group) {
+            clearResults();
+            say("That site wasn't recognised. Check the site above.");
+            return;
+          }
+          render(j, q);
+        })
+        .catch(function () {
+          if (mySeq !== seq) return;
+          clearResults();
+          say("Couldn't search employees. Try again.");
+        });
+    }
+
+    search.addEventListener("input", function () {
+      clearTimeout(debounce);
+      debounce = setTimeout(runSearch, 250);
+    });
+    search.addEventListener("keydown", function (e) {
+      // Enter in the search box must not submit the whole form.
+      if (e.key === "Enter") e.preventDefault();
+    });
+    // A draft resume rewrites the hidden value and fires `change` on it.
+    hidden.addEventListener("change", showChosen);
+    showChosen();
   }
 
   function cssAttrEscape(s) {

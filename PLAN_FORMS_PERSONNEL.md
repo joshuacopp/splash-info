@@ -1,7 +1,8 @@
 # Plan: personnel forms — who can see what
 
-Status (2026-11-13): Phase 1 data layer APPLIED (tables, view, seed, sync
-hook). Phase 1 editing card and Phases 2-4 not built.
+Status (2026-11-13): Phase 1 done (tables, view, seed, location sync, and the
+"Personnel placement" sysadmin card). Phase 2 (Employee field) built, not yet
+pushed/tested live. Phases 3-4 not built.
 The decisions this plan implements are logged in `BUILD_STATE.md`
 (2026-11-13, "Decided (planning only, NOTHING BUILT): forms organisation and
 personnel-form security"). This file is the build order, not a second copy of
@@ -63,6 +64,10 @@ beekeeper-worker, one sysadmin card.
 ---
 
 ## Phase 2 — Site-filtered employee picker
+
+**Opt-in only:** Employee is one more field type in the builder's palette.
+It appears only on forms where someone adds it; no existing form changes and
+nothing adds it automatically.
 
 **What you get:** a new form field type, **Employee**, that searches the
 Beekeeper roster. When the form has a site field, the search shows only that

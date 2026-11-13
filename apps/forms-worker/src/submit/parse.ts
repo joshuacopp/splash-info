@@ -110,6 +110,20 @@ export function parseSubmitFormData(
       continue;
     }
 
+    if (field.type === "employee") {
+      // One hidden input of JSON ({id, name}) written by forms-public.js.
+      // Carried forward raw; resolveEmployees re-reads a picked person from
+      // the roster and vets a typed name before validation.
+      const raw = formData.get(field.key);
+      if (typeof raw !== "string" || raw.trim() === "") continue;
+      try {
+        payload[field.key] = JSON.parse(raw);
+      } catch {
+        payload[field.key] = "__unparseable__";
+      }
+      continue;
+    }
+
     if (field.type === "package_price_grid") {
       // One hidden input of JSON, written by forms-public.js. Carried forward
       // RAW: the submit handler normalises prices, fills blank new prices and

@@ -22,7 +22,7 @@
 import { authenticate } from "@splash/auth";
 import { jsonError } from "@splash/http";
 import type { FormSchema } from "@splash/forms-schema";
-import { priceGridSitesSummary } from "@splash/forms-schema";
+import { isEmployeeValue, priceGridSitesSummary } from "@splash/forms-schema";
 import { requireServiceKey } from "./auth.js";
 import type { Env } from "../index.js";
 
@@ -369,6 +369,8 @@ function queueCellValue(field: unknown, raw: unknown): string | null {
   // this -- not its prices, which belong on the ticket.
   const sites = priceGridSitesSummary(raw);
   if (sites) return sites;
+  // An employee field's cell is just the name -- which person this is about.
+  if (isEmployeeValue(raw)) return raw.name;
 
   const options = (field as { options?: { value: string; label: string }[] }).options;
   const label = (v: unknown): string => {

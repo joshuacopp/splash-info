@@ -8,6 +8,7 @@
 
 import { AddLocationCard } from "../_components/AddLocationCard";
 import { OperationCard } from "../_components/OperationCard";
+import { PersonnelPlacementCard } from "../_components/PersonnelPlacementCard";
 import { UpdateLocationCard } from "../_components/UpdateLocationCard";
 import { UpdatePackageCard } from "../_components/UpdatePackageCard";
 
@@ -17,6 +18,7 @@ export function TableOperations() {
       <AddLocationOperationCard />
       <UpdatePackageOperationCard />
       <UpdateLocationOperationCard />
+      <PersonnelPlacementOperationCard />
     </>
   );
 }
@@ -50,6 +52,17 @@ function UpdateLocationOperationCard() {
       description="Search a locations row by site #, name, address, or manager, then edit denormalized fields (manager names + emails, address, hrt_email, rm_group, site). DB triggers cascade into pricing_simple + user_permissions."
     >
       <UpdateLocationCard />
+    </OperationCard>
+  );
+}
+
+function PersonnelPlacementOperationCard() {
+  return (
+    <OperationCard
+      title="Personnel placement"
+      description="Org level, department and where someone actually works, for personnel forms. Overrides what their Beekeeper title implies. Every change is logged below."
+    >
+      <PersonnelPlacementCard />
     </OperationCard>
   );
 }

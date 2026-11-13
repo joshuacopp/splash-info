@@ -182,6 +182,18 @@ const SHELL_CSS = `
      (current | new) by two rows (single | monthly) -- the comparison a reader
      makes is current-vs-new, so those sit side by side. */
   .field-price-grid { border: 0; padding: 0; }
+  .emp-chosen { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 10px 12px; border: 1px solid var(--splash-cyan); border-radius: 6px; background: #f5fbfe; }
+  .emp-chosen-extra { color: #555; }
+  .emp-change-btn { margin-left: auto; background: none; border: 0; color: #1e88e5; font-weight: 600; cursor: pointer; padding: 6px 4px; }
+  .emp-results { margin-top: 4px; border: 1px solid #dfe5ee; border-radius: 6px; background: #fff; max-height: 320px; overflow-y: auto; }
+  .emp-results-heading { margin: 0; padding: 8px 12px; font-size: 13px; color: #666; background: #f7f9fc; }
+  .emp-option { display: block; width: 100%; text-align: left; background: #fff; border: 0; border-top: 1px solid #eef1f6; padding: 10px 12px; cursor: pointer; font: inherit; }
+  .emp-option:first-child { border-top: 0; }
+  .emp-option:hover, .emp-option:focus { background: #f0f7fd; }
+  .emp-option-name { display: block; font-weight: 600; }
+  .emp-option-detail { display: block; font-size: 13px; color: #666; }
+  .emp-option-typed { color: #1e88e5; font-weight: 600; }
+  .emp-msg { font-size: 13px; color: #666; margin: 4px 0 0; }
   .price-grid-empty { color: #666; font-style: italic; margin: 4px 0; }
   .price-grid-hint { font-size: 13px; color: #666; margin-top: 6px; }
   .price-grid-row { border: 1px solid #dfe5ee; border-radius: 6px; padding: 8px 12px; margin-bottom: 8px; background: #fff; }

@@ -1421,3 +1421,39 @@ export async function updateLocationAction(
     message: `Updated location #${selectorValue}. Triggers cascaded to pricing_simple + user_permissions.`
   };
 }
+
+/* ============================================================
+ * Personnel placement (PLAN_FORMS_PERSONNEL.md phase 1)
+ *
+ * PATCH /sysadmin/api/personnel. Empty selects mean "no override": the
+ * worker stores null, and when every field is empty it deletes the row so
+ * the person falls back to their Beekeeper title's level.
+ * ============================================================ */
+
+export async function updatePlacementAction(
+  _prevState: ActionResult | null,
+  formData: FormData
+): Promise<ActionResult> {
+  const id = fieldString(formData, "beekeeper_user_id");
+  const name = fieldString(formData, "display_name") || "this person";
+  if (!id) return { ok: false, error: "Pick a person first." };
+
+  const result = await sysadminPatchJson("/sysadmin/api/personnel", {
+    beekeeper_user_id: id,
+    level: fieldString(formData, "level") || null,
+    department: fieldString(formData, "department") || null,
+    works_at: fieldString(formData, "works_at") || null,
+    notes: fieldString(formData, "notes") || null
+  });
+  if (!result.ok) return { ok: false, error: result.error };
+
+  revalidatePath(PAGE_PATH);
+  const cleared =
+    result.body && typeof result.body === "object" && (result.body as { cleared?: unknown }).cleared === true;
+  return {
+    ok: true,
+    message: cleared
+      ? `Cleared the override for ${name}; their Beekeeper title decides their level now.`
+      : `Saved ${name}.`
+  };
+}

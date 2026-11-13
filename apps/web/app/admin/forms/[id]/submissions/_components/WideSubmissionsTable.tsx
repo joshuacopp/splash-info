@@ -12,6 +12,7 @@ import Link from "next/link";
 
 import type { Field } from "@splash/forms-schema";
 import { formatPriceGridValue, isPriceGridValue } from "@splash/forms-schema/package-price";
+import { formatEmployeeValue, isEmployeeValue } from "@splash/forms-schema/employee";
 import type { SubmissionListItem } from "../../../_lib/worker-fetch";
 import StatusPill from "./StatusPill";
 import AnswerCell from "./AnswerCell";
@@ -62,6 +63,8 @@ function toSearchText(field: Field, value: unknown): string {
     }
     case "package_price_grid":
       return isPriceGridValue(value) ? formatPriceGridValue(value) : "";
+    case "employee":
+      return isEmployeeValue(value) ? formatEmployeeValue(value) : "";
     default:
       return String(value);
   }

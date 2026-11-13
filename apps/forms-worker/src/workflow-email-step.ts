@@ -37,7 +37,9 @@ import type {
 } from "@splash/forms-schema";
 import {
   flaggedFieldKeys,
+  formatEmployeeValue,
   formatPriceGridValue,
+  isEmployeeValue,
   isPriceGridValue,
   priceGridSitesSummary
 } from "@splash/forms-schema";
@@ -1240,6 +1242,7 @@ function renderPayloadSummary(
 export function resolveDisplayValue(field: Field | undefined, value: unknown): string {
   if (value == null || value === "") return "";
   if (isPriceGridValue(value)) return formatPriceGridValue(value);
+  if (isEmployeeValue(value)) return formatEmployeeValue(value);
   // radio stores a dropdown-shaped payload; without it here, emails printed
   // radio option CODES ("option_2") where every other surface shows labels.
   if (field && (field.type === "dropdown" || field.type === "radio")) {

@@ -18,6 +18,7 @@ import {
   formatPriceGridValue,
   isPriceGridValue
 } from "@splash/forms-schema/package-price";
+import { formatEmployeeValue, isEmployeeValue } from "@splash/forms-schema/employee";
 
 const TRUNCATE_AT = 80;
 
@@ -70,6 +71,16 @@ export default function AnswerCell({ field, value }: Props) {
 
     case "signature":
       return <SignatureCell field={field} value={value} />;
+
+    case "employee":
+      return isEmployeeValue(value) ? (
+        <span title={formatEmployeeValue(value)}>
+          {value.name}
+          {value.unverified && <span className="ml-1 text-xs text-amber-800">(typed)</span>}
+        </span>
+      ) : (
+        <span className="text-splash-navy/40">—</span>
+      );
 
     case "package_price_grid":
       return isPriceGridValue(value) ? (
