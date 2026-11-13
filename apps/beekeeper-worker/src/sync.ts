@@ -6,9 +6,11 @@
 // workorders-worker MaintainX sync posture (Brief 71): the read paths join the
 // cache; a fresh cache is a nicety, never a hard dependency.
 
-import { listAllUsers, listSchedules } from "./beekeeper.js";
+import { listAllUsers, listLocations, listSchedules } from "./beekeeper.js";
 import {
+  recordBeekeeperLocations,
   sbClient,
+  syncBeekeeperLocationNames,
   upsertBeekeeperSchedules,
   upsertBeekeeperUsers
 } from "./db.js";
@@ -38,6 +40,16 @@ export async function runBeekeeperSync(env: Env): Promise<SyncResult> {
       upsertBeekeeperUsers(sb, users),
       upsertBeekeeperSchedules(sb, schedules)
     ]);
+    // Separate and swallowed: a missing beekeeper_locations table (or any
+    // failure here) must not turn the user/schedule refill into ok:false.
+    try {
+      // Names (and site codes) from Beekeeper's own list, then any id a user
+      // carries that the list did not include.
+      await syncBeekeeperLocationNames(sb, await listLocations(env));
+      await recordBeekeeperLocations(sb, users);
+    } catch (err) {
+      console.error("beekeeper-worker: syncing locations failed:", err);
+    }
     return {
       ok: true,
       users: userCount,

@@ -287,6 +287,24 @@ async function bkFetch<T>(
  * Reads
  * ============================================================ */
 
+/** One Beekeeper location (what the API calls an org unit; users carry these
+ *  ids in `org_unit_ids`). `unique_name` is the admin-set code -- for most
+ *  sites the 3-digit site number ("068"), otherwise free text
+ *  ("KennethHoffman/Bayville", "Global/NoLocation"). */
+export interface BeekeeperLocation {
+  id: string;
+  name?: string;
+  unique_name?: string;
+  type?: string;
+  is_default?: boolean;
+}
+
+/** GET /orgunits/locations — every location in the tenant (unpaginated as of
+ *  2026-11-13: 88 rows in one response). */
+export function listLocations(env: Env): Promise<BeekeeperLocation[]> {
+  return bkFetch<BeekeeperLocation[]>(env, "GET", "/orgunits/locations");
+}
+
 /** GET /shifts/schedules — all schedules (the location/schedule picker). */
 export function listSchedules(env: Env): Promise<BeekeeperSchedule[]> {
   return bkFetch<BeekeeperSchedule[]>(env, "GET", "/shifts/schedules");

@@ -11,6 +11,7 @@ import {
   customFieldNumber,
   customField,
   customFieldString,
+  type BeekeeperLocation,
   type BeekeeperSchedule,
   type BeekeeperUser
 } from "./beekeeper.js";
@@ -308,6 +309,89 @@ function reportsToId(u: BeekeeperUser): string | null {
     return typeof id === "string" && id ? id : null;
   }
   return null;
+}
+
+/**
+ * Record every Beekeeper location (org unit) a user belongs to in
+ * beekeeper_locations, as kind "unknown", so a new site shows up in the
+ * "locations still to name" list instead of silently having no roster.
+ *
+ * INSERT-ONLY (ignoreDuplicates): an existing row's name / kind / site_number
+ * is hand-maintained (supabase/personnel-placements-01.sql) and must never be
+ * reset by a sync. Returns how many ids were offered, not how many were new.
+ */
+export async function recordBeekeeperLocations(
+  sb: SupabaseClient,
+  users: BeekeeperUser[]
+): Promise<number> {
+  const ids = new Set<string>();
+  for (const u of users) {
+    for (const ou of Array.isArray(u.org_unit_ids) ? u.org_unit_ids : []) {
+      if (typeof ou === "string" && ou) ids.add(ou);
+    }
+  }
+  if (ids.size === 0) return 0;
+  const rows = [...ids].map((org_unit_id) => ({ org_unit_id }));
+  const { error } = await sb
+    .from("beekeeper_locations")
+    .upsert(rows, { onConflict: "org_unit_id", ignoreDuplicates: true });
+  if (error) throw new Error(`recordBeekeeperLocations: ${error.message}`);
+  return rows.length;
+}
+
+/**
+ * Sync Beekeeper's own location list into beekeeper_locations.
+ *
+ * Writes ONLY `name` on existing rows -- kind / site_number are the Splash
+ * mapping and are hand-maintained (supabase/personnel-placements-02-locations.sql).
+ * A brand-new location whose unique_name is a 3-digit code naming a real site
+ * is then mapped to that site, but only while it is still `unknown`, so a hand
+ * correction is never undone. Returns the number of locations seen.
+ */
+export async function syncBeekeeperLocationNames(
+  sb: SupabaseClient,
+  locations: BeekeeperLocation[]
+): Promise<number> {
+  const rows = locations
+    .filter((l) => typeof l.id === "string" && l.id)
+    .map((l) => ({ org_unit_id: l.id, name: l.name ?? null }));
+  if (rows.length === 0) return 0;
+  const { error } = await sb
+    .from("beekeeper_locations")
+    .upsert(rows, { onConflict: "org_unit_id" });
+  if (error) throw new Error(`syncBeekeeperLocationNames: ${error.message}`);
+
+  const coded = locations
+    .map((l) => ({ id: l.id, code: (l.unique_name ?? "").trim() }))
+    .filter((l) => /^\d{3}$/.test(l.code));
+  if (coded.length === 0) return rows.length;
+  const { data: unknown, error: uErr } = await sb
+    .from("beekeeper_locations")
+    .select("org_unit_id")
+    .eq("kind", "unknown")
+    .in("org_unit_id", coded.map((c) => c.id));
+  if (uErr) throw new Error(`syncBeekeeperLocationNames: ${uErr.message}`);
+  for (const row of (unknown as { org_unit_id: string }[]) ?? []) {
+    const siteNumber = Number(coded.find((c) => c.id === row.org_unit_id)?.code);
+    const { count } = await sb
+      .from("locations")
+      .select("site_number", { count: "exact", head: true })
+      .eq("site_number", siteNumber);
+    if (!count) continue; // e.g. Nanuet (087): in Beekeeper, not in locations
+    const { error: pErr } = await sb
+      .from("beekeeper_locations")
+      .update({
+        kind: "site",
+        site_number: siteNumber,
+        matched_by: "beekeeper_code",
+        updated_at: new Date().toISOString(),
+        updated_by: "beekeeper-worker sync"
+      })
+      .eq("org_unit_id", row.org_unit_id)
+      .eq("kind", "unknown");
+    if (pErr) throw new Error(`syncBeekeeperLocationNames: ${pErr.message}`);
+  }
+  return rows.length;
 }
 
 /** Upsert Beekeeper-owned schedule columns. NEVER writes location_code — that
