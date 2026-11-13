@@ -231,7 +231,7 @@ IT_ISSUES_MX_ENABLED = "false"
 # Supply Orders (Kleen-Rite). Anything but "live" sends the vendor email to
 # SUPPLY_ORDERS_TEST_TO instead of sales@kleen-ritecorp.com, with no CC and
 # "[TEST]" in the subject. Flip to "live" (and push) when ready to order.
-SUPPLY_ORDERS_MODE = "test"
+SUPPLY_ORDERS_MODE = "live"
 SUPPLY_ORDERS_TEST_TO = "josh.copp@splashcarwashes.com"
 # CUTOVER 2026-09-14: /workorders now reads the local mirror, not live
 # MaintainX calls. Roll back by commenting this line and pushing -- the
