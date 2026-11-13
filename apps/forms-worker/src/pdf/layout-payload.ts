@@ -34,6 +34,7 @@ import {
   formatEmployeeValue,
   formatPriceGridValue,
   isEmployeeValue,
+  isFieldVisible,
   isPriceGridValue
 } from "@splash/forms-schema";
 
@@ -92,6 +93,10 @@ export async function drawPayload(
   for (let i = 0; i < all.length; i++) {
     const field = all[i]!;
     if (isExcluded(field)) continue;
+    // A conditional question that was not showing was never asked -- printing
+    // its label with a blank (e.g. "PTO day 5" on a one-day request) only
+    // pads the record. Same rule the submit path uses to skip `required`.
+    if (!isFieldVisible(field, input.payload)) continue;
     if (field.type === "image") continue;
     if (field.type === "heading") {
       heading = field.text || field.label;
