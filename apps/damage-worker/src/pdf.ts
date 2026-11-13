@@ -653,13 +653,20 @@ export async function storeCheckRequestPdf(
   // an idempotent import wants to overwrite the one it wrote last time.
   let filename = `${baseFilename}.pdf`;
   if (!filenameOverride) {
+    // Prefix match via substr(), NOT `LIKE ?`. D1 caps LIKE patterns at 50
+    // bytes and `Req_{claim_id}_{stage-slug}%` is ~54, so LIKE threw
+    // "LIKE or GLOB pattern too complex" -- but only once a Check Request row
+    // already existed (SQLite evaluates LIKE per candidate row). The first
+    // generation always passed and every re-fire failed. substr() has no cap
+    // and also stops `_` in the stem acting as a wildcard.
     const existingResult = await db
       .prepare(
         `SELECT COUNT(*) AS n FROM claim_photos
-         WHERE claim_id = ? AND photo_type = 'Check Request' AND filename LIKE ?
+         WHERE claim_id = ? AND photo_type = 'Check Request'
+         AND substr(filename, 1, length(?2)) = ?2
          AND deleted_at IS NULL`
       )
-      .bind(claim.claim_id, baseFilename + "%")
+      .bind(claim.claim_id, baseFilename)
       .first<{ n: number }>();
     const existingCount = existingResult?.n ?? 0;
     if (existingCount > 0) filename = `${baseFilename}_${existingCount + 1}.pdf`;
