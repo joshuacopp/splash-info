@@ -3345,6 +3345,21 @@ URL-based — service bindings don't apply to those.
   on-screen view -- every field except the photo, plus CRD status, checkboxes
   and notes. With a site or date filter on, a duplicate's twin is fetched
   separately, because the twin is usually at another site or day.
+- **Supply Orders** (2026-11-13) - Kleen-Rite ordering at
+  `/admin/supply-orders`, served by splash-workorders
+  (`src/supply-orders*.ts`). Catalog search calls Kleen-Rite's PUBLIC
+  Searchspring endpoint (site `mubrxa`) -- not an API they gave us; if it
+  stops answering, "Add by item #" still works. Prices come from product-page
+  JSON-LD and are public estimates, NEVER put in the vendor email. Ordering
+  needs the `supply_orders` grant; APPROVING NEEDS NO GRANT (site rm_email,
+  else am_email, or admin tier). An order by someone who could approve it
+  sends at once. There is ONE send path (`approveAndSend`) and an order is
+  marked `sent` only after the vendor email is queued -- don't fork it.
+  Vendor email: to `supply_order_vendors.order_email`, reply-to the site RM,
+  CC `site_email`. `SUPPLY_ORDERS_MODE` (wrangler.toml) must be `"live"` to
+  reach Kleen-Rite; anything else redirects to `SUPPLY_ORDERS_TEST_TO`.
+  Ship-to is `locations.ship_to_address` when set (Oswego), else
+  `locations.location`.
 - **outbound_emails table** (Brief 127) - Shared queue of fully-rendered
   outbound emails. Single Power Automate flow polls every 5 minutes
   and drains the queue regardless of which worker enqueued the row.

@@ -72,6 +72,7 @@ import { handleMaintenanceSummary } from "./maintenance.js";
 import { handlePartsRequest } from "./parts.js";
 import { handleItIssueLink, handleItIssuesRequest } from "./it-issues.js";
 import { runItIssuesDailyReport } from "./it-issues-email.js";
+import { handleSupplyOrdersRequest } from "./supply-orders.js";
 import { runMaintainXUserTeamSync, type SyncResult } from "./sync.js";
 
 // The two cron expressions registered under `[triggers] crons` in
@@ -126,6 +127,10 @@ interface Env extends SupabaseEnv {
   IT_ISSUES_MX_APPROVER_TEAM_ID?: string;
   /** IT Issue Tracker: "true" turns the MaintainX request button on. */
   IT_ISSUES_MX_ENABLED?: string;
+  /** Supply Orders: "live" sends orders to Kleen-Rite; anything else = test. */
+  SUPPLY_ORDERS_MODE?: string;
+  /** Supply Orders test-mode recipient of the vendor email. */
+  SUPPLY_ORDERS_TEST_TO?: string;
   /** MaintainX webhook signing secret, returned by POST /subscriptions and
    *  re-readable from GET /subscriptions/{id}/secret.
    *  `wrangler secret put MAINTAINX_WEBHOOK_SECRET`.
@@ -478,6 +483,14 @@ export default {
         const auth = await authenticate(request, env);
         if (auth.status !== "authenticated") return jsonError(401, "unauthorized");
         return handleItIssuesRequest(request, env, path, auth.session);
+      }
+
+      // Supply Orders -- /workorders/api/supply-orders[...]. Kleen-Rite ordering
+      // with RM approval; access rules live in ./supply-orders.ts.
+      if (path === "workorders/api/supply-orders" || path.startsWith("workorders/api/supply-orders/")) {
+        const auth = await authenticate(request, env);
+        if (auth.status !== "authenticated") return jsonError(401, "unauthorized");
+        return handleSupplyOrdersRequest(request, env, path, auth.session, ctx);
       }
 
       // The IT Issue Tracker's emailed links. NO SESSION: the token is the

@@ -119,6 +119,7 @@ const ADMIN_KNOWN_SUBPATHS = new Set<string>([
   "scorm-builder",
   "sds-catalog",
   "signups",
+  "supply-orders",
   "sysadmin",
   "api",
   // legacy redirect targets — also live under /admin/, must not be re-redirected

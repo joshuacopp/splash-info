@@ -22,7 +22,8 @@ export const ALL_TOOLS = [
   "inventory",
   "inventory_admin",
   "it_issues",
-  "it_issues_it"
+  "it_issues_it",
+  "supply_orders"
 ] as const;
 
 export type Tool = (typeof ALL_TOOLS)[number];
@@ -40,7 +41,9 @@ export const TOOL_HELP: Record<Tool, string> = {
     "Chemical inventory — full admin: products, recipients, edit/delete visits (pick one inventory tier)",
   it_issues: "IT Issue Tracker (beta) — report and track IT issues at their own sites",
   it_issues_it:
-    "IT Issue Tracker — IT support: sees every site, and their actions count as IT's in the daily digest (no need to also tick it_issues)"
+    "IT Issue Tracker — IT support: sees every site, and their actions count as IT's in the daily digest (no need to also tick it_issues)",
+  supply_orders:
+    "Supply Orders — order from Kleen-Rite for their sites. GM orders go to the site RM for approval; the site's RM / RD orders send straight away"
 };
 
 /** Stable render order, whatever order the codes arrived in. */

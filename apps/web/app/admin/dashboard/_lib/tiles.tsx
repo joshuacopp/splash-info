@@ -485,6 +485,20 @@ export const TILES: ReadonlyArray<Tile> = [
       ["it_issues", "it_issues_it"].some((t) => (s?.tools as readonly string[] | undefined)?.includes(t))
   },
   {
+    id: "supply-orders",
+    group: "operations",
+    subgroup: "mechanical",
+    eyebrow: "Supplies",
+    title: "Supply Orders",
+    description: "Order from Kleen-Rite. GM orders go to the RM for approval, then straight to Kleen-Rite.",
+    href: "/admin/supply-orders",
+    icon: truckIcon,
+    // The `supply_orders` grant (or super_admin). Same rule as the worker's
+    // canOrder. RMs approving without the grant arrive from the email link.
+    visibleTo: (s) =>
+      s?.role === "super_admin" || ((s?.tools as readonly string[] | undefined)?.includes("supply_orders") ?? false)
+  },
+  {
     id: "maintenance-tracker",
     group: "operations",
     subgroup: "mechanical",

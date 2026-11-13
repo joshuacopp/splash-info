@@ -138,6 +138,13 @@ export function CreateUserToolsAndDcRole() {
             <input type="checkbox" name="tools" value="it_issues_it" />
             it_issues_it
           </label>
+          <label
+            className="inline-flex items-center gap-2 text-sm text-splash-navy"
+            title={TOOL_HELP.supply_orders}
+          >
+            <input type="checkbox" name="tools" value="supply_orders" />
+            supply_orders
+          </label>
         </div>
         <p className="mt-1.5 text-[0.6875rem] text-splash-navy/60">
           Chemical inventory has three tiers — view is read-only, inventory can

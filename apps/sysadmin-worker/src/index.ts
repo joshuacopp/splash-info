@@ -202,7 +202,9 @@ const VALID_TOOLS: ReadonlySet<ToolName> = new Set([
   // IT Issue Tracker beta gate (2026-11-04). Super admins have it implicitly.
   "it_issues",
   // IT support in the tracker (2026-11-05): every site, actions count as IT's.
-  "it_issues_it"
+  "it_issues_it",
+  // Supply Orders (2026-11-13): Kleen-Rite ordering.
+  "supply_orders"
 ]);
 const VALID_ROLES: ReadonlySet<UserRole> = new Set(["super_admin", "location_admin"]);
 const VALID_DC_ROLES: ReadonlySet<DcRole> = new Set(["gm", "rm", "admin", "super_admin"]);

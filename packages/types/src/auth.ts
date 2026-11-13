@@ -84,7 +84,8 @@ export type ToolName =
   | "inventory_view"
   | "inventory_admin"
   | "it_issues"
-  | "it_issues_it";
+  | "it_issues_it"
+  | "supply_orders";
 
 export const VALID_TOOLS: readonly ToolName[] = [
   "pricing",
@@ -97,7 +98,10 @@ export const VALID_TOOLS: readonly ToolName[] = [
   "inventory_admin",
   "it_issues",
   // IT support in the IT Issue Tracker: every site, actions count as IT's.
-  "it_issues_it"
+  "it_issues_it",
+  // Supply Orders (2026-11-13): Kleen-Rite ordering. Approvers (site RM) do
+  // not need it -- they act on orders routed to them.
+  "supply_orders"
 ] as const;
 
 /**
