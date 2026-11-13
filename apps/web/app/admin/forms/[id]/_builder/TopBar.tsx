@@ -1,6 +1,7 @@
 "use client";
 
 import type { FormMetaState } from "./reducer";
+import FormQrButton from "../../_components/FormQrButton";
 
 type SaveState = "idle" | "saving" | "saved" | "error";
 type PublishState = "idle" | "publishing" | "done" | "error";
@@ -80,6 +81,9 @@ export default function TopBar({
           >
             {errorMsg}
           </span>
+        )}
+        {status === "published" && (
+          <FormQrButton slug={formMeta.slug} title={formMeta.title} size="md" />
         )}
         <button
           type="button"

@@ -13,6 +13,7 @@ import { listFormsAdmin, type FormListItem } from "./_lib/worker-fetch";
 import FormsAdminTabs from "./_components/FormsAdminTabs";
 import NoAccessCard from "./_components/NoAccessCard";
 import CopyLinkButton from "./_components/CopyLinkButton";
+import FormQrButton from "./_components/FormQrButton";
 import ArchiveButton from "./_components/ArchiveButton";
 
 export const dynamic = "force-dynamic";
@@ -210,7 +211,10 @@ function FormsTable({ items }: { items: FormListItem[] }) {
               </td>
               <td className="px-3 py-2 align-top">
                 {f.status === "published" ? (
-                  <CopyLinkButton slug={f.slug} />
+                  <div className="flex flex-wrap gap-1">
+                    <CopyLinkButton slug={f.slug} />
+                    <FormQrButton slug={f.slug} title={f.title} />
+                  </div>
                 ) : (
                   <span className="text-xs text-splash-navy/40">—</span>
                 )}
