@@ -42,7 +42,7 @@ comment on column public.locations.ship_to_address is
   'Shipping address for vendor orders when it differs from the physical address (locations.location). Null = use location.';
 
 update public.locations
-   set ship_to_address = '255 West Seneca Street Oswego NY 13126 PMB 400'
+   set ship_to_address = '255 West Seneca Street PMB 400, Oswego, NY 13126'
  where site_number = 147 and site = 'Oswego' and ship_to_address is null;
 
 -- ---------------------------------------------------------------- orders

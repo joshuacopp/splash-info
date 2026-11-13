@@ -42,7 +42,7 @@ export function buildVendorEmail(input: {
   test: boolean;
 }): { subject: string; text: string; html: string } {
   const { order, lines, test } = input;
-  const subject = `${test ? "[TEST - do not fill] " : ""}Order - PO ${order.po_number} - Splash ${order.site_name}`;
+  const subject = `${test ? "[TEST - do not fill] " : ""}Splash Car Wash Order - PO ${order.po_number}`;
   const shipLines = order.ship_to.split("\n").filter(Boolean);
   const text = [
     test ? "*** TEST ORDER - this was not sent to Kleen-Rite ***\n" : "",

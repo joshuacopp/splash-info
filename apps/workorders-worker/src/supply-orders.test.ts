@@ -13,7 +13,8 @@ import {
   nextPo,
   parseLines,
   poBase,
-  shipToFor
+  shipToFor,
+  addressLines
 } from "./supply-orders";
 import { buildVendorEmail, vendorLine } from "./supply-orders-email";
 import { detailsFromProductHtml, mapResult, priceFromProductHtml } from "./supply-orders-catalog";
@@ -131,7 +132,7 @@ describe("vendor email", () => {
     po_number: "147-20261110-Bm",
     account_no: "169231",
     shipping_method: "Ground shipping",
-    ship_to: shipToFor({ ship_to_address: "255 West Seneca Street Oswego NY 13126 PMB 400", location: "293 NY-104" }, "Splash Express"),
+    ship_to: shipToFor({ ship_to_address: "255 West Seneca Street PMB 400, Oswego, NY 13126", location: "293 NY-104" }, "Splash Express"),
     site_name: "Oswego"
   };
   const lines = [{ sku: "GUSS50", name: "Plastic thumb gun", qty: 5, uom: "Each" }];
@@ -147,10 +148,11 @@ describe("vendor email", () => {
         "",
         "Ground shipping",
         "Splash Express",
-        "255 West Seneca Street Oswego NY 13126 PMB 400"
+        "255 West Seneca Street PMB 400",
+        "Oswego, NY 13126"
       ].join("\n")
     );
-    expect(e.subject).toBe("Order - PO 147-20261110-Bm - Splash Oswego");
+    expect(e.subject).toBe("Splash Car Wash Order - PO 147-20261110-Bm");
     expect(e.html).not.toContain("$");
   });
   it("marks test emails loudly", () => {
@@ -160,6 +162,21 @@ describe("vendor email", () => {
   });
   it("shows a non-Each unit", () => {
     expect(vendorLine({ sku: "VSKMF100", name: "Towels", qty: 2, uom: "Case" })).toBe("VSKMF100 - Towels (Case) - Qty 2");
+  });
+  it("formats addresses as street + City, ST ZIP", () => {
+    expect(addressLines("26428 Johnson Rd (Route 11), Evans Mills (LeRay), NY 13637")).toEqual([
+      "26428 Johnson Rd",
+      "Evans Mills, NY 13637"
+    ]);
+    expect(addressLines("293 NY-104, Creekside Plaza, Oswego, NY 13126")).toEqual([
+      "293 NY-104, Creekside Plaza",
+      "Oswego, NY 13126"
+    ]);
+    expect(addressLines("4935 Nesconset Highway, Port Jefferson Station, NY, 11776")).toEqual([
+      "4935 Nesconset Highway",
+      "Port Jefferson Station, NY 11776"
+    ]);
+    expect(addressLines("123 Test St Binghamton NY 13905")).toEqual(["123 Test St Binghamton NY 13905"]);
   });
   it("ships to the physical address when there is no override", () => {
     expect(shipToFor({ ship_to_address: null, location: "1 Main St" }, "Splash Express")).toBe("Splash Express\n1 Main St");

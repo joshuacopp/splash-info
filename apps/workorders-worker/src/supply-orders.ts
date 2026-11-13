@@ -341,10 +341,27 @@ export function nextPo(base: string, taken: string[]): string {
   return `${base}${Date.now()}`;
 }
 
-/** The shipping block: company line, then the site's ship-to (or physical) address. */
+/**
+ * A one-line site address as a mailing label: street, then "City, ST ZIP".
+ * Asides in parentheses ("(Route 11)", "(LeRay)") are dropped -- they are
+ * not part of a postal address. Anything that doesn't end in a state and ZIP
+ * after a comma-separated city is passed through as one line.
+ */
+export function addressLines(raw: string): string[] {
+  const a = raw.replace(/\s*\([^)]*\)/g, "").replace(/\s+/g, " ").trim();
+  if (!a) return [];
+  const m = a.match(/^(.*?),?\s+([A-Za-z]{2}),?\s+(\d{5}(?:-\d{4})?)$/);
+  if (!m) return [a];
+  const parts = m[1]!.split(",").map((s) => s.trim()).filter(Boolean);
+  if (parts.length < 2) return [a];
+  const city = parts.pop()!;
+  return [parts.join(", "), `${city}, ${m[2]!.toUpperCase()} ${m[3]}`];
+}
+
+/** The shipping block: company line, street, "City, ST ZIP". */
 export function shipToFor(site: Pick<SiteRow, "ship_to_address" | "location">, company: string): string {
   const addr = (site.ship_to_address ?? "").trim() || (site.location ?? "").trim();
-  return [company.trim(), addr].filter(Boolean).join("\n");
+  return [company.trim(), ...addressLines(addr)].filter(Boolean).join("\n");
 }
 
 export interface LineInput {
