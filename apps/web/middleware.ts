@@ -114,6 +114,7 @@ const ADMIN_KNOWN_SUBPATHS = new Set<string>([
   "my-requests",
   "parts",
   "performance",
+  "price-match",
   "pricing",
   "promotions",
   "scorm-builder",

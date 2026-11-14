@@ -85,7 +85,8 @@ export type ToolName =
   | "inventory_admin"
   | "it_issues"
   | "it_issues_it"
-  | "supply_orders";
+  | "supply_orders"
+  | "price_match";
 
 export const VALID_TOOLS: readonly ToolName[] = [
   "pricing",
@@ -101,7 +102,10 @@ export const VALID_TOOLS: readonly ToolName[] = [
   "it_issues_it",
   // Supply Orders (2026-11-13): Kleen-Rite ordering. Approvers (site RM) do
   // not need it -- they act on orders routed to them.
-  "supply_orders"
+  "supply_orders",
+  // Price Match (2026-11-14): NCS price-match request emails. No super_admin
+  // shortcut in the worker -- only people holding this grant.
+  "price_match"
 ] as const;
 
 /**

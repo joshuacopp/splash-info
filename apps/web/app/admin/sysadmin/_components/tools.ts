@@ -23,7 +23,8 @@ export const ALL_TOOLS = [
   "inventory_admin",
   "it_issues",
   "it_issues_it",
-  "supply_orders"
+  "supply_orders",
+  "price_match"
 ] as const;
 
 export type Tool = (typeof ALL_TOOLS)[number];
@@ -43,7 +44,9 @@ export const TOOL_HELP: Record<Tool, string> = {
   it_issues_it:
     "IT Issue Tracker — IT support: sees every site, and their actions count as IT's in the daily digest (no need to also tick it_issues)",
   supply_orders:
-    "Kleen-Rite Orders — order from Kleen-Rite for their sites. GM orders go to the site RM for approval; the site's RM / RD orders send straight away"
+    "Kleen-Rite Orders — order from Kleen-Rite for their sites. GM orders go to the site RM for approval; the site's RM / RD orders send straight away",
+  price_match:
+    "Price Match — email NCS a price-match request (parts, prices, competitor quotes). Super admin does NOT include it; grant it explicitly"
 };
 
 /** Stable render order, whatever order the codes arrived in. */

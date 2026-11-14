@@ -233,6 +233,13 @@ IT_ISSUES_MX_ENABLED = "false"
 # "[TEST]" in the subject. Flip to "live" (and push) when ready to order.
 SUPPLY_ORDERS_MODE = "live"
 SUPPLY_ORDERS_TEST_TO = "josh.copp@splashcarwashes.com"
+
+# Price Match (src/price-match.ts): NCS price-match request emails. Anything
+# but "live" sends to PRICE_MATCH_TEST_TO with no CC and "[TEST]" in the
+# subject. Live: To = first PRICE_MATCH_TO address, CC = the rest + the sender.
+PRICE_MATCH_MODE = "test"
+PRICE_MATCH_TO = "achryst@ncswash.com,msoderquist@ncswash.com"
+PRICE_MATCH_TEST_TO = "josh.copp@splashcarwashes.com"
 # CUTOVER 2026-09-14: /workorders now reads the local mirror, not live
 # MaintainX calls. Roll back by commenting this line and pushing -- the
 # MaintainX path is untouched and an unset value resolves back to it.

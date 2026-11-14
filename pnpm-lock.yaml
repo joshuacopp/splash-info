@@ -588,6 +588,9 @@ importers:
       '@splash/types':
         specifier: workspace:*
         version: link:../../packages/types
+      '@splash/xlsx':
+        specifier: workspace:*
+        version: link:../../packages/xlsx
     devDependencies:
       '@cloudflare/vitest-pool-workers':
         specifier: ^0.12.4

@@ -17,7 +17,8 @@
     "@splash/email-shell": "workspace:*",
     "@splash/http": "workspace:*",
     "@splash/maintainx": "workspace:*",
-    "@splash/types": "workspace:*"
+    "@splash/types": "workspace:*",
+    "@splash/xlsx": "workspace:*"
   },
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "^0.12.4",

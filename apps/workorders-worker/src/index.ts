@@ -73,6 +73,7 @@ import { handlePartsRequest } from "./parts.js";
 import { handleItIssueLink, handleItIssuesRequest } from "./it-issues.js";
 import { runItIssuesDailyReport } from "./it-issues-email.js";
 import { handleSupplyOrdersRequest } from "./supply-orders.js";
+import { handlePriceMatchRequest } from "./price-match.js";
 import { runMaintainXUserTeamSync, type SyncResult } from "./sync.js";
 
 // The two cron expressions registered under `[triggers] crons` in
@@ -131,6 +132,12 @@ interface Env extends SupabaseEnv {
   SUPPLY_ORDERS_MODE?: string;
   /** Supply Orders test-mode recipient of the vendor email. */
   SUPPLY_ORDERS_TEST_TO?: string;
+  /** Price Match: "live" emails NCS; anything else = test (src/price-match.ts). */
+  PRICE_MATCH_MODE?: string;
+  /** Price Match live recipients, comma-separated: first To, rest CC. */
+  PRICE_MATCH_TO?: string;
+  /** Price Match test-mode recipient. */
+  PRICE_MATCH_TEST_TO?: string;
   /** MaintainX webhook signing secret, returned by POST /subscriptions and
    *  re-readable from GET /subscriptions/{id}/secret.
    *  `wrangler secret put MAINTAINX_WEBHOOK_SECRET`.
@@ -491,6 +498,14 @@ export default {
         const auth = await authenticate(request, env);
         if (auth.status !== "authenticated") return jsonError(401, "unauthorized");
         return handleSupplyOrdersRequest(request, env, path, auth.session, ctx);
+      }
+
+      // Price Match -- /workorders/api/price-match[/preview]. NCS price-match
+      // request emails; `price_match` grant only (see ./price-match.ts).
+      if (path === "workorders/api/price-match" || path.startsWith("workorders/api/price-match/")) {
+        const auth = await authenticate(request, env);
+        if (auth.status !== "authenticated") return jsonError(401, "unauthorized");
+        return handlePriceMatchRequest(request, env, path, auth.session);
       }
 
       // The IT Issue Tracker's emailed links. NO SESSION: the token is the

@@ -235,6 +235,13 @@ const truckIcon: ReactNode = (
   </svg>
 );
 
+const tagIcon: ReactNode = (
+  <svg {...SvgProps}>
+    <path d="M12.586 2.586A2 2 0 0 0 11.172 2H4a2 2 0 0 0-2 2v7.172a2 2 0 0 0 .586 1.414l8.704 8.704a2.426 2.426 0 0 0 3.42 0l6.58-6.58a2.426 2.426 0 0 0 0-3.42z" />
+    <circle cx="7.5" cy="7.5" r=".5" fill="currentColor" />
+  </svg>
+);
+
 const fileTextIcon: ReactNode = (
   <svg {...SvgProps}>
     <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
@@ -497,6 +504,19 @@ export const TILES: ReadonlyArray<Tile> = [
     // canOrder. RMs approving without the grant arrive from the email link.
     visibleTo: (s) =>
       s?.role === "super_admin" || ((s?.tools as readonly string[] | undefined)?.includes("supply_orders") ?? false)
+  },
+  {
+    id: "price-match",
+    group: "operations",
+    subgroup: "mechanical",
+    eyebrow: "NCS",
+    title: "Price Match",
+    description: "Send NCS a price-match request with competitor prices and quotes.",
+    href: "/admin/price-match",
+    icon: tagIcon,
+    // The `price_match` grant ONLY -- super_admin does not imply it (operator,
+    // 2026-11-14). Same rule as the worker's canUsePriceMatch.
+    visibleTo: (s) => (s?.tools as readonly string[] | undefined)?.includes("price_match") ?? false
   },
   {
     id: "maintenance-tracker",

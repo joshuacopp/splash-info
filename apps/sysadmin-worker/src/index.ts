@@ -204,7 +204,9 @@ const VALID_TOOLS: ReadonlySet<ToolName> = new Set([
   // IT support in the tracker (2026-11-05): every site, actions count as IT's.
   "it_issues_it",
   // Supply Orders (2026-11-13): Kleen-Rite ordering.
-  "supply_orders"
+  "supply_orders",
+  // Price Match (2026-11-14): NCS price-match request emails.
+  "price_match"
 ]);
 const VALID_ROLES: ReadonlySet<UserRole> = new Set(["super_admin", "location_admin"]);
 const VALID_DC_ROLES: ReadonlySet<DcRole> = new Set(["gm", "rm", "admin", "super_admin"]);

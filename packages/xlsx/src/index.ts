@@ -30,7 +30,13 @@ export type XlsxColumnKind =
   | "number"
   | "datetime"
   | "date"
-  | "wrap";
+  | "wrap"
+  /** Dollar amount shown as $#,##0.00. A value that isn't a plain number
+   *  ("9.25/foot") is kept as text rather than dropped. */
+  | "currency"
+  /** An http(s) URL written as a clickable HYPERLINK cell; anything else, or
+   *  a URL past HYPERLINK's 255-character limit, is plain text. */
+  | "url";
 
 export interface XlsxColumn {
   header: string;
@@ -197,6 +203,22 @@ function renderCell(ref: string, value: XlsxCell, kind: XlsxColumnKind): string 
     return `<c r="${ref}" s="${style}"/>`;
   }
 
+  if (kind === "currency") {
+    const raw = typeof value === "number" ? String(value) : String(value ?? "").trim();
+    const n = /^-?\$?\s*-?[\d,]*\.?\d+$/.test(raw) ? Number(raw.replace(/[$,\s]/g, "")) : NaN;
+    if (Number.isFinite(n)) return `<c r="${ref}" s="${style}"><v>${n}</v></c>`;
+    if (raw === "") return `<c r="${ref}" s="${style}"/>`;
+    return inlineStrCell(ref, raw, 0);
+  }
+
+  if (kind === "url") {
+    const url = String(value ?? "").trim();
+    if (url === "") return `<c r="${ref}" s="0"/>`;
+    if (!/^https?:\/\/\S+$/i.test(url) || url.length > 255) return inlineStrCell(ref, url, 0);
+    const f = `HYPERLINK("${url.replace(/"/g, '""')}")`;
+    return `<c r="${ref}" s="${style}" t="str"><f>${escapeXml(f)}</f><v>${escapeXml(url)}</v></c>`;
+  }
+
   if (kind === "date" || kind === "datetime") {
     const serial = toExcelSerial(String(value ?? ""));
     if (serial === null) return `<c r="${ref}" s="${style}"/>`;
@@ -217,9 +239,10 @@ function inlineStrCell(ref: string, text: string, style: number): string {
 }
 
 /* ------------------------------------------------------------------ *
- * Styles — 5 cellXfs referenced by index from renderCell / header
+ * Styles — 7 cellXfs referenced by index from renderCell / header
  *   0 general text | 1 bold header | 2 wrap text
  *   3 datetime (numFmt 164) | 4 date (numFmt 165)
+ *   5 currency (numFmt 166) | 6 hyperlink (blue underline, font 2)
  * ------------------------------------------------------------------ */
 
 const STYLE_FOR_KIND: Record<XlsxColumnKind, number> = {
@@ -227,24 +250,28 @@ const STYLE_FOR_KIND: Record<XlsxColumnKind, number> = {
   number: 0,
   wrap: 2,
   datetime: 3,
-  date: 4
+  date: 4,
+  currency: 5,
+  url: 6
 };
 
 const STYLES_XML =
   `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
   `<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">` +
-  `<numFmts count="2">` +
+  `<numFmts count="3">` +
   `<numFmt numFmtId="164" formatCode="yyyy\\-mm\\-dd\\ hh:mm"/>` +
   `<numFmt numFmtId="165" formatCode="yyyy\\-mm\\-dd"/>` +
+  `<numFmt numFmtId="166" formatCode="&quot;$&quot;#,##0.00"/>` +
   `</numFmts>` +
-  `<fonts count="2">` +
+  `<fonts count="3">` +
   `<font><sz val="11"/><name val="Calibri"/></font>` +
   `<font><b/><sz val="11"/><name val="Calibri"/></font>` +
+  `<font><u/><sz val="11"/><color rgb="FF0563C1"/><name val="Calibri"/></font>` +
   `</fonts>` +
   `<fills count="1"><fill><patternFill patternType="none"/></fill></fills>` +
   `<borders count="1"><border/></borders>` +
   `<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>` +
-  `<cellXfs count="5">` +
+  `<cellXfs count="7">` +
   // 0 — general text
   `<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>` +
   // 1 — bold header, top-aligned
@@ -255,6 +282,10 @@ const STYLES_XML =
   `<xf numFmtId="164" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/>` +
   // 4 — date
   `<xf numFmtId="165" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/>` +
+  // 5 — currency
+  `<xf numFmtId="166" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/>` +
+  // 6 — hyperlink
+  `<xf numFmtId="0" fontId="2" fillId="0" borderId="0" xfId="0" applyFont="1"/>` +
   `</cellXfs>` +
   `<cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>` +
   `</styleSheet>`;
