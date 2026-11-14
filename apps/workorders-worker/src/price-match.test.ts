@@ -9,6 +9,7 @@ import {
   canUsePriceMatch,
   lineDiff,
   nameFromEmail,
+  orderItems,
   orderTotal,
   ordersSavings,
   parseInput,
@@ -99,6 +100,13 @@ describe("orders", () => {
     ).toHaveProperty("error");
     expect(parseInput({ competitor: "T", lines: [line()], initials: "12" })).toHaveProperty("error");
   });
+  it("other parts: need a site, quantities line up past blank rows", () => {
+    const xs = [{ part: "Brush" }, { part: "" }, { ncs_part_no: "WB-9" }];
+    expect(parseInput({ competitor: "T", lines: [line()], extras: xs })).toHaveProperty("error");
+    const r = parseInput({ competitor: "T", lines: [line()], extras: xs, orders: [{ location_id: 7, qty: [""], extra_qty: ["1", "9", "4"] }] });
+    expect("input" in r && r.input.orders[0]!.extra_qty).toEqual([1, 4]);
+    expect(parseInput({ competitor: "T", lines: [line()], extras: [{ part: "B", ncs_url: "nope" }], orders: [{ location_id: 7, qty: [1] }] })).toHaveProperty("error");
+  });
   const sites = [
     { id: 1, site_number: 147, site: "Binghamton", location: "1 Main St, Binghamton, NY 13901", ship_to_address: null },
     { id: 2, site_number: 9, site: "Oswego", location: "x", ship_to_address: "255 West Seneca Street PMB 400, Oswego, NY 13126" }
@@ -106,7 +114,7 @@ describe("orders", () => {
   const at = new Date("2026-11-14T15:00:00Z");
   it("POs follow the Kleen-Rite sequence and skip numbers already used", () => {
     const r = resolveOrders(
-      [{ location_id: 1, qty: [1] }, { location_id: 2, qty: [3] }],
+      [{ location_id: 1, qty: [1], extra_qty: [] }, { location_id: 2, qty: [3], extra_qty: [] }],
       sites,
       "Jc",
       at,
@@ -118,8 +126,10 @@ describe("orders", () => {
     expect(r.orders[1]!.ship_to).toContain("PMB 400");
   });
   it("a site with no quantities is an error, not an empty PO", () => {
-    expect(resolveOrders([{ location_id: 1, qty: [0] }], sites, "Jc", at, [])).toHaveProperty("error");
-    expect(resolveOrders([{ location_id: 99, qty: [1] }], sites, "Jc", at, [])).toHaveProperty("error");
+    expect(resolveOrders([{ location_id: 1, qty: [0], extra_qty: [0] }], sites, "Jc", at, [])).toHaveProperty("error");
+    expect(resolveOrders([{ location_id: 99, qty: [1], extra_qty: [] }], sites, "Jc", at, [])).toHaveProperty("error");
+    // A site ordering only other (non-matched) parts is a real PO.
+    expect(resolveOrders([{ location_id: 1, qty: [0], extra_qty: [2] }], sites, "Jc", at, [])).toHaveProperty("orders");
   });
 });
 
@@ -135,10 +145,19 @@ describe("prices", () => {
   });
   it("order totals and savings use the matched price x qty", () => {
     const ls = [line(), line({ ncs_price: "76", competitor_price: "69" })];
-    expect(orderTotal(ls, [2, 0])).toBe(334.26);
+    expect(orderTotal(orderItems(ls, [], { qty: [2, 0], extra_qty: [] }))).toBe(334.26);
     expect(ordersSavings(ls, [{ qty: [2, 0] }, { qty: [0, 3] }])).toBe(146.08);
-    expect(orderTotal([line({ competitor_price: "9.25/foot" })], [10])).toBeNull();
-    expect(orderTotal([line({ competitor_price: "9.25/foot" }), line()], [0, 1])).toBe(167.13);
+    expect(orderTotal(orderItems([line({ competitor_price: "9.25/foot" })], [], { qty: [10], extra_qty: [] }))).toBeNull();
+    expect(orderTotal(orderItems([line({ competitor_price: "9.25/foot" }), line()], [], { qty: [0, 1], extra_qty: [] }))).toBe(167.13);
+  });
+  it("other parts bill at the NCS price and stay out of the savings", () => {
+    const ls = [line()];
+    const xs = [{ part: "Brush", ncs_part_no: "B-1", ncs_price: "40", ncs_url: "" }, { part: "Mystery", ncs_part_no: "", ncs_price: "", ncs_url: "" }];
+    const its = orderItems(ls, xs, { qty: [1], extra_qty: [2, 0] });
+    expect(its.map((i) => [i.part, i.price, i.matched])).toEqual([["X458 Sprocket", "167.13", true], ["Brush", "40", false]]);
+    expect(orderTotal(its)).toBe(247.13);
+    expect(orderTotal(orderItems(ls, xs, { qty: [1], extra_qty: [0, 1] }))).toBeNull();
+    expect(ordersSavings(ls, [{ qty: [1] }])).toBe(62.54);
     expect(ordersSavings(ls, [])).toBeNull();
   });
 });
@@ -191,9 +210,15 @@ describe("order email", () => {
     site_name: "Binghamton",
     po_number: "147-20261114-Jc",
     ship_to: "Splash Express\n1 Main St\nBinghamton, NY 13901",
-    qty: [2, 0]
+    qty: [2, 0],
+    extra_qty: [3]
   };
-  const request = { competitor: "Triumph", note: "", lines: [line(), line({ part: "Chain" })] };
+  const request = {
+    competitor: "Triumph",
+    note: "",
+    lines: [line(), line({ part: "Chain" })],
+    extras: [{ part: "Wrap brush", ncs_part_no: "WB-9", ncs_price: "", ncs_url: "" }]
+  };
   it("carries the PO, ship-to and only the ordered parts", () => {
     const e = buildPriceMatchEmail({ request, orders: [order], sender: "j@x.com", fileNames: [], xlsxName: "pm.xlsx", test: null });
     expect(e.subject).toBe("Price Match Request - Triumph + PO 147-20261114-Jc");
@@ -202,9 +227,13 @@ describe("order email", () => {
     expect(e.text).toContain("2 x X458 Sprocket @ $167.13 = $334.26");
     expect(e.text).not.toContain("x Chain");
     expect(e.text).toContain("$125.08 less than NCS pricing");
+    expect(e.html).toContain("Also ordering - not price matched");
+    expect(e.text).toContain("3 x Wrap brush (NCS #WB-9) @ NCS price");
+    expect(e.text).not.toContain("PO total"); // the other part has no price
+    expect(e.text).toContain("bill them at your regular price");
   });
   it("no orders = a plain price match, per unit", () => {
-    const e = buildPriceMatchEmail({ request, sender: "j@x.com", fileNames: [], xlsxName: "pm.xlsx", test: null });
+    const e = buildPriceMatchEmail({ request: { ...request, extras: [] }, sender: "j@x.com", fileNames: [], xlsxName: "pm.xlsx", test: null });
     expect(e.html).toContain("Prices are per unit.");
     expect(e.html).not.toContain("Ship to");
   });

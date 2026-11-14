@@ -33,7 +33,31 @@ export interface SiteOption {
   ship_to: string;
 }
 
-/** One site in the order: quantities keyed by line id. */
+/** A part ordered at NCS's price -- not price matched; order section only. */
+interface Extra {
+  id: string;
+  part: string;
+  ncs_part_no: string;
+  ncs_price: string;
+  ncs_url: string;
+}
+type ExtraField = Exclude<keyof Extra, "id">;
+const EXTRA_FIELDS: Array<{ key: ExtraField; label: string; width: string; placeholder?: string }> = [
+  { key: "part", label: "Part", width: "min-w-[200px]", placeholder: "Wrap brush" },
+  { key: "ncs_part_no", label: "NCS Part #", width: "min-w-[110px]" },
+  { key: "ncs_price", label: "NCS Price (each)", width: "min-w-[110px]", placeholder: "optional" },
+  { key: "ncs_url", label: "NCS Link", width: "min-w-[220px]", placeholder: "optional" }
+];
+const blankExtra = (): Extra => ({ id: newId(), part: "", ncs_part_no: "", ncs_price: "", ncs_url: "" });
+const isBlankExtra = (x: Extra) => EXTRA_FIELDS.every((f) => x[f.key].trim() === "");
+function toExtra(raw: Partial<Record<string, unknown>>): Extra {
+  const x = blankExtra();
+  for (const f of EXTRA_FIELDS) if (typeof raw[f.key] === "string") x[f.key] = raw[f.key] as string;
+  if (typeof raw.id === "string" && raw.id) x.id = raw.id;
+  return x;
+}
+
+/** One site in the order: quantities keyed by line id (price-matched or other). */
 interface Order {
   location_id: number;
   qty: Record<string, string>;
@@ -224,6 +248,7 @@ export default function PriceMatchForm(props: {
   const [note, setNote] = useState("");
   const [lines, setLines] = useState<Line[]>(() => [blank()]);
   const [orders, setOrders] = useState<Order[]>([]);
+  const [extras, setExtras] = useState<Extra[]>([]);
   const [initials, setInitials] = useState(props.initials);
   const [addSite, setAddSite] = useState("");
   const [siteCursor, setSiteCursor] = useState(0);
@@ -242,7 +267,7 @@ export default function PriceMatchForm(props: {
     try {
       const raw = window.localStorage.getItem(DRAFT_KEY);
       const d = raw
-        ? (JSON.parse(raw) as { competitor?: string; note?: string; lines?: Array<Record<string, unknown>>; orders?: Order[]; initials?: string })
+        ? (JSON.parse(raw) as { competitor?: string; note?: string; lines?: Array<Record<string, unknown>>; orders?: Order[]; initials?: string; extras?: Array<Record<string, unknown>> })
         : null;
       if (d) {
         setCompetitor(d.competitor ?? "");
@@ -254,6 +279,7 @@ export default function PriceMatchForm(props: {
           setOrders(d.orders.filter((o) => o && known.has(o.location_id)).map((o) => ({ location_id: o.location_id, qty: o.qty ?? {} })));
         }
         if (d.initials) setInitials(d.initials);
+        if (Array.isArray(d.extras)) setExtras(d.extras.map(toExtra));
       }
     } catch {
       // storage blocked: start empty
@@ -264,13 +290,13 @@ export default function PriceMatchForm(props: {
   useEffect(() => {
     if (!loaded) return;
     try {
-      const empty = !competitor && !note && lines.every(isBlank) && orders.length === 0;
+      const empty = !competitor && !note && lines.every(isBlank) && orders.length === 0 && extras.every(isBlankExtra);
       if (empty) window.localStorage.removeItem(DRAFT_KEY);
-      else window.localStorage.setItem(DRAFT_KEY, JSON.stringify({ competitor, note, lines, orders, initials }));
+      else window.localStorage.setItem(DRAFT_KEY, JSON.stringify({ competitor, note, lines, orders, initials, extras }));
     } catch {
       // ignore
     }
-  }, [loaded, competitor, note, lines, orders, initials]);
+  }, [loaded, competitor, note, lines, orders, initials, extras]);
 
   // ---- lines
   const setCell = (row: number, key: Field, value: string) =>
@@ -313,6 +339,37 @@ export default function PriceMatchForm(props: {
   };
 
   const filled = lines.filter((l) => !isBlank(l));
+  const filledExtras = extras.filter((x) => !isBlankExtra(x));
+  /** Order grid rows: price-matched parts, then other parts. */
+  const gridRows = useMemo(
+    () => [
+      ...filled.map((l) => ({ id: l.id, part: l.part, ncs_part_no: l.ncs_part_no, matched: true })),
+      ...filledExtras.map((x) => ({ id: x.id, part: x.part, ncs_part_no: x.ncs_part_no, matched: false }))
+    ],
+    [filled, filledExtras]
+  );
+
+  const setExtraCell = (row: number, key: ExtraField, value: string) =>
+    setExtras((xs) => xs.map((x, i) => (i === row ? { ...x, [key]: value } : x)));
+  /** Multi-cell paste into the other-parts table: fill right and down. */
+  const onExtraPaste = (row: number, col: number) => (e: React.ClipboardEvent<HTMLInputElement>) => {
+    const text = e.clipboardData.getData("text/plain");
+    if (!/[\t\n]/.test(text.replace(/\n$/, ""))) return;
+    e.preventDefault();
+    const rows = parseTsv(text);
+    setExtras((xs) => {
+      const next = xs.map((x) => ({ ...x }));
+      rows.forEach((r, ri) => {
+        const target = row + ri;
+        while (next.length <= target) next.push(blankExtra());
+        r.forEach((v, ci) => {
+          const f = EXTRA_FIELDS[col + ci];
+          if (f) next[target]![f.key] = v;
+        });
+      });
+      return next;
+    });
+  };
 
   // ---- orders
   const siteById = useMemo(() => new Map(props.sites.map((s) => [s.id, s])), [props.sites]);
@@ -328,7 +385,7 @@ export default function PriceMatchForm(props: {
     setOrders((os) => {
       const next = os.map((o) => ({ ...o, qty: { ...o.qty } }));
       rows.forEach((r, ri) => {
-        const l = filled[row + ri];
+        const l = gridRows[row + ri];
         if (!l) return;
         r.forEach((v, ci) => {
           const o = next[col + ci];
@@ -344,12 +401,17 @@ export default function PriceMatchForm(props: {
     for (const o of orders) {
       const s = siteById.get(o.location_id);
       const name = s ? siteLabel(s) : "A site";
-      const qs = filled.map((l) => qtyValue(o.qty[l.id]));
+      const qs = gridRows.map((l) => qtyValue(o.qty[l.id]));
       if (qs.some((q) => q === null)) out.push(`${name}: quantities must be numbers.`);
       else if (!qs.some((q) => (q ?? 0) > 0)) out.push(`${name}: enter at least one quantity, or remove the site.`);
     }
+    if (filledExtras.length && orders.length === 0) out.push("Other parts are only ordered — add a site, or remove them.");
+    for (const x of filledExtras) {
+      if (!x.part.trim() && !x.ncs_part_no.trim()) out.push("Each other part needs a name or an NCS part #.");
+      else if (x.ncs_url.trim() && !/^https?:\/\//i.test(x.ncs_url.trim())) out.push(`${x.part || x.ncs_part_no}: the NCS link must be a web address.`);
+    }
     return out;
-  }, [orders, filled, siteById]);
+  }, [orders, gridRows, filledExtras, siteById]);
 
   const savings = useMemo(() => {
     let t = 0;
@@ -437,7 +499,13 @@ export default function PriceMatchForm(props: {
     initials: cleanInitials,
     lines: filled.map(({ id: _id, ...rest }) => rest),
     // qty[i] belongs to lines[i] as sent.
-    orders: orders.map((o) => ({ location_id: o.location_id, qty: filled.map((l) => o.qty[l.id] ?? "") }))
+    extras: filledExtras.map(({ id: _id, ...rest }) => rest),
+    // qty[i] / extra_qty[i] belong to lines[i] / extras[i] as sent.
+    orders: orders.map((o) => ({
+      location_id: o.location_id,
+      qty: filled.map((l) => o.qty[l.id] ?? ""),
+      extra_qty: filledExtras.map((x) => o.qty[x.id] ?? "")
+    }))
   });
 
   const doPreview = async () => {
@@ -489,6 +557,7 @@ export default function PriceMatchForm(props: {
       setNote("");
       setLines([blank()]);
       setOrders([]);
+      setExtras([]);
       setFiles([]);
       router.refresh();
     } catch {
@@ -808,11 +877,73 @@ export default function PriceMatchForm(props: {
           </div>
         </div>
 
+        <details className="mb-4 rounded-splash-sm border border-gray-light bg-gray-light/20 px-3 py-2">
+          <summary className="cursor-pointer text-sm font-semibold text-splash-navy">
+            Other parts to order — not price matched
+            {filledExtras.length > 0 && <span className="font-normal text-splash-navy/60"> ({filledExtras.length})</span>}
+          </summary>
+          <p className="mt-2 text-xs text-splash-navy/70">
+            Ordered on the same POs at NCS&apos;s regular price. They don&apos;t appear in the price-match table or the
+            savings. Price and link are optional. Paste cells from Excel to fill across and down.
+          </p>
+          {extras.length > 0 && (
+            <div className="mt-2 overflow-x-auto">
+              <table className="w-full text-left text-sm">
+                <thead className="text-xs uppercase tracking-wide text-splash-navy/60">
+                  <tr>
+                    {EXTRA_FIELDS.map((f) => (
+                      <th key={f.key} className={`px-1 py-1 ${f.width}`}>
+                        {f.label}
+                      </th>
+                    ))}
+                    <th />
+                  </tr>
+                </thead>
+                <tbody>
+                  {extras.map((x, ri) => (
+                    <tr key={x.id}>
+                      {EXTRA_FIELDS.map((f, ci) => (
+                        <td key={f.key} className={`px-1 py-1 ${f.width}`}>
+                          <input
+                            className={input}
+                            value={x[f.key]}
+                            placeholder={ri === 0 ? f.placeholder : undefined}
+                            aria-label={`Other part ${f.label}, row ${ri + 1}`}
+                            onChange={(e) => setExtraCell(ri, f.key, e.target.value)}
+                            onPaste={onExtraPaste(ri, ci)}
+                          />
+                        </td>
+                      ))}
+                      <td className="px-1 py-1">
+                        <button
+                          type="button"
+                          aria-label={`Remove other part ${ri + 1}`}
+                          className="rounded px-2 py-1.5 text-splash-navy/50 hover:bg-gray-light hover:text-racecar-red"
+                          onClick={() => setExtras((xs) => xs.filter((_, i) => i !== ri))}
+                        >
+                          ✕
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+          <button
+            type="button"
+            onClick={() => setExtras((xs) => [...xs, blankExtra()])}
+            className="mt-2 rounded-splash-sm border border-splash-blue px-3 py-1.5 text-sm font-semibold text-splash-blue hover:bg-splash-blue/5"
+          >
+            + Add other part
+          </button>
+        </details>
+
         {orders.length === 0 ? (
           <p className="rounded-splash-sm border border-dashed border-gray-light px-3 py-4 text-center text-sm italic text-splash-navy/60">
             No order — this sends a price-match request only.
           </p>
-        ) : filled.length === 0 ? (
+        ) : gridRows.length === 0 ? (
           <p className="text-sm italic text-splash-navy/60">Add parts above, then enter quantities here.</p>
         ) : (
           <>
@@ -842,11 +973,16 @@ export default function PriceMatchForm(props: {
                   </tr>
                 </thead>
                 <tbody>
-                  {filled.map((l, ri) => (
-                    <tr key={l.id}>
+                  {gridRows.map((l, ri) => (
+                    <tr key={l.id} className={!l.matched && (ri === 0 || gridRows[ri - 1]!.matched) ? "border-t-2 border-gray-light" : ""}>
                       <td className="max-w-[280px] px-1 py-1 text-splash-navy">
-                        {l.part || <span className="italic text-splash-navy/50">(unnamed part)</span>}
-                        {l.ncs_part_no && <span className="ml-1 text-xs text-splash-navy/50">#{l.ncs_part_no}</span>}
+                        {!l.matched && (ri === 0 || gridRows[ri - 1]!.matched) && (
+                          <div className="mb-0.5 text-[11px] font-semibold uppercase tracking-wide text-splash-navy/50">
+                            Not price matched (NCS price)
+                          </div>
+                        )}
+                        {l.part || l.ncs_part_no || <span className="italic text-splash-navy/50">(unnamed part)</span>}
+                        {l.part && l.ncs_part_no && <span className="ml-1 text-xs text-splash-navy/50">#{l.ncs_part_no}</span>}
                       </td>
                       {orders.map((o, ci) => {
                         const bad = qtyValue(o.qty[l.id]) === null;
