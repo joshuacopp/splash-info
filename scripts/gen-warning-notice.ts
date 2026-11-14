@@ -270,16 +270,45 @@ push({
   format: "png",
   ...when("employee_response", "agree", "disagree")
 } as Field);
+// REFUSAL. Often no second supervisor is on site, and another (non-supervisor)
+// employee is never brought in to witness (operator, 2026-11-14). So the
+// supervisor attests to the refusal -- their signature above is on the same
+// record -- and a witness is added only when another supervisor happens to be
+// there. Keep REFUSAL_ATTESTATION in pdf/warning-notice.ts matching the tick.
+push({
+  key: "refusal_attest",
+  type: "multi",
+  label: "Supervisor confirms the refusal",
+  required: true,
+  minSelected: 1,
+  options: [
+    {
+      label:
+        "I gave the employee this Warning Notice and the Notice of Negative Information, went over them with the employee, and the employee refused to sign.",
+      value: "confirmed"
+    }
+  ],
+  ...when("employee_response", "refused")
+} as Field);
+push({
+  key: "refusal_notes",
+  type: "long_text",
+  label: "What the employee said (optional)",
+  required: false,
+  maxLength: 2000,
+  rows: 3,
+  ...when("employee_response", "refused")
+} as Field);
 push({
   key: "witness_name",
   type: "name",
-  label: "Second supervisor (witness) name",
-  helpText: "The employee refused to sign. A second supervisor witnesses that the notice was given.",
-  required: true,
+  label: "Witness name (optional)",
+  helpText: "Only if another supervisor is present. Don't bring in a non-supervisor employee to witness.",
+  required: false,
   maxLength: 120,
   ...when("employee_response", "refused")
 } as Field);
-push({ key: "witness_signature", type: "signature", label: "Second supervisor signature", required: true, format: "png", ...when("employee_response", "refused") } as Field);
+push({ key: "witness_signature", type: "signature", label: "Witness signature (optional)", required: false, format: "png", ...when("employee_response", "refused") } as Field);
 
 // --- Employee's copy ------------------------------------------------------------------------
 // The manager chooses how the copy is delivered; printing requires a

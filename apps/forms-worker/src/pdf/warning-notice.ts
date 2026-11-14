@@ -66,6 +66,12 @@ const RIGHTS_PARAGRAPHS = [
 const STATEMENT_NOTICE =
   "If you disagree with this warning, you may submit a written statement explaining your position. It will be kept with this notice in your personnel record.";
 
+// Matches the refusal_attest tick in scripts/gen-warning-notice.ts. A refusal
+// is recorded by the supervisor; a witness only when another supervisor was
+// present (often nobody else is on site).
+const REFUSAL_ATTESTATION =
+  "The supervisor confirms they gave the employee this Warning Notice and the Notice of Negative Information, went over them with the employee, and the employee refused to sign.";
+
 const MEDICAL_FOOTNOTE =
   "* If this Employee Warning Notice, after completion, contains information on the medical condition or history of an employee, it must be maintained in a separate medical file and treated as confidential in accordance with applicable law and regulations.";
 
@@ -345,7 +351,15 @@ async function drawWarning(doc: PDFDocument, fonts: Fonts, bucket: R2Like, p: Su
   addPageIfNeeded(doc, cursor, 60); // keep the label with its box
   smallLabel(cursor.page, fonts, "Reasons", MARGIN, cursor.y);
   cursor.y -= 10;
-  textBox(doc, cursor, fonts, resp === "refused" ? "Employee refused to sign." : str(p.employee_reasons), 2);
+  textBox(
+    doc,
+    cursor,
+    fonts,
+    resp === "refused"
+      ? ["Employee refused to sign.", str(p.refusal_notes) && `Employee said: ${str(p.refusal_notes)}`].filter(Boolean).join("\n")
+      : str(p.employee_reasons),
+    2
+  );
 
   // Action taken.
   drawSectionHeading(doc, cursor, fonts, "Action Taken");
@@ -372,14 +386,7 @@ async function drawWarning(doc: PDFDocument, fonts: Fonts, bucket: R2Like, p: Su
   checkbox(cursor.page, fonts, MARGIN, cursor.y, resp === "refused");
   text(cursor.page, "This form was refused by Employee", MARGIN + 16, cursor.y, 10, fonts.regular);
   cursor.y -= 16;
-  if (resp === "refused") {
-    await signatureLine(doc, cursor, fonts, bucket, {
-      label: "Supervisor (witness)",
-      name: str(p.witness_name),
-      r2Key: r2KeyOf(p.witness_signature),
-      date: fmtDate(p.warning_date)
-    });
-  }
+  if (resp === "refused") await drawRefusal(doc, cursor, fonts, bucket, p, fmtDate(p.warning_date));
 
   cursor.y -= 4;
   paragraph(doc, cursor, fonts, STATEMENT_NOTICE, 9, true, COLORS.navy);
@@ -434,13 +441,20 @@ async function drawNotice(doc: PDFDocument, fonts: Fonts, bucket: R2Like, p: Sub
     note: resp === "refused" ? "REFUSED TO SIGN" : undefined,
     date
   });
-  if (resp === "refused") {
-    await signatureLine(doc, cursor, fonts, bucket, {
-      label: "Witnessed by",
-      name: str(p.witness_name),
-      r2Key: r2KeyOf(p.witness_signature),
-      date
-    });
+  if (resp === "refused") await drawRefusal(doc, cursor, fonts, bucket, p, date);
+}
+
+// The supervisor's attestation, then the witness line only when one was given.
+async function drawRefusal(doc: PDFDocument, cursor: Cursor, fonts: Fonts, bucket: R2Like, p: SubmissionPayload, date: string) {
+  paragraph(doc, cursor, fonts, REFUSAL_ATTESTATION, 9.5);
+  cursor.y -= 6;
+  const witnessName = str(p.witness_name);
+  const witnessSig = r2KeyOf(p.witness_signature);
+  if (witnessName || witnessSig) {
+    await signatureLine(doc, cursor, fonts, bucket, { label: "Witness (supervisor)", name: witnessName, r2Key: witnessSig, date });
+  } else {
+    paragraph(doc, cursor, fonts, "No witness present.", 9.5, false, COLORS.muted);
+    cursor.y -= 4;
   }
 }
 
