@@ -394,14 +394,12 @@ const workflow: FormWorkflow = {
         "current_pay_type",
         "new_rate",
         "new_pay_type",
-        "effective_date",
-        "ny_payday",
-        "ny_pay_frequency",
-        "ny_allowances",
-        "ny_allowance_detail",
-        "ny_primary_language",
-        "ny_notice_language"
+        "effective_date"
       ],
+      // The NY notice as it will read -- including the 1.5x overtime rate --
+      // rather than the raw NY answers (operator: the page only MENTIONED
+      // overtime). Same code that fills the notice computes it.
+      show_ny_pay_notice: true,
       transitions: [
         {
           to: "payroll_email",

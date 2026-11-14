@@ -297,8 +297,11 @@ export async function cascadeThroughEmailSteps(
     }
 
     // The official NY s.195.1 pay notice, when the stage asks for it and the
-    // submission is for a NY site. Fail-soft like the PDF above: payroll still
-    // gets the email (and our PDF) if the notice cannot be built.
+    // submission is for a NY site. A SEPARATE attachment beside the completed
+    // form, on purpose (operator, 2026-11-13): payroll uploads the signed
+    // acknowledgement on its own to the employee's file in iSolved, so it must
+    // not be merged into the pay change PDF. Fail-soft like the PDF above:
+    // payroll still gets the email (and our PDF) if the notice cannot be built.
     if (stage.attach_ny_pay_notice && ctx.submissionMeta && needsNyPayNotice(ctx.payload)) {
       try {
         const bytes = await fillNyPayNotice(env.FORMS_FILES, ctx.payload, [

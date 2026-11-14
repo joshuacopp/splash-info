@@ -311,7 +311,8 @@ const workflowStageSchema = z.object({
   attach_ny_pay_notice: z.boolean().optional(),
   approval_link_label: z.string().max(60).optional(),
   page_intro: z.string().max(1000).optional(),
-  show_fields: z.array(z.string()).optional()
+  show_fields: z.array(z.string()).optional(),
+  show_ny_pay_notice: z.boolean().optional()
 });
 
 const workflowNotificationsSchema = z.object({
@@ -377,7 +378,8 @@ const workflowStageSchemaDraft = z.object({
   attach_ny_pay_notice: z.boolean().optional(),
   approval_link_label: z.string().max(60).optional(),
   page_intro: z.string().max(1000).optional(),
-  show_fields: z.array(z.string()).optional()
+  show_fields: z.array(z.string()).optional(),
+  show_ny_pay_notice: z.boolean().optional()
 });
 
 export const formWorkflowSchemaDraft = z.object({

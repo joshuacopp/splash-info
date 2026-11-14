@@ -14,6 +14,7 @@
 // See tokens.ts for why opening the page does not use the link up.
 
 import { isOriginAllowed } from "@splash/http";
+import { nyNoticeRows } from "../pdf/ny-pay-notice.js";
 import {
   isEmployeeValue,
   isFieldVisible,
@@ -477,6 +478,16 @@ function renderDecisionPage(
   const only = stage.transitions.length === 1 ? stage.transitions[0]! : null;
   const actions = stage.transitions.map((t, i) => actionOption(t, i, only !== null)).join("");
   const typedLabel = only?.typed_name_label || "Type your full name";
+  // What the NY notice will say -- the overtime rate in particular -- shown
+  // to the employee before they sign it (same code that fills the notice).
+  const nyRows = stage.show_ny_pay_notice
+    ? nyNoticeRows(submission.payload as Record<string, unknown>)
+    : null;
+  const nyNotice = nyRows
+    ? `<h3 class="ap-section">What you're acknowledging (New York pay notice)</h3><dl class="ap-answers">${nyRows
+        .map((r) => `<div class="ap-row"><dt>${escapeHtml(r.label)}</dt><dd>${escapeHtml(r.value)}</dd></div>`)
+        .join("")}</dl>`
+    : "";
   const sigLabel = only?.signature_label || "Signature";
   const intro = stage.page_intro
     ? `<div class="ap-intro">${introHtml(stage.page_intro, submission.payload as Record<string, unknown>)}</div>`
@@ -492,7 +503,7 @@ ${intro}
   submitted by ${escapeHtml(submission.submitter_email ?? "an anonymous submitter")} on ${escapeHtml(submittedAt)} ET
 </p>
 <dl class="ap-answers">${answers}</dl>
-${error ? `<div class="ap-error" role="alert">${escapeHtml(error)}</div>` : ""}
+${nyNotice}${error ? `<div class="ap-error" role="alert">${escapeHtml(error)}</div>` : ""}
 <form method="POST" action="/forms/approve/${escapeHtml(token)}" class="ap-form" id="ap-form">
   <fieldset class="field"${only ? " hidden" : ""}>
     <legend class="field-label">Your decision</legend>
@@ -705,6 +716,7 @@ const PAGE_CSS = `
   .ap-sig { display: block; width: 100%; max-width: 600px; height: 180px; border: 1px solid #ccc; border-radius: 4px; background: #fff; touch-action: none; }
   .ap-clear { margin-top: 6px; background: none; border: 1px solid #ccc; border-radius: 4px; padding: 4px 12px; cursor: pointer; }
   .submit-btn[disabled] { opacity: 0.5; cursor: not-allowed; }
+.ap-section { font-size: 17px; color: var(--splash-navy); margin: 8px 0 4px; }
 .ap-intro { border-left: 4px solid #1e88e5; background: #f3f8fd; padding: 12px 16px; margin: 0 0 16px; font-size: 16px; line-height: 1.45; }
 `;
 

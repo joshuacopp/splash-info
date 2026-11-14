@@ -102,6 +102,14 @@ function money(raw: string): string {
   return Number.isFinite(n) && n > 0 ? n.toFixed(2) : raw.replace(/^\$/, "");
 }
 
+/** 1.5 x an hourly rate, two decimals, or "" when the rate is not a number.
+ *  ONE function for the filled notice and the sign-off page, so the employee
+ *  is shown exactly the overtime rate the notice they sign states. */
+function overtimeRate(rate: string): string {
+  const n = Number(rate);
+  return Number.isFinite(n) && n > 0 ? (n * 1.5).toFixed(2) : "";
+}
+
 /** The employee's acknowledgement: the sign-off transition out of the
  *  employee_signoff stage, newest first. */
 function signoffEntry(history: WorkflowHistoryEntry[]): WorkflowHistoryEntry | null {
@@ -150,8 +158,7 @@ export async function fillNyPayNotice(
   const rate = money(str(payload.new_rate));
   if (hourly) {
     setText(form, L.rate, rate);
-    const n = Number(rate);
-    if (L.overtime && Number.isFinite(n) && n > 0) setText(form, L.overtime, (n * 1.5).toFixed(2));
+    if (L.overtime) setText(form, L.overtime, overtimeRate(rate));
   } else {
     setText(form, L.rate, `$${rate} per ${payType === "week" ? "week" : "year"} (salary)`);
   }
@@ -236,4 +243,57 @@ export async function fillNyPayNotice(
   }
 
   return doc.save();
+}
+
+
+const FREQ_LABEL: Record<string, string> = { weekly: "Weekly", biweekly: "Bi-weekly", other: "Other" };
+const ALLOWANCE_LABEL: Record<string, string> = {
+  none: "None",
+  tips: "Tips",
+  meals: "Meals",
+  lodging: "Lodging",
+  other: "Other"
+};
+
+/**
+ * What the filled notice will say, as label/value rows, for the employee's
+ * sign-off page -- so they see the overtime rate, payday and the rest that
+ * they are acknowledging, computed by the same code that fills the notice.
+ * Null when the submission is not for a NY site.
+ */
+export function nyNoticeRows(payload: Payload): { label: string; value: string }[] | null {
+  if (!needsNyPayNotice(payload)) return null;
+  const payType = str(payload.new_pay_type);
+  const hourly = payType === "hour" || payType === "";
+  const rate = money(str(payload.new_rate));
+  const rows: { label: string; value: string }[] = [];
+  rows.push({
+    label: "Your new pay rate",
+    value: hourly ? `$${rate} per hour` : `$${rate} per ${payType === "week" ? "week" : "year"} (salary)`
+  });
+  if (hourly) {
+    const ot = overtimeRate(rate);
+    if (ot) rows.push({ label: "Your overtime rate", value: `$${ot} per hour (1.5 times your regular rate)` });
+  } else {
+    rows.push({ label: "Overtime", value: "Exempt from overtime" });
+  }
+  const allowances = Array.isArray(payload.ny_allowances)
+    ? (payload.ny_allowances as unknown[]).filter((v): v is string => typeof v === "string")
+    : [];
+  const detail = str(payload.ny_allowance_detail);
+  rows.push({
+    label: "Allowances taken",
+    value: (allowances.map((a) => ALLOWANCE_LABEL[a] ?? a).join(", ") || "None") + (detail ? ` (${detail})` : "")
+  });
+  if (str(payload.ny_payday)) rows.push({ label: "Regular payday", value: str(payload.ny_payday) });
+  const freq = str(payload.ny_pay_frequency);
+  if (freq) rows.push({ label: "You are paid", value: FREQ_LABEL[freq] ?? freq });
+  rows.push({
+    label: "Notice language",
+    value:
+      str(payload.ny_notice_language) === "english_only"
+        ? `English only (your primary language: ${str(payload.ny_primary_language) || "not given"}) - the Department of Labor does not yet offer this notice in it`
+        : "English, your primary language"
+  });
+  return rows;
 }

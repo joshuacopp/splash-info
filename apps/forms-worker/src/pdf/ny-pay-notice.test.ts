@@ -7,7 +7,7 @@
 import { describe, expect, it } from "vitest";
 import { PDFDocument } from "pdf-lib";
 import type { WorkflowHistoryEntry } from "@splash/forms-schema";
-import { fillNyPayNotice, needsNyPayNotice } from "./ny-pay-notice.js";
+import { fillNyPayNotice, needsNyPayNotice, nyNoticeRows } from "./ny-pay-notice.js";
 
 // 1x1 transparent PNG -- a stand-in signature.
 const PNG = Uint8Array.from(
@@ -67,5 +67,12 @@ describe("fillNyPayNotice", () => {
     expect(bytes).not.toBeNull();
     const doc = await PDFDocument.load(bytes!);
     expect(doc.getForm().getFields()).toHaveLength(0);
+  });
+
+
+  it("shows the employee the same overtime rate the notice states", () => {
+    const rows = nyNoticeRows({ ...base, new_pay_type: "hour" })!;
+    expect(rows.find((r) => r.label === "Your overtime rate")?.value).toContain("$24.75");
+    expect(nyNoticeRows({ ny_site: "no" })).toBeNull();
   });
 });

@@ -524,6 +524,11 @@ export interface WorkflowStage {
   // or the labor budget).
   page_intro?: string;
   show_fields?: string[];
+  // 2026-11-13 -- approval page shows a "What you're acknowledging" section:
+  // what the filled NY s.195.1 notice will state (rate, OVERTIME RATE, payday,
+  // frequency, allowances, language), from the same code that fills it. NY
+  // submissions only. For the Pay Change employee sign-off.
+  show_ny_pay_notice?: boolean;
   _uiKey?: string;
 }
 
