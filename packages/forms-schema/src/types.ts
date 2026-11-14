@@ -45,6 +45,12 @@ export interface FieldBase {
   // do". Flagging everything collapses the distinction and makes the queue
   // unreadable, which is what the cap is for.
   show_in_queue?: boolean;
+  // 2026-11-13 -- when true, the answer is left off the emailed approval page
+  // (/forms/approve/{token}). It still appears on the PDF, the admin detail
+  // page and exports. For answers an approver does not need to decide (a
+  // legal notice section, the requester's email, signatures), so the page
+  // shows only what the decision rests on.
+  hide_from_approvers?: boolean;
   // Brief 176 — when true, this question renders a "Create action item"
   // checkbox at fill time. Ticking it spawns a row in `action_items` for the
   // site to work off after the visit.

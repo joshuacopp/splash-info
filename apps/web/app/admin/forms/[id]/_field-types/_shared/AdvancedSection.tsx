@@ -33,6 +33,8 @@ export default function AdvancedSection({ field, onUpdate }: Props) {
   const exclude =
     Boolean((field as { exclude_from_pdf?: boolean }).exclude_from_pdf) ||
     false;
+  const hideFromApprovers =
+    Boolean((field as { hide_from_approvers?: boolean }).hide_from_approvers) || false;
   const inQueue =
     Boolean((field as { show_in_queue?: boolean }).show_in_queue) || false;
   const canShowInQueue = !DISPLAY_ONLY.includes(field.type);
@@ -63,6 +65,16 @@ export default function AdvancedSection({ field, onUpdate }: Props) {
               onUpdate({ show_in_queue: v || undefined } as Partial<Field>)
             }
             hint="Lets someone working the queue tell tickets apart without opening each one. Up to 5 fields per form; pick the ones that identify a ticket, not the ones needed to action it."
+          />
+        ) : null}
+        {canShowInQueue ? (
+          <LabeledCheckbox
+            label="Hide from approvers"
+            checked={hideFromApprovers}
+            onChange={(v) =>
+              onUpdate({ hide_from_approvers: v || undefined } as Partial<Field>)
+            }
+            hint="Leaves this answer off the emailed approval page. It still appears on the PDF and the submission page. Use it for answers the approver doesn't need to decide."
           />
         ) : null}
         {canSpawnActionItem ? (

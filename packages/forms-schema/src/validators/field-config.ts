@@ -31,6 +31,7 @@ const fieldBaseSchema = {
   // enforcement beyond type, operators flip it freely, and the read side caps
   // how many it honours.
   show_in_queue: z.boolean().optional(),
+  hide_from_approvers: z.boolean().optional(),
   action_item_eligible: z.boolean().optional(),
   action_item_label: z.string().trim().min(1).max(60).optional(),
   visible_if: z
@@ -626,6 +627,7 @@ const fieldBaseSchemaDraft = {
   exclude_from_pdf: z.boolean().optional(),
   // Brief 173 — same, for the queue-column flag.
   show_in_queue: z.boolean().optional(),
+  hide_from_approvers: z.boolean().optional(),
   action_item_eligible: z.boolean().optional(),
   action_item_label: z.string().trim().min(1).max(60).optional(),
   visible_if: z

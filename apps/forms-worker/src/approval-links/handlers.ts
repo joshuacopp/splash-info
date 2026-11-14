@@ -15,6 +15,7 @@
 
 import { isOriginAllowed } from "@splash/http";
 import {
+  isFieldVisible,
   isPackagePriceRows,
   isPackagePriceSites,
   packageLabel,
@@ -453,8 +454,16 @@ function renderDecisionPage(
   });
 
   const files = linkFiles(submission);
+  // Only what the decision rests on. Left off: display-only types, fields the
+  // form marks hide_from_approvers, conditional questions that were never
+  // shown, hidden lookups (routing data such as the RM's address -- the filler
+  // never saw them either), and signature rows, which the page cannot show
+  // anyway. Everything still appears on the PDF and the admin detail page.
   const answers = schema.fields
-    .filter((f) => f.type !== "heading" && f.type !== "image")
+    .filter((f) => f.type !== "heading" && f.type !== "image" && f.type !== "signature")
+    .filter((f) => !f.hide_from_approvers)
+    .filter((f) => !(f.type === "lookup" && f.resolutionMode === "prefill_hidden"))
+    .filter((f) => isFieldVisible(f, submission.payload as Record<string, unknown>))
     .map((f) => answerRow(f, submission.payload[f.key], token, files))
     .filter(Boolean)
     .join("");
