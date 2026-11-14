@@ -1,5 +1,6 @@
 // Field type discriminator. Order intentional — display-only types last.
 import type { LookupKeyColumn } from "./lookup-sources.js";
+import { isFieldVisible } from "./approver-view.js";
 
 export type FieldType =
   | "name"
@@ -664,19 +665,8 @@ export interface LocationOption {
  * dependent hides too. That is the behaviour you want and it needs no
  * recursion.
  */
-export function isFieldVisible(
-  field: Field,
-  payload: Record<string, unknown>
-): boolean {
-  const vis = field.visible_if;
-  if (!vis) return true;
-  const raw = payload[vis.field_key];
-  if (raw == null) return false;
-  if (Array.isArray(raw)) {
-    return raw.some((v) => typeof v === "string" && vis.equals.includes(v));
-  }
-  return typeof raw === "string" && vis.equals.includes(raw);
-}
+// Implemented in approver-view.ts so apps/web can import it by subpath.
+export { isFieldVisible };
 
 /**
  * Keys of every two-option, action-item-eligible question answered with its

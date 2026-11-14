@@ -8,7 +8,8 @@
   "exports": {
     ".": "./src/index.ts",
     "./package-price": "./src/package-price.ts",
-    "./employee": "./src/employee.ts"
+    "./employee": "./src/employee.ts",
+    "./approver-view": "./src/approver-view.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

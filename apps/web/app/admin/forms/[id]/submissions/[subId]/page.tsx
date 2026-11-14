@@ -8,6 +8,8 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 
+import { approverFields } from "@splash/forms-schema/approver-view";
+
 import { getMe } from "../../../../../_lib/me";
 import {
   getSubmissionAdmin,
@@ -139,115 +141,69 @@ export default async function SubmissionDetailPage({
     fromApprovals ? "/admin/approvals" : null
   );
   const workflow = submission.version.schema.workflow;
+  const currentStageId = submission.workflow_stage ?? workflow?.default_stage ?? null;
+  const currentStage =
+    workflow?.stages.find((st) => st.id === currentStageId) ?? null;
+  // REVIEW MODE: opened from Pending Approvals at a stage someone decides.
+  // The decision comes first and only the answers it rests on are shown --
+  // the same approverFields rule as the emailed approval page, so the RM sees
+  // the same request whichever link they used. Everything else (routing
+  // lookups, metadata, admin status/notes) is one click away, not gone.
+  const reviewMode = fromApprovals && !!currentStage?.approver_source;
+  const keyFields = reviewMode
+    ? approverFields(submission.version.schema, currentStage, submission.payload)
+    : [];
 
-  return (
-    <section className="mx-auto w-full max-w-[820px] px-5 py-9">
-      <div className="mb-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm">
-        {fromApprovals && (
-          <Link
-            href="/admin/approvals"
-            className="font-semibold text-splash-blue hover:underline"
-          >
-            ← Back to Pending Approvals
-          </Link>
-        )}
-        <Link
-          href={`/admin/forms/${encodeURIComponent(id)}/submissions`}
-          className="text-splash-blue hover:underline"
-        >
-          ← All submissions
-        </Link>
-      </div>
-
-      <FormsAdminTabs formId={id} canBuild={canBuild} />
-
-      <div className="mb-5 flex flex-wrap items-baseline justify-between gap-3">
+  // Shown only to callers the worker says may SAVE it (submissionGate): a
+  // queue worker on the approver path cannot, and a Save that always fails
+  // is worse than no form. Their notes go in the Discussion thread.
+  const statusNotes = canEdit ? (
+    <section className="mb-6 rounded-md border border-gray-light bg-white p-5">
+      <h2 className="mb-2 text-lg font-semibold text-splash-navy">
+        Status &amp; Splash Notes
+      </h2>
+      <p className="mb-3 text-xs text-splash-navy/60">
+        Visible to all admin / super_admin users. Last-write-wins.
+      </p>
+      <ActionForm action={save} resetOnSuccess={false} className="space-y-3">
         <div>
-          <p className="mb-1 text-xs font-semibold uppercase tracking-[0.18em] text-sudsy-blue">
-            Submission
-          </p>
-          <h1 className="text-2xl font-bold text-splash-navy">
-            {submission.submitter_email ?? "Anonymous submission"}
-          </h1>
-          <p className="mt-1 text-sm text-splash-navy/70">
-            {formatAbsolute(submission.submitted_at)} · v
-            {submission.version.version_number}
-          </p>
-        </div>
-        <StatusPill status={submission.status} />
-      </div>
-
-      {/* ADMIN-ONLY, AND NOW HIDDEN RATHER THAN MERELY UNUSABLE.
-          handlePatchSubmission gates on submissionGate -- admin tier or the
-          form_submissions grant scoped to your own locations -- so a queue
-          worker reaching this page via Brief 173's approver path cannot save
-          either field. Showing them a form whose Save button always fails is
-          worse than showing nothing: they fill it in, lose the text, and
-          reasonably conclude the page is broken.
-          CRD's note-taking is served by the Discussion thread below, which
-          they CAN post to. */}
-      {canEdit && (
-      <section className="mb-6 rounded-md border border-gray-light bg-white p-5">
-        <h2 className="mb-2 text-lg font-semibold text-splash-navy">
-          Status &amp; Splash Notes
-        </h2>
-        <p className="mb-3 text-xs text-splash-navy/60">
-          Visible to all admin / super_admin users. Last-write-wins.
-        </p>
-        <ActionForm action={save} resetOnSuccess={false} className="space-y-3">
-          <div>
-            <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-splash-navy/70">
-              Status
-            </label>
-            <select
-              name="status"
-              defaultValue={submission.status}
-              className="rounded-splash-sm border border-gray-light bg-white px-3 py-1.5 text-sm text-splash-navy"
-            >
-              <option value="new">New</option>
-              <option value="in_progress">In progress</option>
-              <option value="closed">Closed</option>
-            </select>
-          </div>
-          <div>
-            <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-splash-navy/70">
-              Splash Notes
-            </label>
-            <textarea
-              name="splash_notes"
-              defaultValue={submission.splash_notes ?? ""}
-              rows={6}
-              maxLength={10000}
-              placeholder="Internal notes about this submission…"
-              className="block w-full rounded-splash-md border border-gray-light bg-white px-3 py-2 text-sm text-splash-navy focus:border-splash-blue focus:outline-none focus:ring-1 focus:ring-splash-blue"
-            />
-          </div>
-          <SubmitButton
-            pendingText="Saving…"
-            className="rounded-splash-md bg-splash-navy px-4 py-2 text-sm font-semibold text-white hover:bg-splash-blue-dark disabled:opacity-70"
+          <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-splash-navy/70">
+            Status
+          </label>
+          <select
+            name="status"
+            defaultValue={submission.status}
+            className="rounded-splash-sm border border-gray-light bg-white px-3 py-1.5 text-sm text-splash-navy"
           >
-            Save
-          </SubmitButton>
-        </ActionForm>
-      </section>
-      )}
+            <option value="new">New</option>
+            <option value="in_progress">In progress</option>
+            <option value="closed">Closed</option>
+          </select>
+        </div>
+        <div>
+          <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-splash-navy/70">
+            Splash Notes
+          </label>
+          <textarea
+            name="splash_notes"
+            defaultValue={submission.splash_notes ?? ""}
+            rows={6}
+            maxLength={10000}
+            placeholder="Internal notes about this submission…"
+            className="block w-full rounded-splash-md border border-gray-light bg-white px-3 py-2 text-sm text-splash-navy focus:border-splash-blue focus:outline-none focus:ring-1 focus:ring-splash-blue"
+          />
+        </div>
+        <SubmitButton
+          pendingText="Saving…"
+          className="rounded-splash-md bg-splash-navy px-4 py-2 text-sm font-semibold text-white hover:bg-splash-blue-dark disabled:opacity-70"
+        >
+          Save
+        </SubmitButton>
+      </ActionForm>
+    </section>
+  ) : null;
 
-      {workflow && (
-        <WorkflowSection
-          submissionId={subId}
-          formId={id}
-          workflow={workflow}
-          currentStageId={
-            submission.workflow_stage ?? workflow.default_stage
-          }
-          history={submission.workflow_history}
-          currentApproverEmails={submission.current_approver_emails}
-          callerEmail={session.email}
-          isAdminTier={isAdminTier}
-          transitionAction={transition}
-        />
-      )}
-
+  const fullPayload = (
       <section className="mb-6">
         <h2 className="mb-2 text-lg font-semibold text-splash-navy">
           Form payload
@@ -262,7 +218,9 @@ export default async function SubmissionDetailPage({
           formId={id}
         />
       </section>
+  );
 
+  const metadata = (
       <section className="mb-6 rounded-md border border-gray-light bg-white">
         <h2 className="border-b border-gray-light px-5 py-3 text-lg font-semibold text-splash-navy">
           Metadata
@@ -337,6 +295,109 @@ export default async function SubmissionDetailPage({
           ))}
         </dl>
       </section>
+  );
+
+  return (
+    <section className="mx-auto w-full max-w-[820px] px-5 py-9">
+      <div className="mb-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm">
+        {fromApprovals && (
+          <Link
+            href="/admin/approvals"
+            className="font-semibold text-splash-blue hover:underline"
+          >
+            ← Back to Pending Approvals
+          </Link>
+        )}
+        <Link
+          href={`/admin/forms/${encodeURIComponent(id)}/submissions`}
+          className="text-splash-blue hover:underline"
+        >
+          ← All submissions
+        </Link>
+      </div>
+
+      {!reviewMode && <FormsAdminTabs formId={id} canBuild={canBuild} />}
+
+      {reviewMode ? (
+        <div className="mb-4 flex flex-wrap items-baseline justify-between gap-2">
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-[0.18em] text-sudsy-blue">
+              Review request
+            </p>
+            <p className="mt-0.5 text-sm text-splash-navy/70">
+              From {submission.submitter_email ?? "an anonymous submitter"} ·{" "}
+              {formatAbsolute(submission.submitted_at)}
+            </p>
+          </div>
+        </div>
+      ) : (
+        <div className="mb-5 flex flex-wrap items-baseline justify-between gap-3">
+          <div>
+            <p className="mb-1 text-xs font-semibold uppercase tracking-[0.18em] text-sudsy-blue">
+              Submission
+            </p>
+            <h1 className="text-2xl font-bold text-splash-navy">
+              {submission.submitter_email ?? "Anonymous submission"}
+            </h1>
+            <p className="mt-1 text-sm text-splash-navy/70">
+              {formatAbsolute(submission.submitted_at)} · v
+              {submission.version.version_number}
+            </p>
+          </div>
+          <StatusPill status={submission.status} />
+        </div>
+      )}
+
+      {!reviewMode && statusNotes}
+
+      {workflow && (
+        <WorkflowSection
+          submissionId={subId}
+          formId={id}
+          workflow={workflow}
+          currentStageId={
+            submission.workflow_stage ?? workflow.default_stage
+          }
+          history={submission.workflow_history}
+          currentApproverEmails={submission.current_approver_emails}
+          callerEmail={session.email}
+          isAdminTier={isAdminTier}
+          transitionAction={transition}
+        />
+      )}
+
+      {reviewMode ? (
+        <>
+          <section className="mb-6">
+            <h2 className="mb-2 text-lg font-semibold text-splash-navy">
+              The request
+            </h2>
+            <PayloadRenderer
+              schema={submission.version.schema}
+              payload={submission.payload}
+              files={submission.files}
+              formId={id}
+              only={keyFields}
+              compact
+            />
+          </section>
+          <details className="mb-6 rounded-md border border-gray-light bg-white">
+            <summary className="cursor-pointer px-5 py-3 text-sm font-semibold text-splash-blue">
+              Full submission and details
+            </summary>
+            <div className="border-t border-gray-light px-3 pt-4">
+              {statusNotes}
+              {fullPayload}
+              {metadata}
+            </div>
+          </details>
+        </>
+      ) : (
+        <>
+          {fullPayload}
+          {metadata}
+        </>
+      )}
 
       <DiscussionSection
         formId={id}

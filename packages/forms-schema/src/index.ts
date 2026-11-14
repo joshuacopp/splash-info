@@ -22,4 +22,5 @@ export * from "./types.js";
 export * from "./lookup-sources.js";
 export * from "./package-price.js";
 export * from "./employee.js";
+export { approverFields } from "./approver-view.js";
 export * from "./validators/index.js";

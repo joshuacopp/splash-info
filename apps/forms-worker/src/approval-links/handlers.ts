@@ -16,8 +16,8 @@
 import { isOriginAllowed } from "@splash/http";
 import { nyNoticeRows } from "../pdf/ny-pay-notice.js";
 import {
+  approverFields,
   isEmployeeValue,
-  isFieldVisible,
   isPackagePriceRows,
   isPackagePriceSites,
   packageLabel,
@@ -461,13 +461,7 @@ function renderDecisionPage(
   // shown, hidden lookups (routing data such as the RM's address -- the filler
   // never saw them either), and signature rows, which the page cannot show
   // anyway. Everything still appears on the PDF and the admin detail page.
-  const answers = schema.fields
-    .filter((f) => f.type !== "heading" && f.type !== "image" && f.type !== "signature")
-    .filter((f) =>
-      stage.show_fields ? stage.show_fields.includes(f.key) : !f.hide_from_approvers
-    )
-    .filter((f) => !(f.type === "lookup" && f.resolutionMode === "prefill_hidden"))
-    .filter((f) => isFieldVisible(f, submission.payload as Record<string, unknown>))
+  const answers = approverFields(schema, stage, submission.payload as Record<string, unknown>)
     .map((f) => answerRow(f, submission.payload[f.key], token, files))
     .filter(Boolean)
     .join("");

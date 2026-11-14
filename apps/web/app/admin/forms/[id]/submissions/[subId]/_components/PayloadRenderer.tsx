@@ -24,9 +24,13 @@ interface Props {
   payload: Record<string, unknown>;
   files: SubmissionFile[];
   formId: string;
+  /** Render only these fields (e.g. approverFields) instead of the whole schema. */
+  only?: Field[];
+  /** Approver view: no payload keys, no "Other payload entries" appendix. */
+  compact?: boolean;
 }
 
-export default function PayloadRenderer({ schema, payload, files }: Props) {
+export default function PayloadRenderer({ schema, payload, files, only, compact }: Props) {
   const filesByKey = new Map<string, SubmissionFile[]>();
   for (const f of files) {
     const arr = filesByKey.get(f.field_key);
@@ -36,7 +40,7 @@ export default function PayloadRenderer({ schema, payload, files }: Props) {
 
   const renderedKeys = new Set<string>();
 
-  const fieldRows = schema.fields
+  const fieldRows = (only ?? schema.fields)
     .filter((f) => f.type !== "heading" && f.type !== "image")
     .map((f) => {
       renderedKeys.add(f.key);
@@ -49,9 +53,11 @@ export default function PayloadRenderer({ schema, payload, files }: Props) {
         >
           <dt className="text-xs font-semibold uppercase tracking-wide text-splash-navy/60">
             {f.label}
-            <span className="ml-1 font-mono text-[10px] text-splash-navy/40">
-              {f.key}
-            </span>
+            {!compact && (
+              <span className="ml-1 font-mono text-[10px] text-splash-navy/40">
+                {f.key}
+              </span>
+            )}
           </dt>
           <dd className="text-sm text-splash-navy">
             <FieldValue
@@ -65,9 +71,9 @@ export default function PayloadRenderer({ schema, payload, files }: Props) {
       );
     });
 
-  const extraEntries = Object.entries(payload).filter(
-    ([k]) => !renderedKeys.has(k)
-  );
+  const extraEntries = compact || only
+    ? []
+    : Object.entries(payload).filter(([k]) => !renderedKeys.has(k));
 
   return (
     <div className="overflow-hidden rounded-splash-md border border-gray-light bg-white">
