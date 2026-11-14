@@ -312,6 +312,7 @@ const workflowStageSchema = z.object({
   // generator no-ops when false / missing.
   attach_pdf: z.boolean().optional(),
   attach_ny_pay_notice: z.boolean().optional(),
+  attach_warning_notice: z.boolean().optional(),
   approval_link_label: z.string().max(60).optional(),
   page_intro: z.string().max(1000).optional(),
   show_fields: z.array(z.string()).optional(),
@@ -379,6 +380,7 @@ const workflowStageSchemaDraft = z.object({
   // Brief 129 — email-step PDF attach flag (draft variant).
   attach_pdf: z.boolean().optional(),
   attach_ny_pay_notice: z.boolean().optional(),
+  attach_warning_notice: z.boolean().optional(),
   approval_link_label: z.string().max(60).optional(),
   page_intro: z.string().max(1000).optional(),
   show_fields: z.array(z.string()).optional(),

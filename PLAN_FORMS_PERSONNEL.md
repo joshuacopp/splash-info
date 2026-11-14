@@ -196,3 +196,15 @@ forms marked as such. No separate phase needed.
   Phase 1.
 - Default grants per department × level — drafted as a table for review at the
   start of Phase 3, not before.
+
+---
+
+## Later -- pre-fill previous warnings (operator, 2026-11-14)
+
+The Employee Warning Notice (`scripts/gen-warning-notice.ts`) asks the manager
+to type up to three previous warnings, as the paper form did. Once every GM
+writes up here, pre-fill what the system already has for that employee and let
+the manager add anything older by hand. Needs phase 3 first: listing past
+write-ups on a no-sign-in tablet form would show confidential records to
+whoever holds the link, so the list must come from a signed-in, rule-checked
+read.

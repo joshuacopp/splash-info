@@ -516,6 +516,11 @@ export interface WorkflowStage {
   // submission's `ny_site` answer is "yes". Built for the Pay Change form and
   // coupled to its field keys.
   attach_ny_pay_notice?: boolean;
+  // 2026-11-14 -- attach the Splash-branded Employee Warning Notice + Notice of
+  // Negative Information PDF (apps/forms-worker/src/pdf/warning-notice.ts),
+  // filled from the submission. Built for the Employee Warning Notice form and
+  // coupled to its field keys (scripts/gen-warning-notice.ts).
+  attach_warning_notice?: boolean;
   // 2026-11-13 -- button text for `{approval.link}` in this email step when
   // the next stage is not an approve/deny decision (e.g. "Open for employee
   // signature"). Default "Review & Approve or Deny".

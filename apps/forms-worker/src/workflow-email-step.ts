@@ -62,6 +62,7 @@ import {
   type SafetyDocRow
 } from "./sds/safety-docs.js";
 import { fillNyPayNotice, needsNyPayNotice } from "./pdf/ny-pay-notice.js";
+import { buildWarningNoticePdf } from "./pdf/warning-notice.js";
 import { generateOrReuseCompletedPdf } from "./pdf/cascade-attach.js";
 import { mintApprovalLink } from "./approval-links/tokens.js";
 import { wrapInEmailShell } from "@splash/email-shell";
@@ -327,6 +328,46 @@ export async function cascadeThroughEmailSteps(
       } catch (err) {
         console.error(
           `[forms.ny-notice] failed for submission ${ctx.runtime.submissionId} stage ${stage.id}`,
+          err
+        );
+      }
+    }
+
+    // The Splash Employee Warning Notice + Notice of Negative Information --
+    // the document itself, not the generic completed-form PDF. Built once per
+    // submission and reused by later email steps (the employee's copy), so
+    // HR and the employee hold byte-identical documents. Fail-soft like the
+    // attachments above: the email still goes if the PDF cannot be built.
+    if (stage.attach_warning_notice && ctx.submissionMeta) {
+      try {
+        const r2Key = `form-submission-pdfs/${ctx.form.id}/${ctx.submissionMeta.id}-warning-notice.pdf`;
+        let size: number | null = null;
+        const existing = await env.FORMS_FILES.head(r2Key);
+        if (existing) {
+          size = existing.size;
+        } else {
+          const bytes = await buildWarningNoticePdf(env.FORMS_FILES, ctx.payload, {
+            id: ctx.submissionMeta.id,
+            submittedAt: ctx.submissionMeta.submittedAt
+          });
+          await env.FORMS_FILES.put(r2Key, bytes, {
+            httpMetadata: { contentType: "application/pdf" }
+          });
+          size = bytes.byteLength;
+        }
+        stageAttachments = [
+          ...(stageAttachments ?? []),
+          {
+            filename: `Employee-Warning-Notice-${ctx.submissionMeta.id.slice(0, 8)}.pdf`,
+            r2_key: r2Key,
+            mime: "application/pdf",
+            size_bytes: size,
+            bucket: "FORMS_FILES"
+          }
+        ];
+      } catch (err) {
+        console.error(
+          `[forms.warning-notice] failed for submission ${ctx.runtime.submissionId} stage ${stage.id}`,
           err
         );
       }

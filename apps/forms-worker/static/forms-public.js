@@ -280,23 +280,28 @@
       byKey[key].push(wrap);
     });
 
-    function controlValue(key) {
+    // Every current answer of the control, as a list: one value for a text
+    // input or radio group, every TICKED value for a checkbox group. The server
+    // (isFieldVisible) shows a dependent when ANY ticked value matches, so the
+    // page must too -- taking only the first ticked box hid "Other" whenever
+    // another box above it was also ticked.
+    function controlValues(key) {
       var els = formEl.querySelectorAll('[name="' + cssAttrEscape(key) + '"]');
-      if (!els.length) return null;
+      var out = [];
       for (var i = 0; i < els.length; i++) {
         var el = els[i];
-        // Radio groups share a name; only the checked one carries the answer.
         if (el.type === "radio" || el.type === "checkbox") {
-          if (el.checked) return el.value;
+          if (el.checked) out.push(el.value);
         } else {
-          return el.value;
+          out.push(el.value);
+          break;
         }
       }
-      return null;
+      return out;
     }
 
     function apply(key) {
-      var value = controlValue(key);
+      var values = controlValues(key);
       byKey[key].forEach(function (wrap) {
         // JSON rather than a delimiter: option values are operator-authored
         // and any separator character could legitimately appear in one.
@@ -307,7 +312,9 @@
           allowed = [];
         }
         if (!Array.isArray(allowed)) allowed = [];
-        var show = value != null && allowed.indexOf(value) !== -1;
+        var show = values.some(function (v) {
+          return allowed.indexOf(v) !== -1;
+        });
         wrap.hidden = !show;
         var inputs = wrap.querySelectorAll("input, select, textarea");
         Array.prototype.forEach.call(inputs, function (input) {
