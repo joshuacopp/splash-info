@@ -94,7 +94,11 @@ export const shortTextFieldSchema = z.object({
   type: z.literal("short_text"),
   maxLength: z.number().int().positive().optional(),
   placeholder: z.string().optional(),
-  defaultValue: z.string().optional()
+  defaultValue: z.string().optional(),
+  numeric: z
+    .object({ min: z.number().optional(), max: z.number().optional(), integer: z.boolean().optional() })
+    .strict()
+    .optional()
 });
 
 export const longTextFieldSchema = z.object({
@@ -697,7 +701,11 @@ const shortTextFieldSchemaDraft = z.object({
   type: z.literal("short_text"),
   maxLength: z.number().int().positive().optional(),
   placeholder: z.string().optional(),
-  defaultValue: z.string().optional()
+  defaultValue: z.string().optional(),
+  numeric: z
+    .object({ min: z.number().optional(), max: z.number().optional(), integer: z.boolean().optional() })
+    .strict()
+    .optional()
 });
 
 const longTextFieldSchemaDraft = z.object({

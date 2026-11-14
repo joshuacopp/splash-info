@@ -53,9 +53,31 @@ export function payloadValidatorFor(field: Field): z.ZodTypeAny | null {
 
     case "short_text": {
       const max = field.maxLength ?? 500;
-      return field.required
+      const base = field.required
         ? z.string().min(1, "Required").max(max)
         : z.string().max(max).optional().or(z.literal(""));
+      const num = field.numeric;
+      if (!num) return base;
+      return base.refine(
+        (v) => {
+          if (v == null || v === "") return true; // blank handled by required
+          const t = v.trim();
+          if (!(num.integer ? /^-?\d+$/ : /^-?\d+(\.\d+)?$/).test(t)) return false;
+          const n = Number(t);
+          return (num.min == null || n >= num.min) && (num.max == null || n <= num.max);
+        },
+        {
+          message:
+            `Enter a ${num.integer ? "whole " : ""}number` +
+            (num.min != null && num.max != null
+              ? ` from ${num.min} to ${num.max}`
+              : num.max != null
+                ? ` up to ${num.max}`
+                : num.min != null
+                  ? ` of at least ${num.min}`
+                  : "")
+        }
+      );
     }
 
     case "long_text": {

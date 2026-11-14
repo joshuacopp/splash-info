@@ -183,6 +183,9 @@ export interface ShortTextField extends FieldBase {
   placeholder?: string;
   /** Pre-filled answer the filler can change. */
   defaultValue?: string;
+  /** The answer must be a number (stored as the typed string). Shows a number
+   *  keypad on tablets; the server checks the bounds. */
+  numeric?: { min?: number; max?: number; integer?: boolean };
 }
 
 export interface LongTextField extends FieldBase {
