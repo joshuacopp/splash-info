@@ -28,3 +28,15 @@ declare module "*/templates/ny-ls59.pdf" {
   const contents: ArrayBuffer;
   export default contents;
 }
+
+// Digest chart font (fonts/*.ttf, `[[rules]] type = "Data"`) and the resvg
+// wasm module (wrangler bundles *.wasm as a CompiledWasm module by default).
+declare module "*/fonts/noto-sans-regular.ttf" {
+  const contents: ArrayBuffer;
+  export default contents;
+}
+
+declare module "@resvg/resvg-wasm/index_bg.wasm" {
+  const mod: WebAssembly.Module;
+  export default mod;
+}

@@ -13,6 +13,7 @@
     "clean": "rm -rf dist .turbo .wrangler"
   },
   "dependencies": {
+    "@resvg/resvg-wasm": "2.6.2",
     "@splash/auth": "workspace:*",
     "@splash/db-supabase": "workspace:*",
     "@splash/email-shell": "workspace:*",

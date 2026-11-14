@@ -39,6 +39,7 @@
 //   GET    /forms/admin/api/forms/{id}/submissions/{subId}/comments — Brief 174: thread
 //   POST   /forms/admin/api/forms/{id}/submissions/{subId}/comments — Brief 174: post
 //   GET    /forms/admin/api/forms/{id}/versions       — Brief 96: version history
+//   *      /forms/admin/api/forms/{id}/digests[...]   — 2026-11-14: scheduled digests (src/digests/admin.ts)
 //   POST   /forms/internal/api/email-queue/claim      — Brief 127: PA claims batch
 //   POST   /forms/internal/api/email-queue/confirm    — Brief 127: PA confirms send
 //   GET    /forms/admin/api/email-queue/list          — Brief 128: admin viewer list
@@ -168,6 +169,8 @@ import {
 import { runDailyCleanup } from "./cron/cleanup.js";
 import { runDailyApprovalDigest } from "./cron/approval-digest.js";
 import { runCloudflareEmailDrain } from "./email-queue/cloudflare-drain.js";
+import { handleDigestsRoute } from "./digests/admin.js";
+import { runDueDigests } from "./digests/run.js";
 
 export interface Env {
   SUPABASE_URL: string;
@@ -438,6 +441,15 @@ export default {
       if (req.method === "GET") return handleListForms(env, req);
       if (req.method === "POST") return handleCreateForm(env, req);
       return new Response("Method Not Allowed", { status: 405 });
+    }
+
+    // 2026-11-14 -- form digests (src/digests/admin.ts):
+    // /forms/admin/api/forms/{id}/digests[/preview|/test|/{digestId}]
+    const digestsMatch = url.pathname.match(
+      /^\/forms\/admin\/api\/forms\/([^/]+)\/digests(\/[^/]+)?$/
+    );
+    if (digestsMatch && digestsMatch[1]) {
+      return handleDigestsRoute(env, req, digestsMatch[1], digestsMatch[2] ?? "");
     }
 
     // /forms/admin/api/forms/{id}
@@ -859,6 +871,18 @@ export default {
           })
           .catch((err) => console.error("[forms.email-queue.cloudflare] drain failed", err))
       );
+      // Form digests (2026-11-14): checked every 5th minute. Each digest is
+      // due from its Eastern send hour onward on its send day, and
+      // form_digest_runs' unique (digest, period) row makes a send happen once.
+      if (new Date(event.scheduledTime).getUTCMinutes() % 5 === 0) {
+        ctx.waitUntil(
+          runDueDigests(env)
+            .then((r) => {
+              if (r.sent.length > 0) console.log("[forms.digest.cron] sent", r);
+            })
+            .catch((err) => console.error("[forms.digest.cron] failed", err))
+        );
+      }
       return;
     }
     if (event.cron === "0 12 * * *") {

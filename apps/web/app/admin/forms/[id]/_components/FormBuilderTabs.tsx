@@ -1,4 +1,5 @@
 // Brief 125 — Form builder section tabs (Fields | Workflow | Settings).
+// 2026-11-14: + Digests (scheduled summary emails, _digests/DigestsPanel.tsx).
 //
 // URL-driven via `?tab=fields|workflow|settings`. Default `fields` when
 // omitted (back-compat for direct URLs / existing bookmarks). Rendered as
@@ -9,7 +10,7 @@
 
 import Link from "next/link";
 
-export type BuilderTab = "fields" | "workflow" | "settings";
+export type BuilderTab = "fields" | "workflow" | "settings" | "digests";
 
 interface Props {
   formId: string;
@@ -19,7 +20,8 @@ interface Props {
 const TABS: ReadonlyArray<{ id: BuilderTab; label: string }> = [
   { id: "fields", label: "Fields" },
   { id: "workflow", label: "Workflow" },
-  { id: "settings", label: "Settings" }
+  { id: "settings", label: "Settings" },
+  { id: "digests", label: "Digests" }
 ];
 
 export default function FormBuilderTabs({ formId, active }: Props) {

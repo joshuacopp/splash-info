@@ -9,7 +9,8 @@
     ".": "./src/index.ts",
     "./package-price": "./src/package-price.ts",
     "./employee": "./src/employee.ts",
-    "./approver-view": "./src/approver-view.ts"
+    "./approver-view": "./src/approver-view.ts",
+    "./digest": "./src/digest.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

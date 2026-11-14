@@ -3311,6 +3311,20 @@ URL-based — service bindings don't apply to those.
   `{category: "lube"|"detail", name, current, new}` -- one price each. Rows
   may be EMPTY when a site's changes are only new packages / services. All
   four are display records: nothing writes pricing_simple.
+- **Form digests** (2026-11-14) - Scheduled summary emails per form, set up
+  by admins on the Digests tab of /admin/forms/{id} -- build new digests there,
+  not as custom code. Config type + validator: `packages/forms-schema/src/digest.ts`
+  (import from apps/web via `@splash/forms-schema/digest`). Worker:
+  `apps/forms-worker/src/digests/` (aggregate = pure; period = Eastern calendar
+  math; run = cron/test/preview; chart-svg + chart-png = drawing). Per-site
+  roles (site / RM / RD / HRT) see ONLY their own sites; named people see all.
+  The send lock is the `form_digest_runs` UNIQUE (digest_id, period) row,
+  inserted BEFORE sending -- keep it that way or overlapping cron ticks double
+  mail. Charts are rasterised in-worker by `@resvg/resvg-wasm` with the
+  vendored `fonts/noto-sans-regular.ttf`; anything importing `run.ts` /
+  `render-email.ts` / `chart-png.ts` pulls in the wasm, which vitest-pool-workers
+  cannot load -- test pure modules (`aggregate`, `period`, `audience`) instead.
+  Sum/average needs a short-text field with `numeric`.
 - **Employee field** (2026-11-13, PLAN_FORMS_PERSONNEL.md phase 2) - form
   field type `employee`: searches the Beekeeper roster of the site another
   field names (011 / 101 = office groups) via `POST /forms/api/employees/{slug}`.

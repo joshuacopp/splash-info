@@ -12,6 +12,8 @@ import { getFormAdmin, getLookupSourcesAdmin } from "../_lib/worker-fetch";
 import FormsAdminTabs from "../_components/FormsAdminTabs";
 import NoAccessCard from "../_components/NoAccessCard";
 import BuilderClient from "./_builder/BuilderClient";
+import DigestsPanel from "./_digests/DigestsPanel";
+import { listDigestsAction } from "./_digests/actions";
 import FormBuilderTabs, {
   type BuilderTab
 } from "./_components/FormBuilderTabs";
@@ -24,7 +26,7 @@ interface PageProps {
 }
 
 function resolveTab(raw: string | undefined): BuilderTab {
-  if (raw === "workflow" || raw === "settings") return raw;
+  if (raw === "workflow" || raw === "settings" || raw === "digests") return raw;
   return "fields";
 }
 
@@ -69,6 +71,9 @@ export default async function FormBuilderPage({ params, searchParams }: PageProp
 
       <FormBuilderTabs formId={id} active={activeTab} />
 
+      {activeTab === "digests" ? (
+        <DigestsTab formId={id} fields={detail.draftSchema.fields} />
+      ) : (
       <BuilderClient
         initial={detail}
         lookupSources={lookupSources}
@@ -76,6 +81,17 @@ export default async function FormBuilderPage({ params, searchParams }: PageProp
         accessTag={detail.accessTag ?? null}
         activeTab={activeTab}
       />
+      )}
     </section>
   );
+}
+
+// Digests is not part of the builder's draft/publish state, so it renders on
+// its own rather than inside BuilderClient.
+async function DigestsTab({ formId, fields }: { formId: string; fields: import("@splash/forms-schema").Field[] }) {
+  const r = await listDigestsAction(formId);
+  if (!r.ok) {
+    return <p className="rounded bg-red-50 px-3 py-2 text-sm text-red-800">Couldn't load digests: {r.error}</p>;
+  }
+  return <DigestsPanel formId={formId} fields={fields} initialDigests={r.data} />;
 }

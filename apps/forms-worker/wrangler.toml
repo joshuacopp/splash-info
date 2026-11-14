@@ -169,9 +169,12 @@ fallthrough = false
 # Filled by src/pdf/ny-pay-notice.ts for the Pay Change form's payroll email.
 # Same posture as the static .js rule: no separate R2 upload step, and the
 # template version is pinned in the repo.
+# Also the digest chart font (src/digests/chart-png.ts): resvg needs a font
+# buffer to draw any text and a worker has no system fonts. Vendored, SIL OFL.
+# ONE Data rule: wrangler ignores a second rule of the same type.
 [[rules]]
 type = "Data"
-globs = ["**/templates/*.pdf"]
+globs = ["**/templates/*.pdf", "**/fonts/*.ttf"]
 fallthrough = false
 
 [limits]

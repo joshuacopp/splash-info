@@ -165,6 +165,9 @@ importers:
 
   apps/forms-worker:
     dependencies:
+      '@resvg/resvg-wasm':
+        specifier: 2.6.2
+        version: 2.6.2
       '@splash/auth':
         specifier: workspace:*
         version: link:../../packages/auth
@@ -2292,6 +2295,10 @@ packages:
   '@remix-run/router@1.23.3':
     resolution: {integrity: sha512-4An71tdz9X8+3sI4Qqqd2LWd9vS39J7sqd9EU4Scw7TJE/qB10Flv/UuqbPVgfQV9XoK8Np6jNquZitnZq5i+Q==}
     engines: {node: '>=14.0.0'}
+
+  '@resvg/resvg-wasm@2.6.2':
+    resolution: {integrity: sha512-FqALmHI8D4o6lk/LRWDnhw95z5eO+eAa6ORjVg09YRR7BkcM6oPHU9uyC0gtQG5vpFLvgpeU4+zEAz2H8APHNw==}
+    engines: {node: '>= 10'}
 
   '@rolldown/pluginutils@1.0.0-beta.27':
     resolution: {integrity: sha512-+d0F4MKMCbeVUJwG96uQ4SgAznZNSq93I3V+9NHA4OpvqG8mRCpGdKmK8l/dl02h2CCDHwW2FqilnTyDcAnqjA==}
@@ -7270,6 +7277,8 @@ snapshots:
   '@poppinss/exception@1.2.3': {}
 
   '@remix-run/router@1.23.3': {}
+
+  '@resvg/resvg-wasm@2.6.2': {}
 
   '@rolldown/pluginutils@1.0.0-beta.27': {}
 

@@ -900,3 +900,51 @@ export async function abandonEmailQueueAdmin(id: string): Promise<void> {
   );
   await readJson<{ ok: true; id: string }>(resp, "abandonEmailQueueAdmin");
 }
+
+// =============================================================================
+// Form digests (2026-11-14) -- scheduled summary emails, /admin/forms/{id}?tab=digests
+// =============================================================================
+//
+// Shapes mirror apps/forms-worker/src/digests/{aggregate,run}.ts. The config
+// types live in @splash/forms-schema/digest (shared with the worker).
+
+export interface DigestChartData {
+  type: "bar" | "line" | "pie";
+  agg: "count" | "sum" | "avg";
+  title: string;
+  xLabel: string;
+  yLabel: string;
+  x: { key: string; label: string }[];
+  series: { key: string; label: string; values: (number | null)[] }[];
+}
+
+export interface DigestTableData {
+  columns: string[];
+  numericFrom: number;
+  sections: { title?: string; rows: string[][]; total?: string[] }[];
+  grandTotal?: string[];
+}
+
+export interface DigestPreviewData {
+  period: { key: string; label: string; from: string; to: string };
+  total: number;
+  capped: boolean;
+  charts: DigestChartData[];
+  table: DigestTableData | null;
+  recipients: { email: string; roles: string[]; scope: string; submissions: number; skipped: boolean }[];
+}
+
+/** Worker call that keeps the status and the parsed body, for actions that show the worker's message. */
+export async function callDigestsAdmin(
+  formId: string,
+  rest: string,
+  method: "GET" | "POST" | "PATCH" | "DELETE",
+  body?: unknown
+): Promise<{ status: number; body: Record<string, unknown> }> {
+  const resp = await callForms(`/forms/admin/api/forms/${encodeURIComponent(formId)}/digests${rest}`, {
+    method,
+    jsonBody: body
+  });
+  const parsed = (await resp.json().catch(() => ({}))) as Record<string, unknown>;
+  return { status: resp.status, body: parsed };
+}
