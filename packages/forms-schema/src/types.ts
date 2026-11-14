@@ -441,6 +441,12 @@ export interface WorkflowTransition {
   to: string;
   label: string;
   requires?: WorkflowTransitionRequirements;
+  // 2026-11-13 -- labels for the typed-name / signature boxes on the emailed
+  // approval page, when the person signing is not the approver (e.g. the
+  // employee acknowledging a pay change). Default "Type your full name" /
+  // "Signature".
+  typed_name_label?: string;
+  signature_label?: string;
 }
 
 /**
@@ -497,6 +503,27 @@ export interface WorkflowStage {
   // pass reads the just-written R2 object instead of regenerating. Defaults
   // to false / missing.
   attach_pdf?: boolean;
+  // 2026-11-13 -- also attach the OFFICIAL NY Labor Law s.195.1 pay notice
+  // (NYS DOL LS 54 / LS 59), filled from the submission and the employee's
+  // sign-off (apps/forms-worker/src/pdf/ny-pay-notice.ts). Only when the
+  // submission's `ny_site` answer is "yes". Built for the Pay Change form and
+  // coupled to its field keys.
+  attach_ny_pay_notice?: boolean;
+  // 2026-11-13 -- button text for `{approval.link}` in this email step when
+  // the next stage is not an approve/deny decision (e.g. "Open for employee
+  // signature"). Default "Review & Approve or Deny".
+  approval_link_label?: string;
+  // 2026-11-13 -- emailed approval page only. `page_intro` is shown at the top
+  // of the link page ({field.key} placeholders allowed), for a step whose
+  // signer needs telling what is happening ("Hand this tablet to the
+  // employee..."). `show_fields`, when set, is EXACTLY which answers (by key,
+  // in schema order) this stage's page shows -- overriding
+  // hide_from_approvers -- for a signer who must see some things the
+  // approvers did not and must not see others (the employee acknowledging a
+  // pay change sees the new rate and the NY notice, not the merits write-up
+  // or the labor budget).
+  page_intro?: string;
+  show_fields?: string[];
   _uiKey?: string;
 }
 

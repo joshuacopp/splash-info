@@ -61,6 +61,7 @@ import {
   lookupSafetyDocsForFieldKeys,
   type SafetyDocRow
 } from "./sds/safety-docs.js";
+import { fillNyPayNotice, needsNyPayNotice } from "./pdf/ny-pay-notice.js";
 import { generateOrReuseCompletedPdf } from "./pdf/cascade-attach.js";
 import { mintApprovalLink } from "./approval-links/tokens.js";
 import { wrapInEmailShell } from "@splash/email-shell";
@@ -99,6 +100,9 @@ export interface RuntimeContext {
    *  recipient gets their own link); null when minting failed, in which case
    *  the token falls back to the signed-in submission URL. */
   approvalLinkUrl?: string | null;
+  /** Button text for `{approval.link}` -- the email stage's
+   *  `approval_link_label`, else "Review & Approve or Deny". */
+  approvalLinkLabel?: string;
   /** Backs `{decision.note}` / `{decision.by}`: the most recent PERSON's
    *  transition (system email-step entries skipped). Lets an outcome email
    *  carry the approver's reason -- a denial with no reason attached sends
@@ -292,6 +296,39 @@ export async function cascadeThroughEmailSteps(
       }
     }
 
+    // The official NY s.195.1 pay notice, when the stage asks for it and the
+    // submission is for a NY site. Fail-soft like the PDF above: payroll still
+    // gets the email (and our PDF) if the notice cannot be built.
+    if (stage.attach_ny_pay_notice && ctx.submissionMeta && needsNyPayNotice(ctx.payload)) {
+      try {
+        const bytes = await fillNyPayNotice(env.FORMS_FILES, ctx.payload, [
+          ...(ctx.priorWorkflowHistory ?? []),
+          ...appended
+        ]);
+        if (bytes) {
+          const r2Key = `form-submission-pdfs/${ctx.form.id}/${ctx.submissionMeta.id}-ny-pay-notice.pdf`;
+          await env.FORMS_FILES.put(r2Key, bytes, {
+            httpMetadata: { contentType: "application/pdf" }
+          });
+          stageAttachments = [
+            ...(stageAttachments ?? []),
+            {
+              filename: `NY-Pay-Notice-${ctx.submissionMeta.id.slice(0, 8)}.pdf`,
+              r2_key: r2Key,
+              mime: "application/pdf",
+              size_bytes: bytes.byteLength,
+              bucket: "FORMS_FILES"
+            }
+          ];
+        }
+      } catch (err) {
+        console.error(
+          `[forms.ny-notice] failed for submission ${ctx.runtime.submissionId} stage ${stage.id}`,
+          err
+        );
+      }
+    }
+
     // `{approval.link}` — a per-recipient no-sign-in link for the approval
     // stage this email step leads into. Minted only when the template asks
     // for it AND the next stage is one somebody approves; it is bound to that
@@ -304,6 +341,7 @@ export async function cascadeThroughEmailSteps(
       const recipientRuntime: RuntimeContext = wantsApprovalLink
         ? {
             ...localRuntime,
+            approvalLinkLabel: stage.approval_link_label,
             approvalLinkUrl: await mintApprovalLink(env, {
               formId: ctx.form.id,
               submissionId: ctx.runtime.submissionId,
@@ -575,7 +613,7 @@ export function renderTemplate(
       case "approvals.url":
         return "Pending Approvals: https://splashcarwashes.info/admin/approvals";
       case "approval.link":
-        return `Approve or deny (no sign-in needed): ${approvalLinkOrFallback(runtime)}`;
+        return `${runtime.approvalLinkLabel || "Approve or deny"} (no sign-in needed): ${approvalLinkOrFallback(runtime)}`;
       case "decision.note":
         return runtime.decision?.note ?? "";
       case "decision.by":
@@ -717,7 +755,9 @@ function renderTokenHtml(
     case "approval.link":
       return renderCtaButton(
         approvalLinkOrFallback(runtime),
-        runtime.approvalLinkUrl ? "Review & Approve or Deny" : "View Submission",
+        runtime.approvalLinkUrl
+          ? runtime.approvalLinkLabel || "Review & Approve or Deny"
+          : "View Submission",
         "primary"
       );
     case "my_requests.url":

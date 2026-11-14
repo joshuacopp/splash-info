@@ -15,6 +15,7 @@
 
 import { isOriginAllowed } from "@splash/http";
 import {
+  isEmployeeValue,
   isFieldVisible,
   isPackagePriceRows,
   isPackagePriceSites,
@@ -461,19 +462,31 @@ function renderDecisionPage(
   // anyway. Everything still appears on the PDF and the admin detail page.
   const answers = schema.fields
     .filter((f) => f.type !== "heading" && f.type !== "image" && f.type !== "signature")
-    .filter((f) => !f.hide_from_approvers)
+    .filter((f) =>
+      stage.show_fields ? stage.show_fields.includes(f.key) : !f.hide_from_approvers
+    )
     .filter((f) => !(f.type === "lookup" && f.resolutionMode === "prefill_hidden"))
     .filter((f) => isFieldVisible(f, submission.payload as Record<string, unknown>))
     .map((f) => answerRow(f, submission.payload[f.key], token, files))
     .filter(Boolean)
     .join("");
 
-  const actions = stage.transitions.map((t, i) => actionOption(t, i)).join("");
+  // One possible action (e.g. "Employee signed"): no decision to make, so the
+  // radio is pre-picked and its fieldset hidden; the page goes straight to
+  // what that action needs. Its own labels name who is signing.
+  const only = stage.transitions.length === 1 ? stage.transitions[0]! : null;
+  const actions = stage.transitions.map((t, i) => actionOption(t, i, only !== null)).join("");
+  const typedLabel = only?.typed_name_label || "Type your full name";
+  const sigLabel = only?.signature_label || "Signature";
+  const intro = stage.page_intro
+    ? `<div class="ap-intro">${introHtml(stage.page_intro, submission.payload as Record<string, unknown>)}</div>`
+    : "";
 
   return shell(
-    "Approval needed",
+    stage.page_intro ? stage.label : "Approval needed",
     `
 <style>${PAGE_CSS}</style>
+${intro}
 <p class="forms-description">
   <strong>${escapeHtml(stage.label)}</strong> &middot;
   submitted by ${escapeHtml(submission.submitter_email ?? "an anonymous submitter")} on ${escapeHtml(submittedAt)} ET
@@ -481,7 +494,7 @@ function renderDecisionPage(
 <dl class="ap-answers">${answers}</dl>
 ${error ? `<div class="ap-error" role="alert">${escapeHtml(error)}</div>` : ""}
 <form method="POST" action="/forms/approve/${escapeHtml(token)}" class="ap-form" id="ap-form">
-  <fieldset class="field">
+  <fieldset class="field"${only ? " hidden" : ""}>
     <legend class="field-label">Your decision</legend>
     ${actions}
   </fieldset>
@@ -490,11 +503,11 @@ ${error ? `<div class="ap-error" role="alert">${escapeHtml(error)}</div>` : ""}
     <textarea id="ap-note" name="note" class="field-textarea" rows="3" maxlength="5000"></textarea>
   </div>
   <div class="field ap-req" data-req="typed_name" hidden>
-    <label class="field-label" for="ap-name">Type your full name</label>
+    <label class="field-label" for="ap-name">${escapeHtml(typedLabel)}</label>
     <input id="ap-name" name="typed_name" class="field-input" maxlength="200" autocomplete="name" />
   </div>
   <div class="field ap-req" data-req="signature" hidden>
-    <span class="field-label">Signature</span>
+    <span class="field-label">${escapeHtml(sigLabel)}</span>
     <canvas class="ap-sig" width="600" height="180"></canvas>
     <button type="button" class="ap-clear">Clear</button>
     <input type="hidden" name="signature_png" value="" />
@@ -505,7 +518,23 @@ ${error ? `<div class="ap-error" role="alert">${escapeHtml(error)}</div>` : ""}
   );
 }
 
-function actionOption(t: WorkflowTransition, i: number): string {
+/** A stage's page_intro as safe HTML: placeholders filled, escaped, line
+ *  breaks kept. */
+function introHtml(text: string, payload: Record<string, unknown>): string {
+  return escapeHtml(fillIntro(text, payload)).split("\n").join("<br>");
+}
+
+/** `{field.key}` in a stage's page_intro -> that answer (an employee's name,
+ *  a site). Plain text; the caller escapes. */
+function fillIntro(text: string, payload: Record<string, unknown>): string {
+  return text.replace(/\{field\.([a-z][a-z0-9_]*)\}/g, (_m, key: string) => {
+    const v = payload[key];
+    if (isEmployeeValue(v)) return v.name;
+    return typeof v === "string" || typeof v === "number" ? String(v) : "";
+  });
+}
+
+function actionOption(t: WorkflowTransition, i: number, preselect = false): string {
   const req = t.requires ?? {};
   const needs = [req.signature ? "signature" : "", req.note ? "note" : "", req.typed_name ? "typed_name" : ""]
     .filter(Boolean)
@@ -516,7 +545,7 @@ function actionOption(t: WorkflowTransition, i: number): string {
     req.typed_name ? "typed name" : ""
   ].filter(Boolean);
   return `<label class="field-radio-option">
-    <input type="radio" name="to" value="${escapeHtml(t.to)}" data-needs="${escapeHtml(needs)}" data-label="${escapeHtml(t.label)}" id="ap-to-${i}" />
+    <input type="radio" name="to" value="${escapeHtml(t.to)}" data-needs="${escapeHtml(needs)}" data-label="${escapeHtml(t.label)}" id="ap-to-${i}"${preselect ? " checked" : ""} />
     <span>${escapeHtml(t.label)}${hint.length ? ` <span class="ap-hint">(requires ${escapeHtml(hint.join(" and "))})</span>` : ""}</span>
   </label>`;
 }
@@ -676,6 +705,7 @@ const PAGE_CSS = `
   .ap-sig { display: block; width: 100%; max-width: 600px; height: 180px; border: 1px solid #ccc; border-radius: 4px; background: #fff; touch-action: none; }
   .ap-clear { margin-top: 6px; background: none; border: 1px solid #ccc; border-radius: 4px; padding: 4px 12px; cursor: pointer; }
   .submit-btn[disabled] { opacity: 0.5; cursor: not-allowed; }
+.ap-intro { border-left: 4px solid #1e88e5; background: #f3f8fd; padding: 12px 16px; margin: 0 0 16px; font-size: 16px; line-height: 1.45; }
 `;
 
 // Runs on DOMContentLoaded, after the shell's deferred signature-pad script.

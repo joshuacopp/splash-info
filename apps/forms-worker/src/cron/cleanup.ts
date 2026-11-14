@@ -200,6 +200,7 @@ export async function runDailyCleanup(env: Env): Promise<CleanupResult> {
 
       // Map R2 keys to submission_ids. Path shape:
       //   form-submission-pdfs/{form_id}/{submission_id}.pdf
+      //   form-submission-pdfs/{form_id}/{submission_id}-ny-pay-notice.pdf
       // index 0  1                       2
       const keyToSubmissionId: Map<string, string> = new Map();
       for (const obj of list.objects) {
@@ -207,9 +208,11 @@ export async function runDailyCleanup(env: Env): Promise<CleanupResult> {
         const parts = obj.key.split("/");
         if (parts.length < 3 || !parts[2]) continue;
         const basename = parts[2];
-        const subId = basename.endsWith(".pdf")
-          ? basename.slice(0, -4)
-          : basename;
+        // Companion PDFs share the submission's prefix
+        // ({submission_id}-ny-pay-notice.pdf), so read the leading UUID. A
+        // non-UUID here would fail the whole .in("id", ...) query (22P02)
+        // and stop the sweep, so anything else is skipped, not guessed at.
+        const subId = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i.exec(basename)?.[0];
         if (!subId) continue;
         keyToSubmissionId.set(obj.key, subId);
       }

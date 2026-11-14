@@ -278,7 +278,9 @@ const workflowTransitionSchema = z.object({
       typed_name: z.boolean().optional(),
       note: z.boolean().optional()
     })
-    .optional()
+    .optional(),
+  typed_name_label: z.string().max(80).optional(),
+  signature_label: z.string().max(80).optional()
 });
 
 const workflowStageSchema = z.object({
@@ -305,7 +307,11 @@ const workflowStageSchema = z.object({
   body_template: z.string().optional(),
   // Brief 129 — email-step PDF attach flag. No strict-mode cross-check;
   // generator no-ops when false / missing.
-  attach_pdf: z.boolean().optional()
+  attach_pdf: z.boolean().optional(),
+  attach_ny_pay_notice: z.boolean().optional(),
+  approval_link_label: z.string().max(60).optional(),
+  page_intro: z.string().max(1000).optional(),
+  show_fields: z.array(z.string()).optional()
 });
 
 const workflowNotificationsSchema = z.object({
@@ -347,7 +353,9 @@ const workflowTransitionSchemaDraft = z.object({
       typed_name: z.boolean().optional(),
       note: z.boolean().optional()
     })
-    .optional()
+    .optional(),
+  typed_name_label: z.string().max(80).optional(),
+  signature_label: z.string().max(80).optional()
 });
 
 const workflowStageSchemaDraft = z.object({
@@ -365,7 +373,11 @@ const workflowStageSchemaDraft = z.object({
   subject_template: z.string().optional(),
   body_template: z.string().optional(),
   // Brief 129 — email-step PDF attach flag (draft variant).
-  attach_pdf: z.boolean().optional()
+  attach_pdf: z.boolean().optional(),
+  attach_ny_pay_notice: z.boolean().optional(),
+  approval_link_label: z.string().max(60).optional(),
+  page_intro: z.string().max(1000).optional(),
+  show_fields: z.array(z.string()).optional()
 });
 
 export const formWorkflowSchemaDraft = z.object({

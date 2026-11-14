@@ -364,6 +364,7 @@ const workflow: FormWorkflow = {
       kind: "email",
       recipients: siteAndManager,
       subject_template: `${T}Approved - employee signature needed: ${WHO}`,
+      approval_link_label: "Open for employee signature",
       body_template: [
         "The pay change for " + WHO + " is approved.",
         "Open the link below with the employee and have them sign to acknowledge the new rate. It is not sent to payroll until they sign.",
@@ -373,12 +374,42 @@ const workflow: FormWorkflow = {
       transitions: [{ to: "employee_signoff", label: "Sent" }]
     },
     {
+      // THE EMPLOYEE signs here, not the manager (operator, 2026-11-13: the
+      // generic approval page read as if the manager were signing). The
+      // manager opens the link and hands the tablet over; the page says so,
+      // shows only what the employee is acknowledging, and labels the boxes
+      // as the employee's.
       id: "employee_signoff",
-      label: "Employee signature",
+      label: "Employee acknowledgement",
       kind: "approval",
       approver_source: siteAndManager[0]!,
+      page_intro:
+        "Manager: hand this device to {field.employee}.\n\n" +
+        "{field.employee}: your pay rate is changing as shown below. Please review it, then type your name and sign to acknowledge that you have been told your new pay rate" +
+        " (and, in New York, your overtime rate, allowances and payday).",
+      show_fields: [
+        "employee",
+        "site_name",
+        "current_rate",
+        "current_pay_type",
+        "new_rate",
+        "new_pay_type",
+        "effective_date",
+        "ny_payday",
+        "ny_pay_frequency",
+        "ny_allowances",
+        "ny_allowance_detail",
+        "ny_primary_language",
+        "ny_notice_language"
+      ],
       transitions: [
-        { to: "payroll_email", label: "Employee signed", requires: { signature: true, typed_name: true } }
+        {
+          to: "payroll_email",
+          label: "Sign and submit",
+          requires: { signature: true, typed_name: true },
+          typed_name_label: "Employee's full name",
+          signature_label: "Employee signature"
+        }
       ]
     },
     {
@@ -387,6 +418,9 @@ const workflow: FormWorkflow = {
       kind: "email",
       recipients: payrollAndSite,
       attach_pdf: true,
+      // The official NY s.195.1 notice (LS 54 / LS 59), filled and signed by
+      // the employee, for NY sites only.
+      attach_ny_pay_notice: true,
       subject_template: `${T}Approved pay change: ${WHO}`,
       body_template: [
         "Approved and signed pay change for " + WHO + ".",
@@ -431,6 +465,11 @@ const keys = fields.map((f) => f.key);
 for (const [what, list] of [["id", ids], ["key", keys]] as const) {
   const dup = [...new Set(list.filter((x, i) => list.indexOf(x) !== i))];
   if (dup.length) throw new Error(`duplicate field ${what}s: ${dup.join(", ")}`);
+}
+for (const st of workflow.stages) {
+  for (const k of st.show_fields ?? []) {
+    if (!keys.includes(k)) throw new Error(`stage ${st.id}: show_fields names unknown field ${k}`);
+  }
 }
 if (keys.includes("site_number")) throw new Error("pay-change must not have a site_number field (confidential, unscoped)");
 const queued = fields.filter((f) => f.show_in_queue).length;

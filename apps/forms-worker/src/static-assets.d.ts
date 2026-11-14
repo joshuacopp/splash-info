@@ -16,3 +16,15 @@ declare module "*/static/forms-public.js" {
   const contents: string;
   export default contents;
 }
+
+// NY pay notice templates -- `[[rules]] type = "Data"` imports each PDF under
+// templates/ as an ArrayBuffer.
+declare module "*/templates/ny-ls54.pdf" {
+  const contents: ArrayBuffer;
+  export default contents;
+}
+
+declare module "*/templates/ny-ls59.pdf" {
+  const contents: ArrayBuffer;
+  export default contents;
+}

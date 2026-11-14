@@ -164,6 +164,16 @@ type = "Text"
 globs = ["**/static/*.js"]
 fallthrough = false
 
+# NY Labor Law s.195.1 pay notice templates (official NYS DOL fillable PDFs,
+# LS 54 hourly / LS 59 exempt, 12/25 editions) bundled as ArrayBuffers.
+# Filled by src/pdf/ny-pay-notice.ts for the Pay Change form's payroll email.
+# Same posture as the static .js rule: no separate R2 upload step, and the
+# template version is pinned in the repo.
+[[rules]]
+type = "Data"
+globs = ["**/templates/*.pdf"]
+fallthrough = false
+
 [limits]
 cpu_ms = 30000
 
