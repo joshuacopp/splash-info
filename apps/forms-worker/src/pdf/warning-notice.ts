@@ -108,6 +108,9 @@ export function violationSummary(p: SubmissionPayload): string {
 }
 
 export function deliveryMethod(p: SubmissionPayload): string {
+  // copy_delivery is the manager's explicit choice; older submissions (before
+  // it existed) fall back to whether an email was given.
+  if (str(p.copy_delivery) === "print") return "Hand delivered in a sealed envelope";
   const email = str(p.employee_email);
   return email ? `Email (${email})` : "Hand delivered in a sealed envelope";
 }
@@ -235,12 +238,13 @@ async function drawWarning(doc: PDFDocument, fonts: Fonts, bucket: R2Like, p: Su
   };
   const W = CONTENT_WIDTH;
   let y = cursor.y;
-  box(MARGIN, y, W * 0.5, "Employee", employeeName(p));
-  box(MARGIN + W * 0.5, y, W * 0.25, "Site", str(p.site_name));
+  box(MARGIN, y, W * 0.75, "Employee", employeeName(p));
   box(MARGIN + W * 0.75, y, W * 0.25, "Warning date", fmtDate(p.warning_date));
   y -= rowH;
   box(MARGIN, y, W * 0.3, "Employee no.", str(p.employee_number));
-  box(MARGIN + W * 0.3, y, W * 0.45, "Department", str(p.department));
+  // Department is the site name, as on the paper / JotForm process (operator,
+  // 2026-11-14). A typed `department` wins, for a future 011 / 101 write-up.
+  box(MARGIN + W * 0.3, y, W * 0.45, "Department", str(p.department) || str(p.site_name));
   box(MARGIN + W * 0.75, y, W * 0.25, "Shift", str(p.shift));
   cursor.y = y - rowH - 18;
 

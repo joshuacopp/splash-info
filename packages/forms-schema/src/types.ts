@@ -166,6 +166,10 @@ export interface NameField extends FieldBase {
 export interface EmailField extends FieldBase {
   type: "email";
   maxLength?: number;    // default 254
+  /** Stop the browser filling this box with a saved address. For an email
+   *  that is NOT the filler's own on a shared site tablet -- the employee's
+   *  copy on a write-up was being filled with the manager's address. */
+  noAutofill?: boolean;
 }
 
 export interface PhoneField extends FieldBase {

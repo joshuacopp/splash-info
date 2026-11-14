@@ -80,7 +80,8 @@ export const nameFieldSchema = z.object({
 export const emailFieldSchema = z.object({
   ...fieldBaseSchema,
   type: z.literal("email"),
-  maxLength: z.number().int().positive().optional()
+  maxLength: z.number().int().positive().optional(),
+  noAutofill: z.boolean().optional()
 });
 
 export const phoneFieldSchema = z.object({
@@ -682,7 +683,8 @@ const nameFieldSchemaDraft = z.object({
 const emailFieldSchemaDraft = z.object({
   ...fieldBaseSchemaDraft,
   type: z.literal("email"),
-  maxLength: z.number().int().positive().optional()
+  maxLength: z.number().int().positive().optional(),
+  noAutofill: z.boolean().optional()
 });
 
 const phoneFieldSchemaDraft = z.object({

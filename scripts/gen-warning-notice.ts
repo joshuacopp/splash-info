@@ -107,7 +107,12 @@ push({
 } as Field);
 push({ key: "warning_date", type: "date", label: "Warning date", required: true, defaultToToday: true, show_in_queue: true } as Field);
 push({ key: "employee_number", type: "short_text", label: "Employee no.", required: false, maxLength: 30 } as Field);
-push({ key: "department", type: "short_text", label: "Department", required: false, maxLength: 60 } as Field);
+// DEPARTMENT IS THE SITE (operator, 2026-11-14): write-ups are site-level,
+// and the paper / JotForm process always put the location name in the
+// Department box, so the PDF prints site_name there and the form does not ask.
+// If 011 / 101 office staff are ever written up here, add a `department`
+// short_text with visible_if { field_key: "site", equals: ["011", "11", "101"] }
+// -- the PDF already prefers a typed `department` over the site name.
 push({ key: "shift", type: "short_text", label: "Shift", required: false, maxLength: 60 } as Field);
 
 // --- Violations ---------------------------------------------------------------------
@@ -215,6 +220,23 @@ push({
   level: "h3",
   required: false
 } as Field);
+// The employee signs for the Notice of Negative Information, so they read its
+// rights text here BEFORE signing. Keep identical to RIGHTS_PARAGRAPHS in
+// apps/forms-worker/src/pdf/warning-notice.ts (the printed Notice).
+push({
+  key: "rights_notice",
+  type: "heading",
+  label: "Notice of Negative Information",
+  text: "Notice of Negative Information - please read before signing",
+  level: "h4",
+  helpText: [
+    "This warning is being added to your personnel file.",
+    "You may request a copy of your personnel record by submitting a written request to your immediate Manager. A request made in response to this notice does not count toward your two-requests-per-year limit.",
+    "If you disagree with this information, you may discuss it with Human Resources. If an agreement is not reached, you may submit a written statement explaining your position, which will become a permanent part of your personnel record.",
+    "The Company prohibits retaliation for exercising these rights."
+  ].join("\n\n"),
+  required: false
+} as Field);
 push({
   key: "employee_response",
   type: "radio",
@@ -260,13 +282,42 @@ push({
 push({ key: "witness_signature", type: "signature", label: "Second supervisor signature", required: true, format: "png", ...when("employee_response", "refused") } as Field);
 
 // --- Employee's copy ------------------------------------------------------------------------
+// The manager chooses how the copy is delivered; printing requires a
+// confirmation, because nothing else records that the hand-over happened.
+push({
+  key: "copy_delivery",
+  type: "radio",
+  label: "How will the employee get their copy?",
+  required: true,
+  layout: "vertical",
+  options: [
+    { label: "Email it to them", value: "email" },
+    { label: "Print it and hand it to them", value: "print" }
+  ]
+} as Field);
 push({
   key: "employee_email",
   type: "email",
   label: "Employee's email for their copy",
-  helpText:
-    "Optional. If given, the employee is emailed both documents. If blank, print the copy and hand it to them in a sealed envelope.",
-  required: false
+  helpText: "Both documents are emailed here as soon as the form is submitted.",
+  required: true,
+  // The tablet's browser was filling this with the manager's own address.
+  noAutofill: true,
+  ...when("copy_delivery", "email")
+} as Field);
+push({
+  key: "print_confirm",
+  type: "multi",
+  label: "Printed copy",
+  required: true,
+  minSelected: 1,
+  options: [
+    {
+      label: "I will print the employee's copy (it is emailed to me) and hand it to them in a sealed envelope today.",
+      value: "confirmed"
+    }
+  ],
+  ...when("copy_delivery", "print")
 } as Field);
 
 // --- Workflow: email the PDF, then done ------------------------------------------------------
