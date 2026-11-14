@@ -43,6 +43,14 @@ export interface PendingApprovalItem {
   /** Direct link target for the Review button. */
   review_path: string;
   /**
+   * 2026-11-13 -- set when the current stage has its own signing page
+   * (`page_intro`, e.g. the Pay Change employee acknowledgement) AND the
+   * caller is on its approver list: the queue's button opens that page
+   * (approval-links/sign-route.ts) instead of the admin submission view,
+   * so the person signing sees the signing page, not every answer.
+   */
+  sign_path: string | null;
+  /**
    * Brief 131 — set to "empty" when the row's `approver_source` exists
    * but resolution produced no emails (a misconfigured picker, mid-form
    * data drift, etc.). The All Approvals admin view surfaces a
@@ -266,6 +274,10 @@ export async function handlePendingApprovals(
           ? r.location_code.trim()
           : null) ?? extractLocationCode(schema, r.payload),
       review_path: `/admin/forms/${r.form_id}/submissions/${r.id}`,
+      sign_path:
+        stage?.page_intro && approverEmails.map((e) => e.toLowerCase()).includes(callerEmail)
+          ? `/forms/admin/api/forms/${r.form_id}/submissions/${r.id}/sign`
+          : null,
       approver_resolution_status:
         approverEmails.length === 0 && expectsApprover ? "empty" : "resolved",
       queue_fields: resolveQueueFields(schema, r.payload),

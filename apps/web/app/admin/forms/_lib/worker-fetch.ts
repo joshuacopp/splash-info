@@ -693,6 +693,9 @@ export interface PendingApprovalItem {
   submitted_at: string;
   location_code: string | null;
   review_path: string;
+  /** Set when the current step has its own signing page and the caller is
+   *  its approver: the queue opens that page instead of the review view. */
+  sign_path?: string | null;
   /**
    * Brief 131 — "empty" when the row's approver_source couldn't be
    * resolved to any emails. Surfaced on the All Approvals admin view

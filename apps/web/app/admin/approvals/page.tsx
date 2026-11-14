@@ -357,6 +357,19 @@ function FormGroup({
                 Submitted {relativeTime(item.submitted_at)}
               </p>
             </div>
+            {item.sign_path ? (
+              // A step with its own signing page (e.g. the employee
+              // acknowledgement on a pay change): open THAT page, served by
+              // the forms worker, so the person signing sees what they are
+              // signing rather than every answer on the request. Plain <a>:
+              // it leaves the Next app.
+              <a
+                href={item.sign_path}
+                className="inline-flex items-center gap-1.5 rounded-splash-sm bg-splash-blue px-4 py-1.5 text-xs font-bold uppercase tracking-wide text-white shadow-splash-btn transition-colors hover:bg-splash-blue-dark"
+              >
+                Open for signature
+              </a>
+            ) : (
             <Link
               href={`${item.review_path}?from=approvals`}
               className="inline-flex items-center gap-1.5 rounded-splash-sm bg-splash-blue px-4 py-1.5 text-xs font-bold uppercase tracking-wide text-white shadow-splash-btn transition-colors hover:bg-splash-blue-dark"
@@ -376,6 +389,7 @@ function FormGroup({
                 <polyline points="12 5 19 12 12 19" />
               </svg>
             </Link>
+            )}
           </li>
         ))}
       </ul>

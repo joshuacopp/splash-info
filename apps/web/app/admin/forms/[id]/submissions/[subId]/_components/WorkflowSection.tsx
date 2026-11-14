@@ -34,6 +34,7 @@ import SignatureCanvas from "./SignatureCanvas";
 
 interface Props {
   submissionId: string;
+  formId: string;
   workflow: FormWorkflow;
   currentStageId: string;
   history: WorkflowHistoryEntry[];
@@ -96,7 +97,25 @@ export default function WorkflowSection(props: Props) {
         )}
       </div>
 
-      {currentStage && currentStage.transitions.length > 0 && (
+      {currentStage?.page_intro && onApproverList && (
+        // This step has its own signing page (e.g. the employee acknowledging
+        // a pay change). Send the approver there rather than signing here:
+        // this page shows every answer, the signing page shows only what the
+        // signer is agreeing to, with the signer's own labels.
+        <div className="mb-4">
+          <a
+            href={`/forms/admin/api/forms/${props.formId}/submissions/${props.submissionId}/sign`}
+            className="inline-flex items-center rounded-splash-md bg-splash-blue px-4 py-2 text-sm font-semibold text-white hover:bg-splash-blue-dark"
+          >
+            Open for signature
+          </a>
+          <p className="mt-1 text-xs text-splash-navy/60">
+            Opens the signing page for this step. Hand the device to the person signing.
+          </p>
+        </div>
+      )}
+
+      {currentStage && currentStage.transitions.length > 0 && !(currentStage.page_intro && onApproverList) && (
         <div className="mb-4 flex flex-wrap gap-2">
           {currentStage.transitions.map((t) => (
             <button

@@ -235,6 +235,7 @@ export default async function SubmissionDetailPage({
       {workflow && (
         <WorkflowSection
           submissionId={subId}
+          formId={id}
           workflow={workflow}
           currentStageId={
             submission.workflow_stage ?? workflow.default_stage

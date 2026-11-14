@@ -103,6 +103,7 @@ import {
 } from "./admin/submissions.js";
 import { handleListVersions } from "./admin/versions.js";
 import { handlePendingApprovals } from "./admin/pending-approvals.js";
+import { handleOpenSigningPage } from "./approval-links/sign-route.js";
 import { handleMyRequests } from "./admin/my-requests.js";
 import { handleUserSearch } from "./admin/users-search.js";
 import { handleShareFormEmail } from "./admin/share-email.js";
@@ -538,6 +539,16 @@ export default {
     );
     if (subListMatch && subListMatch[1] && req.method === "GET") {
       return handleListSubmissions(env, req, subListMatch[1]);
+    }
+
+    // GET /forms/admin/api/forms/{id}/submissions/{subId}/sign -- open the
+    // signing page for a signed-in approver (queue / submission page). Must
+    // match BEFORE the bare-{subId} pattern, like /transition.
+    const subSignMatch = url.pathname.match(
+      /^\/forms\/admin\/api\/forms\/([^/]+)\/submissions\/([^/]+)\/sign$/
+    );
+    if (subSignMatch && subSignMatch[1] && subSignMatch[2] && req.method === "GET") {
+      return handleOpenSigningPage(env, req, subSignMatch[1], subSignMatch[2]);
     }
 
     // Brief 120 — POST /forms/admin/api/forms/{id}/submissions/{subId}/transition
