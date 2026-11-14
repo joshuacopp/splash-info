@@ -226,6 +226,7 @@ export default function PriceMatchForm(props: {
   const [orders, setOrders] = useState<Order[]>([]);
   const [initials, setInitials] = useState(props.initials);
   const [addSite, setAddSite] = useState("");
+  const [siteCursor, setSiteCursor] = useState(0);
   const [files, setFiles] = useState<File[]>([]);
   const [paste, setPaste] = useState("");
   const [pasteMsg, setPasteMsg] = useState<string | null>(null);
@@ -369,6 +370,30 @@ export default function PriceMatchForm(props: {
   const poPreview = (s: SiteOption) =>
     `${s.site_number != null ? String(s.site_number).padStart(3, "0") : "000"}-${props.today}-${cleanInitials || props.initials}`;
   const availableSites = props.sites.filter((s) => !orders.some((o) => o.location_id === s.id));
+
+  /**
+   * Type-ahead: digits match the site number ("122", "12", "9" -> 009),
+   * anything else matches inside the site name ("bin" -> Binghamton).
+   * An exact site number sorts first, so "122" + Enter adds Binghamton.
+   */
+  const siteMatches = useMemo(() => {
+    const q = addSite.trim().toLowerCase();
+    if (!q) return [];
+    if (/^\d+$/.test(q)) {
+      const n = Number(q);
+      return availableSites
+        .filter((s) => s.site_number != null && (String(s.site_number).startsWith(String(n)) || String(s.site_number).padStart(3, "0").startsWith(q)))
+        .sort((a, b) => Number(b.site_number === n) - Number(a.site_number === n) || (a.site_number ?? 0) - (b.site_number ?? 0))
+        .slice(0, 12);
+    }
+    return availableSites.filter((s) => (s.site ?? "").toLowerCase().includes(q)).slice(0, 12);
+  }, [addSite, availableSites]);
+
+  const pickSite = (id: number) => {
+    setOrders((os) => (os.some((o) => o.location_id === id) ? os : [...os, { location_id: id, qty: {} }]));
+    setAddSite("");
+    setSiteCursor(0);
+  };
 
   // ---- files
   const addFiles = useCallback(async (incoming: File[]) => {
@@ -707,27 +732,67 @@ export default function PriceMatchForm(props: {
         </div>
 
         <div className="mb-4 flex flex-wrap items-end gap-3">
-          <div className="min-w-[240px] flex-1">
+          <div className="relative min-w-[240px] flex-1">
             <label className={label} htmlFor="pm-add-site">
               Add a site
             </label>
-            <select
+            <input
               id="pm-add-site"
               className={input}
               value={addSite}
+              autoComplete="off"
+              role="combobox"
+              aria-expanded={siteMatches.length > 0}
+              aria-controls="pm-site-matches"
+              placeholder="Site number or name, e.g. 122 or bin"
               onChange={(e) => {
-                const id = Number(e.target.value);
-                if (id) setOrders((os) => [...os, { location_id: id, qty: {} }]);
-                setAddSite("");
+                setAddSite(e.target.value);
+                setSiteCursor(0);
               }}
-            >
-              <option value="">{availableSites.length ? "Choose a site…" : "Every site is added"}</option>
-              {availableSites.map((s) => (
-                <option key={s.id} value={s.id}>
-                  {siteLabel(s)}
-                </option>
-              ))}
-            </select>
+              onKeyDown={(e) => {
+                if (e.key === "ArrowDown") {
+                  e.preventDefault();
+                  setSiteCursor((c) => Math.min(c + 1, siteMatches.length - 1));
+                } else if (e.key === "ArrowUp") {
+                  e.preventDefault();
+                  setSiteCursor((c) => Math.max(c - 1, 0));
+                } else if (e.key === "Enter") {
+                  e.preventDefault();
+                  const pick = siteMatches[siteCursor] ?? siteMatches[0];
+                  if (pick) pickSite(pick.id);
+                } else if (e.key === "Escape") {
+                  setAddSite("");
+                }
+              }}
+            />
+            {siteMatches.length > 0 && (
+              <ul
+                id="pm-site-matches"
+                role="listbox"
+                className="absolute z-20 mt-1 max-h-72 w-full overflow-y-auto rounded-splash-sm border border-gray-light bg-white py-1 text-sm shadow-lg"
+              >
+                {siteMatches.map((s, i) => (
+                  <li
+                    key={s.id}
+                    role="option"
+                    aria-selected={i === siteCursor}
+                    className={`cursor-pointer px-3 py-1.5 ${i === siteCursor ? "bg-splash-blue/10" : "hover:bg-gray-light/50"}`}
+                    onMouseEnter={() => setSiteCursor(i)}
+                    // mousedown, not click: fires before the input loses focus.
+                    onMouseDown={(e) => {
+                      e.preventDefault();
+                      pickSite(s.id);
+                    }}
+                  >
+                    <span className="font-semibold text-splash-navy">{siteLabel(s)}</span>
+                    <span className="ml-2 text-xs text-splash-navy/50">{s.ship_to.split("\n").slice(1).join(", ")}</span>
+                  </li>
+                ))}
+              </ul>
+            )}
+            {addSite.trim() !== "" && siteMatches.length === 0 && (
+              <p className="mt-1 text-xs text-splash-navy/60">No site matches &ldquo;{addSite.trim()}&rdquo; (or it&apos;s already added).</p>
+            )}
           </div>
           <div className="w-[120px]">
             <label className={label} htmlFor="pm-initials">
