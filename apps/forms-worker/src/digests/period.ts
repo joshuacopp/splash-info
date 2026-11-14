@@ -125,6 +125,24 @@ export function periodFor(frequency: DigestSchedule["frequency"], today: string)
   };
 }
 
+/**
+ * For tests and previews: the same span as the real period but ENDING TODAY
+ * (daily = today, weekly = the last 7 days including today, monthly = this
+ * month so far), so a submission made a minute ago is included.
+ */
+export function periodThroughToday(frequency: DigestSchedule["frequency"], today: string): DigestPeriod {
+  const to = today;
+  const from = frequency === "daily" ? today : frequency === "weekly" ? addDays(today, -6) : `${today.slice(0, 7)}-01`;
+  return {
+    key: `P:${from}:${to}`,
+    from,
+    to,
+    fromUtc: easternMidnightUtc(from).toISOString(),
+    toUtcExclusive: easternMidnightUtc(addDays(to, 1)).toISOString(),
+    label: `${periodLabel(from, to)} (through today)`
+  };
+}
+
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
 export function shortDate(ymd: string): string {

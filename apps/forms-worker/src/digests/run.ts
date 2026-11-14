@@ -17,7 +17,7 @@ import {
   type DigestForm,
   type SiteContacts
 } from "./data.js";
-import { duePeriod, easternNow, periodFor, type DigestPeriod } from "./period.js";
+import { duePeriod, easternNow, periodThroughToday, type DigestPeriod } from "./period.js";
 import { bytesToBase64, renderDigestEmail } from "./render-email.js";
 import { resolveAudiences, scopeLabel, scopeSubs, type Audience } from "./audience.js";
 
@@ -146,12 +146,18 @@ export async function runDueDigests(env: Env, at: Date = new Date()): Promise<{ 
 
 // --- test send + preview -----------------------------------------------------------
 
-/** The most recently COMPLETED period, which is what a test or preview shows. */
+/**
+ * The period a test or preview shows: the same length as the real one but
+ * ENDING TODAY, so a submission made a minute ago shows up. (Showing only the
+ * last completed period left a fresh test submission invisible, and an admin
+ * checking a new digest had no way to see it working -- operator, 2026-11-14.)
+ * Scheduled sends still cover only the completed period.
+ */
 export function previewPeriod(config: DigestConfig, at: Date = new Date()): DigestPeriod {
-  return periodFor(config.schedule.frequency, easternNow(at).ymd);
+  return periodThroughToday(config.schedule.frequency, easternNow(at).ymd);
 }
 
-/** Mail the caller the all-sites version of the last completed period. */
+/** Mail the caller the all-sites version, through today. */
 export async function sendTestDigest(
   env: Env,
   formId: string,

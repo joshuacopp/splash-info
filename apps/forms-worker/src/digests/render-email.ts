@@ -48,7 +48,14 @@ export async function renderDigestEmail(input: DigestEmailInput): Promise<Render
     text.push(warn, "");
   }
 
-  for (let i = 0; i < input.charts.length; i++) {
+  // Nothing to show: say so, rather than a blank chart and a header-only table.
+  const empty = input.total === 0;
+  if (empty) {
+    blocks.push(`<p style="margin:0 0 8px 0;padding:14px 16px;background:#f6f6f4;font-size:14px;color:${INK_2};">No submissions in this period.</p>`);
+    text.push("No submissions in this period.", "");
+  }
+
+  for (let i = 0; !empty && i < input.charts.length; i++) {
     const c = input.charts[i]!;
     const { svg, width, height } = chartSvg(c);
     try {
@@ -66,7 +73,7 @@ export async function renderDigestEmail(input: DigestEmailInput): Promise<Render
     }
   }
 
-  if (input.table) {
+  if (input.table && !empty) {
     blocks.push(renderTableHtml(input.table));
     text.push(...renderTableText(input.table), "");
   }

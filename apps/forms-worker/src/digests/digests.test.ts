@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import type { Field } from "@splash/forms-schema";
 import { digestConfigSchema, defaultDigestConfig } from "@splash/forms-schema";
 import { chartData, tableData, OTHER_KEY, type AggregateContext, type DigestSubmission } from "./aggregate.js";
-import { duePeriod, easternMidnightUtc, easternNow, periodFor } from "./period.js";
+import { duePeriod, easternMidnightUtc, easternNow, periodFor, periodThroughToday } from "./period.js";
 import { resolveAudiences } from "./audience.js";
 import type { SiteContacts } from "./data.js";
 
@@ -29,6 +29,12 @@ describe("periods (Eastern)", () => {
     expect(duePeriod(weekly, easternNow(new Date("2026-11-16T12:05:00Z")))?.key).toBe("W:2026-11-09");
     expect(duePeriod(weekly, easternNow(new Date("2026-11-16T22:00:00Z")))?.key).toBe("W:2026-11-09"); // late same day still sends
     expect(duePeriod(weekly, easternNow(new Date("2026-11-17T12:05:00Z")))).toBeNull();
+  });
+
+  it("test/preview periods end today", () => {
+    expect(periodThroughToday("daily", "2026-11-14")).toMatchObject({ from: "2026-11-14", to: "2026-11-14" });
+    expect(periodThroughToday("weekly", "2026-11-14")).toMatchObject({ from: "2026-11-08", to: "2026-11-14" });
+    expect(periodThroughToday("monthly", "2026-11-14")).toMatchObject({ from: "2026-11-01", to: "2026-11-14" });
   });
 
   it("uses the Eastern day, not the UTC day, in the evening", () => {
