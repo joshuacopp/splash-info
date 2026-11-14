@@ -361,7 +361,7 @@ const workflow: FormWorkflow = {
       approver_source: rd[0]!,
       transitions: [
         { to: "notify_site", label: "Approve", requires: { signature: true } },
-        { to: "denied_email", label: "Deny", requires: { note: true } }
+        { to: "denied_by_rd_email", label: "Deny", requires: { note: true } }
       ]
     },
     {
@@ -433,15 +433,32 @@ const workflow: FormWorkflow = {
       ].join("\n\n"),
       transitions: [{ to: "approved", label: "Sent" }]
     },
+    // Two denial emails because the audience depends on who denied: an RM
+    // denial goes to the site and manager; an RD denial also goes to the RM,
+    // who had already approved it (operator, 2026-11-14).
     {
       id: "denied_email",
-      label: "Email denial",
+      label: "Email denial (RM denied)",
       kind: "email",
       recipients: siteAndManager,
       attach_pdf: true,
       subject_template: `${T}Pay change denied: ${WHO}`,
       body_template: [
         "The pay change for " + WHO + " was denied by {decision.by}.",
+        "Reason: {decision.note}",
+        FACTS
+      ].join("\n\n"),
+      transitions: [{ to: "denied", label: "Sent" }]
+    },
+    {
+      id: "denied_by_rd_email",
+      label: "Email denial (RD denied)",
+      kind: "email",
+      recipients: LIVE ? [...siteAndManager, ...rm] : siteAndManager,
+      attach_pdf: true,
+      subject_template: `${T}Pay change denied: ${WHO}`,
+      body_template: [
+        "The pay change for " + WHO + " was approved by the regional manager, then denied by {decision.by}.",
         "Reason: {decision.note}",
         FACTS
       ].join("\n\n"),
