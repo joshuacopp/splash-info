@@ -92,7 +92,8 @@ export const shortTextFieldSchema = z.object({
   ...fieldBaseSchema,
   type: z.literal("short_text"),
   maxLength: z.number().int().positive().optional(),
-  placeholder: z.string().optional()
+  placeholder: z.string().optional(),
+  defaultValue: z.string().optional()
 });
 
 export const longTextFieldSchema = z.object({
@@ -125,13 +126,15 @@ export const radioFieldSchema = z.object({
   ...fieldBaseSchema,
   type: z.literal("radio"),
   options: z.array(dropdownOptionSchema),
-  layout: z.enum(["vertical", "inline"]).optional()
+  layout: z.enum(["vertical", "inline"]).optional(),
+  defaultValue: z.string().optional()
 });
 
 export const multiFieldSchema = z.object({
   ...fieldBaseSchema,
   type: z.literal("multi"),
   options: z.array(dropdownOptionSchema),
+  defaultValues: z.array(z.string()).optional(),
   minSelected: z.number().int().nonnegative().optional(),
   maxSelected: z.number().int().positive().optional()
 });
@@ -689,7 +692,8 @@ const shortTextFieldSchemaDraft = z.object({
   ...fieldBaseSchemaDraft,
   type: z.literal("short_text"),
   maxLength: z.number().int().positive().optional(),
-  placeholder: z.string().optional()
+  placeholder: z.string().optional(),
+  defaultValue: z.string().optional()
 });
 
 const longTextFieldSchemaDraft = z.object({
@@ -718,13 +722,15 @@ const radioFieldSchemaDraft = z.object({
   ...fieldBaseSchemaDraft,
   type: z.literal("radio"),
   options: z.array(dropdownOptionSchema),
-  layout: z.enum(["vertical", "inline"]).optional()
+  layout: z.enum(["vertical", "inline"]).optional(),
+  defaultValue: z.string().optional()
 });
 
 const multiFieldSchemaDraft = z.object({
   ...fieldBaseSchemaDraft,
   type: z.literal("multi"),
   options: z.array(dropdownOptionSchema),
+  defaultValues: z.array(z.string()).optional(),
   minSelected: z.number().int().nonnegative().optional(),
   maxSelected: z.number().int().positive().optional()
 });

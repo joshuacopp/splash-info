@@ -9,7 +9,7 @@ export function renderMulti(field: MultiField, _ctx: RenderBodyArgs): string {
     .map((opt, idx) => {
       const optId = `${field.id}_${idx}`;
       return `<label class="field-multi-option" for="${escapeHtml(optId)}">
-        <input type="checkbox" id="${escapeHtml(optId)}" name="${escapeHtml(field.key)}" value="${escapeHtml(opt.value)}" />
+        <input type="checkbox" id="${escapeHtml(optId)}" name="${escapeHtml(field.key)}" value="${escapeHtml(opt.value)}"${field.defaultValues?.includes(opt.value) ? " checked" : ""} />
         <span>${escapeHtml(opt.label)}</span>
       </label>`;
     })

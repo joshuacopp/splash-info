@@ -8,10 +8,13 @@
 //   LS 59 (12/25)  Notice for Exempt Employees          -- "week" / "year"
 //                  (operator decision: salaried = exempt managers)
 //
-// SECTION 1 (EMPLOYER INFORMATION) IS LEFT BLANK on purpose (operator,
-// 2026-11-13): payroll / HR completes it. Everything else comes from the
-// submission:
+// SECTION 1 (EMPLOYER INFORMATION) is the same for every site -- Splash CC
+// Management, LLC at the Milford office -- as on the notices payroll has always
+// issued (operator, 2026-11-14; the office moved from Ste 304 to Ste 201).
+// See EMPLOYER below. FEIN and DBA stay blank, as they always have.
+// Everything else comes from the submission:
 //
+//   1  Employer               EMPLOYER (constant)
 //   2  Notice given          "Before a change in pay rate(s)" (always)
 //   3  Rate                   new_rate (+ new_pay_type wording on LS 59)
 //   4  Allowances             ny_allowances + ny_allowance_detail
@@ -23,7 +26,7 @@
 //                             its timestamp in Eastern), falling back to the
 //                             Employee field
 //      Signature              that entry's signature image, drawn on the line
-//      Preparer               manager_name
+//      Preparer               manager_name, manager_title
 //
 // COUPLED TO FIELD KEYS of scripts/gen-pay-change.ts. Renaming one there
 // blanks the matching box here -- this file is the other half of that form.
@@ -80,6 +83,23 @@ const LS59: Layout = {
   payday: "Generic_GenericTextField_TextField5",
   payOther: "Generic_GenericTextField_TextField6"
 };
+
+// Section 1. Field names are identical on LS 54 and LS 59.
+const EMPLOYER = {
+  name: "Splash CC Management, LLC",
+  address: "472 Wheelers Farm Rd Ste 201\nMilford CT 06461",
+  phone: ["203", "324", "5400"] as const
+};
+
+function setMultiline(form: PDFForm, name: string, value: string): void {
+  try {
+    const f = form.getTextField(name);
+    f.enableMultiline();
+    f.setText(value);
+  } catch (err) {
+    console.warn(`[forms.ny-notice] text field ${name} not set`, err);
+  }
+}
 
 function setText(form: PDFForm, name: string, value: string): void {
   if (!value) return;
@@ -151,6 +171,14 @@ export async function fillNyPayNotice(
   const form = doc.getForm();
   const L = hourly ? LS54 : LS59;
 
+  // 1 -- employer (physical and mailing address are the same office).
+  setText(form, "Apprenticeship_ApplicantNotification_EmployerName", EMPLOYER.name);
+  setMultiline(form, "Business_BusinessAddress_BusinessStreetAddress1", EMPLOYER.address);
+  setMultiline(form, "Generic_GenericMultiLine_MultiLine1", EMPLOYER.address);
+  setText(form, "Contact_OtherPhone1", EMPLOYER.phone[0]);
+  setText(form, "Contact_OtherPhone2", EMPLOYER.phone[1]);
+  setText(form, "Contact_OtherPhone3", EMPLOYER.phone[2]);
+
   // 2 -- a pay change is always given before the change.
   check(form, "Generic_GenericYesNo_No15");
 
@@ -212,7 +240,11 @@ export async function fillNyPayNotice(
     setText(form, "DocumentSignature_SignatureDD", when.dd);
     setText(form, "DocumentSignature_SignatureYY", when.yy);
   }
-  setText(form, "Business_PreparerName", str(payload.manager_name));
+  setText(
+    form,
+    "Business_PreparerName",
+    [str(payload.manager_name), str(payload.manager_title)].filter(Boolean).join(", ")
+  );
 
   // Flatten first, so the signature drawn below sits on the final page and
   // nothing in the notice can be edited after the employee signed it.

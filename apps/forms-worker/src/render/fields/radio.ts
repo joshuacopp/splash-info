@@ -30,7 +30,7 @@ export function renderRadio(field: RadioField, _ctx: RenderBodyArgs): string {
       // marking them all is both correct and the most portable across
       // browsers. Submit-time validation remains the authoritative gate.
       return `<label class="field-radio-option" for="${escapeHtml(optId)}">
-        <input type="radio" id="${escapeHtml(optId)}" name="${escapeHtml(field.key)}" value="${escapeHtml(opt.value)}" ${field.required ? "required" : ""} />
+        <input type="radio" id="${escapeHtml(optId)}" name="${escapeHtml(field.key)}" value="${escapeHtml(opt.value)}"${opt.value === field.defaultValue ? " checked" : ""} ${field.required ? "required" : ""} />
         <span>${escapeHtml(opt.label)}</span>
       </label>`;
     })

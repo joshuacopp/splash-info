@@ -109,6 +109,8 @@ push({
   show_in_queue: true
 } as Field);
 push({ key: "manager_name", type: "name", label: "Manager requesting the change", required: true, maxLength: 120 } as Field);
+// The NY notice asks for the preparer's name AND title.
+push({ key: "manager_title", type: "short_text", label: "Manager's title", placeholder: "e.g. General Manager", required: true, maxLength: 80 } as Field);
 push({
   key: "manager_email",
   type: "email",
@@ -210,13 +212,16 @@ push({
   visible_if: NY,
   hide_from_approvers: true
 } as Field);
-push({ key: "ny_payday", type: "short_text", label: "Regular payday", placeholder: "e.g. Friday", required: true, maxLength: 40, visible_if: NY, hide_from_approvers: true } as Field);
+// Pre-filled with how everyone is paid (weekly, Friday, no allowances);
+// every answer stays editable for the exception.
+push({ key: "ny_payday", type: "short_text", label: "Regular payday", placeholder: "e.g. Friday", defaultValue: "Friday", required: true, maxLength: 40, visible_if: NY, hide_from_approvers: true } as Field);
 push({
   key: "ny_pay_frequency",
   type: "radio",
   label: "Pay is",
   required: true,
   layout: "inline",
+  defaultValue: "weekly",
   options: [
     { label: "Weekly", value: "weekly" },
     { label: "Bi-weekly", value: "biweekly" },
@@ -230,6 +235,7 @@ push({
   type: "multi",
   label: "Allowances taken",
   required: true,
+  defaultValues: ["none"],
   options: [
     { label: "None", value: "none" },
     { label: "Tips", value: "tips" },
@@ -302,7 +308,7 @@ const FACTS = [
   "Monthly cost: ${field.monthly_effect}",
   "Labor budget / trend: {field.labor_budget} / {field.labor_trend}",
   "Back pay: {field.back_pay}",
-  "Requested by: {field.manager_name}"
+  "Requested by: {field.manager_name}, {field.manager_title}"
 ].join("\n");
 
 const workflow: FormWorkflow = {

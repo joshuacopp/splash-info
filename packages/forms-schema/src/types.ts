@@ -177,6 +177,8 @@ export interface ShortTextField extends FieldBase {
   type: "short_text";
   maxLength?: number;    // default 500
   placeholder?: string;
+  /** Pre-filled answer the filler can change. */
+  defaultValue?: string;
 }
 
 export interface LongTextField extends FieldBase {
@@ -224,11 +226,15 @@ export interface RadioField extends FieldBase {
    *  stacks them. Defaults to vertical -- inline only reads well for short
    *  labels and few options. */
   layout?: "vertical" | "inline";
+  /** Option value selected when the form opens; the filler can change it. */
+  defaultValue?: string;
 }
 
 export interface MultiField extends FieldBase {
   type: "multi";
   options: DropdownOption[];
+  /** Option values ticked when the form opens; the filler can change them. */
+  defaultValues?: string[];
   minSelected?: number;   // default 0
   maxSelected?: number;   // optional cap
 }
