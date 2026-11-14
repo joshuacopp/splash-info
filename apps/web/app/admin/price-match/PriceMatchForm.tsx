@@ -6,43 +6,70 @@
 // box, which maps columns by their headings. Competitor evidence is a link
 // per part and/or attached quotes (PDF, photo, or a screenshot pasted
 // straight in). The draft survives a reload; attachments do not.
+//
+// Prices are PER UNIT. Quantities live only in the optional Order section:
+// sites x parts, one PO per site, ship-to from the site record.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 
 interface Line {
+  /** Client-only, so order quantities stay with their part when rows move. */
+  id: string;
   part: string;
   ncs_part_no: string;
-  qty: string;
   ncs_price: string;
   ncs_url: string;
   competitor_part_no: string;
   competitor_price: string;
   competitor_url: string;
 }
-type Field = keyof Line;
+type Field = Exclude<keyof Line, "id">;
+
+export interface SiteOption {
+  id: number;
+  site_number: number | null;
+  site: string | null;
+  ship_to: string;
+}
+
+/** One site in the order: quantities keyed by line id. */
+interface Order {
+  location_id: number;
+  qty: Record<string, string>;
+}
 
 const FIELDS: Array<{ key: Field; label: string; width: string; placeholder?: string }> = [
   { key: "part", label: "Part", width: "min-w-[200px]", placeholder: "X458 Sprocket" },
   { key: "ncs_part_no", label: "NCS Part #", width: "min-w-[110px]" },
-  { key: "qty", label: "Qty", width: "w-[64px]" },
-  { key: "ncs_price", label: "NCS Price", width: "min-w-[100px]", placeholder: "229.67" },
+  { key: "ncs_price", label: "NCS Price (each)", width: "min-w-[110px]", placeholder: "229.67" },
   { key: "ncs_url", label: "NCS Link", width: "min-w-[220px]", placeholder: "https://estore.ncswash.com/…" },
   { key: "competitor_part_no", label: "Comp. Part #", width: "min-w-[110px]" },
-  { key: "competitor_price", label: "Comp. Price", width: "min-w-[100px]", placeholder: "167.13" },
+  { key: "competitor_price", label: "Comp. Price (each)", width: "min-w-[110px]", placeholder: "167.13" },
   { key: "competitor_url", label: "Comp. Link", width: "min-w-[220px]", placeholder: "optional" }
 ];
 
+let seq = 0;
+const newId = () => `l${Date.now().toString(36)}${(seq++).toString(36)}`;
+
 const blank = (): Line => ({
+  id: newId(),
   part: "",
   ncs_part_no: "",
-  qty: "",
   ncs_price: "",
   ncs_url: "",
   competitor_part_no: "",
   competitor_price: "",
   competitor_url: ""
 });
+
+/** A stored or pasted row -> a Line with only the known fields and a fresh id. */
+function toLine(raw: Partial<Record<string, unknown>>): Line {
+  const l = blank();
+  for (const f of FIELDS) if (typeof raw[f.key] === "string") l[f.key] = raw[f.key] as string;
+  if (typeof raw.id === "string" && raw.id) l.id = raw.id;
+  return l;
+}
 
 const DRAFT_KEY = "price-match.draft.v1";
 const MAX_FILE = 5 * 1024 * 1024;
@@ -65,7 +92,19 @@ function diff(l: Line): number | null {
   const b = priceNumber(l.competitor_price);
   return a == null || b == null ? null : Math.round((a - b) * 100) / 100;
 }
-const isBlank = (l: Line) => Object.values(l).every((v) => v.trim() === "");
+const isBlank = (l: Line) => FIELDS.every((f) => l[f.key].trim() === "");
+
+/** Same rule as the worker's parseQty: blank/0 = none, else a number. */
+function qtyValue(s: string | undefined): number | null {
+  const t = (s ?? "").trim();
+  if (t === "") return 0;
+  return /^\d{1,6}(\.\d{1,2})?$/.test(t) ? Number(t) : null;
+}
+
+function siteLabel(s: Pick<SiteOption, "site_number" | "site">): string {
+  const n = s.site_number != null ? String(s.site_number).padStart(3, "0") : "";
+  return [n, s.site].filter(Boolean).join(" · ") || "Site";
+}
 
 /** Excel copies cells as TSV; a cell with a line break comes quoted. */
 function parseTsv(text: string): string[][] {
@@ -117,7 +156,8 @@ function headerField(h: string): Field | "competitor" | null {
     if (num && !price) return "ncs_part_no";
     return "ncs_price";
   }
-  if (/qty|quantity/.test(s)) return "qty";
+  // Quantities are not part of a price match (they go in the Order section).
+  if (/qty|quantity/.test(s)) return null;
   if (/part|desc|item|name/.test(s)) return "part";
   return null;
 }
@@ -173,11 +213,19 @@ export default function PriceMatchForm(props: {
   liveRecipients: string[];
   senderEmail: string;
   competitors: string[];
+  sites: SiteOption[];
+  /** Default PO initials, e.g. "Jc". */
+  initials: string;
+  /** Today in Eastern time as YYYYMMDD, for the PO preview. */
+  today: string;
 }) {
   const router = useRouter();
   const [competitor, setCompetitor] = useState("");
   const [note, setNote] = useState("");
-  const [lines, setLines] = useState<Line[]>([blank()]);
+  const [lines, setLines] = useState<Line[]>(() => [blank()]);
+  const [orders, setOrders] = useState<Order[]>([]);
+  const [initials, setInitials] = useState(props.initials);
+  const [addSite, setAddSite] = useState("");
   const [files, setFiles] = useState<File[]>([]);
   const [paste, setPaste] = useState("");
   const [pasteMsg, setPasteMsg] = useState<string | null>(null);
@@ -192,27 +240,36 @@ export default function PriceMatchForm(props: {
   useEffect(() => {
     try {
       const raw = window.localStorage.getItem(DRAFT_KEY);
-      const d = raw ? (JSON.parse(raw) as { competitor?: string; note?: string; lines?: Line[] }) : null;
+      const d = raw
+        ? (JSON.parse(raw) as { competitor?: string; note?: string; lines?: Array<Record<string, unknown>>; orders?: Order[]; initials?: string })
+        : null;
       if (d) {
         setCompetitor(d.competitor ?? "");
         setNote(d.note ?? "");
-        if (Array.isArray(d.lines) && d.lines.length) setLines(d.lines.map((l) => ({ ...blank(), ...l })));
+        // Older drafts carried a per-line qty; toLine drops it.
+        if (Array.isArray(d.lines) && d.lines.length) setLines(d.lines.map(toLine));
+        if (Array.isArray(d.orders)) {
+          const known = new Set(props.sites.map((s) => s.id));
+          setOrders(d.orders.filter((o) => o && known.has(o.location_id)).map((o) => ({ location_id: o.location_id, qty: o.qty ?? {} })));
+        }
+        if (d.initials) setInitials(d.initials);
       }
     } catch {
       // storage blocked: start empty
     }
     setLoaded(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   useEffect(() => {
     if (!loaded) return;
     try {
-      const empty = !competitor && !note && lines.every(isBlank);
+      const empty = !competitor && !note && lines.every(isBlank) && orders.length === 0;
       if (empty) window.localStorage.removeItem(DRAFT_KEY);
-      else window.localStorage.setItem(DRAFT_KEY, JSON.stringify({ competitor, note, lines }));
+      else window.localStorage.setItem(DRAFT_KEY, JSON.stringify({ competitor, note, lines, orders, initials }));
     } catch {
       // ignore
     }
-  }, [loaded, competitor, note, lines]);
+  }, [loaded, competitor, note, lines, orders, initials]);
 
   // ---- lines
   const setCell = (row: number, key: Field, value: string) =>
@@ -255,17 +312,63 @@ export default function PriceMatchForm(props: {
   };
 
   const filled = lines.filter((l) => !isBlank(l));
-  const total = useMemo(() => {
-    if (filled.length < 2) return null;
-    let t = 0;
-    for (const l of filled) {
-      const d = diff(l);
-      if (d == null) return null;
-      const q = Number(l.qty);
-      t += d * (Number.isFinite(q) && q > 0 ? q : 1);
+
+  // ---- orders
+  const siteById = useMemo(() => new Map(props.sites.map((s) => [s.id, s])), [props.sites]);
+  const setQty = (locationId: number, lineId: string, value: string) =>
+    setOrders((os) => os.map((o) => (o.location_id === locationId ? { ...o, qty: { ...o.qty, [lineId]: value } } : o)));
+
+  /** Multi-cell paste into the order grid: rows = parts, columns = sites. */
+  const onQtyPaste = (row: number, col: number) => (e: React.ClipboardEvent<HTMLInputElement>) => {
+    const text = e.clipboardData.getData("text/plain");
+    if (!/[\t\n]/.test(text.replace(/\n$/, ""))) return;
+    e.preventDefault();
+    const rows = parseTsv(text);
+    setOrders((os) => {
+      const next = os.map((o) => ({ ...o, qty: { ...o.qty } }));
+      rows.forEach((r, ri) => {
+        const l = filled[row + ri];
+        if (!l) return;
+        r.forEach((v, ci) => {
+          const o = next[col + ci];
+          if (o) o.qty[l.id] = v;
+        });
+      });
+      return next;
+    });
+  };
+
+  const orderProblems = useMemo(() => {
+    const out: string[] = [];
+    for (const o of orders) {
+      const s = siteById.get(o.location_id);
+      const name = s ? siteLabel(s) : "A site";
+      const qs = filled.map((l) => qtyValue(o.qty[l.id]));
+      if (qs.some((q) => q === null)) out.push(`${name}: quantities must be numbers.`);
+      else if (!qs.some((q) => (q ?? 0) > 0)) out.push(`${name}: enter at least one quantity, or remove the site.`);
     }
-    return Math.round(t * 100) / 100;
-  }, [filled]);
+    return out;
+  }, [orders, filled, siteById]);
+
+  const savings = useMemo(() => {
+    let t = 0;
+    let any = false;
+    for (const o of orders)
+      for (const l of filled) {
+        const q = qtyValue(o.qty[l.id]) ?? 0;
+        if (!q) continue;
+        const d = diff(l);
+        if (d == null) return null;
+        t += d * q;
+        any = true;
+      }
+    return any ? Math.round(t * 100) / 100 : null;
+  }, [orders, filled]);
+
+  const cleanInitials = initials.replace(/[^A-Za-z]/g, "").slice(0, 4);
+  const poPreview = (s: SiteOption) =>
+    `${s.site_number != null ? String(s.site_number).padStart(3, "0") : "000"}-${props.today}-${cleanInitials || props.initials}`;
+  const availableSites = props.sites.filter((s) => !orders.some((o) => o.location_id === s.id));
 
   // ---- files
   const addFiles = useCallback(async (incoming: File[]) => {
@@ -303,7 +406,14 @@ export default function PriceMatchForm(props: {
   const totalBytes = files.reduce((n, f) => n + f.size, 0);
 
   // ---- submit
-  const payload = () => ({ competitor, note, lines: filled });
+  const payload = () => ({
+    competitor,
+    note,
+    initials: cleanInitials,
+    lines: filled.map(({ id: _id, ...rest }) => rest),
+    // qty[i] belongs to lines[i] as sent.
+    orders: orders.map((o) => ({ location_id: o.location_id, qty: filled.map((l) => o.qty[l.id] ?? "") }))
+  });
 
   const doPreview = async () => {
     setError(null);
@@ -337,21 +447,23 @@ export default function PriceMatchForm(props: {
       for (const f of files) fd.append("files", f, f.name);
       const res = await fetch("/admin/price-match/api/send", { method: "POST", body: fd });
       const data = (await res.json().catch(() => null)) as
-        | { error?: string; to?: string; cc?: string[]; test?: boolean; ref_no?: number | null }
+        | { error?: string; to?: string; cc?: string[]; test?: boolean; ref_no?: number | null; po_numbers?: string[] }
         | null;
       if (!res.ok || !data || data.error) {
         setError(data?.error ?? `Send failed (${res.status}).`);
         return;
       }
       setPreview(null);
+      const pos = data.po_numbers ?? [];
       setSent(
         `${data.test ? "Test request" : "Request"}${data.ref_no ? ` #${data.ref_no}` : ""} queued to ${data.to}${
           data.cc?.length ? `, CC ${data.cc.join(", ")}` : ""
-        }. It goes out within about 5 minutes.`
+        }${pos.length ? ` with PO${pos.length === 1 ? "" : "s"} ${pos.join(", ")}${data.test ? " (test - not reserved)" : ""}` : ""}. It goes out within about 5 minutes.`
       );
       setCompetitor("");
       setNote("");
       setLines([blank()]);
+      setOrders([]);
       setFiles([]);
       router.refresh();
     } catch {
@@ -361,7 +473,7 @@ export default function PriceMatchForm(props: {
     }
   };
 
-  const ready = competitor.trim() !== "" && filled.length > 0;
+  const ready = competitor.trim() !== "" && filled.length > 0 && orderProblems.length === 0;
 
   return (
     <div className="space-y-5">
@@ -427,18 +539,21 @@ export default function PriceMatchForm(props: {
 
       <div className="rounded-splash-md border-[1.5px] border-splash-navy/15 bg-white p-5 shadow-splash-card">
         <div className="mb-3 flex flex-wrap items-baseline justify-between gap-2">
-          <h2 className="text-lg font-bold text-splash-navy">Parts</h2>
+          <h2 className="text-lg font-bold text-splash-navy">
+            Parts <span className="text-sm font-normal text-splash-navy/60">— prices per unit</span>
+          </h2>
           <p className="text-xs text-splash-navy/60">
             Paste cells from Excel into any box to fill across and down. Prices can be text, e.g. &ldquo;9.25/foot&rdquo;.
+            Quantities go in the Order section below.
           </p>
         </div>
 
         <details className="mb-4 rounded-splash-sm border border-gray-light bg-gray-light/20 px-3 py-2">
           <summary className="cursor-pointer text-sm font-semibold text-splash-navy">Paste from Excel</summary>
           <p className="mt-2 text-xs text-splash-navy/70">
-            Copy the rows <em>including the heading row</em> and paste here. Headings like Part, Qty, NCS / MacNeil Price,
-            MacNeil Link, Competitor, Competitor Price, Competitor Link are recognised. Without headings, columns are read
-            in the table&apos;s order.
+            Copy the rows <em>including the heading row</em> and paste here. Headings like Part, NCS / MacNeil Price,
+            MacNeil Link, Competitor, Competitor Price, Competitor Link are recognised (a Qty column is ignored). Without
+            headings, columns are read in the table&apos;s order.
           </p>
           <textarea
             className={`${input} mt-2 font-mono text-xs`}
@@ -481,7 +596,7 @@ export default function PriceMatchForm(props: {
               {lines.map((l, ri) => {
                 const d = diff(l);
                 return (
-                  <tr key={ri} className="align-top">
+                  <tr key={l.id} className="align-top">
                     {FIELDS.map((f, ci) => (
                       <td key={f.key} className={`px-1 py-1 ${f.width}`}>
                         <input
@@ -526,11 +641,6 @@ export default function PriceMatchForm(props: {
           >
             + Add part
           </button>
-          {total != null && (
-            <p className="text-sm text-splash-navy">
-              Total difference{filled.some((l) => l.qty) ? " (× qty)" : ""}: <strong>{money(total)}</strong>
-            </p>
-          )}
         </div>
       </div>
 
@@ -586,6 +696,140 @@ export default function PriceMatchForm(props: {
         )}
       </div>
 
+      <div className="rounded-splash-md border-[1.5px] border-splash-navy/15 bg-white p-5 shadow-splash-card">
+        <div className="mb-3 flex flex-wrap items-baseline justify-between gap-2">
+          <h2 className="text-lg font-bold text-splash-navy">
+            Order <span className="text-sm font-normal text-splash-navy/60">— optional</span>
+          </h2>
+          <p className="text-xs text-splash-navy/60">
+            &ldquo;If you can match, process these.&rdquo; One PO per site, shipped to the site&apos;s address on file.
+          </p>
+        </div>
+
+        <div className="mb-4 flex flex-wrap items-end gap-3">
+          <div className="min-w-[240px] flex-1">
+            <label className={label} htmlFor="pm-add-site">
+              Add a site
+            </label>
+            <select
+              id="pm-add-site"
+              className={input}
+              value={addSite}
+              onChange={(e) => {
+                const id = Number(e.target.value);
+                if (id) setOrders((os) => [...os, { location_id: id, qty: {} }]);
+                setAddSite("");
+              }}
+            >
+              <option value="">{availableSites.length ? "Choose a site…" : "Every site is added"}</option>
+              {availableSites.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {siteLabel(s)}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="w-[120px]">
+            <label className={label} htmlFor="pm-initials">
+              PO initials
+            </label>
+            <input
+              id="pm-initials"
+              className={input}
+              value={initials}
+              maxLength={4}
+              onChange={(e) => setInitials(e.target.value.replace(/[^A-Za-z]/g, ""))}
+            />
+          </div>
+        </div>
+
+        {orders.length === 0 ? (
+          <p className="rounded-splash-sm border border-dashed border-gray-light px-3 py-4 text-center text-sm italic text-splash-navy/60">
+            No order — this sends a price-match request only.
+          </p>
+        ) : filled.length === 0 ? (
+          <p className="text-sm italic text-splash-navy/60">Add parts above, then enter quantities here.</p>
+        ) : (
+          <>
+            <div className="overflow-x-auto">
+              <table className="text-left text-sm">
+                <thead className="text-xs text-splash-navy/60">
+                  <tr className="align-bottom">
+                    <th className="px-1 py-1 uppercase tracking-wide">Part</th>
+                    {orders.map((o) => {
+                      const s = siteById.get(o.location_id);
+                      return (
+                        <th key={o.location_id} className="min-w-[110px] px-1 py-1" title={s?.ship_to}>
+                          <div className="flex items-start justify-between gap-1">
+                            <span className="font-semibold text-splash-navy">{s ? siteLabel(s) : o.location_id}</span>
+                            <button
+                              type="button"
+                              aria-label={`Remove ${s ? siteLabel(s) : "site"} from the order`}
+                              className="rounded px-1 text-splash-navy/50 hover:bg-gray-light hover:text-racecar-red"
+                              onClick={() => setOrders((os) => os.filter((x) => x.location_id !== o.location_id))}
+                            >
+                              ✕
+                            </button>
+                          </div>
+                        </th>
+                      );
+                    })}
+                  </tr>
+                </thead>
+                <tbody>
+                  {filled.map((l, ri) => (
+                    <tr key={l.id}>
+                      <td className="max-w-[280px] px-1 py-1 text-splash-navy">
+                        {l.part || <span className="italic text-splash-navy/50">(unnamed part)</span>}
+                        {l.ncs_part_no && <span className="ml-1 text-xs text-splash-navy/50">#{l.ncs_part_no}</span>}
+                      </td>
+                      {orders.map((o, ci) => {
+                        const bad = qtyValue(o.qty[l.id]) === null;
+                        return (
+                          <td key={o.location_id} className="px-1 py-1">
+                            <input
+                              className={`${input} text-right ${bad ? "border-racecar-red" : ""}`}
+                              inputMode="decimal"
+                              placeholder="0"
+                              value={o.qty[l.id] ?? ""}
+                              aria-label={`Quantity of ${l.part || `part ${ri + 1}`} for ${siteLabel(siteById.get(o.location_id) ?? { site: null, site_number: null })}`}
+                              onChange={(e) => setQty(o.location_id, l.id, e.target.value)}
+                              onPaste={onQtyPaste(ri, ci)}
+                            />
+                          </td>
+                        );
+                      })}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            <ul className="mt-4 space-y-2 text-sm">
+              {orders.map((o) => {
+                const s = siteById.get(o.location_id);
+                if (!s) return null;
+                return (
+                  <li key={o.location_id} className="flex flex-wrap gap-x-4 gap-y-1">
+                    <span className="font-semibold text-splash-navy">PO {poPreview(s)}</span>
+                    <span className="text-splash-navy/70">{s.ship_to.replace(/\n/g, ", ")}</span>
+                  </li>
+                );
+              })}
+            </ul>
+            <p className="mt-2 text-xs text-splash-navy/60">
+              PO numbers are final when sent — if one is already used today, it becomes …2, …3 (shared with Kleen-Rite
+              orders). Paste a block of quantities from Excel to fill across sites and down parts.
+            </p>
+            {savings != null && savings > 0 && (
+              <p className="mt-2 text-sm text-splash-navy">
+                At the matched prices this order saves <strong>{money(savings)}</strong>.
+              </p>
+            )}
+          </>
+        )}
+      </div>
+
       {error && (
         <p role="alert" className="rounded-splash-md border border-racecar-red bg-white px-3 py-2 text-sm text-racecar-red">
           {error}
@@ -609,7 +853,11 @@ export default function PriceMatchForm(props: {
         >
           {busy === "send" ? "Sending…" : props.live ? "Send to NCS" : "Send test to me"}
         </button>
-        {!ready && <span className="text-xs text-splash-navy/60">Name the competitor and add at least one part.</span>}
+        {!ready && (
+          <span className="text-xs text-splash-navy/60">
+            {competitor.trim() === "" || filled.length === 0 ? "Name the competitor and add at least one part." : orderProblems[0]}
+          </span>
+        )}
       </div>
 
       {preview && (

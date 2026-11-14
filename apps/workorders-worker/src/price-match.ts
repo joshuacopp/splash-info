@@ -7,8 +7,21 @@
 // email -- a table in the body, the same table as an .xlsx attachment, the
 // quotes attached -- and queues it on outbound_emails.
 //
+// PRICES ARE PER UNIT. Quantities live only in the optional ORDER section
+// (operator, 2026-11-14): pick one or more sites and a quantity per part per
+// site, and the same email carries one PO per site -- "if you can match,
+// process these". A Qty column on the price table read as either "the price
+// for 10" or "10 at this price"; keeping quantities out of it removes that.
+// Each site's ship-to comes from `locations` (ship_to_address, else
+// location), exactly as Kleen-Rite orders do.
+//
+// POs use the Kleen-Rite format AND THE SAME SEQUENCE: {site#}-{YYYYMMDD}-
+// {initials}, then 2, 3, ... Both supply_orders and price_match_orders are
+// checked before a number is used, and Kleen-Rite's create checks ours.
+// Test sends compute POs but do not reserve them.
+//
 // ROUTES (under /workorders/api/, dispatched from index.ts):
-//   GET  price-match           recent requests + where an email would go
+//   GET  price-match           recent requests, sites, where an email would go
 //   POST price-match/preview   JSON body -> the email as it would be sent
 //   POST price-match           multipart: data = JSON, files = quotes
 //
@@ -25,8 +38,9 @@
 import type { Session } from "@splash/auth";
 import { enqueueOutboundEmail, type OutboundEmailAttachment } from "@splash/db-supabase";
 import { isOriginAllowed, json, jsonError } from "@splash/http";
-import { buildXlsxWorkbook, type XlsxColumn } from "@splash/xlsx";
+import { buildXlsxWorkbookMultiSheet, type XlsxColumn, type XlsxSheet } from "@splash/xlsx";
 import { easternYmd } from "./eastern-time.js";
+import { cleanInitials, initialsFrom, nextPo, poBase, shipToFor } from "./supply-orders.js";
 
 export interface PriceMatchEnv {
   SUPABASE_URL: string;
@@ -41,16 +55,18 @@ export interface PriceMatchEnv {
 }
 
 export const MAX_LINES = 100;
+export const MAX_SITES = 60;
 export const MAX_FILES = 10;
 /** forms-worker's queue claim drops attachments over 5 MB; match it. */
 export const MAX_FILE_BYTES = 5 * 1024 * 1024;
 export const MAX_TOTAL_BYTES = 15 * 1024 * 1024;
+/** The company line on the shipping label -- same as Kleen-Rite orders. */
+export const SHIP_TO_COMPANY = "Splash Express";
 const FILE_EXT = /\.(pdf|jpe?g|png|gif|webp|heic|heif|xlsx?|csv|docx?|txt)$/i;
 
 export interface PriceMatchLine {
   part: string;
   ncs_part_no: string;
-  qty: string;
   ncs_price: string;
   ncs_url: string;
   competitor_part_no: string;
@@ -58,10 +74,38 @@ export interface PriceMatchLine {
   competitor_url: string;
 }
 
+/** One site's order as typed: qty[i] belongs to lines[i]; 0 = not ordered. */
+export interface OrderInput {
+  location_id: number;
+  qty: number[];
+}
+
 export interface PriceMatchInput {
   competitor: string;
   note: string;
   lines: PriceMatchLine[];
+  orders: OrderInput[];
+  /** PO initials as typed; null = derive from the sender. */
+  initials: string | null;
+}
+
+/** An order resolved against `locations`, with its PO. */
+export interface ResolvedOrder {
+  location_id: number;
+  site_number: number | null;
+  site_name: string;
+  po_number: string;
+  ship_to: string;
+  qty: number[];
+}
+
+/** The `locations` columns an order needs. */
+export interface SitePick {
+  id: number;
+  site_number: number | null;
+  site: string | null;
+  location: string | null;
+  ship_to_address: string | null;
 }
 
 /* ============================================================
@@ -114,6 +158,14 @@ function isHttpUrl(s: string): boolean {
   }
 }
 
+/** "" / "0" -> 0 (not ordered); "4" / "12.5" -> the number; anything else -> null. */
+export function parseQty(v: unknown): number | null {
+  const s = typeof v === "number" ? String(v) : typeof v === "string" ? v.trim() : "";
+  if (s === "") return 0;
+  if (!/^\d{1,6}(\.\d{1,2})?$/.test(s)) return null;
+  return Number(s);
+}
+
 export function parseInput(raw: unknown): { input: PriceMatchInput } | { error: string } {
   if (!raw || typeof raw !== "object") return { error: "Nothing to send." };
   const b = raw as Record<string, unknown>;
@@ -122,13 +174,14 @@ export function parseInput(raw: unknown): { input: PriceMatchInput } | { error: 
   const note = str(b.note, 2000);
   const rawLines = Array.isArray(b.lines) ? b.lines : [];
   const lines: PriceMatchLine[] = [];
-  for (const r of rawLines) {
+  /** raw line index -> kept line index (blank rows are dropped). */
+  const keep = new Map<number, number>();
+  for (const [ri, r] of rawLines.entries()) {
     if (!r || typeof r !== "object") continue;
     const o = r as Record<string, unknown>;
     const line: PriceMatchLine = {
       part: str(o.part, 200),
       ncs_part_no: str(o.ncs_part_no, 60),
-      qty: str(o.qty, 20),
       ncs_price: str(o.ncs_price, 40),
       ncs_url: str(o.ncs_url, 500),
       competitor_part_no: str(o.competitor_part_no, 60),
@@ -145,11 +198,39 @@ export function parseInput(raw: unknown): { input: PriceMatchInput } | { error: 
     if (line.competitor_url && !isHttpUrl(line.competitor_url)) {
       return { error: `Line ${n} (${line.part}): the competitor link must be a web address.` };
     }
+    keep.set(ri, lines.length);
     lines.push(line);
   }
   if (lines.length === 0) return { error: "Add at least one part." };
   if (lines.length > MAX_LINES) return { error: `At most ${MAX_LINES} parts per request.` };
-  return { input: { competitor, note, lines } };
+
+  const rawOrders = Array.isArray(b.orders) ? b.orders : [];
+  if (rawOrders.length > MAX_SITES) return { error: `At most ${MAX_SITES} sites per request.` };
+  const orders: OrderInput[] = [];
+  const seen = new Set<number>();
+  for (const r of rawOrders) {
+    if (!r || typeof r !== "object") continue;
+    const o = r as Record<string, unknown>;
+    const location_id = Number(o.location_id);
+    if (!Number.isInteger(location_id) || location_id <= 0) return { error: "An order has no site." };
+    if (seen.has(location_id)) return { error: "The same site is in the order twice." };
+    seen.add(location_id);
+    const rawQty = Array.isArray(o.qty) ? o.qty : [];
+    const qty = lines.map(() => 0);
+    for (const [ri, ki] of keep) {
+      const q = parseQty(rawQty[ri]);
+      if (q === null) return { error: `${lines[ki]!.part}: quantities must be numbers, e.g. 4 or 12.5.` };
+      qty[ki] = q;
+    }
+    orders.push({ location_id, qty });
+  }
+
+  let initials: string | null = null;
+  if (typeof b.initials === "string" && b.initials.trim() !== "") {
+    initials = cleanInitials(b.initials);
+    if (!initials) return { error: "PO initials must be letters." };
+  }
+  return { input: { competitor, note, lines, orders, initials } };
 }
 
 /** "$1,229.67" / "229.67" -> 229.67; "9.25/foot" -> null. */
@@ -160,16 +241,47 @@ export function priceNumber(s: string): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
-function qtyNumber(s: string): number {
-  const n = Number(s.trim());
-  return Number.isFinite(n) && n > 0 ? n : 1;
-}
-
 /** NCS minus competitor, per unit. null when either side isn't a plain price. */
 export function lineDiff(l: Pick<PriceMatchLine, "ncs_price" | "competitor_price">): number | null {
   const a = priceNumber(l.ncs_price);
   const b = priceNumber(l.competitor_price);
   return a == null || b == null ? null : Math.round((a - b) * 100) / 100;
+}
+
+const round2 = (n: number) => Math.round(n * 100) / 100;
+
+/** qty x matched (competitor) price; null when the price isn't a plain number. */
+export function extended(line: PriceMatchLine, qty: number): number | null {
+  const p = priceNumber(line.competitor_price);
+  return p == null ? null : round2(p * qty);
+}
+
+/** A PO's total at matched prices -- null unless every ordered line has one. */
+export function orderTotal(lines: PriceMatchLine[], qty: number[]): number | null {
+  let t = 0;
+  for (const [i, l] of lines.entries()) {
+    if (!qty[i]) continue;
+    const e = extended(l, qty[i]!);
+    if (e == null) return null;
+    t += e;
+  }
+  return round2(t);
+}
+
+/** What all the orders save against NCS pricing -- null unless every ordered line has a numeric difference. */
+export function ordersSavings(lines: PriceMatchLine[], orders: Array<{ qty: number[] }>): number | null {
+  let t = 0;
+  let any = false;
+  for (const o of orders) {
+    for (const [i, l] of lines.entries()) {
+      if (!o.qty[i]) continue;
+      const d = lineDiff(l);
+      if (d == null) return null;
+      t += d * o.qty[i]!;
+      any = true;
+    }
+  }
+  return any ? round2(t) : null;
 }
 
 export function money(n: number): string {
@@ -183,15 +295,49 @@ export function showPrice(s: string): string {
   return n == null ? s : money(n);
 }
 
-/** Sum of (difference x qty) -- only when every line has a numeric difference. */
-export function totalDiff(lines: PriceMatchLine[]): number | null {
-  let total = 0;
-  for (const l of lines) {
-    const d = lineDiff(l);
-    if (d == null) return null;
-    total += d * qtyNumber(l.qty);
+function showQty(n: number): string {
+  return Number.isInteger(n) ? String(n) : String(round2(n));
+}
+
+/** "147 - Binghamton" */
+export function siteTitle(o: Pick<ResolvedOrder, "site_number" | "site_name">): string {
+  return o.site_number != null ? `${String(o.site_number).padStart(3, "0")} - ${o.site_name}` : o.site_name;
+}
+
+/**
+ * Turn typed orders into POs. `taken` is every PO already used (both
+ * tables); POs given out earlier in this same call are added to it, so two
+ * sites can never collide even if they share a site number.
+ */
+export function resolveOrders(
+  orders: OrderInput[],
+  sites: SitePick[],
+  initials: string,
+  at: Date,
+  taken: string[]
+): { orders: ResolvedOrder[] } | { error: string } {
+  const byId = new Map(sites.map((s) => [s.id, s]));
+  const used = [...taken];
+  const out: ResolvedOrder[] = [];
+  for (const o of orders) {
+    const s = byId.get(o.location_id);
+    if (!s) return { error: "One of the order sites no longer exists. Remove it and add it again." };
+    const site_name = (s.site ?? "").trim() || `Site ${s.site_number ?? s.id}`;
+    if (!o.qty.some((q) => q > 0)) {
+      return { error: `${site_name}: enter a quantity for at least one part, or remove the site.` };
+    }
+    const po_number = nextPo(poBase(s.site_number, at, initials), used);
+    used.push(po_number);
+    out.push({
+      location_id: s.id,
+      site_number: s.site_number,
+      site_name,
+      po_number,
+      ship_to: shipToFor(s, SHIP_TO_COMPANY),
+      qty: o.qty
+    });
   }
-  return Math.round(total * 100) / 100;
+  return { orders: out };
 }
 
 /* ============================================================
@@ -215,29 +361,27 @@ function slug(s: string): string {
   return s.replace(/[^A-Za-z0-9]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 40) || "Competitor";
 }
 
-export function xlsxFilename(input: PriceMatchInput, at: Date): string {
+export function xlsxFilename(input: Pick<PriceMatchInput, "competitor">, at: Date): string {
   return `Price_Match_${slug(input.competitor)}_${easternYmd(at)}.xlsx`;
 }
 
-export function buildPriceMatchXlsx(input: PriceMatchInput): Uint8Array {
-  const columns: XlsxColumn[] = [
+export function buildPriceMatchXlsx(input: Pick<PriceMatchInput, "competitor" | "lines">, orders: ResolvedOrder[] = []): Uint8Array {
+  const priceColumns: XlsxColumn[] = [
     { header: "Part", width: 32, kind: "wrap" },
     { header: "NCS Part #", width: 14, kind: "text" },
-    { header: "Qty", width: 7, kind: "text" },
-    { header: "NCS Price", width: 13, kind: "currency" },
+    { header: "NCS Price (each)", width: 15, kind: "currency" },
     { header: "NCS Link", width: 44, kind: "url" },
     { header: "Competitor", width: 24, kind: "text" },
     { header: "Competitor Part #", width: 16, kind: "text" },
-    { header: "Competitor Price", width: 16, kind: "currency" },
+    { header: "Competitor Price (each)", width: 20, kind: "currency" },
     { header: "Competitor Link", width: 44, kind: "url" },
     { header: "Difference (each)", width: 16, kind: "currency" }
   ];
-  const rows = input.lines.map((l) => {
+  const priceRows = input.lines.map((l) => {
     const d = lineDiff(l);
     return [
       l.part,
       l.ncs_part_no,
-      l.qty,
       l.ncs_price,
       l.ncs_url,
       input.competitor,
@@ -247,26 +391,56 @@ export function buildPriceMatchXlsx(input: PriceMatchInput): Uint8Array {
       d == null ? "" : d
     ];
   });
-  return buildXlsxWorkbook(columns, rows, "Price Match");
+  const sheets: XlsxSheet[] = [{ name: "Price Match", columns: priceColumns, rows: priceRows }];
+
+  if (orders.length) {
+    const orderColumns: XlsxColumn[] = [
+      { header: "PO", width: 18, kind: "text" },
+      { header: "Site", width: 24, kind: "text" },
+      { header: "Ship To", width: 34, kind: "wrap" },
+      { header: "Part", width: 32, kind: "wrap" },
+      { header: "NCS Part #", width: 14, kind: "text" },
+      { header: "Qty", width: 8, kind: "number" },
+      { header: "Matched Price (each)", width: 18, kind: "currency" },
+      { header: "Extended", width: 14, kind: "currency" },
+      { header: "NCS Link", width: 44, kind: "url" }
+    ];
+    const orderRows = orders.flatMap((o) =>
+      input.lines.flatMap((l, i) => {
+        const q = o.qty[i] ?? 0;
+        if (!q) return [];
+        const e = extended(l, q);
+        return [[o.po_number, siteTitle(o), o.ship_to, l.part, l.ncs_part_no, q, l.competitor_price, e == null ? "" : e, l.ncs_url]];
+      })
+    );
+    sheets.push({ name: "Orders", columns: orderColumns, rows: orderRows });
+  }
+  return buildXlsxWorkbookMultiSheet(sheets);
+}
+
+export function emailSubject(competitor: string, orders: Pick<ResolvedOrder, "po_number">[], test: boolean): string {
+  const po = orders.length === 1 ? ` + PO ${orders[0]!.po_number}` : orders.length > 1 ? ` + ${orders.length} POs` : "";
+  return `${test ? "[TEST] " : ""}Price Match Request - ${competitor}${po}`;
 }
 
 export function buildPriceMatchEmail(input: {
-  request: PriceMatchInput;
+  request: Pick<PriceMatchInput, "competitor" | "note" | "lines">;
+  orders?: ResolvedOrder[];
   sender: string;
   fileNames: string[];
   xlsxName: string;
   test: { to: string; cc: string[] } | null;
 }): { subject: string; html: string; text: string } {
   const { request, sender, fileNames, xlsxName, test } = input;
+  const orders = input.orders ?? [];
   const { competitor, note, lines } = request;
   const name = nameFromEmail(sender);
-  const subject = `${test ? "[TEST] " : ""}Price Match Request - ${competitor}`;
+  const subject = emailSubject(competitor, orders, test != null);
   const hasNcsNo = lines.some((l) => l.ncs_part_no);
   const hasCompNo = lines.some((l) => l.competitor_part_no);
-  const hasQty = lines.some((l) => l.qty);
   const hasCompLinks = lines.some((l) => l.competitor_url);
-  const total = lines.length > 1 ? totalDiff(lines) : null;
   const quotes = fileNames.length > 0;
+  const savings = ordersSavings(lines, orders);
 
   const evidence =
     hasCompLinks && quotes
@@ -276,50 +450,83 @@ export function buildPriceMatchEmail(input: {
         : quotes
           ? `${competitor}'s quote is attached.`
           : "";
-  const intro = `We'd like to request a price match on the part${lines.length === 1 ? "" : "s"} below against ${competitor}.${evidence ? ` ${evidence}` : ""}`;
+  const intro =
+    `We'd like to request a price match on the part${lines.length === 1 ? "" : "s"} below against ${competitor}. ` +
+    `Prices are per unit.${evidence ? ` ${evidence}` : ""}`;
+  const orderIntro =
+    orders.length === 0
+      ? ""
+      : `If you can match these prices, please process the following order${orders.length === 1 ? "" : "s"} at the matched prices` +
+        (orders.length === 1 ? "." : ` - one PO per site.`);
 
   const th = (s: string, right = false) =>
     `<th style="padding:6px 8px;border:1px solid #c9d1dc;background:#eef2f7;text-align:${right ? "right" : "left"};font-size:13px;white-space:nowrap;">${esc(s)}</th>`;
   const td = (s: string, right = false, nowrap = false) =>
     `<td style="padding:6px 8px;border:1px solid #c9d1dc;text-align:${right ? "right" : "left"};font-size:13px;vertical-align:top;${nowrap ? "white-space:nowrap;" : ""}">${s}</td>`;
   const link = (url: string, label: string) => (url ? `<a href="${esc(url)}" style="color:#1a5fb4;">${esc(label)}</a>` : "");
+  const table = (rows: string[]) =>
+    `<table cellpadding="0" cellspacing="0" style="border-collapse:collapse;margin:0 0 14px;">${rows.join("")}</table>`;
+  const p = (s: string) => `<p style="margin:0 0 12px;">${s}</p>`;
 
+  // ---- price table (per unit)
   const head = [
     th("Part"),
     hasNcsNo ? th("NCS Part #") : "",
-    hasQty ? th("Qty", true) : "",
-    th("NCS Price", true),
-    th(`${competitor} Price`, true),
-    th("Difference", true),
+    th("NCS Price (each)", true),
+    th(`${competitor} Price (each)`, true),
+    th("Difference (each)", true),
     th("Links")
   ].join("");
-  const body = lines
-    .map((l) => {
-      const d = lineDiff(l);
-      const links = [link(l.ncs_url, "NCS"), link(l.competitor_url, competitor)].filter(Boolean).join(" &middot; ");
-      return (
-        `<tr>` +
-        td(esc(l.part) + (hasCompNo && l.competitor_part_no ? `<br><span style="color:#5b6b7f;font-size:12px;">${esc(competitor)} #: ${esc(l.competitor_part_no)}</span>` : "")) +
-        (hasNcsNo ? td(esc(l.ncs_part_no), false, true) : "") +
-        (hasQty ? td(esc(l.qty), true) : "") +
-        td(esc(showPrice(l.ncs_price)), true, true) +
-        td(esc(showPrice(l.competitor_price)), true, true) +
-        td(d == null ? "&ndash;" : esc(money(d)), true, true) +
-        td(links, false, true) +
-        `</tr>`
-      );
-    })
-    .join("");
-  const span = 4 + (hasNcsNo ? 1 : 0) + (hasQty ? 1 : 0);
-  const totalRow =
-    total != null
-      ? `<tr><td colspan="${span}" style="padding:6px 8px;border:1px solid #c9d1dc;text-align:right;font-size:13px;font-weight:bold;">Total difference${hasQty ? " (x qty)" : ""}</td>` +
-        td(`<strong>${esc(money(total))}</strong>`, true, true) +
-        td("") +
-        `</tr>`
-      : "";
+  const priceRows = lines.map((l) => {
+    const d = lineDiff(l);
+    const links = [link(l.ncs_url, "NCS"), link(l.competitor_url, competitor)].filter(Boolean).join(" &middot; ");
+    return (
+      `<tr>` +
+      td(esc(l.part) + (hasCompNo && l.competitor_part_no ? `<br><span style="color:#5b6b7f;font-size:12px;">${esc(competitor)} #: ${esc(l.competitor_part_no)}</span>` : "")) +
+      (hasNcsNo ? td(esc(l.ncs_part_no), false, true) : "") +
+      td(esc(showPrice(l.ncs_price)), true, true) +
+      td(esc(showPrice(l.competitor_price)), true, true) +
+      td(d == null ? "&ndash;" : esc(money(d)), true, true) +
+      td(links, false, true) +
+      `</tr>`
+    );
+  });
 
-  const p = (s: string) => `<p style="margin:0 0 12px;">${s}</p>`;
+  // ---- one block per PO
+  const orderBlocks = orders.map((o) => {
+    const rows = lines.flatMap((l, i) => {
+      const q = o.qty[i] ?? 0;
+      if (!q) return [];
+      const e = extended(l, q);
+      return [
+        `<tr>` +
+          td(esc(l.part)) +
+          (hasNcsNo ? td(esc(l.ncs_part_no), false, true) : "") +
+          td(esc(showQty(q)), true, true) +
+          td(esc(showPrice(l.competitor_price)), true, true) +
+          td(e == null ? "&ndash;" : esc(money(e)), true, true) +
+          `</tr>`
+      ];
+    });
+    const total = orderTotal(lines, o.qty);
+    const span = 3 + (hasNcsNo ? 1 : 0);
+    const totalRow =
+      total != null
+        ? `<tr><td colspan="${span}" style="padding:6px 8px;border:1px solid #c9d1dc;text-align:right;font-size:13px;font-weight:bold;">PO total</td>` +
+          td(`<strong>${esc(money(total))}</strong>`, true, true) +
+          `</tr>`
+        : "";
+    return [
+      `<p style="margin:16px 0 4px;font-size:15px;"><strong>PO ${esc(o.po_number)}</strong> &mdash; ${esc(siteTitle(o))}</p>`,
+      `<p style="margin:0 0 8px;color:#333;"><span style="color:#5b6b7f;">Ship to:</span><br>${esc(o.ship_to).replace(/\n/g, "<br>")}</p>`,
+      table([
+        `<tr>${th("Part")}${hasNcsNo ? th("NCS Part #") : ""}${th("Qty", true)}${th("Matched Price (each)", true)}${th("Extended", true)}</tr>`,
+        ...rows,
+        totalRow
+      ])
+    ].join("");
+  });
+
   const attachedList = [xlsxName, ...fileNames];
   const html = [
     `<div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:1.45;color:#111;">`,
@@ -333,11 +540,12 @@ export function buildPriceMatchEmail(input: {
     p("Hi,"),
     p(esc(intro)),
     note ? p(esc(note).replace(/\n/g, "<br>")) : "",
-    `<table cellpadding="0" cellspacing="0" style="border-collapse:collapse;margin:0 0 14px;">`,
-    `<tr>${head}</tr>`,
-    body,
-    totalRow,
-    `</table>`,
+    table([`<tr>${head}</tr>`, ...priceRows]),
+    orders.length
+      ? `<h3 style="margin:20px 0 8px;font-size:16px;color:#0b2545;">Order${orders.length === 1 ? "" : "s"}</h3>` + p(esc(orderIntro))
+      : "",
+    ...orderBlocks,
+    savings != null && savings > 0 ? p(`At the matched prices, ${orders.length === 1 ? "this order comes" : "these orders come"} to ${esc(money(savings))} less than NCS pricing.`) : "",
     p(`Attached: ${attachedList.map(esc).join(", ")}.`),
     p("Thanks,"),
     p(`${esc(name)}<br>Splash Car Wash<br><a href="mailto:${esc(sender)}" style="color:#1a5fb4;">${esc(sender)}</a>`),
@@ -347,10 +555,27 @@ export function buildPriceMatchEmail(input: {
   const textLines = lines.map((l) => {
     const d = lineDiff(l);
     return [
-      `- ${l.part}${l.ncs_part_no ? ` (NCS #${l.ncs_part_no})` : ""}${l.qty ? ` x${l.qty}` : ""}`,
-      `  NCS ${showPrice(l.ncs_price)} vs ${competitor} ${showPrice(l.competitor_price)}${d == null ? "" : ` (difference ${money(d)})`}`,
+      `- ${l.part}${l.ncs_part_no ? ` (NCS #${l.ncs_part_no})` : ""}`,
+      `  NCS ${showPrice(l.ncs_price)} vs ${competitor} ${showPrice(l.competitor_price)} each${d == null ? "" : ` (difference ${money(d)})`}`,
       `  NCS: ${l.ncs_url}`,
       l.competitor_url ? `  ${competitor}: ${l.competitor_url}` : ""
+    ]
+      .filter(Boolean)
+      .join("\n");
+  });
+  const textOrders = orders.map((o) => {
+    const total = orderTotal(lines, o.qty);
+    return [
+      `PO ${o.po_number} - ${siteTitle(o)}`,
+      `Ship to:`,
+      ...o.ship_to.split("\n").map((s) => `  ${s}`),
+      ...lines.flatMap((l, i) => {
+        const q = o.qty[i] ?? 0;
+        if (!q) return [];
+        const e = extended(l, q);
+        return [`  ${showQty(q)} x ${l.part}${l.ncs_part_no ? ` (NCS #${l.ncs_part_no})` : ""} @ ${showPrice(l.competitor_price)}${e == null ? "" : ` = ${money(e)}`}`];
+      }),
+      total != null ? `  PO total: ${money(total)}` : ""
     ]
       .filter(Boolean)
       .join("\n");
@@ -363,7 +588,9 @@ export function buildPriceMatchEmail(input: {
     note ? `\n${note}` : "",
     "",
     ...textLines,
-    total != null ? `\nTotal difference: ${money(total)}` : "",
+    orders.length ? `\n${orderIntro}\n` : "",
+    textOrders.join("\n\n"),
+    savings != null && savings > 0 ? `\nAt the matched prices, ${orders.length === 1 ? "this order comes" : "these orders come"} to ${money(savings)} less than NCS pricing.` : "",
     "",
     `Attached: ${attachedList.join(", ")}.`,
     "",
@@ -382,7 +609,7 @@ export function buildPriceMatchEmail(input: {
 
 async function pg<T>(
   env: PriceMatchEnv,
-  method: "GET" | "POST",
+  method: "GET" | "POST" | "DELETE",
   pathAndQuery: string,
   body?: unknown,
   extraHeaders: Record<string, string> = {}
@@ -403,7 +630,46 @@ async function pg<T>(
     return null;
   }
   const text = await res.text();
-  return text ? (JSON.parse(text) as T) : null;
+  return (text ? JSON.parse(text) : []) as T;
+}
+
+const SITE_SELECT = "select=id,site_number,site,location,ship_to_address";
+
+async function listSites(env: PriceMatchEnv): Promise<SitePick[]> {
+  return (await pg<SitePick[]>(env, "GET", `locations?${SITE_SELECT}&order=site_number.asc,site.asc&limit=500`)) ?? [];
+}
+
+/**
+ * Every PO already used on this date, in BOTH tables -- the PO sequence is
+ * shared with Kleen-Rite orders. Null if either read failed: guessing would
+ * hand out a PO that is already on an order.
+ */
+export async function takenPosOn(env: PriceMatchEnv, at: Date): Promise<string[] | null> {
+  const day = `*-${easternYmd(at).replace(/-/g, "")}-*`;
+  const q = `po_number=like.${encodeURIComponent(day)}&select=po_number`;
+  const [a, b] = await Promise.all([
+    pg<Array<{ po_number: string }>>(env, "GET", `supply_orders?${q}`),
+    pg<Array<{ po_number: string }>>(env, "GET", `price_match_orders?${q}`)
+  ]);
+  if (!a || !b) return null;
+  return [...a, ...b].map((r) => r.po_number);
+}
+
+/** Sites + POs for a request. Test sends compute POs without reserving them. */
+async function ordersFor(
+  env: PriceMatchEnv,
+  req: PriceMatchInput,
+  initials: string,
+  at: Date
+): Promise<{ orders: ResolvedOrder[] } | { error: string; status: number }> {
+  if (req.orders.length === 0) return { orders: [] };
+  const ids = req.orders.map((o) => o.location_id).join(",");
+  const sites = await pg<SitePick[]>(env, "GET", `locations?id=in.(${ids})&${SITE_SELECT}`);
+  if (!sites) return { error: "Could not look up the order sites. Try again.", status: 502 };
+  const taken = await takenPosOn(env, at);
+  if (!taken) return { error: "Could not check PO numbers. Try again.", status: 502 };
+  const r = resolveOrders(req.orders, sites, initials, at, taken);
+  return "error" in r ? { error: r.error, status: 400 } : r;
 }
 
 /* ============================================================
@@ -426,20 +692,34 @@ export async function handlePriceMatchRequest(
   return jsonError(404, "Not found");
 }
 
+function defaultInitials(session: Session): string {
+  return initialsFrom(null, session.email) || "X";
+}
+
 async function overview(env: PriceMatchEnv, session: Session): Promise<Response> {
   const r = recipientsFor(env, session.email);
-  const requests =
-    (await pg<unknown[]>(
+  const [requests, sites] = await Promise.all([
+    pg<unknown[]>(
       env,
       "GET",
-      `price_match_requests?select=id,ref_no,created_at,created_by_email,competitor,lines,files,sent_to,sent_cc,test&order=created_at.desc&limit=25`
-    )) ?? [];
+      `price_match_requests?select=id,ref_no,created_at,created_by_email,competitor,lines,orders,files,sent_to,sent_cc,test&order=created_at.desc&limit=25`
+    ),
+    listSites(env)
+  ]);
   return json({
     live: !r.test,
     to: r.to,
     cc: r.cc,
     live_recipients: liveRecipients(env),
-    requests
+    initials: defaultInitials(session),
+    today: easternYmd(new Date()).replace(/-/g, ""),
+    sites: sites.map((s) => ({
+      id: s.id,
+      site_number: s.site_number,
+      site: s.site,
+      ship_to: shipToFor(s, SHIP_TO_COMPANY)
+    })),
+    requests: requests ?? []
   });
 }
 
@@ -452,13 +732,17 @@ async function preview(request: Request, env: PriceMatchEnv, session: Session): 
   }
   const parsed = parseInput(raw);
   if ("error" in parsed) return jsonError(400, parsed.error);
+  const now = new Date();
+  const resolved = await ordersFor(env, parsed.input, parsed.input.initials ?? defaultInitials(session), now);
+  if ("error" in resolved) return jsonError(resolved.status, resolved.error);
   const fileNames = Array.isArray(raw.file_names) ? raw.file_names.filter((f): f is string => typeof f === "string").slice(0, MAX_FILES) : [];
   const r = recipientsFor(env, session.email);
   const email = buildPriceMatchEmail({
     request: parsed.input,
+    orders: resolved.orders,
     sender: lc(session.email),
     fileNames,
-    xlsxName: xlsxFilename(parsed.input, new Date()),
+    xlsxName: xlsxFilename(parsed.input, now),
     test: r.test ? livePreviewTarget(env, session) : null
   });
   return json({ ...email, to: r.to, cc: r.cc, test: r.test });
@@ -481,6 +765,20 @@ function bytesToBase64(bytes: Uint8Array): string {
 function safeFilename(name: string): string {
   const cleaned = name.replace(/[\\/:*?"<>|\u0000-\u001f]+/g, "_").trim().slice(-120);
   return cleaned || "quote";
+}
+
+/** What an order looks like stored: lines it orders, not the whole qty vector. */
+function orderRecord(o: ResolvedOrder, lines: PriceMatchLine[]) {
+  return {
+    location_id: o.location_id,
+    site_number: o.site_number,
+    site_name: o.site_name,
+    po_number: o.po_number,
+    ship_to: o.ship_to,
+    lines: lines.flatMap((l, i) =>
+      o.qty[i] ? [{ part: l.part, ncs_part_no: l.ncs_part_no, qty: o.qty[i], matched_price: l.competitor_price }] : []
+    )
+  };
 }
 
 async function send(request: Request, env: PriceMatchEnv, session: Session): Promise<Response> {
@@ -520,15 +818,41 @@ async function send(request: Request, env: PriceMatchEnv, session: Session): Pro
     quotes.push({ name: unique, mime: f.type || "application/octet-stream", bytes: new Uint8Array(await f.arrayBuffer()) });
   }
 
-  // ---- build
   const me = lc(session.email);
   const now = new Date();
   const id = crypto.randomUUID();
   const r = recipientsFor(env, me);
+  const initials = req.initials ?? defaultInitials(session);
+
+  // ---- POs. Live POs are reserved BEFORE the email, so the number NCS sees
+  // is one nobody else can take; the unique index on price_match_orders
+  // settles a race (retry with fresh numbers). Released if the email fails.
+  let orders: ResolvedOrder[] = [];
+  for (let attempt = 0; ; attempt++) {
+    const resolved = await ordersFor(env, req, initials, now);
+    if ("error" in resolved) return jsonError(resolved.status, resolved.error);
+    orders = resolved.orders;
+    if (r.test || orders.length === 0) break;
+    const ins = await pg<unknown[]>(
+      env,
+      "POST",
+      "price_match_orders",
+      orders.map((o) => ({ request_id: id, ...orderRecord(o, req.lines) })),
+      { Prefer: "return=minimal" }
+    );
+    if (ins) break;
+    if (attempt >= 3) return jsonError(502, "Could not reserve PO numbers. Nothing was sent -- try again.");
+  }
+  const releasePos = async () => {
+    if (!r.test && orders.length) await pg(env, "DELETE", `price_match_orders?request_id=eq.${id}`);
+  };
+
+  // ---- build
   const xlsxName = xlsxFilename(req, now);
-  const xlsx = buildPriceMatchXlsx(req);
+  const xlsx = buildPriceMatchXlsx(req, orders);
   const email = buildPriceMatchEmail({
     request: req,
+    orders,
     sender: me,
     fileNames: quotes.map((q) => q.name),
     xlsxName,
@@ -544,7 +868,7 @@ async function send(request: Request, env: PriceMatchEnv, session: Session): Pro
     ...quotes.map((q) => ({ filename: q.name, mime: q.mime, size_bytes: q.bytes.length, base64: bytesToBase64(q.bytes) }))
   ];
 
-  // ---- send first: the email is the point, the history row is a record of it.
+  // ---- send: the email is the point, the history row is a record of it.
   let emailId: string;
   try {
     const res = await enqueueOutboundEmail(env, {
@@ -562,6 +886,7 @@ async function send(request: Request, env: PriceMatchEnv, session: Session): Pro
     emailId = res.id;
   } catch (err) {
     console.error("[price-match] enqueue failed", err);
+    await releasePos();
     return jsonError(502, "The email could not be queued. Nothing was sent -- try again.");
   }
 
@@ -590,6 +915,7 @@ async function send(request: Request, env: PriceMatchEnv, session: Session): Pro
       competitor: req.competitor,
       note: req.note || null,
       lines: req.lines,
+      orders: orders.map((o) => orderRecord(o, req.lines)),
       files: stored,
       sent_to: r.to,
       sent_cc: r.cc,
@@ -600,5 +926,17 @@ async function send(request: Request, env: PriceMatchEnv, session: Session): Pro
   );
   if (!row) console.error(`[price-match] history insert failed for ${id}; email ${emailId} is queued`);
 
-  return json({ ok: true, id, ref_no: row?.[0]?.ref_no ?? null, to: r.to, cc: r.cc, test: r.test, subject: email.subject }, 201);
+  return json(
+    {
+      ok: true,
+      id,
+      ref_no: row?.[0]?.ref_no ?? null,
+      to: r.to,
+      cc: r.cc,
+      test: r.test,
+      subject: email.subject,
+      po_numbers: orders.map((o) => o.po_number)
+    },
+    201
+  );
 }

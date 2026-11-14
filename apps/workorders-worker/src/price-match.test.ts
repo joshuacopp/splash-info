@@ -9,11 +9,15 @@ import {
   canUsePriceMatch,
   lineDiff,
   nameFromEmail,
+  orderTotal,
+  ordersSavings,
   parseInput,
+  parseQty,
   priceNumber,
   recipientsFor,
-  totalDiff,
-  type PriceMatchLine
+  resolveOrders,
+  type PriceMatchLine,
+  type ResolvedOrder
 } from "./price-match";
 import type { Session } from "@splash/auth";
 
@@ -24,7 +28,6 @@ function line(over: Partial<PriceMatchLine> = {}): PriceMatchLine {
   return {
     part: "X458 Sprocket",
     ncs_part_no: "",
-    qty: "",
     ncs_price: "229.67",
     ncs_url: NCS,
     competitor_part_no: "",
@@ -74,17 +77,69 @@ describe("parsing", () => {
   });
 });
 
+describe("orders", () => {
+  it("quantities: blank or 0 = not ordered, junk refused", () => {
+    expect(parseQty("")).toBe(0);
+    expect(parseQty("0")).toBe(0);
+    expect(parseQty(" 12 ")).toBe(12);
+    expect(parseQty("12.5")).toBe(12.5);
+    expect(parseQty("ten")).toBeNull();
+    expect(parseQty("-1")).toBeNull();
+  });
+  it("lines quantities up with the kept lines when a blank row is dropped", () => {
+    const r = parseInput({
+      competitor: "Triumph",
+      lines: [line(), { part: "" }, line({ part: "Chain" })],
+      orders: [{ location_id: 7, qty: ["2", "99", "5"] }]
+    });
+    expect("input" in r && r.input.orders[0]!.qty).toEqual([2, 5]);
+    expect(parseInput({ competitor: "T", lines: [line()], orders: [{ location_id: 7, qty: ["x"] }] })).toHaveProperty("error");
+    expect(
+      parseInput({ competitor: "T", lines: [line()], orders: [{ location_id: 7, qty: [1] }, { location_id: 7, qty: [1] }] })
+    ).toHaveProperty("error");
+    expect(parseInput({ competitor: "T", lines: [line()], initials: "12" })).toHaveProperty("error");
+  });
+  const sites = [
+    { id: 1, site_number: 147, site: "Binghamton", location: "1 Main St, Binghamton, NY 13901", ship_to_address: null },
+    { id: 2, site_number: 9, site: "Oswego", location: "x", ship_to_address: "255 West Seneca Street PMB 400, Oswego, NY 13126" }
+  ];
+  const at = new Date("2026-11-14T15:00:00Z");
+  it("POs follow the Kleen-Rite sequence and skip numbers already used", () => {
+    const r = resolveOrders(
+      [{ location_id: 1, qty: [1] }, { location_id: 2, qty: [3] }],
+      sites,
+      "Jc",
+      at,
+      ["147-20261114-JC"]
+    );
+    if ("error" in r) throw new Error(r.error);
+    expect(r.orders.map((o) => o.po_number)).toEqual(["147-20261114-Jc2", "009-20261114-Jc"]);
+    expect(r.orders[0]!.ship_to).toBe("Splash Express\n1 Main St\nBinghamton, NY 13901");
+    expect(r.orders[1]!.ship_to).toContain("PMB 400");
+  });
+  it("a site with no quantities is an error, not an empty PO", () => {
+    expect(resolveOrders([{ location_id: 1, qty: [0] }], sites, "Jc", at, [])).toHaveProperty("error");
+    expect(resolveOrders([{ location_id: 99, qty: [1] }], sites, "Jc", at, [])).toHaveProperty("error");
+  });
+});
+
 describe("prices", () => {
   it("reads plain prices only", () => {
     expect(priceNumber("$1,229.67")).toBe(1229.67);
     expect(priceNumber("76")).toBe(76);
     expect(priceNumber("9.25/foot")).toBeNull();
   });
-  it("differences and totals", () => {
+  it("differences are per unit", () => {
     expect(lineDiff(line())).toBe(62.54);
     expect(lineDiff(line({ competitor_price: "9.25/foot" }))).toBeNull();
-    expect(totalDiff([line({ qty: "2" }), line({ ncs_price: "76", competitor_price: "69" })])).toBe(132.08);
-    expect(totalDiff([line(), line({ ncs_price: "10/foot" })])).toBeNull();
+  });
+  it("order totals and savings use the matched price x qty", () => {
+    const ls = [line(), line({ ncs_price: "76", competitor_price: "69" })];
+    expect(orderTotal(ls, [2, 0])).toBe(334.26);
+    expect(ordersSavings(ls, [{ qty: [2, 0] }, { qty: [0, 3] }])).toBe(146.08);
+    expect(orderTotal([line({ competitor_price: "9.25/foot" })], [10])).toBeNull();
+    expect(orderTotal([line({ competitor_price: "9.25/foot" }), line()], [0, 1])).toBe(167.13);
+    expect(ordersSavings(ls, [])).toBeNull();
   });
 });
 
@@ -129,9 +184,39 @@ describe("email", () => {
   });
 });
 
+describe("order email", () => {
+  const order: ResolvedOrder = {
+    location_id: 1,
+    site_number: 147,
+    site_name: "Binghamton",
+    po_number: "147-20261114-Jc",
+    ship_to: "Splash Express\n1 Main St\nBinghamton, NY 13901",
+    qty: [2, 0]
+  };
+  const request = { competitor: "Triumph", note: "", lines: [line(), line({ part: "Chain" })] };
+  it("carries the PO, ship-to and only the ordered parts", () => {
+    const e = buildPriceMatchEmail({ request, orders: [order], sender: "j@x.com", fileNames: [], xlsxName: "pm.xlsx", test: null });
+    expect(e.subject).toBe("Price Match Request - Triumph + PO 147-20261114-Jc");
+    expect(e.html).toContain("PO 147-20261114-Jc");
+    expect(e.html).toContain("Binghamton, NY 13901");
+    expect(e.text).toContain("2 x X458 Sprocket @ $167.13 = $334.26");
+    expect(e.text).not.toContain("x Chain");
+    expect(e.text).toContain("$125.08 less than NCS pricing");
+  });
+  it("no orders = a plain price match, per unit", () => {
+    const e = buildPriceMatchEmail({ request, sender: "j@x.com", fileNames: [], xlsxName: "pm.xlsx", test: null });
+    expect(e.html).toContain("Prices are per unit.");
+    expect(e.html).not.toContain("Ship to");
+  });
+  it("orders add a second sheet", () => {
+    const text = new TextDecoder().decode(buildPriceMatchXlsx(request, [order]));
+    expect(text).toContain("xl/worksheets/sheet2.xml");
+  });
+});
+
 describe("spreadsheet", () => {
   it("is a zip that carries a hyperlink and keeps text prices", () => {
-    const bytes = buildPriceMatchXlsx({ competitor: "Triumph", note: "", lines: [line({ competitor_price: "9.25/foot" })] });
+    const bytes = buildPriceMatchXlsx({ competitor: "Triumph", lines: [line({ competitor_price: "9.25/foot" })] });
     expect(bytes[0]).toBe(0x50); // "PK"
     const text = new TextDecoder().decode(bytes);
     expect(text).toContain(`<f>HYPERLINK("${NCS}")</f>`);

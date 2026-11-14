@@ -709,13 +709,15 @@ async function createOrder(request: Request, env: SupplyOrdersEnv, session: Sess
   const base = poBase(site.site_number, new Date(), initials);
   let created: OrderRow | null = null;
   // The unique index on po_number settles a race between two submits.
+  // NCS price-match orders (price-match.ts) draw from the SAME PO sequence,
+  // so their table is checked too.
   for (let attempt = 0; attempt < 5 && !created; attempt++) {
-    const taken = await pg<Array<{ po_number: string }>>(
-      env,
-      "GET",
-      `supply_orders?po_number=ilike.${encodeURIComponent(base)}*&select=po_number`
-    );
-    const po = nextPo(base, (taken.data ?? []).map((t) => t.po_number));
+    const q = `po_number=ilike.${encodeURIComponent(base)}*&select=po_number`;
+    const [taken, ncs] = await Promise.all([
+      pg<Array<{ po_number: string }>>(env, "GET", `supply_orders?${q}`),
+      pg<Array<{ po_number: string }>>(env, "GET", `price_match_orders?${q}`)
+    ]);
+    const po = nextPo(base, [...(taken.data ?? []), ...(ncs.data ?? [])].map((t) => t.po_number));
     const ins = await pg<OrderRow[]>(
       env,
       "POST",

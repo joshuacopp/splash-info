@@ -14,6 +14,8 @@ export interface PriceMatchHistoryItem {
   competitor: string;
   lines: Array<{ part: string }>;
   files: Array<{ filename: string }>;
+  /** Missing on requests sent before orders existed. */
+  orders?: Array<{ po_number: string; site_name: string }>;
   sent_to: string;
   sent_cc: string[];
   test: boolean;
@@ -24,6 +26,9 @@ export interface PriceMatchOverview {
   to: string;
   cc: string[];
   live_recipients: string[];
+  initials: string;
+  today: string;
+  sites: Array<{ id: number; site_number: number | null; site: string | null; ship_to: string }>;
   requests: PriceMatchHistoryItem[];
 }
 

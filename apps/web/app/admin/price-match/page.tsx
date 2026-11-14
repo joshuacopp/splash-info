@@ -40,7 +40,7 @@ export default async function PriceMatchPage() {
       <h1 className="text-2xl font-bold text-splash-navy">Price Match</h1>
       <p className="mb-5 mt-1 text-sm text-splash-navy/70">
         NCS matches competitor pricing. List the parts with both prices, attach the competitor&apos;s quote or link
-        their pages, and this sends NCS the request with a spreadsheet of the same table.
+        their pages, and optionally add an order — sites and quantities, one PO each — to be filled if they can match. It all goes to NCS in one email with a spreadsheet of the same tables.
       </p>
 
       {!allowed ? (
@@ -60,6 +60,9 @@ export default async function PriceMatchPage() {
             liveRecipients={overview.live_recipients}
             senderEmail={session.email}
             competitors={[...new Set(overview.requests.map((r) => r.competitor))]}
+            sites={overview.sites}
+            initials={overview.initials}
+            today={overview.today}
           />
 
           <h2 className="mb-2 mt-10 text-lg font-bold text-splash-navy">Sent requests</h2>
@@ -76,6 +79,7 @@ export default async function PriceMatchPage() {
                     <th className="px-3 py-2">Sent</th>
                     <th className="px-3 py-2">Competitor</th>
                     <th className="px-3 py-2">Parts</th>
+                    <th className="px-3 py-2">POs</th>
                     <th className="px-3 py-2">Attachments</th>
                     <th className="px-3 py-2">To</th>
                     <th className="px-3 py-2">By</th>
@@ -101,6 +105,15 @@ export default async function PriceMatchPage() {
                           · {r.lines.slice(0, 2).map((l) => l.part).join(", ")}
                           {r.lines.length > 2 ? "…" : ""}
                         </span>
+                      </td>
+                      <td className="px-3 py-2 text-splash-navy/70">
+                        {(r.orders ?? []).length === 0
+                          ? "—"
+                          : (r.orders ?? []).map((o) => (
+                              <div key={o.po_number} className="whitespace-nowrap">
+                                {o.po_number} <span className="text-xs">{o.site_name}</span>
+                              </div>
+                            ))}
                       </td>
                       <td className="px-3 py-2 text-splash-navy/70">{r.files.map((f) => f.filename).join(", ")}</td>
                       <td className="px-3 py-2 text-splash-navy/70">

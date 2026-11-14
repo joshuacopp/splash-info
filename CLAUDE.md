@@ -3377,6 +3377,9 @@ URL-based — service bindings don't apply to those.
   `locations.location`. `supply_order_common_items` is a company-wide
   "Commonly ordered at Splash" list (seeded from the operator's past orders;
   no site on that source) shown under each site's own history.
+  The PO sequence is SHARED with NCS Price Match orders
+  (`price_match_orders`, `src/price-match.ts`): each side checks both tables
+  before using a number. Keep it that way if either allocator changes.
 - **outbound_emails table** (Brief 127) - Shared queue of fully-rendered
   outbound emails. Single Power Automate flow polls every 5 minutes
   and drains the queue regardless of which worker enqueued the row.
