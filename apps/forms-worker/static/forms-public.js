@@ -133,8 +133,50 @@
       }
       var pendingId = currentPendingId(formEl);
       if (!pendingId) return;
-      uploadFile(file, slug, pendingId, fieldKey, hidden, wrap);
+      prepareFile(wrap, file).then(function (ready) {
+        uploadFile(ready, slug, pendingId, fieldKey, hidden, wrap);
+      });
     });
+  }
+
+  // Opt-in photo shrink (FileField.resizeImages -> data-resize="<px>"). Draws
+  // the photo onto a canvas with its long edge capped and re-encodes JPEG.
+  // createImageBitmap applies the EXIF orientation, so a sideways phone photo
+  // comes out upright. Anything that can't be decoded (HEIC on most
+  // browsers, PDFs) or that is already small enough goes up unchanged --
+  // resizing is a convenience, never a reason to fail an upload.
+  function prepareFile(wrap, file) {
+    var max = parseInt(wrap.getAttribute("data-resize") || "", 10);
+    if (!max || !file || !/^image\/(jpeg|png|webp)$/i.test(file.type) || typeof createImageBitmap !== "function") {
+      return Promise.resolve(file);
+    }
+    return createImageBitmap(file, { imageOrientation: "from-image" })
+      .then(function (bmp) {
+        var scale = Math.min(1, max / Math.max(bmp.width, bmp.height));
+        if (scale === 1 && file.size < 1500000) {
+          bmp.close && bmp.close();
+          return file;
+        }
+        var canvas = document.createElement("canvas");
+        canvas.width = Math.round(bmp.width * scale);
+        canvas.height = Math.round(bmp.height * scale);
+        canvas.getContext("2d").drawImage(bmp, 0, 0, canvas.width, canvas.height);
+        bmp.close && bmp.close();
+        return new Promise(function (resolve) {
+          canvas.toBlob(function (blob) {
+            if (!blob || blob.size >= file.size) return resolve(file);
+            var name = file.name.replace(/\.[^.]+$/, "") + ".jpg";
+            try {
+              resolve(new File([blob], name, { type: "image/jpeg" }));
+            } catch (_) {
+              resolve(file); // very old browsers without the File constructor
+            }
+          }, "image/jpeg", 0.85);
+        });
+      })
+      .catch(function () {
+        return file;
+      });
   }
 
   // Multi-file field. Every picked file uploads on its own (one at a time, so
@@ -175,7 +217,10 @@
         list.appendChild(li);
       });
     }
-    function uploadOne(file) {
+    function uploadOne(picked) {
+      return prepareFile(wrap, picked).then(uploadPrepared);
+    }
+    function uploadPrepared(file) {
       var pendingId = currentPendingId(formEl);
       var fd = new FormData();
       fd.append("pending_submission_id", pendingId);
@@ -1618,9 +1663,19 @@
         submitBtn.textContent = "Submitting…";
       }
 
+      // Files were already uploaded when picked (their r2_key rides in the
+      // hidden `${key}_r2` input, which is all the server reads). A named
+      // <input type="file"> would otherwise send the WHOLE file again with
+      // the submit -- a second full-size phone photo over site wifi for
+      // nothing (found 2026-11-14).
+      var body = new FormData(formEl);
+      Array.prototype.forEach.call(formEl.querySelectorAll('input[type="file"][name]'), function (f) {
+        body.delete(f.name);
+      });
+
       fetch(actionUrl, {
         method: "POST",
-        body: new FormData(formEl),
+        body: body,
         headers: { Accept: "application/json" }
       })
         .then(function (resp) {

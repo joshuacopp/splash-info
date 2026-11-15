@@ -174,7 +174,8 @@ export const fileFieldSchema = z.object({
   type: z.literal("file"),
   maxSizeMb: z.number().int().positive().optional(),
   allowedMimeTypes: z.array(z.string()).optional(),
-  allowMultiple: z.boolean().optional()
+  allowMultiple: z.boolean().optional(),
+  resizeImages: z.number().int().min(640).max(4096).optional()
 });
 
 export const signatureFieldSchema = z.object({
@@ -318,6 +319,7 @@ const workflowStageSchema = z.object({
   attach_pdf: z.boolean().optional(),
   attach_ny_pay_notice: z.boolean().optional(),
   attach_warning_notice: z.boolean().optional(),
+  attach_files: z.boolean().optional(),
   approval_link_label: z.string().max(60).optional(),
   page_intro: z.string().max(1000).optional(),
   show_fields: z.array(z.string()).optional(),
@@ -386,6 +388,7 @@ const workflowStageSchemaDraft = z.object({
   attach_pdf: z.boolean().optional(),
   attach_ny_pay_notice: z.boolean().optional(),
   attach_warning_notice: z.boolean().optional(),
+  attach_files: z.boolean().optional(),
   approval_link_label: z.string().max(60).optional(),
   page_intro: z.string().max(1000).optional(),
   show_fields: z.array(z.string()).optional(),
@@ -768,7 +771,8 @@ const fileFieldSchemaDraft = z.object({
   type: z.literal("file"),
   maxSizeMb: z.number().int().positive().optional(),
   allowedMimeTypes: z.array(z.string()).optional(),
-  allowMultiple: z.boolean().optional()
+  allowMultiple: z.boolean().optional(),
+  resizeImages: z.number().int().min(640).max(4096).optional()
 });
 
 const signatureFieldSchemaDraft = z.object({

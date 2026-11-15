@@ -16,7 +16,7 @@ export function renderFile(field: FileField, _ctx: RenderBodyArgs): string {
     // required.
     return `
 <div class="field" data-field-key="${escapeHtml(field.key)}" data-field-type="file" data-multiple="1"
-     data-field-max-size-mb="${field.maxSizeMb ?? 10}">
+     data-field-max-size-mb="${field.maxSizeMb ?? 10}"${field.resizeImages ? ` data-resize="${field.resizeImages}"` : ""}>
   ${fieldLabel(field)}
   <input type="file"
          id="${escapeHtml(field.id)}"
@@ -30,7 +30,7 @@ export function renderFile(field: FileField, _ctx: RenderBodyArgs): string {
   }
   return `
 <div class="field" data-field-key="${escapeHtml(field.key)}" data-field-type="file"
-     data-field-max-size-mb="${field.maxSizeMb ?? 10}">
+     data-field-max-size-mb="${field.maxSizeMb ?? 10}"${field.resizeImages ? ` data-resize="${field.resizeImages}"` : ""}>
   ${fieldLabel(field)}
   <input type="file"
          name="${escapeHtml(field.key)}"

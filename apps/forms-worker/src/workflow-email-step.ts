@@ -373,6 +373,44 @@ export async function cascadeThroughEmailSteps(
       }
     }
 
+    // The submission's own uploads (FormWorkflowStage.attach_files), named
+    // after the field so "Bay 1 photo.jpg" says what it is. Referenced by
+    // r2_key -- the claim endpoint inlines them -- and skipped over the
+    // queue's 5 MB per-attachment cap rather than silently dropped there.
+    if (stage.attach_files) {
+      const MAX = 5 * 1024 * 1024;
+      const files: OutboundEmailAttachment[] = [];
+      for (const f of ctx.schema.fields) {
+        if (f.type !== "file") continue;
+        const v = ctx.payload[f.key];
+        const entries = (Array.isArray(v) ? v : v ? [v] : []) as {
+          r2_key?: unknown;
+          mime?: unknown;
+          size_bytes?: unknown;
+          original_filename?: unknown;
+        }[];
+        entries.forEach((e, i) => {
+          if (typeof e?.r2_key !== "string" || !e.r2_key.startsWith("form-submission-files/")) return;
+          const size = typeof e.size_bytes === "number" ? e.size_bytes : 0;
+          if (size > MAX) {
+            console.warn(`[forms.email-step] attach_files: ${e.r2_key} is ${size} bytes, over the 5 MB cap; not attached`);
+            return;
+          }
+          const orig = typeof e.original_filename === "string" ? e.original_filename : "";
+          const ext = /\.[A-Za-z0-9]{1,5}$/.exec(orig)?.[0] ?? "";
+          const base = f.label.replace(/[\\/:*?"<>|]+/g, " ").replace(/\s+/g, " ").trim() || f.key;
+          files.push({
+            filename: `${base}${entries.length > 1 ? ` ${i + 1}` : ""}${ext}`,
+            r2_key: e.r2_key,
+            mime: typeof e.mime === "string" ? e.mime : "application/octet-stream",
+            size_bytes: size,
+            bucket: "FORMS_FILES"
+          });
+        });
+      }
+      if (files.length) stageAttachments = [...(stageAttachments ?? []), ...files.slice(0, 10)];
+    }
+
     // `{approval.link}` — a per-recipient no-sign-in link for the approval
     // stage this email step leads into. Minted only when the template asks
     // for it AND the next stage is one somebody approves; it is bound to that

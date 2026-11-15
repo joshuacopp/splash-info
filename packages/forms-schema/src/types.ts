@@ -275,6 +275,12 @@ export interface FileField extends FieldBase {
   maxSizeMb?: number;             // default 10, hard ceiling 25 enforced server-side
   allowedMimeTypes?: string[];    // default ["image/*", "application/pdf"]
   allowMultiple?: boolean;        // default false
+  /** Shrink photos in the browser before upload so the long edge is at most
+   *  this many px (JPEG). Phone photos are 3-8 MB; at 2048 they are a few
+   *  hundred KB and still readable, which keeps uploads fast on site wifi and
+   *  emailed attachments under the queue's 5 MB cap. Off when unset. HEIC
+   *  that the browser cannot decode uploads unchanged. */
+  resizeImages?: number;
 }
 
 // -----------------------------------------------------------------------------
@@ -528,6 +534,12 @@ export interface WorkflowStage {
   // filled from the submission. Built for the Employee Warning Notice form and
   // coupled to its field keys (scripts/gen-warning-notice.ts).
   attach_warning_notice?: boolean;
+  // 2026-11-14 -- also attach the files uploaded to the submission's file
+  // fields, as they are (e.g. the counter photos on End of Day Car Count).
+  // The completed-form PDF only carries small thumbnails. Pair with
+  // `resizeImages` on the field: the email queue drops any attachment over
+  // 5 MB, and phone photos are 3-8 MB.
+  attach_files?: boolean;
   // 2026-11-13 -- button text for `{approval.link}` in this email step when
   // the next stage is not an approve/deny decision (e.g. "Open for employee
   // signature"). Default "Review & Approve or Deny".
