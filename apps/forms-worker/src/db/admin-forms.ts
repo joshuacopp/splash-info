@@ -331,6 +331,40 @@ export async function setFormAccessTag(
 }
 
 /**
+ * Form-level settings from the builder's Settings tab (2026-11-14). Before
+ * this the tab edited them in the browser only and they had to be set by SQL.
+ * Only the keys present are written.
+ */
+export interface FormSettingsPatch {
+  title?: string;
+  description?: string | null;
+  audience?: "public" | "internal" | "link-only";
+  notify_webhook?: boolean;
+  turnstile_required?: boolean;
+  success_message?: string | null;
+  scope_location_field_key?: string | null;
+  test_email_to?: string | null;
+}
+
+export async function updateFormSettings(
+  env: SupabaseEnv,
+  formId: string,
+  patch: FormSettingsPatch
+): Promise<void> {
+  const url = new URL("/rest/v1/forms", env.SUPABASE_URL);
+  url.searchParams.set("id", `eq.${formId}`);
+  const resp = await fetch(url.toString(), {
+    method: "PATCH",
+    headers: { ...headers(env), "Content-Type": "application/json", Prefer: "return=minimal" },
+    body: JSON.stringify({ ...patch, last_edited_at: new Date().toISOString() })
+  });
+  if (!resp.ok) {
+    const errText = await resp.text().catch(() => "");
+    throw new Error(`updateFormSettings: ${resp.status}: ${errText}`);
+  }
+}
+
+/**
  * Set `forms.crd_visible`. On: CRD agents and supervisors read this form's
  * submissions at the sites they cover (crd_site_coverage). Off: they stop
  * immediately -- nothing is granted per user, so there is nothing to clean up.
@@ -550,9 +584,12 @@ export interface FormDetailResult {
    *  The builder's "no Site number field" banner keys off this so it only
    *  warns when publish will actually add one. */
   scopeLocationFieldKey: string | null;
+  /** `forms.test_email_to`: test mode -- every workflow email goes only here. Null = live. */
+  testEmailTo: string | null;
 }
 
 interface FormDetailRow {
+  test_email_to: string | null;
   access_tag: string | null;
   scope_location_field_key: string | null;
   crd_visible: boolean | null;
@@ -609,7 +646,7 @@ export async function getFormDetail(
   formUrl.searchParams.set("id", `eq.${formId}`);
   formUrl.searchParams.set(
     "select",
-    "id,slug,title,description,audience,status,current_version_id,draft_version_id,notify_webhook,success_message,turnstile_required,access_tag,crd_visible,fill_audience,scope_location_field_key"
+    "id,slug,title,description,audience,status,current_version_id,draft_version_id,notify_webhook,success_message,turnstile_required,access_tag,crd_visible,fill_audience,scope_location_field_key,test_email_to"
   );
   formUrl.searchParams.set("limit", "1");
 
@@ -651,6 +688,7 @@ export async function getFormDetail(
     crdVisible: formRow.crd_visible === true,
     fillAudience: Array.isArray(formRow.fill_audience) ? formRow.fill_audience : [],
     scopeLocationFieldKey: formRow.scope_location_field_key?.trim() || null,
+    testEmailTo: formRow.test_email_to?.trim() || null,
     currentVersionNumber: currentRow?.version_number ?? null,
     versions: versionRows.map((v) => ({
       id: v.id,

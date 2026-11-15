@@ -41,6 +41,12 @@ export default function FileInspector({ field, onUpdate }: InspectorProps) {
         checked={f.allowMultiple ?? false}
         onChange={(v) => onUpdate({ allowMultiple: v } as Partial<Field>)}
       />
+      <LabeledCheckbox
+        label="Shrink photos before upload"
+        checked={!!f.resizeImages}
+        onChange={(v) => onUpdate({ resizeImages: v ? 2048 : undefined } as Partial<Field>)}
+        hint="Phone photos are 3-8 MB. This shrinks them on the device to 2048 px (a few hundred KB, still sharp), so uploads are quick on site wifi and emailed copies stay under the 5 MB limit."
+      />
     </div>
   );
 }

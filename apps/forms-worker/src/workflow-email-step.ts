@@ -66,6 +66,7 @@ import { buildWarningNoticePdf } from "./pdf/warning-notice.js";
 import { generateOrReuseCompletedPdf } from "./pdf/cascade-attach.js";
 import { mintApprovalLink } from "./approval-links/tokens.js";
 import { wrapInEmailShell } from "@splash/email-shell";
+import { getFormTestEmail } from "./db/forms.js";
 
 const MAX_CASCADE_DEPTH = 10;
 
@@ -213,6 +214,13 @@ export async function cascadeThroughEmailSteps(
     note: lastHuman?.note ?? null,
     by: lastHuman?.actor_email ?? null
   };
+
+  // Test mode (forms.test_email_to, set on the Settings tab): every email
+  // goes only to that address, marked [TEST] and listing who it would have
+  // reached. Read once per cascade. A read failure means LIVE -- but it is
+  // logged, because silently mailing real people from a form someone thinks
+  // is in test mode is the worse surprise.
+  const testTo = await getFormTestEmail(env, ctx.form.id);
 
   for (let depth = 0; depth < MAX_CASCADE_DEPTH; depth++) {
     const stage = workflow.stages.find((s) => s.id === currentStageId);
@@ -419,7 +427,10 @@ export async function cascadeThroughEmailSteps(
       Boolean(nextStage?.approver_source) &&
       `${stage.subject_template ?? ""}${stage.body_template ?? ""}`.includes("{approval.link}");
 
-    for (const recipient of recipients) {
+    const testNote = testTo
+      ? `TEST MODE - in live use this email would go to: ${recipients.length ? recipients.join(", ") : "(nobody -- no recipient resolved)"}.`
+      : null;
+    for (const recipient of testTo ? [testTo] : recipients) {
       const recipientRuntime: RuntimeContext = wantsApprovalLink
         ? {
             ...localRuntime,
@@ -432,13 +443,14 @@ export async function cascadeThroughEmailSteps(
             })
           }
         : localRuntime;
-      const subject = renderTemplate(
+      const renderedSubject = renderTemplate(
         stage.subject_template ?? "",
         ctx.schema,
         ctx.payload,
         recipientRuntime
       );
-      const body = renderTemplate(
+      const subject = testNote && !renderedSubject.startsWith("[TEST]") ? `[TEST] ${renderedSubject}` : renderedSubject;
+      const renderedBody = renderTemplate(
         stage.body_template ?? "",
         ctx.schema,
         ctx.payload,
@@ -448,12 +460,18 @@ export async function cascadeThroughEmailSteps(
       // authored plain-text template. Wrap the rendered fragment in
       // the branded shell so PA can ship HTML when the queue row
       // carries body_html.
-      const bodyHtmlFragment = renderTemplateHtml(
+      const body = testNote ? `${testNote}
+
+${renderedBody}` : renderedBody;
+      const renderedHtml = renderTemplateHtml(
         stage.body_template ?? "",
         ctx.schema,
         ctx.payload,
         recipientRuntime
       );
+      const bodyHtmlFragment = testNote
+        ? `<p style="margin:0 0 16px 0;padding:10px 12px;background:#fff7e6;border-left:4px solid #eda100;font-size:13px;">${escapeHtml(testNote)}</p>${renderedHtml}`
+        : renderedHtml;
       const bodyHtml = wrapInEmailShell(bodyHtmlFragment, {
         title: subject,
         preheader: body.slice(0, 100),

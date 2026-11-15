@@ -3311,6 +3311,15 @@ URL-based — service bindings don't apply to those.
   `{category: "lube"|"detail", name, current, new}` -- one price each. Rows
   may be EMPTY when a site's changes are only new packages / services. All
   four are display records: nothing writes pricing_simple.
+- **Form test mode** (2026-11-14) - `forms.test_email_to`, set on the form's
+  Settings tab. While set, EVERY workflow email for the form goes only to that
+  address ([TEST] subject, intended recipients listed in the body) and the
+  public form shows a banner. New forms should be authored with their REAL
+  recipients and put in test mode, rather than baking a TEST address into the
+  schema the way the older scripts/gen-*.ts did with their LIVE=1 switch --
+  going live is then switching test mode off, with no regenerate. Applied in
+  `cascadeThroughEmailSteps` (workflow-email-step.ts); approval stages still
+  assign their real approvers in test mode (only emails are redirected).
 - **Form digests** (2026-11-14) - Scheduled summary emails per form, set up
   by admins on the Digests tab of /admin/forms/{id} -- build new digests there,
   not as custom code. Config type + validator: `packages/forms-schema/src/digest.ts`

@@ -32,6 +32,7 @@ interface FormRow {
   notify_webhook: boolean;
   success_message: string | null;
   turnstile_required: boolean;
+  test_email_to?: string | null;
 }
 
 function rowToFormMeta(row: FormRow): FormMeta {
@@ -46,6 +47,7 @@ function rowToFormMeta(row: FormRow): FormMeta {
     draftVersionId: row.draft_version_id,
     notifyWebhook: row.notify_webhook,
     successMessage: row.success_message,
+    testMode: !!row.test_email_to,
     turnstileRequired: row.turnstile_required
   };
 }
@@ -60,7 +62,7 @@ export async function getFormBySlug(env: SupabaseEnv, slug: string): Promise<For
   url.searchParams.set("slug", `eq.${slug}`);
   url.searchParams.set(
     "select",
-    "id,slug,title,description,audience,status,current_version_id,draft_version_id,notify_webhook,success_message,turnstile_required"
+    "id,slug,title,description,audience,status,current_version_id,draft_version_id,notify_webhook,success_message,turnstile_required,test_email_to"
   );
   url.searchParams.set("limit", "1");
 
@@ -640,4 +642,28 @@ export async function getFormScopeFieldKey(
   }>;
   const key = rows[0]?.scope_location_field_key;
   return typeof key === "string" && key.trim() ? key.trim() : null;
+}
+
+/**
+ * Test mode address for a form (forms.test_email_to), or null when live.
+ * Read once per email cascade. On a read error this returns null (LIVE) and
+ * logs loudly -- see workflow-email-step.ts.
+ */
+export async function getFormTestEmail(env: SupabaseEnv, formId: string): Promise<string | null> {
+  const url = new URL("/rest/v1/forms", env.SUPABASE_URL);
+  url.searchParams.set("id", `eq.${formId}`);
+  url.searchParams.set("select", "test_email_to");
+  url.searchParams.set("limit", "1");
+  try {
+    const r = await fetch(url.toString(), { headers: headers(env) });
+    if (!r.ok) {
+      console.error("[forms] getFormTestEmail: returned", r.status, "-- treating the form as LIVE");
+      return null;
+    }
+    const rows = (await r.json().catch(() => [])) as { test_email_to: string | null }[];
+    return rows[0]?.test_email_to?.trim() || null;
+  } catch (err) {
+    console.error("[forms] getFormTestEmail: fetch threw -- treating the form as LIVE", err);
+    return null;
+  }
 }

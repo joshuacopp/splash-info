@@ -434,6 +434,24 @@ export const formSchemaSchema = z
           message: "a field cannot control its own visibility"
         });
       }
+      // One level only: forms-public.js does not cascade, so a conditional
+      // field controlling another would leave the second one showing (and
+      // required) while its controller is hidden. The builder refuses this too.
+      const controller = data.fields.find((c) => c.key === vis.field_key);
+      if (controller?.visible_if) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["fields", i, "visible_if", "field_key"],
+          message: `"${f.label || f.key}" depends on "${controller.label || controller.key}", which is itself conditional; conditions can only be one level deep`
+        });
+      }
+      if (vis.equals.length === 0) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["fields", i, "visible_if", "equals"],
+          message: `"${f.label || f.key}" is conditional but no answer is ticked, so it would never show`
+        });
+      }
     }
 
     // A price grid with no site to read can never list a package, so it would
@@ -657,10 +675,13 @@ const fieldBaseSchemaDraft = {
   hide_from_approvers: z.boolean().optional(),
   action_item_eligible: z.boolean().optional(),
   action_item_label: z.string().trim().min(1).max(60).optional(),
+  // Draft allows an empty answer list: the builder sets the controlling
+  // question first and the answers next, and Save Draft must not fail in
+  // between. Publish (strict) still refuses it.
   visible_if: z
     .object({
       field_key: z.string().min(1),
-      equals: z.array(z.string()).min(1)
+      equals: z.array(z.string())
     })
     .optional()
 };

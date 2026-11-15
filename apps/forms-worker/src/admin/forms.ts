@@ -25,6 +25,7 @@
 // rendered public form is always strictly valid.
 
 import { isOriginAllowed, jsonError } from "@splash/http";
+import { isValidEmail } from "@splash/types/email-validate";
 import {
   draftFormSchemaSchema,
   formSchemaSchema,
@@ -49,6 +50,8 @@ import {
   setFormAccessTag,
   setFormCrdVisible,
   setFormFillAudience,
+  updateFormSettings,
+  type FormSettingsPatch,
   listAccessTags,
   ACCESS_TAG_RE,
   type ListFormsFilter,
@@ -661,5 +664,97 @@ export async function handleListAccessTags(
   } catch (err) {
     console.error("[forms.admin] list access tags failed", err);
     return jsonError(500, "list_failed");
+  }
+}
+
+
+// =============================================================================
+// PATCH /forms/admin/api/forms/{id}/settings  (2026-11-14)
+// =============================================================================
+//
+// The builder's Settings tab. Before this, title / description / audience /
+// success message / webhook / Turnstile were edited in the browser only and
+// set by SQL. Two settings that were SQL-only before are here too:
+//
+//   confidential -- true pins scope_location_field_key to 'none:confidential'
+//     (submissions are NOT tied to a site, so site admins never see them --
+//     personnel forms). false clears it so the next publish designates the
+//     site_number field again. A real field key already in place is left
+//     alone unless confidential is turned ON.
+//   test_email_to -- test mode: every workflow email goes only here.
+//
+// These live on the forms row, not the versioned schema, so they take effect
+// at once -- no republish (title and success message included).
+
+const CONFIDENTIAL_SCOPE = "none:confidential";
+
+export async function handleUpdateSettings(env: Env, req: Request, formId: string): Promise<Response> {
+  const sk = requireServiceKey(env);
+  if (sk) return sk;
+  if (!isOriginAllowed(req)) return jsonError(403, "bad_origin");
+  const gate = await adminGate(env, req);
+  if (!gate.ok) return adminGateResponse(gate);
+  if (!FORM_ID_RE.test(formId)) return jsonError(400, "bad_id");
+
+  let body: Record<string, unknown>;
+  try {
+    body = (await req.json()) as Record<string, unknown>;
+  } catch {
+    return jsonError(400, "bad_json");
+  }
+  const bad = (field: string, message: string) =>
+    new Response(JSON.stringify({ error: "bad_setting", field, message }), {
+      status: 400,
+      headers: { "Content-Type": "application/json" }
+    });
+  const text = (v: unknown, max: number): string | null | undefined => {
+    if (v === undefined) return undefined;
+    if (v === null) return null;
+    if (typeof v !== "string") return undefined;
+    const t = v.trim();
+    return t === "" ? null : t.slice(0, max);
+  };
+
+  const patch: FormSettingsPatch = {};
+  if ("title" in body) {
+    const t = text(body.title, 200);
+    if (!t) return bad("title", "The form needs a title.");
+    patch.title = t;
+  }
+  if ("description" in body) patch.description = text(body.description, 2000) ?? null;
+  if ("success_message" in body) patch.success_message = text(body.success_message, 2000) ?? null;
+  if ("audience" in body) {
+    if (body.audience !== "public" && body.audience !== "internal" && body.audience !== "link-only") {
+      return bad("audience", "Unknown audience.");
+    }
+    patch.audience = body.audience;
+  }
+  for (const k of ["notify_webhook", "turnstile_required"] as const) {
+    if (k in body) {
+      if (typeof body[k] !== "boolean") return bad(k, "Must be on or off.");
+      patch[k] = body[k] as boolean;
+    }
+  }
+  if ("test_email_to" in body) {
+    const e = text(body.test_email_to, 320);
+    if (e && !isValidEmail(e)) return bad("test_email_to", "Enter a valid email address for test mode.");
+    patch.test_email_to = e ? e.toLowerCase() : null;
+  }
+  if ("confidential" in body) {
+    if (typeof body.confidential !== "boolean") return bad("confidential", "Must be on or off.");
+    const current = await getFormScopeFieldKey(env, formId);
+    if (body.confidential) patch.scope_location_field_key = CONFIDENTIAL_SCOPE;
+    else if (current === CONFIDENTIAL_SCOPE) patch.scope_location_field_key = null;
+  }
+  try {
+    await updateFormSettings(env, formId, patch);
+    console.log(`[forms.admin] settings form=${formId} keys=${Object.keys(patch).join(",")} by=${gate.session.email}`);
+    return new Response(JSON.stringify({ ok: true }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" }
+    });
+  } catch (err) {
+    console.error("[forms.admin] settings update failed", err);
+    return jsonError(500, "settings_failed");
   }
 }

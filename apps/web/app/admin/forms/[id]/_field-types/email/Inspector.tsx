@@ -21,6 +21,12 @@ export default function EmailInspector({ field, onUpdate }: InspectorProps) {
         onChange={(v) => onUpdate({ maxLength: v ? Number(v) : undefined } as Partial<Field>)}
         hint="Default 254 (RFC 5321) if blank."
       />
+      <LabeledCheckbox
+        label="Don't let the browser autofill this"
+        checked={f.noAutofill ?? false}
+        onChange={(v) => onUpdate({ noAutofill: v || undefined } as Partial<Field>)}
+        hint="For an email that belongs to someone else (e.g. the employee's), so a shared tablet doesn't fill in the manager's own address."
+      />
     </div>
   );
 }

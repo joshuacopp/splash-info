@@ -119,6 +119,7 @@ import {
   handleSetAccessTag,
   handleListAccessTags,
   handleSetCrdVisible,
+  handleUpdateSettings,
   handleSetFillAudience
 } from "./admin/forms.js";
 import {
@@ -756,6 +757,12 @@ export default {
     );
     if (accessTagMatch && accessTagMatch[1] && req.method === "PATCH") {
       return handleSetAccessTag(env, req, accessTagMatch[1]);
+    }
+
+    // PATCH /forms/admin/api/forms/{id}/settings -- 2026-11-14, Settings tab
+    const settingsMatch = url.pathname.match(/^\/forms\/admin\/api\/forms\/([^/]+)\/settings$/);
+    if (settingsMatch && settingsMatch[1] && req.method === "PATCH") {
+      return handleUpdateSettings(env, req, settingsMatch[1]);
     }
 
     // PATCH /forms/admin/api/forms/{id}/crd-visible

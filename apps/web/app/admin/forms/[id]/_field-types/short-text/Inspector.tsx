@@ -22,6 +22,36 @@ export default function ShortTextInspector({ field, onUpdate }: InspectorProps) 
         onChange={(v) => onUpdate({ maxLength: v ? Number(v) : undefined } as Partial<Field>)}
         hint="Default 500."
       />
+      <LabeledCheckbox
+        label="Numbers only"
+        checked={!!f.numeric}
+        onChange={(v) => onUpdate({ numeric: v ? { integer: true } : undefined } as Partial<Field>)}
+        hint="Shows a number keypad and refuses anything that isn't a number. Needed for totals and averages in digests."
+      />
+      {f.numeric ? (
+        <div className="space-y-2 rounded-splash-sm border border-gray-light p-2">
+          <LabeledCheckbox
+            label="Whole numbers only"
+            checked={f.numeric.integer ?? false}
+            onChange={(v) => onUpdate({ numeric: { ...f.numeric, integer: v || undefined } } as Partial<Field>)}
+          />
+          <div className="grid grid-cols-2 gap-2">
+            <LabeledInput
+              type="number"
+              label="Lowest allowed"
+              value={f.numeric.min == null ? "" : String(f.numeric.min)}
+              onChange={(v) => onUpdate({ numeric: { ...f.numeric, min: v === "" ? undefined : Number(v) } } as Partial<Field>)}
+            />
+            <LabeledInput
+              type="number"
+              label="Highest allowed"
+              value={f.numeric.max == null ? "" : String(f.numeric.max)}
+              onChange={(v) => onUpdate({ numeric: { ...f.numeric, max: v === "" ? undefined : Number(v) } } as Partial<Field>)}
+              hint="Catches typos like an extra zero."
+            />
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

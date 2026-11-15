@@ -57,7 +57,7 @@ export interface EmailStepCardProps {
     patch: Partial<
       Pick<
         WorkflowStage,
-        "subject_template" | "body_template" | "attach_pdf"
+        "subject_template" | "body_template" | "attach_pdf" | "attach_files" | "approval_link_label"
       >
     >
   ) => void;
@@ -250,6 +250,40 @@ export default function EmailStepCard(props: EmailStepCardProps) {
             </span>
           </span>
         </label>
+
+        <label className="flex items-start gap-2 text-sm text-splash-navy">
+          <input
+            type="checkbox"
+            checked={Boolean(step.attach_files)}
+            onChange={(e) =>
+              onUpdateTemplates({ attach_files: e.currentTarget.checked || undefined })
+            }
+            className="mt-0.5 h-4 w-4 rounded border-gray-light text-splash-blue focus:ring-splash-blue"
+          />
+          <span className="flex-1">
+            <span className="font-semibold">Attach uploaded files</span>
+            <span className="mt-0.5 block text-xs text-splash-navy/60">
+              The photos and documents uploaded on the form, full size (the PDF only has small thumbnails).
+              Files over 5 MB are left off, so turn on &quot;Shrink photos before upload&quot; on photo fields.
+            </span>
+          </span>
+        </label>
+
+        {(step.body_template ?? "").includes("{approval.link}") ? (
+          <label className="block text-[0.65rem] font-semibold uppercase tracking-wide text-splash-navy/70">
+            Approval link button text
+            <input
+              type="text"
+              value={step.approval_link_label ?? ""}
+              maxLength={60}
+              placeholder="Review & Approve or Deny"
+              onChange={(e) =>
+                onUpdateTemplates({ approval_link_label: e.currentTarget.value || undefined })
+              }
+              className="mt-1 w-full rounded-splash-sm border border-gray-light bg-white px-3 py-1.5 text-sm font-normal normal-case tracking-normal text-splash-navy"
+            />
+          </label>
+        ) : null}
 
         <label className="block text-[0.65rem] font-semibold uppercase tracking-wide text-splash-navy/70">
           Then go to

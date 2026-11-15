@@ -191,6 +191,9 @@ export interface FormDetail {
    *  site_number field. Optional so an older worker still parses (undefined
    *  keeps the old banner behaviour). */
   scopeLocationFieldKey?: string | null;
+  /** `forms.test_email_to`: test mode address, null = live. Optional so an
+   *  older worker still parses. */
+  testEmailTo?: string | null;
 }
 
 export interface CreateFormArgs {
@@ -576,6 +579,31 @@ export async function setFormAccessTagAdmin(
     resp,
     "setFormAccessTagAdmin"
   );
+}
+
+export interface FormSettingsBody {
+  title: string;
+  description: string | null;
+  audience: "public" | "internal" | "link-only";
+  notify_webhook: boolean;
+  turnstile_required: boolean;
+  success_message: string | null;
+  confidential: boolean;
+  test_email_to: string | null;
+}
+
+/** PATCH the forms row from the Settings tab. Returns the worker's message on a 400. */
+export async function updateFormSettingsAdmin(
+  formId: string,
+  body: FormSettingsBody
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const resp = await callForms(`/forms/admin/api/forms/${encodeURIComponent(formId)}/settings`, {
+    method: "PATCH",
+    jsonBody: body
+  });
+  if (resp.ok) return { ok: true };
+  const j = (await resp.json().catch(() => ({}))) as { message?: string; error?: string };
+  return { ok: false, error: j.message ?? j.error ?? `Save failed (${resp.status})` };
 }
 
 export async function setFormCrdVisibleAdmin(

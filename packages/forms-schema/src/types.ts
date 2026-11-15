@@ -645,6 +645,10 @@ export interface FormMeta {
   notifyWebhook: boolean;
   successMessage: string | null;
   turnstileRequired: boolean;
+  /** 2026-11-14 -- the form is in test mode (forms.test_email_to set): its
+   *  workflow emails all go to one test address. Optional; only the public
+   *  render path fills it, to show a banner. */
+  testMode?: boolean;
 }
 
 // Submission payload is keyed by field.key. Per-field value shape varies

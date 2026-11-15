@@ -89,7 +89,7 @@ export interface WorkflowTabDispatch {
     patch: Partial<
       Pick<
         WorkflowStage,
-        "subject_template" | "body_template" | "attach_pdf"
+        "subject_template" | "body_template" | "attach_pdf" | "attach_files" | "approval_link_label"
       >
     >
   ) => void;

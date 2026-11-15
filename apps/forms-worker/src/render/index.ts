@@ -90,7 +90,13 @@ export function renderFormBody(args: RenderBodyArgs): string {
     ? `<div class="turnstile-wrap"><div class="cf-turnstile" data-sitekey="${escapeHtml(args.turnstileSiteKey)}"></div></div>`
     : "";
 
-  return `
+  // Test mode: the filler should know nobody real is being emailed. The test
+  // address itself is not shown -- link-only forms are open to anyone with the URL.
+  const testBanner = args.form.testMode
+    ? `<div role="status" style="margin:0 0 16px 0;padding:10px 14px;border-radius:8px;background:#fff7e6;border:1px solid #eda100;color:#5c3d00;font-size:14px;font-weight:600;">TEST MODE - emails from this form go to a test address, not the usual recipients.</div>`
+    : "";
+
+  return `${testBanner}
 <form action="/forms/api/submit/${escapeHtml(args.form.slug)}" method="post" enctype="multipart/form-data" class="forms-body">
   <input type="hidden" name="pending_submission_id" value="${escapeHtml(args.pendingSubmissionId)}" />
   ${fieldsHtml}

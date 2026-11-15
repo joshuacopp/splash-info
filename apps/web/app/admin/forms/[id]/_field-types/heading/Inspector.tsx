@@ -3,6 +3,7 @@
 import type { Field, HeadingField } from "@splash/forms-schema";
 import LabeledInput from "../_shared/LabeledInput";
 import LabeledSelect from "../_shared/LabeledSelect";
+import LabeledTextarea from "../_shared/LabeledTextarea";
 import KeyEditor from "../_shared/KeyEditor";
 import type { InspectorProps } from "../index";
 
@@ -32,6 +33,13 @@ export default function HeadingInspector({ field, onUpdate }: InspectorProps) {
           { value: "h3", label: "H3 — sub-section" },
           { value: "h4", label: "H4 — minor heading" }
         ]}
+      />
+      <LabeledTextarea
+        label="Text under the heading (optional)"
+        value={f.helpText ?? ""}
+        rows={4}
+        onChange={(v) => onUpdate({ helpText: v || undefined } as Partial<Field>)}
+        hint="A block of reading text, e.g. instructions or rights someone reads before signing. Leave a blank line between paragraphs."
       />
     </div>
   );

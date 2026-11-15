@@ -14,6 +14,12 @@ export default function TimeInspector({ field, onUpdate }: InspectorProps) {
       <KeyEditor value={f.key} onChange={(v) => onUpdate({ key: v } as Partial<Field>)} />
       <LabeledCheckbox label="Required" checked={f.required} onChange={(v) => onUpdate({ required: v } as Partial<Field>)} />
       <LabeledInput label="Help text" value={f.helpText ?? ""} onChange={(v) => onUpdate({ helpText: v || undefined } as Partial<Field>)} />
+      <LabeledCheckbox
+        label="Start with the current time"
+        checked={f.defaultToNow ?? false}
+        onChange={(v) => onUpdate({ defaultToNow: v || undefined } as Partial<Field>)}
+        hint="Eastern time. The person filling it in can still change it."
+      />
       <LabeledInput
         type="time"
         label="Min time (HH:MM)"

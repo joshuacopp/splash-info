@@ -18,6 +18,8 @@ import {
   setFormAccessTagAdmin,
   setFormCrdVisibleAdmin,
   setFormFillAudienceAdmin,
+  updateFormSettingsAdmin,
+  type FormSettingsBody,
   updateDraftAdmin,
   type PublishResponse,
   type ReResolveApproversResult
@@ -158,5 +160,18 @@ export async function setFillAudienceAction(
       ok: false,
       error: err instanceof Error ? err.message : String(err)
     };
+  }
+}
+
+/** Settings tab "Save settings" -- writes the forms row; takes effect at once
+ *  (no republish). */
+export async function saveFormSettingsAction(
+  formId: string,
+  body: FormSettingsBody
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  try {
+    return await updateFormSettingsAdmin(formId, body);
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
   }
 }

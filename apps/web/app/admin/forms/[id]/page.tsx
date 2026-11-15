@@ -80,6 +80,7 @@ export default async function FormBuilderPage({ params, searchParams }: PageProp
         formId={id}
         accessTag={detail.accessTag ?? null}
         activeTab={activeTab}
+        myEmail={session.email ?? null}
       />
       )}
     </section>

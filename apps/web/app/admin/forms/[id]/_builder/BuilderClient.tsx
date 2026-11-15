@@ -56,6 +56,8 @@ interface Props {
   formId: string;
   accessTag: string | null;
   activeTab: BuilderTab;
+  /** The signed-in admin's email: the default test-mode address. */
+  myEmail?: string | null;
 }
 
 export default function BuilderClient({
@@ -63,7 +65,8 @@ export default function BuilderClient({
   lookupSources,
   formId,
   accessTag,
-  activeTab
+  activeTab,
+  myEmail
 }: Props) {
   const [state, dispatch] = useReducer(
     reducer,
@@ -430,6 +433,9 @@ export default function BuilderClient({
           accessTag={accessTag}
           crdVisible={initial.crdVisible === true}
           fillAudience={initial.fillAudience ?? []}
+          scopeLocationFieldKey={initial.scopeLocationFieldKey ?? null}
+          testEmailTo={initial.testEmailTo ?? null}
+          myEmail={myEmail ?? null}
         />
       )}
     </div>
