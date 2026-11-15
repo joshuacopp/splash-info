@@ -19,6 +19,15 @@
 // resolves them as strings rather than failing on "module not found".
 import signaturePadJs from "../../static/signature-pad.min.js";
 import formsPublicJs from "../../static/forms-public.js";
+// pdf.js 4.10.38 (Apache-2.0), vendored 2026-11-14 for the builder's Documents
+// tab (drawing a PDF template's pages to place boxes on). Files are the npm
+// package's build/pdf.min.mjs + build/pdf.worker.min.mjs, renamed .js so the
+// Text rule picks them up. SHA-256:
+//   pdfjs.min.js         27fc2a057a00f92a4334ad06e17dbd7259912954e9fb7f76400bcca5fd190a9c
+//   pdfjs.worker.min.js  1baa1844c89c80a5b2797c916e75ab29254be46d8e9cb53cb6364d7aad84be36
+// The version is in the URL, so a long cache is always correct.
+import pdfjsLib from "../../static/pdfjs.min.js";
+import pdfjsWorker from "../../static/pdfjs.worker.min.js";
 
 import type { Env } from "../index.js";
 
@@ -64,6 +73,14 @@ const ASSETS: Record<string, Asset> = {
   "/forms/api/static/forms-public.js": {
     body: formsPublicJs,
     contentType: "application/javascript"
+  },
+  "/forms/api/static/pdfjs-4.10.38.min.js": {
+    body: pdfjsLib,
+    contentType: "text/javascript"
+  },
+  "/forms/api/static/pdfjs-4.10.38.worker.min.js": {
+    body: pdfjsWorker,
+    contentType: "text/javascript"
   }
 };
 

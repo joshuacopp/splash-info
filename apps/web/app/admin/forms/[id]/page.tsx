@@ -8,11 +8,12 @@ import { notFound } from "next/navigation";
 import Link from "next/link";
 
 import { getMe } from "../../../_lib/me";
-import { getFormAdmin, getLookupSourcesAdmin } from "../_lib/worker-fetch";
+import { getFormAdmin, getLookupSourcesAdmin, listPdfTemplatesAdmin } from "../_lib/worker-fetch";
 import FormsAdminTabs from "../_components/FormsAdminTabs";
 import NoAccessCard from "../_components/NoAccessCard";
 import BuilderClient from "./_builder/BuilderClient";
 import DigestsPanel from "./_digests/DigestsPanel";
+import DocumentsPanel from "./_documents/DocumentsPanel";
 import { listDigestsAction } from "./_digests/actions";
 import FormBuilderTabs, {
   type BuilderTab
@@ -26,7 +27,7 @@ interface PageProps {
 }
 
 function resolveTab(raw: string | undefined): BuilderTab {
-  if (raw === "workflow" || raw === "settings" || raw === "digests") return raw;
+  if (raw === "workflow" || raw === "settings" || raw === "digests" || raw === "documents") return raw;
   return "fields";
 }
 
@@ -57,6 +58,7 @@ export default async function FormBuilderPage({ params, searchParams }: PageProp
     notFound();
   }
   const lookupSourcesResp = await getLookupSourcesAdmin();
+  const pdfTemplates = await listPdfTemplatesAdmin(id);
   const lookupSources = lookupSourcesResp?.sources ?? [];
 
   return (
@@ -73,6 +75,13 @@ export default async function FormBuilderPage({ params, searchParams }: PageProp
 
       {activeTab === "digests" ? (
         <DigestsTab formId={id} fields={detail.draftSchema.fields} />
+      ) : activeTab === "documents" ? (
+        <DocumentsPanel
+          formId={id}
+          fields={detail.draftSchema.fields}
+          workflow={detail.draftSchema.workflow ?? null}
+          initialTemplates={pdfTemplates}
+        />
       ) : (
       <BuilderClient
         initial={detail}
@@ -81,6 +90,7 @@ export default async function FormBuilderPage({ params, searchParams }: PageProp
         accessTag={detail.accessTag ?? null}
         activeTab={activeTab}
         myEmail={session.email ?? null}
+        pdfTemplates={pdfTemplates.map((t) => ({ id: t.id, name: t.name }))}
       />
       )}
     </section>

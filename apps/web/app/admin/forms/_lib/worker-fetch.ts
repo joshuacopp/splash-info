@@ -976,3 +976,23 @@ export async function callDigestsAdmin(
   const parsed = (await resp.json().catch(() => ({}))) as Record<string, unknown>;
   return { status: resp.status, body: parsed };
 }
+
+// =============================================================================
+// PDF templates (2026-11-14) -- /admin/forms/{id}?tab=documents
+// =============================================================================
+// The Documents tab talks to the worker from the browser for uploads, saves,
+// the blank PDF (pdf.js) and previews -- all same-origin under /forms/*. Only
+// the initial list is fetched server-side, here.
+
+export async function listPdfTemplatesAdmin(
+  formId: string
+): Promise<import("@splash/forms-schema/pdf-template").PdfTemplate[]> {
+  try {
+    const resp = await callForms(`/forms/admin/api/forms/${encodeURIComponent(formId)}/pdf-templates`);
+    if (!resp.ok) return [];
+    const j = (await resp.json()) as { templates?: import("@splash/forms-schema/pdf-template").PdfTemplate[] };
+    return j.templates ?? [];
+  } catch {
+    return [];
+  }
+}

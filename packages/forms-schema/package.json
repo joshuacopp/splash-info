@@ -10,7 +10,8 @@
     "./package-price": "./src/package-price.ts",
     "./employee": "./src/employee.ts",
     "./approver-view": "./src/approver-view.ts",
-    "./digest": "./src/digest.ts"
+    "./digest": "./src/digest.ts",
+    "./pdf-template": "./src/pdf-template.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

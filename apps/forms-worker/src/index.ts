@@ -40,6 +40,7 @@
 //   POST   /forms/admin/api/forms/{id}/submissions/{subId}/comments — Brief 174: post
 //   GET    /forms/admin/api/forms/{id}/versions       — Brief 96: version history
 //   *      /forms/admin/api/forms/{id}/digests[...]   — 2026-11-14: scheduled digests (src/digests/admin.ts)
+//   *      /forms/admin/api/forms/{id}/pdf-templates[...] — 2026-11-14: fill an uploaded PDF (src/pdf-templates/admin.ts)
 //   POST   /forms/internal/api/email-queue/claim      — Brief 127: PA claims batch
 //   POST   /forms/internal/api/email-queue/confirm    — Brief 127: PA confirms send
 //   GET    /forms/admin/api/email-queue/list          — Brief 128: admin viewer list
@@ -171,6 +172,7 @@ import { runDailyCleanup } from "./cron/cleanup.js";
 import { runDailyApprovalDigest } from "./cron/approval-digest.js";
 import { runCloudflareEmailDrain } from "./email-queue/cloudflare-drain.js";
 import { handleDigestsRoute } from "./digests/admin.js";
+import { handlePdfTemplatesRoute } from "./pdf-templates/admin.js";
 import { runDueDigests } from "./digests/run.js";
 
 export interface Env {
@@ -451,6 +453,15 @@ export default {
     );
     if (digestsMatch && digestsMatch[1]) {
       return handleDigestsRoute(env, req, digestsMatch[1], digestsMatch[2] ?? "");
+    }
+
+    // 2026-11-14 -- PDF templates (src/pdf-templates/admin.ts):
+    // /forms/admin/api/forms/{id}/pdf-templates[/{tid}[/file|/preview]]
+    const pdfTplMatch = url.pathname.match(
+      /^\/forms\/admin\/api\/forms\/([^/]+)\/pdf-templates((?:\/[^/]+){0,2})$/
+    );
+    if (pdfTplMatch && pdfTplMatch[1]) {
+      return handlePdfTemplatesRoute(env, req, pdfTplMatch[1], pdfTplMatch[2] ?? "");
     }
 
     // /forms/admin/api/forms/{id}

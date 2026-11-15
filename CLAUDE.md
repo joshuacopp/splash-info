@@ -3311,6 +3311,14 @@ URL-based — service bindings don't apply to those.
   `{category: "lube"|"detail", name, current, new}` -- one price each. Rows
   may be EMPTY when a site's changes are only new packages / services. All
   four are display records: nothing writes pricing_simple.
+- **PDF templates** (2026-11-14) - Fill a real uploaded PDF from a form: builder
+  Documents tab, `form_pdf_templates`, `apps/forms-worker/src/pdf-templates/`,
+  email step `attach_documents`. New documents go here, NOT into hand-coded
+  `src/pdf/*.ts` (the NY pay notice and warning notice stay as they are by
+  operator decision). Box coordinates are PDF points from the TOP-LEFT; only
+  `fill.ts` flips y for pdf-lib. pdf.js for the builder is vendored in the
+  forms worker and loaded at runtime (no CDN, not bundled into apps/web).
+  See PLAN_FORMS_PDF_TEMPLATES.md "As built".
 - **Form test mode** (2026-11-14) - `forms.test_email_to`, set on the form's
   Settings tab. While set, EVERY workflow email for the form goes only to that
   address ([TEST] subject, intended recipients listed in the body) and the

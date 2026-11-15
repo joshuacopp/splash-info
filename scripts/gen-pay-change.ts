@@ -360,7 +360,15 @@ const workflow: FormWorkflow = {
       kind: "approval",
       approver_source: rd[0]!,
       transitions: [
-        { to: "notify_site", label: "Approve", requires: { signature: true } },
+        // The RD's typed name prints as "Approved By" on the Rate of Pay Change
+        // form (a PDF template), with their signature; the full history goes
+        // in the attached audit PDF (operator, 2026-11-14).
+        {
+          to: "notify_site",
+          label: "Approve",
+          requires: { signature: true, typed_name: true },
+          typed_name_label: "Your full name (printed as Approved By)"
+        },
         { to: "denied_by_rd_email", label: "Deny", requires: { note: true } }
       ]
     },

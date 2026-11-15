@@ -118,6 +118,20 @@ async function drawHistoryEntry(
   });
   cursor.y -= 14;
 
+  // Emailed-link approvals have no sign-in, so the device that acted IS the
+  // audit evidence (operator, 2026-11-14: the attached audit log must carry
+  // every stamp). Recorded on the entry by approval-links; printed only
+  // when present.
+  if (!isSystem && entry.via === "email_link" && (entry.actor_ip || entry.actor_user_agent)) {
+    const device = [
+      entry.actor_ip ? `IP ${entry.actor_ip}` : null,
+      entry.actor_user_agent ? entry.actor_user_agent.slice(0, 110) : null
+    ]
+      .filter(Boolean)
+      .join("  *  ");
+    drawWrappedText(doc, cursor, fonts, `Device: ${device}`, 8, COLORS.muted);
+  }
+
   // System / email-step entries: render the note (which carries the
   // recipient list, formatted by workflow-email-step.ts) and skip the
   // signature/typed-name/action triple — there's nothing for them.

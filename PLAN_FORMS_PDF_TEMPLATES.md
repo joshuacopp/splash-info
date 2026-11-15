@@ -1,6 +1,6 @@
 # Plan: fill an existing PDF from a form (PDF templates)
 
-Status: PLANNED (agreed with the operator 2026-11-14), not built.
+Status: BUILT 2026-11-14 (phases 1-3; see "As built" at the end). Phase 4 optional.
 
 ## Why
 
@@ -85,3 +85,33 @@ no drawing needed. Boxes and AcroForm mapping can be mixed in one template.
   has no real use (nobody builds several forms to fill one document), so it
   is not built.
 - **Admin tier only** uploads and edits templates.
+
+## As built (2026-11-14)
+
+- Types + validator: `packages/forms-schema/src/pdf-template.ts` (subpath
+  `@splash/forms-schema/pdf-template`). Box sources: a form answer (text, or an
+  image for signature/photo fields), a tick when a choice equals a value, an
+  approval step's who/date/signature/typed name/note (latest HUMAN action on
+  that step), date submitted, submission number, fixed text. Options: font
+  size (auto = fit), align, wrap, and `line_height` so wrapped text sits on a
+  paper form's ruled lines.
+- Table `form_pdf_templates` (`supabase/form-pdf-templates-01.sql`, APPLIED);
+  PDF in R2 at `form-pdf-templates/{form_id}/{template_id}.pdf`.
+- Worker: `src/pdf-templates/` (fill / data / admin). Fills by DRAWING with
+  pdf-lib, not AcroForm, so any PDF works (Word "Save as PDF", scans).
+  Email step `attach_documents: [template ids]` fills FRESH at that step and
+  stores `form-submission-pdfs/{form}/{sub}-doc-{tid}-{stage}.pdf`.
+- Builder: Documents tab (`_documents/DocumentsPanel.tsx`) -- upload, pages
+  drawn by pdf.js 4.10.38 VENDORED in the forms worker (`static/pdfjs*.js`,
+  served at `/forms/api/static/pdfjs-4.10.38*.js`, loaded with a
+  webpackIgnore'd import so apps/web does not bundle it), drag to draw /
+  move / corner-resize, arrow-key nudge, box inspector, Preview (latest
+  submission, or [placeholders] when there are none). Email step card lists
+  the form's documents under "Attach filled documents".
+- VERSIONING SIMPLIFICATION vs the plan: templates are not snapshotted per form
+  version. A filled document is generated and stored when its email step
+  runs, so editing a template later never changes a document already sent;
+  it only affects documents generated afterwards.
+- First document: Splash Rate of Pay Change (operator's Word file; the
+  "Send to Mike Grubka and Payroll" footer removed at the operator's request
+  before converting to PDF).

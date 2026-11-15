@@ -57,7 +57,7 @@ export interface EmailStepCardProps {
     patch: Partial<
       Pick<
         WorkflowStage,
-        "subject_template" | "body_template" | "attach_pdf" | "attach_files" | "approval_link_label"
+        "subject_template" | "body_template" | "attach_pdf" | "attach_files" | "approval_link_label" | "attach_documents"
       >
     >
   ) => void;
@@ -68,6 +68,8 @@ export interface EmailStepCardProps {
   ) => void;
   onDuplicate: () => void;
   onRemove: () => void;
+  /** This form's PDF templates, from the Documents tab. */
+  documents?: { id: string; name: string }[];
 }
 
 export default function EmailStepCard(props: EmailStepCardProps) {
@@ -268,6 +270,34 @@ export default function EmailStepCard(props: EmailStepCardProps) {
             </span>
           </span>
         </label>
+
+        {(props.documents ?? []).length > 0 ? (
+          <fieldset className="space-y-1 text-sm text-splash-navy">
+            <legend className="font-semibold">Attach filled documents</legend>
+            <span className="block text-xs text-splash-navy/60">
+              From the Documents tab, filled in from this submission when this email goes out (so they include every
+              signature collected up to this step).
+            </span>
+            {(props.documents ?? []).map((d) => {
+              const on = (step.attach_documents ?? []).includes(d.id);
+              return (
+                <label key={d.id} className="flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    checked={on}
+                    onChange={() => {
+                      const cur = step.attach_documents ?? [];
+                      const next = on ? cur.filter((x) => x !== d.id) : [...cur, d.id];
+                      onUpdateTemplates({ attach_documents: next.length ? next : undefined });
+                    }}
+                    className="h-4 w-4 rounded border-gray-light text-splash-blue focus:ring-splash-blue"
+                  />
+                  {d.name}
+                </label>
+              );
+            })}
+          </fieldset>
+        ) : null}
 
         {(step.body_template ?? "").includes("{approval.link}") ? (
           <label className="block text-[0.65rem] font-semibold uppercase tracking-wide text-splash-navy/70">

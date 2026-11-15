@@ -58,6 +58,8 @@ interface Props {
   activeTab: BuilderTab;
   /** The signed-in admin's email: the default test-mode address. */
   myEmail?: string | null;
+  /** This form's PDF templates, offered to email steps. */
+  pdfTemplates?: { id: string; name: string }[];
 }
 
 export default function BuilderClient({
@@ -66,7 +68,8 @@ export default function BuilderClient({
   formId,
   accessTag,
   activeTab,
-  myEmail
+  myEmail,
+  pdfTemplates
 }: Props) {
   const [state, dispatch] = useReducer(
     reducer,
@@ -420,6 +423,7 @@ export default function BuilderClient({
           fields={state.fields}
           dispatch={workflowTabDispatch}
           formId={formId}
+          documents={pdfTemplates}
         />
       )}
 

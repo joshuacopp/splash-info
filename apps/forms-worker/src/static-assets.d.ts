@@ -40,3 +40,13 @@ declare module "@resvg/resvg-wasm/index_bg.wasm" {
   const mod: WebAssembly.Module;
   export default mod;
 }
+
+// pdf.js (vendored, served to the builder's Documents tab).
+declare module "*/static/pdfjs.min.js" {
+  const contents: string;
+  export default contents;
+}
+declare module "*/static/pdfjs.worker.min.js" {
+  const contents: string;
+  export default contents;
+}

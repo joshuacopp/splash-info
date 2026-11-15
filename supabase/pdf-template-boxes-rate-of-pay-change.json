@@ -1,0 +1,181 @@
+[
+ {
+  "id": "emp",
+  "page": 0,
+  "x": 150,
+  "y": 247,
+  "w": 171,
+  "h": 15,
+  "source": {
+   "type": "field",
+   "key": "employee"
+  }
+ },
+ {
+  "id": "loc",
+  "page": 0,
+  "x": 402,
+  "y": 247,
+  "w": 173,
+  "h": 15,
+  "source": {
+   "type": "field",
+   "key": "site_name"
+  }
+ },
+ {
+  "id": "apprby",
+  "page": 0,
+  "x": 150,
+  "y": 267,
+  "w": 171,
+  "h": 15,
+  "source": {
+   "type": "stage",
+   "stage": "rd_review",
+   "part": "typed_name"
+  }
+ },
+ {
+  "id": "apprdate",
+  "page": 0,
+  "x": 402,
+  "y": 267,
+  "w": 173,
+  "h": 15,
+  "source": {
+   "type": "stage",
+   "stage": "rd_review",
+   "part": "date"
+  }
+ },
+ {
+  "id": "merits",
+  "page": 0,
+  "x": 38,
+  "y": 337,
+  "w": 536,
+  "h": 101,
+  "source": {
+   "type": "field",
+   "key": "merits"
+  },
+  "multiline": true,
+  "font_size": 11,
+  "line_height": 20
+ },
+ {
+  "id": "rate",
+  "page": 0,
+  "x": 150,
+  "y": 464,
+  "w": 137,
+  "h": 15,
+  "source": {
+   "type": "field",
+   "key": "new_rate"
+  }
+ },
+ {
+  "id": "hour",
+  "page": 0,
+  "x": 363.6,
+  "y": 460.4,
+  "w": 14.4,
+  "h": 19.5,
+  "source": {
+   "type": "check",
+   "key": "new_pay_type",
+   "value": "hour"
+  }
+ },
+ {
+  "id": "week",
+  "page": 0,
+  "x": 434,
+  "y": 460.4,
+  "w": 14.5,
+  "h": 19.5,
+  "source": {
+   "type": "check",
+   "key": "new_pay_type",
+   "value": "week"
+  }
+ },
+ {
+  "id": "year",
+  "page": 0,
+  "x": 509.7,
+  "y": 460.4,
+  "w": 14.5,
+  "h": 19.5,
+  "source": {
+   "type": "check",
+   "key": "new_pay_type",
+   "value": "year"
+  }
+ },
+ {
+  "id": "period",
+  "page": 0,
+  "x": 290,
+  "y": 516,
+  "w": 285,
+  "h": 15,
+  "source": {
+   "type": "field",
+   "key": "effective_date"
+  }
+ },
+ {
+  "id": "mgrsig",
+  "page": 0,
+  "x": 40,
+  "y": 558,
+  "w": 300,
+  "h": 37,
+  "source": {
+   "type": "field",
+   "key": "manager_signature"
+  }
+ },
+ {
+  "id": "mgrdate",
+  "page": 0,
+  "x": 450,
+  "y": 580,
+  "w": 125,
+  "h": 15,
+  "source": {
+   "type": "submitted_date"
+  },
+  "align": "center"
+ },
+ {
+  "id": "empsig",
+  "page": 0,
+  "x": 40,
+  "y": 620,
+  "w": 300,
+  "h": 37,
+  "source": {
+   "type": "stage",
+   "stage": "employee_signoff",
+   "part": "signature"
+  }
+ },
+ {
+  "id": "empdate",
+  "page": 0,
+  "x": 450,
+  "y": 642,
+  "w": 125,
+  "h": 15,
+  "source": {
+   "type": "stage",
+   "stage": "employee_signoff",
+   "part": "date"
+  },
+  "align": "center"
+ }
+]

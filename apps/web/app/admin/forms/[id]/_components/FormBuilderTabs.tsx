@@ -10,7 +10,7 @@
 
 import Link from "next/link";
 
-export type BuilderTab = "fields" | "workflow" | "settings" | "digests";
+export type BuilderTab = "fields" | "workflow" | "settings" | "digests" | "documents";
 
 interface Props {
   formId: string;
@@ -21,7 +21,8 @@ const TABS: ReadonlyArray<{ id: BuilderTab; label: string }> = [
   { id: "fields", label: "Fields" },
   { id: "workflow", label: "Workflow" },
   { id: "settings", label: "Settings" },
-  { id: "digests", label: "Digests" }
+  { id: "digests", label: "Digests" },
+  { id: "documents", label: "Documents" }
 ];
 
 export default function FormBuilderTabs({ formId, active }: Props) {

@@ -180,7 +180,7 @@ export type BuilderAction =
       patch: Partial<
         Pick<
           WorkflowStage,
-          "label" | "subject_template" | "body_template" | "attach_pdf" | "attach_files" | "approval_link_label"
+          "label" | "subject_template" | "body_template" | "attach_pdf" | "attach_files" | "approval_link_label" | "attach_documents"
         >
       >;
     }

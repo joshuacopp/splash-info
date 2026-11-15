@@ -67,6 +67,8 @@ import { generateOrReuseCompletedPdf } from "./pdf/cascade-attach.js";
 import { mintApprovalLink } from "./approval-links/tokens.js";
 import { wrapInEmailShell } from "@splash/email-shell";
 import { getFormTestEmail } from "./db/forms.js";
+import { getTemplatesByIds } from "./pdf-templates/data.js";
+import { fillPdfTemplate } from "./pdf-templates/fill.js";
 
 const MAX_CASCADE_DEPTH = 10;
 
@@ -417,6 +419,50 @@ export async function cascadeThroughEmailSteps(
         });
       }
       if (files.length) stageAttachments = [...(stageAttachments ?? []), ...files.slice(0, 10)];
+    }
+
+    // Filled PDF templates (attach_documents) -- the admin's own documents
+    // from the Documents tab. Built FRESH at this step (not reused from an
+    // earlier one) so each copy carries every signature captured so far, and
+    // stored per (submission, template, stage) so the queued email's r2_key
+    // stays valid. Templates must belong to this form: an id pasted from
+    // another form is ignored. Fail-soft per document.
+    if (stage.attach_documents?.length && ctx.submissionMeta) {
+      try {
+        const templates = (await getTemplatesByIds(env, stage.attach_documents)).filter(
+          (t) => t.form_id === ctx.form.id
+        );
+        const history = [...(ctx.priorWorkflowHistory ?? []), ...appended];
+        for (const t of templates) {
+          try {
+            const blank = await env.FORMS_FILES.get(t.r2_key);
+            if (!blank) throw new Error(`template PDF missing at ${t.r2_key}`);
+            const bytes = await fillPdfTemplate(
+              new Uint8Array(await blank.arrayBuffer()),
+              t.boxes,
+              {
+                fields: ctx.schema.fields,
+                payload: ctx.payload,
+                history,
+                submissionId: ctx.submissionMeta.id,
+                submittedAt: ctx.submissionMeta.submittedAt
+              },
+              env.FORMS_FILES
+            );
+            const key = `form-submission-pdfs/${ctx.form.id}/${ctx.submissionMeta.id}-doc-${t.id}-${stage.id}.pdf`;
+            await env.FORMS_FILES.put(key, bytes, { httpMetadata: { contentType: "application/pdf" } });
+            const safe = t.name.replace(/[\\/:*?"<>|]+/g, " ").replace(/\s+/g, " ").trim() || "Document";
+            stageAttachments = [
+              ...(stageAttachments ?? []),
+              { filename: `${safe}.pdf`, r2_key: key, mime: "application/pdf", size_bytes: bytes.byteLength, bucket: "FORMS_FILES" }
+            ];
+          } catch (err) {
+            console.error(`[forms.pdf-template] fill failed template=${t.id} submission=${ctx.submissionMeta.id}`, err);
+          }
+        }
+      } catch (err) {
+        console.error(`[forms.pdf-template] load failed for stage ${stage.id}`, err);
+      }
     }
 
     // `{approval.link}` — a per-recipient no-sign-in link for the approval

@@ -540,6 +540,10 @@ export interface WorkflowStage {
   // `resizeImages` on the field: the email queue drops any attachment over
   // 5 MB, and phone photos are 3-8 MB.
   attach_files?: boolean;
+  // 2026-11-14 -- attach filled copies of these PDF templates (ids from
+  // public.form_pdf_templates, made on the builder's Documents tab). Built
+  // fresh at this step, so they carry every signature captured so far.
+  attach_documents?: string[];
   // 2026-11-13 -- button text for `{approval.link}` in this email step when
   // the next stage is not an approve/deny decision (e.g. "Open for employee
   // signature"). Default "Review & Approve or Deny".

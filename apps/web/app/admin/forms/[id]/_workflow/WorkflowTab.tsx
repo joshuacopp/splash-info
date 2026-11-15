@@ -89,7 +89,7 @@ export interface WorkflowTabDispatch {
     patch: Partial<
       Pick<
         WorkflowStage,
-        "subject_template" | "body_template" | "attach_pdf" | "attach_files" | "approval_link_label"
+        "subject_template" | "body_template" | "attach_pdf" | "attach_files" | "approval_link_label" | "attach_documents"
       >
     >
   ) => void;
@@ -120,13 +120,16 @@ interface Props {
   /** Only needed by the "Apply to open submissions" action, which talks to
    *  the worker directly rather than through the builder reducer. */
   formId: string;
+  /** This form's PDF templates (Documents tab), offered as attachments on email steps. */
+  documents?: { id: string; name: string }[];
 }
 
 export default function WorkflowTab({
   workflow,
   fields,
   dispatch,
-  formId
+  formId,
+  documents = []
 }: Props) {
   if (!workflow) {
     return (
@@ -276,6 +279,7 @@ export default function WorkflowTab({
                     onUpdateLabel={(label) =>
                       dispatch.onUpdateStepLabel(step.id, label)
                     }
+                    documents={documents}
                     onUpdateTemplates={(patch) =>
                       dispatch.onUpdateEmailTemplates(step.id, patch)
                     }
