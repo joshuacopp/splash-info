@@ -3342,6 +3342,20 @@ URL-based — service bindings don't apply to those.
   `render-email.ts` / `chart-png.ts` pulls in the wasm, which vitest-pool-workers
   cannot load -- test pure modules (`aggregate`, `period`, `audience`) instead.
   Sum/average needs a short-text field with `numeric`.
+- **Site Status** (2026-11-15) - Open / closed board at `/admin/site-status`
+  (+ `/reports`), served by splash-forms `src/site-status/`, tables in
+  `supabase/site-status-01.sql`. A site is closed while it has a
+  `site_closures` row with `reopened_at IS NULL` (partial unique index: one at
+  a time). CLOSING needs the site's RD (`am_email`) or RM (`rm_email`), or admin
+  tier; REOPENING also works from ONE company-wide no-sign-in link
+  (`/forms/site-status/{site_status_settings.open_token}`, staff type site
+  number + name) -- security by obscurity by operator decision; it can never
+  close. All changes go through `actions.ts` (compare-and-set writes) so the
+  board, the link and the emailed overdue link can't drift. Emails ride
+  `outbound_emails`; the close email also goes to `site_email` because it
+  carries the reopen link. `site_status_settings.test_email_to` = test mode
+  (one [TEST] email listing intended recipients). "Equipment down"
+  (`site_down_items`) is board-only and never emails.
 - **Employee field** (2026-11-13, PLAN_FORMS_PERSONNEL.md phase 2) - form
   field type `employee`: searches the Beekeeper roster of the site another
   field names (011 / 101 = office groups) via `POST /forms/api/employees/{slug}`.

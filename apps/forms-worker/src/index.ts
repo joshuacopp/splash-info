@@ -174,6 +174,14 @@ import { runCloudflareEmailDrain } from "./email-queue/cloudflare-drain.js";
 import { handleDigestsRoute } from "./digests/admin.js";
 import { handlePdfTemplatesRoute } from "./pdf-templates/admin.js";
 import { runDueDigests } from "./digests/run.js";
+import { handleSiteStatusAdmin } from "./site-status/admin.js";
+import {
+  handleManagePage,
+  handleManagePost,
+  handleSiteLinkPage,
+  handleSiteLinkPost
+} from "./site-status/public.js";
+import { runOverdueCheck } from "./site-status/actions.js";
 
 export interface Env {
   SUPABASE_URL: string;
@@ -272,6 +280,23 @@ export default {
     const packagesMatch = url.pathname.match(/^\/forms\/api\/packages\/([^/]+)$/);
     if (packagesMatch && packagesMatch[1] && req.method === "POST") {
       return handlePackagesForSite(env, req, packagesMatch[1]);
+    }
+
+    // Site open/closed status (2026-11-15, src/site-status/). The emailed
+    // manage link must match before the company-wide link pattern.
+    const siteManageMatch = url.pathname.match(/^\/forms\/site-status\/manage\/([A-Za-z0-9_-]{20,100})$/);
+    if (siteManageMatch && siteManageMatch[1]) {
+      if (req.method === "GET") return handleManagePage(env, url, siteManageMatch[1]);
+      if (req.method === "POST") return handleManagePost(env, req, url, siteManageMatch[1]);
+    }
+    const siteLinkMatch = url.pathname.match(/^\/forms\/site-status\/([A-Za-z0-9_-]{20,100})$/);
+    if (siteLinkMatch && siteLinkMatch[1]) {
+      if (req.method === "GET") return handleSiteLinkPage(env, req, url, siteLinkMatch[1]);
+      if (req.method === "POST") return handleSiteLinkPost(env, req, url, siteLinkMatch[1]);
+    }
+    if (url.pathname.startsWith("/forms/admin/api/site-status/")) {
+      const r = await handleSiteStatusAdmin(env, req, url);
+      if (r) return r;
     }
 
     // GET /forms/approve/{token}/file/{n} — the request's uploads, for the
@@ -888,6 +913,15 @@ export default {
             if (result.claimed > 0) console.log("[forms.email-queue.cloudflare] result", result);
           })
           .catch((err) => console.error("[forms.email-queue.cloudflare] drain failed", err))
+      );
+      // Site status (2026-11-15): closures past their estimate mail the RD + RM
+      // once per estimate (claimed by compare-and-set, so ticks can't double up).
+      ctx.waitUntil(
+        runOverdueCheck(env)
+          .then((r) => {
+            if (r.sent > 0) console.log("[site-status.overdue] sent", r);
+          })
+          .catch((err) => console.error("[site-status.overdue] failed", err))
       );
       // Form digests (2026-11-14): checked every 5th minute. Each digest is
       // due from its Eastern send hour onward on its send day, and

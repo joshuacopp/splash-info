@@ -345,6 +345,15 @@ const megaphoneIcon: ReactNode = (
   </svg>
 );
 
+const storefrontIcon: ReactNode = (
+  <svg {...SvgProps}>
+    <path d="M3 9l1.5-5h15L21 9" />
+    <path d="M3 9h18v2a3 3 0 0 1-6 0 3 3 0 0 1-6 0 3 3 0 0 1-6 0z" />
+    <path d="M5 13v7h14v-7" />
+    <path d="M10 20v-4h4v4" />
+  </svg>
+);
+
 const ticketIcon: ReactNode = (
   <svg {...SvgProps}>
     <path d="M3 8a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v2a2 2 0 0 0 0 4v2a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-2a2 2 0 0 0 0-4z" />
@@ -584,6 +593,18 @@ export const TILES: ReadonlyArray<Tile> = [
     // Admin tier, or the golden_ticket form access tag (CRD). The tag is not
     // on the Session, so it arrives via ctx; the worker still decides access.
     visibleTo: (s, ctx) => isAdminTier(s) || ctx.formAccessTags.includes("golden_ticket")
+  },
+  {
+    id: "site-status",
+    group: "operations",
+    subgroup: "other-tools",
+    eyebrow: "Operations",
+    title: "Site Status",
+    description: "Which sites are closed right now and why, equipment that is down, and closure reports.",
+    href: "/admin/site-status",
+    icon: storefrontIcon,
+    // Anyone on staff may look; closing is limited to the site's RD / RM by the worker.
+    visibleTo: allStaff
   },
   {
     id: "pending-approvals",
