@@ -197,7 +197,9 @@ async function board(env: Env, session: Session): Promise<Response> {
             reopened_at: prev.reopened_at,
             reason: prev.reason,
             reason_detail: prev.reason_detail,
-            closed_by: prev.closed_by
+            closed_by: prev.closed_by,
+            reopened_by: prev.reopened_by,
+            reopen_note: prev.reopen_note
           }
         : null,
       down_items: downBySite.get(s.site_number) ?? []

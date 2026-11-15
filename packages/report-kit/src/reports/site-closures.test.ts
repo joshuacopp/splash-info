@@ -37,6 +37,26 @@ describe("site closures report", () => {
     expect(rows[2]?.still_closed).toBe(true);
   });
 
+  it("carries the reopen note and lists only the estimate changes that had a note", () => {
+    const [r] = toClosureRows(
+      [
+        base({
+          reopen_note: "Power back on",
+          estimate_changes: [
+            { at: "2026-11-10T15:00:00Z", by: "rm@x", from: "2026-11-10T16:00:00Z", to: "2026-11-10T18:00:00Z", note: "Parts late" },
+            { at: "2026-11-10T15:30:00Z", by: "rm@x", from: "2026-11-10T18:00:00Z", to: "2026-11-10T17:00:00Z", note: null }
+          ]
+        })
+      ],
+      now
+    );
+    expect(r?.reopen_note).toBe("Power back on");
+    expect(r?.estimate_change_count).toBe(2);
+    expect(r?.estimate_notes.split("\n")).toHaveLength(1);
+    expect(r?.estimate_notes).toContain("rm@x");
+    expect(r?.estimate_notes).toMatch(/: Parts late$/);
+  });
+
   it("summarises by site, reason and week, with every week present", () => {
     const s = summarizeClosures(rows, { fromYmd: "2026-11-01", toYmd: "2026-11-15" });
     expect(s.kpis).toMatchObject({ closures: 3, sites: 2, hours: 6.5, still_closed: 1 });

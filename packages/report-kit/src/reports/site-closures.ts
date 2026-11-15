@@ -9,7 +9,7 @@
 // the same rows the worker returns.
 
 import { defineReport } from "../define";
-import { addDays, easternYmd, ymdToString } from "../time";
+import { addDays, easternYmd, formatEtDateTime, ymdToString } from "../time";
 
 export const SITE_CLOSURE_REASON_LABEL: Record<string, string> = {
   weather: "Weather",
@@ -37,6 +37,8 @@ export interface SiteClosureRecord {
   reopened_at: string | null;
   reopened_by: string | null;
   reopened_via: string | null;
+  /** Typed by whoever reopened it (board, site link or emailed link). */
+  reopen_note?: string | null;
 }
 
 /** One closure with its durations worked out. Hours, one decimal. */
@@ -47,7 +49,31 @@ export interface SiteClosureRow extends SiteClosureRecord {
   /** Actual minus the FIRST estimate; positive = took longer than said. */
   hours_over_estimate: number;
   estimate_change_count: number;
+  /** Every estimate change that carried a note, oldest first, one line each. */
+  estimate_notes: string;
   reason_label: string;
+}
+
+interface EstimateChangeLike {
+  at?: unknown;
+  by?: unknown;
+  to?: unknown;
+  note?: unknown;
+}
+
+/** One line per noted change: "Nov 14, 2026, 3:05 PM - pat@x (new estimate Nov 14, 2026, 6:00 PM): parts late". */
+export function estimateNotesText(changes: unknown): string {
+  if (!Array.isArray(changes)) return "";
+  return changes
+    .filter((c): c is EstimateChangeLike => !!c && typeof c === "object")
+    .filter((c) => typeof c.note === "string" && c.note.trim() !== "")
+    .map((c) => {
+      const when = typeof c.at === "string" ? formatEtDateTime(c.at) : "";
+      const by = typeof c.by === "string" ? c.by : "";
+      const to = typeof c.to === "string" ? ` (new estimate ${formatEtDateTime(c.to)})` : "";
+      return `${[when, by].filter(Boolean).join(" - ")}${to}: ${String(c.note).trim()}`;
+    })
+    .join("\n");
 }
 
 const H = 3600000;
@@ -65,6 +91,8 @@ export function toClosureRows(records: ReadonlyArray<SiteClosureRecord>, now: Da
       hours_estimated: round1((est - start) / H),
       hours_over_estimate: round1((end - est) / H),
       estimate_change_count: Array.isArray(r.estimate_changes) ? r.estimate_changes.length : 0,
+      estimate_notes: estimateNotesText(r.estimate_changes),
+      reopen_note: r.reopen_note ?? null,
       reason_label: SITE_CLOSURE_REASON_LABEL[r.reason] ?? r.reason
     };
   });
@@ -91,10 +119,12 @@ export const siteClosuresReport = defineReport<SiteClosureRow>({
     { id: "reopened_at", label: "Reopened", kind: "datetime" },
     { id: "reopened_by", label: "Reopened by", kind: "text", in: ["export"] },
     { id: "reopened_via", label: "Reopened via", kind: "text", in: ["export"] },
+    { id: "reopen_note", label: "Reopen note", kind: "text" },
     { id: "hours_closed", label: "Hours closed", kind: "number" },
     { id: "hours_estimated", label: "Hours estimated", kind: "number" },
     { id: "hours_over_estimate", label: "Over estimate (hrs)", kind: "number" },
     { id: "estimate_change_count", label: "Estimate changes", kind: "number", in: ["export"] },
+    { id: "estimate_notes", label: "Estimate notes", kind: "text" },
     { id: "still_closed", label: "Still closed", kind: "boolean" }
   ]
 });

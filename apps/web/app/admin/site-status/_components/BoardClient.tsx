@@ -169,6 +169,7 @@ function ClosePanel({ board, onDone }: { board: Board; onDone: () => void }) {
 
 function ClosedCard({ s, c, now, reasons }: { s: BoardSite; c: Closure; now: number; reasons: Map<string, string> }) {
   const [mode, setMode] = useState<"" | "open" | "estimate" | "down">("");
+  const [showHistory, setShowHistory] = useState(false);
   const overdue = ms(c.est_reopen_at) < now;
   const changed = c.estimate_changes?.length ?? 0;
   return (
@@ -210,7 +211,11 @@ function ClosedCard({ s, c, now, reasons }: { s: BoardSite; c: Closure; now: num
           <dt className="text-xs text-splash-navy/60">Estimated length</dt>
           <dd className="text-splash-navy">
             {fmtDuration(ms(c.est_reopen_at) - ms(c.closed_at))}
-            {changed > 0 ? <span className="text-xs text-splash-navy/60"> (changed {changed}×)</span> : null}
+            {changed > 0 ? (
+              <button type="button" className="ml-1 text-xs font-semibold text-splash-blue hover:underline" onClick={() => setShowHistory((v) => !v)}>
+                (changed {changed}× {showHistory ? "▴" : "▾"})
+              </button>
+            ) : null}
           </dd>
         </div>
         <div>
@@ -218,6 +223,8 @@ function ClosedCard({ s, c, now, reasons }: { s: BoardSite; c: Closure; now: num
           <dd className={overdue ? "font-bold text-splash-deny" : "text-splash-navy"}>{fmtEt(c.est_reopen_at)}</dd>
         </div>
       </dl>
+
+      {showHistory && changed > 0 ? <EstimateHistory c={c} /> : null}
 
       <DownChips s={s} />
 
@@ -333,6 +340,26 @@ function DownForm({ siteNumber, onDone, suggestions }: { siteNumber: number; onD
 }
 const DEFAULT_SUGGESTIONS = ["Vacuums", "Tunnel / conveyor", "Pay station", "Dryers", "Tire shine", "Express lane", "Credit cards"];
 
+// Every estimate change, oldest first: when, who, old -> new, and the note.
+function EstimateHistory({ c }: { c: Closure }) {
+  return (
+    <ol className="mt-3 space-y-1.5 rounded-splash-sm bg-gray-light/40 p-3 text-sm">
+      <li className="text-xs text-splash-navy/60">First estimate: reopen {fmtEt(c.original_est_reopen_at)}</li>
+      {c.estimate_changes.map((e, i) => (
+        <li key={`${e.at}-${i}`} className="text-splash-navy">
+          <span className="text-xs text-splash-navy/60">
+            {fmtEt(e.at)} · <span className="break-all">{e.by}</span>
+          </span>
+          <div>
+            {fmtEt(e.from)} → <strong>{fmtEt(e.to)}</strong>
+          </div>
+          {e.note ? <div className="whitespace-pre-line text-splash-navy/80">“{e.note}”</div> : null}
+        </li>
+      ))}
+    </ol>
+  );
+}
+
 // ---- open site row ------------------------------------------------------------------------
 
 function OpenRow({ s, reasons }: { s: BoardSite; reasons: Map<string, string> }) {
@@ -354,6 +381,10 @@ function OpenRow({ s, reasons }: { s: BoardSite; reasons: Map<string, string> })
                 Last closed {fmtDate(last.closed_at)} · {reasons.get(last.reason) ?? last.reason}
                 {last.reason_detail ? ` — ${last.reason_detail}` : ""}
                 {last.reopened_at ? ` · ${fmtDuration(ms(last.reopened_at) - ms(last.closed_at))}` : ""}
+                {last.reopened_by ? ` · reopened by ${last.reopened_by}` : ""}
+                {last.reopen_note ? (
+                  <span className="block text-splash-navy/80">Reopen note: “{last.reopen_note}”</span>
+                ) : null}
               </>
             ) : (
               "No closures on record"

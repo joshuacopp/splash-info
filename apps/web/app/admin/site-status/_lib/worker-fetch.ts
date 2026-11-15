@@ -43,6 +43,8 @@ export interface BoardSite {
     reason: string;
     reason_detail: string | null;
     closed_by: string;
+    reopened_by?: string | null;
+    reopen_note?: string | null;
   } | null;
   down_items: DownItem[];
 }

@@ -12,6 +12,7 @@ export function ClosuresTable({ rows }: { rows: SiteClosureRow[] }) {
       def={siteClosuresReport}
       rows={rows}
       cells={{
+        estimate_notes: (r) => (r.estimate_notes ? <span className="whitespace-pre-line text-xs">{r.estimate_notes}</span> : ""),
         still_closed: (r) =>
           r.still_closed ? (
             <span className="rounded-full bg-splash-deny/15 px-2 py-0.5 text-xs font-bold text-splash-deny">Closed</span>
