@@ -212,8 +212,8 @@ function FormsTable({ items }: { items: FormListItem[] }) {
               <td className="px-3 py-2 align-top">
                 {f.status === "published" ? (
                   <div className="flex flex-wrap gap-1">
-                    <CopyLinkButton slug={f.slug} />
-                    <FormQrButton formId={f.id} slug={f.slug} title={f.title} audience={f.audience} />
+                    <CopyLinkButton slug={f.publicKey ?? f.slug} />
+                    <FormQrButton formId={f.id} slug={f.slug} publicKey={f.publicKey} title={f.title} audience={f.audience} />
                   </div>
                 ) : (
                   <span className="text-xs text-splash-navy/40">—</span>

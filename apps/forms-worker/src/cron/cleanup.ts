@@ -35,6 +35,7 @@
 
 import { createServiceClient } from "@splash/db-supabase";
 import type { Env } from "../index.js";
+import { deleteExpiredDrafts, liveDraftPendingIds } from "../drafts/index.js";
 
 const ORPHAN_TTL_HOURS = 24;
 const ASSET_GRACE_MS = 60 * 60 * 1000;        // 1h
@@ -64,8 +65,23 @@ export async function runDailyCleanup(env: Env): Promise<CleanupResult> {
   let assetPagesScanned = 0;
   let pdfPagesScanned = 0;
 
-  // PASS 1 — orphan submission files
+  // PASS 0 (2026-11-15) -- expired "continue later" drafts. Runs first so
+  // their uploads count as orphans below; live drafts' uploads must survive,
+  // because a draft can sit for up to 14 days with no submission row.
+  let draftsDeleted = 0;
   try {
+    draftsDeleted = await deleteExpiredDrafts(env);
+  } catch (e) {
+    errors.push(`expired drafts delete failed: ${String(e)}`);
+  }
+  const liveDrafts = await liveDraftPendingIds(env);
+  if (draftsDeleted > 0) console.log(`[forms.cleanup] expired drafts deleted: ${draftsDeleted}`);
+
+  // PASS 1 — orphan submission files
+  // Skipped outright if the live-draft list couldn't be read: deleting a
+  // saved draft's signature is worse than keeping an orphan another day.
+  if (!liveDrafts) errors.push("live drafts unreadable; orphan submission-file sweep skipped");
+  if (liveDrafts) try {
     const client = createServiceClient(env);
     let cursor: string | undefined;
 
@@ -109,6 +125,7 @@ export async function runDailyCleanup(env: Env): Promise<CleanupResult> {
 
         for (const [pendingId, objects] of idToObjects.entries()) {
           if (knownIds.has(pendingId)) continue;
+          if (liveDrafts.has(pendingId)) continue; // a saved draft's upload
           for (const obj of objects) {
             try {
               await env.FORMS_FILES.delete(obj.key);

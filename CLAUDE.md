@@ -3328,6 +3328,16 @@ URL-based — service bindings don't apply to those.
   going live is then switching test mode off, with no regenerate. Applied in
   `cascadeThroughEmailSteps` (workflow-email-step.ts); approval stages still
   assign their real approvers in test mode (only emails are redirected).
+- **Secret links + "Save and continue later"** (2026-11-15) - `forms.link_key`
+  replaces a LINK-ONLY form's slug in its public URL; while set the slug URL is
+  dead. It is enforced only in `getFormBySlug` (apps/forms-worker/src/db/forms.ts),
+  which every public endpoint uses -- a new public endpoint keyed by slug MUST
+  load the form through it, or the secret link is bypassed. Build public URLs
+  from `FormMeta.publicKey ?? slug`, never `slug`. `forms.email_drafts` turns on
+  server drafts (`src/drafts/`, table `form_drafts`): resume link emailed to a
+  Splash address only, 14 days after last save, deleted on submit, and the
+  browser's localStorage autosave is OFF for that form (shared tablets). The
+  daily orphan-upload sweep must keep skipping live drafts' pending ids.
 - **Form digests** (2026-11-14) - Scheduled summary emails per form, set up
   by admins on the Digests tab of /admin/forms/{id} -- build new digests there,
   not as custom code. Config type + validator: `packages/forms-schema/src/digest.ts`

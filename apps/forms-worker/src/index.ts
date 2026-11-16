@@ -65,9 +65,18 @@ import { impersonationBannerHtml } from "./render/impersonation-banner.js";
 import { canFillForm, getFillRule, resolveFillCaller } from "./fill-audience.js";
 import {
   getFormBySlug,
+  getFormById,
   getCurrentVersion,
   getLocationOptionsFromPricingSimple
 } from "./db/forms.js";
+import type { FormMeta } from "@splash/forms-schema";
+import {
+  handleSaveDraft,
+  getDraftByToken,
+  draftExpiredPage,
+  maskEmail,
+  DRAFT_TOKEN_RE
+} from "./drafts/index.js";
 import { renderShell } from "./render/shell.js";
 import { renderFormBody } from "./render/index.js";
 import { handleSubmit } from "./submit/index.js";
@@ -237,6 +246,20 @@ export interface Env {
 export default {
   async fetch(req: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(req.url);
+
+    // GET /forms/resume/{token} -- an emailed "continue later" link
+    // (2026-11-15, src/drafts/). Must match before /forms/{slug} would, but
+    // that pattern is one segment, so order here is for readability.
+    const resumeMatch = url.pathname.match(/^\/forms\/resume\/([A-Za-z0-9_-]{20,120})$/);
+    if (resumeMatch && resumeMatch[1] && req.method === "GET") {
+      return handleResumeDraft(env, req, url, resumeMatch[1]);
+    }
+
+    // POST /forms/api/drafts/{slug} -- save a "continue later" draft.
+    const draftSaveMatch = url.pathname.match(/^\/forms\/api\/drafts\/([^/]+)$/);
+    if (draftSaveMatch && draftSaveMatch[1] && req.method === "POST") {
+      return handleSaveDraft(env, req, ctx, draftSaveMatch[1]);
+    }
 
     // GET /forms/{slug} — public form render (Brief 90).
     const renderMatch = url.pathname.match(/^\/forms\/([^/]+)$/);
@@ -956,13 +979,42 @@ export default {
   }
 };
 
+/** GET /forms/resume/{token}: the form, with the saved draft put back. */
+async function handleResumeDraft(env: Env, req: Request, url: URL, token: string): Promise<Response> {
+  if (!DRAFT_TOKEN_RE.test(token)) return draftExpiredPage();
+  const draft = await getDraftByToken(env, token);
+  if (!draft) return draftExpiredPage();
+  const form = await getFormById(env, draft.form_id);
+  if (!form || !form.emailDrafts) return draftExpiredPage();
+  return handleFormRender(env, req, url, "", {
+    form,
+    draft: {
+      token,
+      values: draft.values ?? {},
+      emailMasked: maskEmail(draft.email),
+      savedAt: draft.updated_at,
+      pendingSubmissionId: draft.pending_submission_id
+    }
+  });
+}
+
 async function handleFormRender(
   env: Env,
   req: Request,
   url: URL,
-  slug: string
+  slug: string,
+  resume?: {
+    form: FormMeta;
+    draft: {
+      token: string;
+      values: Record<string, unknown>;
+      emailMasked: string;
+      savedAt: string;
+      pendingSubmissionId: string;
+    };
+  }
 ): Promise<Response> {
-  const form = await getFormBySlug(env, slug);
+  const form = resume ? resume.form : await getFormBySlug(env, slug);
   if (!form) return notFoundPage();
   if (form.status !== "published") return notFoundPage();   // draft / archived 404 publicly
   if (!form.currentVersionId) return notFoundPage();         // never published
@@ -1013,7 +1065,7 @@ async function handleFormRender(
     ? await getLocationOptionsFromPricingSimple(env)
     : [];
 
-  const pendingSubmissionId = crypto.randomUUID();
+  const pendingSubmissionId = resume?.draft.pendingSubmissionId ?? crypto.randomUUID();
   const includeTurnstile = form.audience === "public" && !!env.TURNSTILE_SITE_KEY;
 
   const bodyHtml = renderFormBody({
@@ -1022,7 +1074,15 @@ async function handleFormRender(
     locationOptions,
     pendingSubmissionId,
     turnstileSiteKey: includeTurnstile ? env.TURNSTILE_SITE_KEY : undefined,
-    urlParams: url.searchParams
+    urlParams: url.searchParams,
+    serverDraft: resume
+      ? {
+          token: resume.draft.token,
+          values: resume.draft.values,
+          emailMasked: resume.draft.emailMasked,
+          savedAt: resume.draft.savedAt
+        }
+      : undefined
   });
 
   const html = renderShell({
@@ -1038,7 +1098,9 @@ async function handleFormRender(
       "Content-Type": "text/html; charset=utf-8",
       "Cache-Control": "no-store",
       "X-Content-Type-Options": "nosniff",
-      "Referrer-Policy": "same-origin"
+      // A resume URL carries the draft's key: never send it on as a referrer.
+      "Referrer-Policy": resume ? "no-referrer" : "same-origin",
+      ...(resume ? { "X-Robots-Tag": "noindex" } : {})
     }
   });
 }

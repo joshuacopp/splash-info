@@ -50,7 +50,7 @@ import {
   type SubmissionStatus
 } from "../db/admin-submissions.js";
 import { getFormDetail } from "../db/admin-forms.js";
-import { getFormScopeFieldKey } from "../db/forms.js";
+import { getFormScopeFieldKey, getFormById } from "../db/forms.js";
 import {
   generateReportPdf,
   type ReportQuestion,
@@ -1355,12 +1355,12 @@ export async function applyTransition(
       // read keeps the cascade self-contained.
       const formMeta = await fetchFormMetaForCascade(env, formId);
       const runtimeBase = buildRuntimeContext({
-        form: { id: formId, slug: formMeta.slug, title: formMeta.title },
+        form: { id: formId, slug: formMeta.slug, title: formMeta.title, publicKey: formMeta.publicKey },
         submissionId: subId,
         submitterEmail: submission.submitter_email
       });
       const cascade = await cascadeThroughEmailSteps(env, {
-        form: { id: formId, slug: formMeta.slug, title: formMeta.title },
+        form: { id: formId, slug: formMeta.slug, title: formMeta.title, publicKey: formMeta.publicKey },
         // The cascade reads `version.versionNumber` for the Brief 129
         // PDF metadata grid (when attach_pdf fires). Other version
         // fields aren't used by the cascade itself.
@@ -1490,7 +1490,11 @@ interface FormMetaForCascade {
 async function fetchFormMetaForCascade(
   env: Env,
   formId: string
-): Promise<FormMetaForCascade> {
+): Promise<FormMetaForCascade & { publicKey?: string }> {
+  // The full row first, so {form.url} gets a secret link when there is one;
+  // the bare select below is the fallback (and pre-2026-11-15 behaviour).
+  const full = await getFormById(env, formId);
+  if (full) return { slug: full.slug, title: full.title, publicKey: full.publicKey };
   const url = new URL("/rest/v1/forms", env.SUPABASE_URL);
   url.searchParams.set("select", "slug,title");
   url.searchParams.set("id", `eq.${formId}`);

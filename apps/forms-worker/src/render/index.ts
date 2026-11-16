@@ -81,6 +81,35 @@ export interface RenderBodyArgs {
   /** URL search params from the GET; consumed by Hidden fields'
    *  `defaultValueFromUrlParam`. */
   urlParams: URLSearchParams;
+  /** Opened from an emailed "continue later" link: the saved answers to put
+   *  back, and the draft's token so later saves update the same draft. */
+  serverDraft?: { token: string; values: Record<string, unknown>; emailMasked: string; savedAt: string };
+}
+
+/** JSON safe inside a <script> element: nothing can close the tag. */
+function scriptJson(v: unknown): string {
+  return JSON.stringify(v).replace(/</g, "\\u003c").replace(/>/g, "\\u003e").replace(/&/g, "\\u0026");
+}
+
+/** "Save and continue later" (forms.email_drafts). Wired by forms-public.js. */
+function renderSaveLater(args: RenderBodyArgs): string {
+  if (!args.form.emailDrafts) return "";
+  const d = args.serverDraft;
+  const data = d
+    ? `<script type="application/json" id="forms-server-draft">${scriptJson({ values: d.values, emailMasked: d.emailMasked, savedAt: d.savedAt })}</script>`
+    : "";
+  return `<div class="forms-save-later" data-forms-save-later="1" style="margin:20px 0 8px 0;padding:14px;border:1px solid #c9d6e8;border-radius:8px;background:#f5f8fc;">
+    <input type="hidden" name="_draft_token" value="${d ? escapeHtml(d.token) : ""}" />
+    <button type="button" data-save-later-open style="cursor:pointer;padding:9px 14px;border-radius:6px;border:1px solid #1e5fa8;background:#fff;color:#1e5fa8;font-weight:600;font-size:15px;">Save and continue later</button>
+    <div data-save-later-panel hidden style="margin-top:12px;">
+      <label style="display:block;font-size:14px;font-weight:600;margin-bottom:4px;" for="forms-save-later-email">Your Splash email address</label>
+      <input id="forms-save-later-email" type="email" autocomplete="off" inputmode="email" placeholder="name@splashcarwashes.com" style="width:100%;max-width:360px;padding:9px;border:1px solid #c9c9c9;border-radius:6px;font-size:15px;" />
+      <button type="button" data-save-later-send style="cursor:pointer;margin-top:8px;padding:9px 14px;border-radius:6px;border:1px solid #1e5fa8;background:#1e5fa8;color:#fff;font-weight:600;font-size:15px;">Email me a link</button>
+      <p style="margin:8px 0 0 0;font-size:13px;color:#555;">We'll email you a private link that reopens this form with your answers. It works for 14 days after your last save. Splash email addresses only. Don't forward the link: anyone who has it can open your answers.</p>
+    </div>
+    <div data-save-later-status role="status" style="margin-top:8px;font-size:14px;color:#0a2240;"></div>
+  </div>
+  ${data}`;
 }
 
 export function renderFormBody(args: RenderBodyArgs): string {
@@ -97,10 +126,11 @@ export function renderFormBody(args: RenderBodyArgs): string {
     : "";
 
   return `${testBanner}
-<form action="/forms/api/submit/${escapeHtml(args.form.slug)}" method="post" enctype="multipart/form-data" class="forms-body">
+<form action="/forms/api/submit/${escapeHtml(args.form.publicKey ?? args.form.slug)}" method="post" enctype="multipart/form-data" class="forms-body"${args.form.emailDrafts ? ' data-email-drafts="1"' : ""}>
   <input type="hidden" name="pending_submission_id" value="${escapeHtml(args.pendingSubmissionId)}" />
   ${fieldsHtml}
   ${turnstileWidget}
+  ${renderSaveLater(args)}
   <button type="submit" class="submit-btn">Submit</button>
 </form>
 `;

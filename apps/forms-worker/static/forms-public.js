@@ -36,8 +36,16 @@
       wireMultiMax(formEl);
       wireConditionals(formEl);
 
-      maybeRenderResumeBanner(formEl, slug);
-      wireAutosave(formEl, slug);
+      if (formEl.getAttribute("data-email-drafts") === "1") {
+        // "Save and continue later" by email (2026-11-15). The draft lives on
+        // the server, so nothing is kept in this browser: these are shared
+        // site tablets, and the forms using this hold personnel details.
+        clearDraft(slug);
+        wireSaveLater(formEl, slug);
+      } else {
+        maybeRenderResumeBanner(formEl, slug);
+        wireAutosave(formEl, slug);
+      }
       wireSubmitInterception(formEl, slug);
     });
   }
@@ -1646,6 +1654,170 @@
     if (h < 24) return h === 1 ? "1 hr ago" : h + " hr ago";
     var d = Math.round(h / 24);
     return d === 1 ? "1 day ago" : d + " days ago";
+  }
+
+  // ---- "Save and continue later" (server draft + emailed link) ----------
+  // The first save needs a Splash email address and sends the link. After
+  // that every change is saved quietly to the same draft (the token rides in
+  // the hidden _draft_token input), so the link always opens the latest
+  // answers. Opened FROM a link, the saved answers are put back on load.
+  var SERVER_SAVE_DEBOUNCE_MS = 3000;
+
+  function wireSaveLater(formEl, slug) {
+    var box = formEl.querySelector('[data-forms-save-later="1"]');
+    if (!box) return;
+    var tokenEl = box.querySelector('input[name="_draft_token"]');
+    var openBtn = box.querySelector("[data-save-later-open]");
+    var panel = box.querySelector("[data-save-later-panel]");
+    var emailEl = box.querySelector("#forms-save-later-email");
+    var sendBtn = box.querySelector("[data-save-later-send]");
+    var statusEl = box.querySelector("[data-save-later-status]");
+    var busy = false;
+    var timer;
+
+    function say(msg, isError) {
+      statusEl.textContent = msg;
+      statusEl.style.color = isError ? "#8a1c1c" : "#0a2240";
+    }
+    function hasToken() {
+      return !!(tokenEl && tokenEl.value);
+    }
+    function refreshButton() {
+      openBtn.textContent = hasToken() ? "Save now" : "Save and continue later";
+    }
+
+    function save(opts) {
+      if (busy) return Promise.resolve(false);
+      busy = true;
+      var body = {
+        values: serializeForm(formEl),
+        pending_submission_id: currentPendingId(formEl),
+        token: hasToken() ? tokenEl.value : undefined,
+        email: opts.email || undefined,
+        resend: opts.resend === true
+      };
+      return fetch("/forms/api/drafts/" + encodeURIComponent(slug), {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        body: JSON.stringify(body)
+      })
+        .then(function (resp) {
+          return resp.text().then(function (text) {
+            var j = null;
+            try { j = JSON.parse(text); } catch (_) {}
+            busy = false;
+            if (!resp.ok || !j || !j.ok) {
+              var code = (j && j.error) || "";
+              if (code === "draft_not_found") {
+                // Expired or already submitted: start a new draft next time.
+                if (tokenEl) tokenEl.value = "";
+                refreshButton();
+                say("That saved link has expired. Enter your email to save again.", true);
+                if (panel) panel.hidden = false;
+              } else if (!opts.quiet) {
+                say(draftError(code), true);
+              }
+              return false;
+            }
+            if (tokenEl) tokenEl.value = j.token;
+            refreshButton();
+            if (panel) panel.hidden = true;
+            var when = new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+            if (j.emailed) {
+              say("Saved. We emailed a link to " + j.email_masked + " - use it to pick up where you left off. It works for 14 days after your last save.");
+            } else {
+              say("Saved at " + when + ". The link we emailed to " + j.email_masked + " opens these answers.");
+            }
+            return true;
+          });
+        })
+        .catch(function () {
+          busy = false;
+          if (!opts.quiet) say("Couldn't save - check your connection and try again.", true);
+          return false;
+        });
+    }
+
+    openBtn.addEventListener("click", function () {
+      if (hasToken()) {
+        save({});
+        return;
+      }
+      panel.hidden = !panel.hidden;
+      if (!panel.hidden && emailEl) emailEl.focus();
+    });
+    function send() {
+      var email = (emailEl.value || "").trim();
+      if (!/^[^@\s]+@splashcarwashes\.com$/i.test(email)) {
+        say("Enter your Splash email address (it must end in @splashcarwashes.com).", true);
+        return;
+      }
+      save({ email: email });
+    }
+    sendBtn.addEventListener("click", send);
+    emailEl.addEventListener("keydown", function (e) {
+      // Enter here must send the link, not submit the whole form.
+      if (e.key === "Enter") { e.preventDefault(); send(); }
+    });
+
+    // Once a draft exists, keep it current without being asked.
+    function schedule(e) {
+      if (!hasToken()) return;
+      if (e && e.target && box.contains(e.target)) return;
+      clearTimeout(timer);
+      timer = setTimeout(function () { save({ quiet: true }); }, SERVER_SAVE_DEBOUNCE_MS);
+    }
+    formEl.addEventListener("input", schedule);
+    formEl.addEventListener("change", schedule);
+
+    // Opened from the emailed link: put the saved answers back.
+    var dataEl = document.getElementById("forms-server-draft");
+    if (dataEl) {
+      var data = null;
+      try { data = JSON.parse(dataEl.textContent || "null"); } catch (_) {}
+      if (data && data.values) {
+        restoreForm(formEl, data.values);
+        clearTimeout(timer); // restoring fires change events; nothing new to save
+        markRestoredUploads(formEl);
+        var saved = data.savedAt ? new Date(data.savedAt) : null;
+        say(
+          "Welcome back - your saved answers" +
+            (saved ? " from " + saved.toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) : "") +
+            " are filled in. Changes now save automatically."
+        );
+      }
+    }
+    refreshButton();
+  }
+
+  function draftError(code) {
+    var map = {
+      email_not_allowed: "Use your Splash email address (it must end in @splashcarwashes.com).",
+      email_required: "Enter your Splash email address.",
+      too_many_drafts: "Too many saved drafts for that address in the last hour. Try again later.",
+      draft_too_large: "This form is too large to save. Please submit it instead.",
+      drafts_not_available: "Saving isn't available for this form.",
+      form_not_found: "This form is no longer available.",
+      session_expired: "Your login expired. Sign in again in a new tab, then save."
+    };
+    return map[String(code).split(":")[0]] || "Couldn't save. Please try again.";
+  }
+
+  // A restored draft brings back the uploaded file / signature's storage key
+  // but not its picture: say so, so nobody thinks it was lost.
+  function markRestoredUploads(formEl) {
+    var wraps = formEl.querySelectorAll('[data-field-type="signature"], [data-field-type="file"]');
+    Array.prototype.forEach.call(wraps, function (wrap) {
+      var hidden = wrap.querySelector('input[type="hidden"]');
+      if (!hidden || !hidden.value) return;
+      var isSig = wrap.getAttribute("data-field-type") === "signature";
+      showStatus(
+        wrap,
+        isSig
+          ? "Signed earlier - your saved signature will be used. Sign again to replace it."
+          : "File uploaded earlier - it will be included. Choose a new file to replace it."
+      );
+    });
   }
 
   function wireSubmitInterception(formEl, slug) {

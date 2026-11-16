@@ -75,3 +75,4 @@ apps/maintenance-tracker/logs/
 # This rule was added once before and lost, because it was left uncommitted --
 # an ignore rule that lives only in a working tree protects nothing.
 supabase/locations-gm-columns-01.sql
+scripts/.termination-boxes.json

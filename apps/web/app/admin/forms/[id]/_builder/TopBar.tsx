@@ -9,6 +9,8 @@ type PublishState = "idle" | "publishing" | "done" | "error";
 interface Props {
   formId: string;
   formMeta: FormMetaState;
+  /** Secret link key, when the form has one. */
+  publicKey?: string;
   status: "draft" | "published" | "archived";
   currentVersionNumber: number | null;
   dirty: boolean;
@@ -23,6 +25,7 @@ interface Props {
 export default function TopBar({
   formId,
   formMeta,
+  publicKey,
   status,
   currentVersionNumber,
   dirty,
@@ -88,6 +91,7 @@ export default function TopBar({
           <FormQrButton
             formId={formId}
             slug={formMeta.slug}
+            publicKey={publicKey}
             title={formMeta.title}
             audience={formMeta.audience}
             size="md"

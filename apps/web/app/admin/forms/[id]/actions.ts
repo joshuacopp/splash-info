@@ -19,6 +19,7 @@ import {
   setFormCrdVisibleAdmin,
   setFormFillAudienceAdmin,
   updateFormSettingsAdmin,
+  updateFormLinkSettingsAdmin,
   type FormSettingsBody,
   updateDraftAdmin,
   type PublishResponse,
@@ -165,6 +166,17 @@ export async function setFillAudienceAction(
 
 /** Settings tab "Save settings" -- writes the forms row; takes effect at once
  *  (no republish). */
+export async function saveLinkSettingsAction(
+  formId: string,
+  body: { secret_link?: "on" | "rotate" | "off"; email_drafts?: boolean }
+): Promise<{ ok: true; link_key?: string | null } | { ok: false; error: string }> {
+  try {
+    return await updateFormLinkSettingsAdmin(formId, body);
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
 export async function saveFormSettingsAction(
   formId: string,
   body: FormSettingsBody

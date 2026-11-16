@@ -653,6 +653,12 @@ export interface FormMeta {
    *  workflow emails all go to one test address. Optional; only the public
    *  render path fills it, to show a banner. */
   testMode?: boolean;
+  /** 2026-11-15 -- what goes in this form's public URL: forms.link_key when a
+   *  link-only form has a secret link, else the slug. Only the public path
+   *  (getFormBySlug / getPublicFormById) fills it; use `publicKey ?? slug`. */
+  publicKey?: string;
+  /** 2026-11-15 -- forms.email_drafts: "Save and continue later" by email. */
+  emailDrafts?: boolean;
 }
 
 // Submission payload is keyed by field.key. Per-field value shape varies

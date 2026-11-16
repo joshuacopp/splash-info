@@ -151,7 +151,7 @@ export interface CascadeResult {
 export async function cascadeThroughEmailSteps(
   env: Env,
   ctx: {
-    form: Pick<FormMeta, "id" | "slug" | "title">;
+    form: Pick<FormMeta, "id" | "slug" | "title" | "publicKey">;
     version: Pick<FormVersion, "id" | "versionNumber">;
     schema: FormSchema;
     payload: SubmissionPayload;
@@ -1480,7 +1480,7 @@ function formatScalar(v: unknown): string {
  * email's local-part — better than empty but not name-quality.
  */
 export function buildRuntimeContext(args: {
-  form: { id: string; slug: string; title: string };
+  form: { id: string; slug: string; title: string; publicKey?: string };
   submissionId: string;
   submitterEmail: string | null;
 }): RuntimeContext {
@@ -1489,7 +1489,8 @@ export function buildRuntimeContext(args: {
     : null;
   return {
     formTitle: args.form.title,
-    formSlug: args.form.slug,
+    // {form.url} must use the secret link when the form has one.
+    formSlug: args.form.publicKey ?? args.form.slug,
     submissionId: args.submissionId,
     formId: args.form.id,
     submitterEmail: args.submitterEmail,

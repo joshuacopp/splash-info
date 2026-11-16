@@ -18,6 +18,7 @@ import { saveFormSettingsAction } from "../actions";
 import AccessTagCard from "./AccessTagCard";
 import CrdVisibleCard from "./CrdVisibleCard";
 import FillAudienceCard from "./FillAudienceCard";
+import SecretLinkCard from "./SecretLinkCard";
 
 interface Props {
   formMeta: FormMetaState;
@@ -32,6 +33,12 @@ interface Props {
   testEmailTo: string | null;
   /** Default test address: the admin's own email. */
   myEmail: string | null;
+  slug: string;
+  /** forms.link_key; null = reached by slug. */
+  linkKey: string | null;
+  onLinkKeyChange: (key: string | null) => void;
+  /** forms.email_drafts. */
+  emailDrafts: boolean;
 }
 
 const CONFIDENTIAL = "none:confidential";
@@ -45,7 +52,11 @@ export default function SettingsTab({
   fillAudience,
   scopeLocationFieldKey,
   testEmailTo,
-  myEmail
+  myEmail,
+  slug,
+  linkKey,
+  onLinkKeyChange,
+  emailDrafts
 }: Props) {
   const [confidential, setConfidential] = useState(scopeLocationFieldKey === CONFIDENTIAL);
   const [testOn, setTestOn] = useState(!!testEmailTo);
@@ -230,6 +241,15 @@ export default function SettingsTab({
         ) : null}
       </div>
       </section>
+
+      <SecretLinkCard
+        formId={formId}
+        slug={slug}
+        audience={formMeta.audience}
+        linkKey={linkKey}
+        onLinkKeyChange={onLinkKeyChange}
+        initialEmailDrafts={emailDrafts}
+      />
 
       <AccessTagCard formId={formId} initialTag={accessTag} />
 

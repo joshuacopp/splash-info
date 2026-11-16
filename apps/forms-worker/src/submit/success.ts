@@ -27,7 +27,7 @@ import { escapeHtml } from "../render/util.js";
 export function renderSuccessPage(form: FormMeta, bannerHtml = ""): Response {
   const successMessage =
     form.successMessage ?? "Thank you for your submission.";
-  const slug = form.slug;
+  const slug = form.publicKey ?? form.slug;
   const isInternal = form.audience === "internal";
 
   const dashboardBtn = isInternal

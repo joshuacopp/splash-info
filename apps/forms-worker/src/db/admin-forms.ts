@@ -69,6 +69,9 @@ export interface FormListItem {
   submissionCount: number;
   lastEditedAt: string;
   createdAt: string;
+  /** What goes in the public URL: forms.link_key for a link-only form with a
+   *  secret link, else the slug (2026-11-15). */
+  publicKey: string;
 }
 
 interface FormListRow {
@@ -206,8 +209,10 @@ export async function listForms(
     }
   }
 
+  const links = await getLinkSettings(env);
   return rows.map((r) => {
     const verEntry = r.versions?.[0];
+    const key = r.audience === "link-only" ? links?.get(r.id)?.linkKey ?? null : null;
     const subEntry = r.submissions?.[0];
     return {
       id: r.id,
@@ -221,7 +226,8 @@ export async function listForms(
         ? publishedAtById.get(r.current_version_id) ?? null
         : null,
       lastEditedAt: r.last_edited_at,
-      createdAt: r.created_at
+      createdAt: r.created_at,
+      publicKey: key ?? r.slug
     };
   });
 }
@@ -344,6 +350,31 @@ export interface FormSettingsPatch {
   success_message?: string | null;
   scope_location_field_key?: string | null;
   test_email_to?: string | null;
+  link_key?: string | null;
+  email_drafts?: boolean;
+}
+
+/**
+ * forms.link_key / forms.email_drafts (2026-11-15), read on their own so the
+ * admin list and detail keep working if the SQL that adds them hasn't been
+ * applied yet (a missing column 400s the whole select). Null = unreadable.
+ */
+export async function getLinkSettings(
+  env: SupabaseEnv,
+  formIds?: string[]
+): Promise<Map<string, { linkKey: string | null; emailDrafts: boolean; audience: string }> | null> {
+  const url = new URL("/rest/v1/forms", env.SUPABASE_URL);
+  url.searchParams.set("select", "id,audience,link_key,email_drafts");
+  if (formIds) url.searchParams.set("id", `in.(${formIds.join(",")})`);
+  else url.searchParams.set("or", "(link_key.not.is.null,email_drafts.is.true)");
+  try {
+    const r = await fetch(url.toString(), { headers: headers(env) });
+    if (!r.ok) return null;
+    const rows = (await r.json()) as Array<{ id: string; audience: string; link_key: string | null; email_drafts: boolean | null }>;
+    return new Map(rows.map((x) => [x.id, { linkKey: x.link_key, emailDrafts: x.email_drafts === true, audience: x.audience }]));
+  } catch {
+    return null;
+  }
 }
 
 export async function updateFormSettings(
@@ -586,6 +617,10 @@ export interface FormDetailResult {
   scopeLocationFieldKey: string | null;
   /** `forms.test_email_to`: test mode -- every workflow email goes only here. Null = live. */
   testEmailTo: string | null;
+  /** `forms.link_key` (2026-11-15): the secret link, or null = the slug URL. */
+  linkKey: string | null;
+  /** `forms.email_drafts`: "Save and continue later" by email. */
+  emailDrafts: boolean;
 }
 
 interface FormDetailRow {
@@ -681,8 +716,11 @@ export async function getFormDetail(
       ? (draftRow.schema as FormSchema)
       : { fields: [] };
 
+  const link = (await getLinkSettings(env, [formRow.id]))?.get(formRow.id);
   return {
     form: rowToFormMeta(formRow),
+    linkKey: link?.linkKey ?? null,
+    emailDrafts: link?.emailDrafts ?? false,
     draftSchema,
     accessTag: formRow.access_tag ?? null,
     crdVisible: formRow.crd_visible === true,

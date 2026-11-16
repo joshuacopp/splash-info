@@ -33,6 +33,17 @@ interface FormRow {
   success_message: string | null;
   turnstile_required: boolean;
   test_email_to?: string | null;
+  link_key?: string | null;
+  email_drafts?: boolean | null;
+}
+
+const FORM_SELECT =
+  "id,slug,title,description,audience,status,current_version_id,draft_version_id,notify_webhook,success_message,turnstile_required,test_email_to,link_key,email_drafts";
+
+/** The secret link applies to link-only forms only. A form that was given a
+ *  key and later switched to internal / public goes back to its slug. */
+function activeLinkKey(row: FormRow): string | null {
+  return row.audience === "link-only" && row.link_key ? row.link_key : null;
 }
 
 function rowToFormMeta(row: FormRow): FormMeta {
@@ -48,23 +59,28 @@ function rowToFormMeta(row: FormRow): FormMeta {
     notifyWebhook: row.notify_webhook,
     successMessage: row.success_message,
     testMode: !!row.test_email_to,
-    turnstileRequired: row.turnstile_required
+    turnstileRequired: row.turnstile_required,
+    publicKey: activeLinkKey(row) ?? row.slug,
+    emailDrafts: row.email_drafts === true
   };
 }
 
 /**
- * Look up a form by slug. Returns null when the row doesn't exist OR the
- * PostgREST call fails — render handler decides what to do (it 404s on
- * either case).
+ * Look up a form by what is in its PUBLIC URL: the slug, or -- for a link-only
+ * form with a secret link -- forms.link_key. Every public endpoint (render,
+ * submit, uploads, lookups, employee search) goes through here, so this is the
+ * one place the secret link is enforced: while a key is set, the slug no
+ * longer finds the form. Returns null when nothing matches OR the PostgREST
+ * call fails (callers 404 on either).
  */
-export async function getFormBySlug(env: SupabaseEnv, slug: string): Promise<FormMeta | null> {
+export async function getFormBySlug(env: SupabaseEnv, slugOrKey: string): Promise<FormMeta | null> {
+  // Slugs are [a-z0-9-] and keys base64url, but this value comes straight from
+  // the URL: refuse anything else rather than splice it into or=(...).
+  if (!/^[A-Za-z0-9_-]{1,120}$/.test(slugOrKey)) return null;
   const url = new URL("/rest/v1/forms", env.SUPABASE_URL);
-  url.searchParams.set("slug", `eq.${slug}`);
-  url.searchParams.set(
-    "select",
-    "id,slug,title,description,audience,status,current_version_id,draft_version_id,notify_webhook,success_message,turnstile_required,test_email_to"
-  );
-  url.searchParams.set("limit", "1");
+  url.searchParams.set("or", `(slug.eq.${slugOrKey},link_key.eq.${slugOrKey})`);
+  url.searchParams.set("select", FORM_SELECT);
+  url.searchParams.set("limit", "2");
 
   let response: Response;
   try {
@@ -73,14 +89,48 @@ export async function getFormBySlug(env: SupabaseEnv, slug: string): Promise<For
     console.error("[forms] getFormBySlug: fetch threw", err);
     return null;
   }
+  if (response.status === 400) {
+    // The 2026-11-15 columns aren't there yet (SQL not applied): fall back to
+    // the slug-only lookup so a code deploy ahead of the SQL can't take every
+    // form down. Logged loudly so it gets noticed.
+    console.error("[forms] getFormBySlug: link_key/email_drafts missing? apply supabase/forms-secret-links-and-drafts-01.sql");
+    const legacy = new URL("/rest/v1/forms", env.SUPABASE_URL);
+    legacy.searchParams.set("slug", `eq.${slugOrKey}`);
+    legacy.searchParams.set("select", FORM_SELECT.replace(",link_key,email_drafts", ""));
+    legacy.searchParams.set("limit", "1");
+    try {
+      response = await fetch(legacy.toString(), { headers: headers(env) });
+    } catch {
+      return null;
+    }
+  }
   if (!response.ok) {
     console.error("[forms] getFormBySlug: returned", response.status);
     return null;
   }
   const rows = (await response.json().catch(() => [])) as FormRow[];
-  const row = rows[0];
-  if (!row) return null;
-  return rowToFormMeta(row);
+  const byKey = rows.find((r) => activeLinkKey(r) === slugOrKey);
+  if (byKey) return rowToFormMeta(byKey);
+  const bySlug = rows.find((r) => r.slug === slugOrKey);
+  // A secret link is on: the slug alone must not open the form.
+  if (!bySlug || activeLinkKey(bySlug)) return null;
+  return rowToFormMeta(bySlug);
+}
+
+/** By id, for the emailed resume link (which outlives a "Change link"). */
+export async function getFormById(env: SupabaseEnv, formId: string): Promise<FormMeta | null> {
+  const url = new URL("/rest/v1/forms", env.SUPABASE_URL);
+  url.searchParams.set("id", `eq.${formId}`);
+  url.searchParams.set("select", FORM_SELECT);
+  url.searchParams.set("limit", "1");
+  try {
+    const r = await fetch(url.toString(), { headers: headers(env) });
+    if (!r.ok) return null;
+    const row = ((await r.json().catch(() => [])) as FormRow[])[0];
+    return row ? rowToFormMeta(row) : null;
+  } catch {
+    return null;
+  }
 }
 
 interface VersionRow {

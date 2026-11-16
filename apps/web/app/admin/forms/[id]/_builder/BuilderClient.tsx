@@ -95,6 +95,9 @@ export default function BuilderClient({
     "idle" | "publishing" | "done" | "error"
   >("idle");
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  // Secret link key (2026-11-15). Lives here so the TopBar's QR button follows
+  // a "Change link" made on the Settings tab without a reload.
+  const [linkKey, setLinkKey] = useState<string | null>(initial.linkKey ?? null);
   // Phone layout (see MobileSheet.tsx): the palette and the field settings
   // are bottom sheets instead of side columns.
   const wide = useIsWide();
@@ -263,6 +266,7 @@ export default function BuilderClient({
       <TopBar
         formId={formId}
         formMeta={state.formMeta}
+        publicKey={state.formMeta.audience === "link-only" && linkKey ? linkKey : undefined}
         status={initial.form.status}
         currentVersionNumber={initial.currentVersionNumber}
         dirty={state.dirty}
@@ -440,6 +444,10 @@ export default function BuilderClient({
           scopeLocationFieldKey={initial.scopeLocationFieldKey ?? null}
           testEmailTo={initial.testEmailTo ?? null}
           myEmail={myEmail ?? null}
+          slug={state.formMeta.slug}
+          linkKey={linkKey}
+          onLinkKeyChange={setLinkKey}
+          emailDrafts={initial.emailDrafts === true}
         />
       )}
     </div>

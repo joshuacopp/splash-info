@@ -19,6 +19,8 @@ import ShareByEmail from "./ShareByEmail";
 interface Props {
   formId: string;
   slug: string;
+  /** Secret link key when the form has one (it replaces the slug in the URL). */
+  publicKey?: string;
   title: string;
   audience: string;
   /** "sm" matches the Copy link pill on the list; "md" matches the builder's buttons. */
@@ -70,13 +72,13 @@ function escapeHtml(s: string): string {
     .replace(/'/g, "&#39;");
 }
 
-export default function FormQrButton({ formId, slug, title, audience, size = "sm" }: Props) {
+export default function FormQrButton({ formId, slug, publicKey, title, audience, size = "sm" }: Props) {
   const [open, setOpen] = useState(false);
   const [url, setUrl] = useState("");
 
   useEffect(() => {
-    if (open) setUrl(`${window.location.origin}/forms/${slug}`);
-  }, [open, slug]);
+    if (open) setUrl(`${window.location.origin}/forms/${publicKey ?? slug}`);
+  }, [open, slug, publicKey]);
 
   useEffect(() => {
     if (!open) return;

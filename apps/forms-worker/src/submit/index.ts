@@ -50,6 +50,7 @@ import {
   type SubmissionRow
 } from "../db/forms.js";
 import { parseSubmitFormData } from "./parse.js";
+import { deleteDraftsForSubmission } from "../drafts/index.js";
 import { resolvePriceGrids } from "./price-grids.js";
 import { resolveEmployees } from "../lookup/employees.js";
 import { verifyTurnstile } from "./turnstile.js";
@@ -505,7 +506,7 @@ export async function handleSubmit(
       if (isEmailStage(defaultStage)) {
         try {
           const runtimeBase = buildRuntimeContext({
-            form: { id: form.id, slug: form.slug, title: form.title },
+            form: { id: form.id, slug: form.slug, title: form.title, publicKey: form.publicKey },
             submissionId: pendingSubmissionId,
             submitterEmail
           });
@@ -576,6 +577,11 @@ export async function handleSubmit(
   if (!inserted.wasNew) {
     console.log("[forms] handleSubmit: idempotent re-submit", inserted.row.id);
   }
+
+  // A saved "continue later" draft of this submission is finished: its
+  // emailed link must stop working (drafts share the pending id, which is
+  // the submission id). Best-effort -- an expired draft is swept daily anyway.
+  if (form.emailDrafts) ctx.waitUntil(deleteDraftsForSubmission(env, form.id, inserted.row.id));
 
   // -----------------------------------------------------------------
   // Brief 92 — record file/signature uploads in form_submission_files.

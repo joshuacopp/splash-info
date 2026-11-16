@@ -158,6 +158,9 @@ export interface FormListItem {
   submissionCount: number;
   lastEditedAt: string;
   createdAt: string;
+  /** What goes in the public URL: the secret link key, else the slug
+   *  (2026-11-15). Optional so an older worker still parses. */
+  publicKey?: string;
 }
 
 export interface FormListResponse {
@@ -194,6 +197,10 @@ export interface FormDetail {
   /** `forms.test_email_to`: test mode address, null = live. Optional so an
    *  older worker still parses. */
   testEmailTo?: string | null;
+  /** `forms.link_key`: the secret link, null = /forms/{slug} (2026-11-15). */
+  linkKey?: string | null;
+  /** `forms.email_drafts`: "Save and continue later" by email. */
+  emailDrafts?: boolean;
 }
 
 export interface CreateFormArgs {
@@ -603,6 +610,20 @@ export async function updateFormSettingsAdmin(
   });
   if (resp.ok) return { ok: true };
   const j = (await resp.json().catch(() => ({}))) as { message?: string; error?: string };
+  return { ok: false, error: j.message ?? j.error ?? `Save failed (${resp.status})` };
+}
+
+/** Secret link on / change / off, and "Save and continue later" (2026-11-15). */
+export async function updateFormLinkSettingsAdmin(
+  formId: string,
+  body: { secret_link?: "on" | "rotate" | "off"; email_drafts?: boolean }
+): Promise<{ ok: true; link_key?: string | null } | { ok: false; error: string }> {
+  const resp = await callForms(`/forms/admin/api/forms/${encodeURIComponent(formId)}/settings`, {
+    method: "PATCH",
+    jsonBody: body
+  });
+  const j = (await resp.json().catch(() => ({}))) as { message?: string; error?: string; link_key?: string | null };
+  if (resp.ok) return { ok: true, ...("link_key" in j ? { link_key: j.link_key ?? null } : {}) };
   return { ok: false, error: j.message ?? j.error ?? `Save failed (${resp.status})` };
 }
 

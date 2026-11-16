@@ -51,6 +51,7 @@ import {
   setFormCrdVisible,
   setFormFillAudience,
   updateFormSettings,
+  getLinkSettings,
   type FormSettingsPatch,
   listAccessTags,
   ACCESS_TAG_RE,
@@ -688,6 +689,15 @@ export async function handleListAccessTags(
 
 const CONFIDENTIAL_SCOPE = "none:confidential";
 
+/** 24 URL-safe characters (144 random bits): unguessable, short enough to type off a QR. */
+function newLinkKey(): string {
+  const bytes = new Uint8Array(18);
+  crypto.getRandomValues(bytes);
+  let s = "";
+  for (const b of bytes) s += String.fromCharCode(b);
+  return btoa(s).replace(/[+]/g, "-").replace(/[/]/g, "_").replace(/=+$/, "");
+}
+
 export async function handleUpdateSettings(env: Env, req: Request, formId: string): Promise<Response> {
   const sk = requireServiceKey(env);
   if (sk) return sk;
@@ -740,6 +750,24 @@ export async function handleUpdateSettings(env: Env, req: Request, formId: strin
     if (e && !isValidEmail(e)) return bad("test_email_to", "Enter a valid email address for test mode.");
     patch.test_email_to = e ? e.toLowerCase() : null;
   }
+  // Secret link (2026-11-15): "on" gives a link-only form a random key that
+  // replaces its slug in the URL (only if it has none yet); "rotate" replaces
+  // the key, killing every old link and QR code; "off" goes back to the slug.
+  if ("secret_link" in body) {
+    const v = body.secret_link;
+    if (v !== "on" && v !== "rotate" && v !== "off") return bad("secret_link", "Unknown secret link action.");
+    if (v === "off") patch.link_key = null;
+    else {
+      const audience = patch.audience ?? (await getLinkSettings(env, [formId]))?.get(formId)?.audience;
+      if (audience !== "link-only") return bad("secret_link", "Only link-only forms can have a secret link.");
+      const existing = (await getLinkSettings(env, [formId]))?.get(formId)?.linkKey ?? null;
+      if (v === "rotate" || !existing) patch.link_key = newLinkKey();
+    }
+  }
+  if ("email_drafts" in body) {
+    if (typeof body.email_drafts !== "boolean") return bad("email_drafts", "Must be on or off.");
+    patch.email_drafts = body.email_drafts;
+  }
   if ("confidential" in body) {
     if (typeof body.confidential !== "boolean") return bad("confidential", "Must be on or off.");
     const current = await getFormScopeFieldKey(env, formId);
@@ -749,7 +777,7 @@ export async function handleUpdateSettings(env: Env, req: Request, formId: strin
   try {
     await updateFormSettings(env, formId, patch);
     console.log(`[forms.admin] settings form=${formId} keys=${Object.keys(patch).join(",")} by=${gate.session.email}`);
-    return new Response(JSON.stringify({ ok: true }), {
+    return new Response(JSON.stringify({ ok: true, ...("link_key" in patch ? { link_key: patch.link_key } : {}) }), {
       status: 200,
       headers: { "Content-Type": "application/json" }
     });

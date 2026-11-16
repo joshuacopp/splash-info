@@ -24,6 +24,7 @@
 
 import { isOriginAllowed, jsonError } from "@splash/http";
 import { enqueueOutboundEmail } from "@splash/db-supabase";
+import { getFormById } from "../db/forms.js";
 import { wrapInEmailShell, escapeHtml, escapeAttr } from "@splash/email-shell";
 import { isValidEmail } from "@splash/types/email-validate";
 import { adminGate, adminGateResponse, requireServiceKey } from "./auth.js";
@@ -96,7 +97,9 @@ export async function handleShareFormEmail(
   if (!form) return jsonError(404, "form_not_found");
   if (form.status !== "published") return jsonError(409, "form_not_published");
 
-  const formUrl = `${base}/forms/${encodeURIComponent(form.slug)}`;
+  // Secret link (forms.link_key) when the form has one -- the slug URL is dead then.
+  const pub = await getFormById(env, formId);
+  const formUrl = `${base}/forms/${encodeURIComponent(pub?.publicKey ?? form.slug)}`;
   const title = form.title?.trim() || form.slug;
   const sender = session.email ?? "";
   const rendered = renderShareEmail({ title, formUrl, sender, message });
