@@ -97,7 +97,8 @@ push({
   key: "complaint",
   type: "long_text",
   label: "What happened?",
-  helpText: "Describe the concern: what happened, when, where, and who was involved or saw it.",
+  helpText:
+    "Please include all relevant information: what happened, where it happened, and who was involved or saw it. List the date and time of each occurrence, as best you remember. If it has happened more than once, describe each time.",
   required: true,
   maxLength: 5000,
   rows: 8,
