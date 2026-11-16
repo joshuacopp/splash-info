@@ -321,6 +321,9 @@ const workflowStageSchema = z.object({
   attach_warning_notice: z.boolean().optional(),
   attach_files: z.boolean().optional(),
   attach_documents: z.array(z.string().uuid()).max(10).optional(),
+  send_if: z
+    .object({ field_key: z.string().min(1), equals: z.array(z.string()).min(1) })
+    .optional(),
   approval_link_label: z.string().max(60).optional(),
   page_intro: z.string().max(1000).optional(),
   show_fields: z.array(z.string()).optional(),
@@ -391,6 +394,9 @@ const workflowStageSchemaDraft = z.object({
   attach_warning_notice: z.boolean().optional(),
   attach_files: z.boolean().optional(),
   attach_documents: z.array(z.string().uuid()).max(10).optional(),
+  send_if: z
+    .object({ field_key: z.string().min(1), equals: z.array(z.string()).min(1) })
+    .optional(),
   approval_link_label: z.string().max(60).optional(),
   page_intro: z.string().max(1000).optional(),
   show_fields: z.array(z.string()).optional(),
@@ -559,6 +565,13 @@ export const formSchemaSchema = z
           stage.transitions.length === 1 &&
           (stage.recipients?.length ?? 0) > 0);
       if (isEmailStage) {
+        if (stage.send_if && !data.fields.some((f) => f.key === stage.send_if!.field_key)) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["workflow", "stages", i, "send_if", "field_key"],
+            message: `Email step "${stage.id}" sends only if "${stage.send_if.field_key}" matches, but that is not a field on this form`
+          });
+        }
         if (!stage.recipients || stage.recipients.length === 0) {
           ctx.addIssue({
             code: z.ZodIssueCode.custom,

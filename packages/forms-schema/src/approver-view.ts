@@ -23,14 +23,22 @@ export function isFieldVisible(
   field: Field,
   payload: Record<string, unknown>
 ): boolean {
-  const vis = field.visible_if;
-  if (!vis) return true;
-  const raw = payload[vis.field_key];
+  return field.visible_if ? answerMatches(field.visible_if, payload) : true;
+}
+
+/** Does the answer to `cond.field_key` equal one of `cond.equals` (for a
+ *  checkbox list: is one of them ticked)? Shared by a field's visible_if and an
+ *  email step's send_if so the two can never match differently. */
+export function answerMatches(
+  cond: { field_key: string; equals: string[] },
+  payload: Record<string, unknown>
+): boolean {
+  const raw = payload[cond.field_key];
   if (raw == null) return false;
   if (Array.isArray(raw)) {
-    return raw.some((v) => typeof v === "string" && vis.equals.includes(v));
+    return raw.some((v) => typeof v === "string" && cond.equals.includes(v));
   }
-  return typeof raw === "string" && vis.equals.includes(raw);
+  return typeof raw === "string" && cond.equals.includes(raw);
 }
 
 /**

@@ -36,6 +36,7 @@ import type {
   WorkflowStage
 } from "@splash/forms-schema";
 import {
+  answerMatches,
   flaggedFieldKeys,
   formatEmployeeValue,
   formatPriceGridValue,
@@ -253,6 +254,31 @@ export async function cascadeThroughEmailSteps(
     // enqueue one row per recipient, append the history entry, then
     // advance.
     const nextStageId = stage.transitions[0]?.to ?? "";
+
+    // send_if not met: skip this email, record why, move on.
+    if (stage.send_if && !answerMatches(stage.send_if, ctx.payload as Record<string, unknown>)) {
+      appended.push({
+        from: previousStageId ?? stage.id,
+        to: nextStageId,
+        actor_email: "system@forms",
+        actor_session_role: null,
+        note: "Email step skipped: not requested on this submission",
+        signature_r2_key: null,
+        typed_name: null,
+        at: new Date().toISOString()
+      });
+      if (!nextStageId) {
+        return {
+          workflow_stage: stage.id,
+          appended_history: appended,
+          enqueued_email_ids: enqueuedEmailIds,
+          current_approver_emails: []
+        };
+      }
+      previousStageId = stage.id;
+      currentStageId = nextStageId;
+      continue;
+    }
     const nextStage = workflow.stages.find((s) => s.id === nextStageId);
     const outcomeForRender: OutcomeContext =
       nextStage && stageIsOutcomeKind(nextStage)

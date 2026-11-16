@@ -24,5 +24,5 @@ export * from "./package-price.js";
 export * from "./employee.js";
 export * from "./digest.js";
 export * from "./pdf-template.js";
-export { approverFields } from "./approver-view.js";
+export { approverFields, answerMatches } from "./approver-view.js";
 export * from "./validators/index.js";

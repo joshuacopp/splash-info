@@ -544,6 +544,12 @@ export interface WorkflowStage {
   // public.form_pdf_templates, made on the builder's Documents tab). Built
   // fresh at this step, so they carry every signature captured so far.
   attach_documents?: string[];
+  // 2026-11-16 -- email steps only: send this email only when a field's
+  // answer matches (same shape and matching as a field's visible_if -- for a
+  // checkbox list, "matches" means one of `equals` is ticked). Not met = the
+  // step is skipped (history says so) and the workflow moves on. Used for the
+  // termination checklist's "request X" items, each emailing its own owner.
+  send_if?: FieldVisibility;
   // 2026-11-13 -- button text for `{approval.link}` in this email step when
   // the next stage is not an approve/deny decision (e.g. "Open for employee
   // signature"). Default "Review & Approve or Deny".

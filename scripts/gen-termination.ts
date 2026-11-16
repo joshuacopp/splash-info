@@ -234,24 +234,60 @@ const REPORT_WORKFLOW: FormWorkflow = {
 // 2. Employment Termination Checklist (the site GM)
 // ---------------------------------------------------------------------------------------
 
-// Paper order and wording (lightly tidied: "electrically" -> "electronically").
+// Paper order, with the operator's 2026-11-16 rewording: things a site GM
+// cannot do themselves (email, Divvy, iSolved, Spot AI) are REQUESTS, and each
+// ticked request emails its owner when the checklist is submitted (REQUESTS).
+// Divvy is split in two; "business accounts" became ProcureDesk.
 const STEPS: Array<[string, string]> = [
   ["unemployment", "Unemployment paperwork handed or electronically sent to employee"],
   ["cobra", "COBRA letter drafted and mailed to employee, if necessary"],
   ["last_paycheck", "Last paycheck handed to employee or scheduled for direct deposit"],
   ["location_keys", "Location keys recovered from employee"],
-  ["email_access", "Company email access removed (contact Shane or Roger)"],
-  ["divvy", "Divvy access removed and Divvy business card recovered, if necessary (contact Blayne)"],
+  ["email_deactivation", "If the employee has a personal splashcarwashes.com email (not a site email), request deactivation"],
+  ["divvy_card", "Physical Divvy card recovered"],
+  ["divvy_deactivation", "Request Divvy deactivation"],
   ["alarm_codes", "Security alarm system codes changed, if necessary"],
   ["building_locks", "Building keys and locks changed, if necessary"],
   ["micrologic", "Micrologic (Wash Assist) access removed"],
   ["connect_team", "Connect Team account access removed, if necessary"],
-  ["isolved", "iSolved manager access removed, if necessary"],
+  ["isolved", "Request iSolved manager access removed"],
   ["property", "Splash Car Wash property recovered from the employee"],
-  ["business_accounts", "Business account access removed and passwords changed"],
-  ["spot_ai", "Spot A.I. software access removed, if necessary"],
+  ["procuredesk", "ProcureDesk password changed (if applicable)"],
+  ["spot_ai", "Request Spot AI access removed"],
   ["kiosk", "Kiosk codes and keys changed, if necessary"],
   ["paperwork_sent", "Termination paperwork and employee write-ups sent to Daina and Shane"]
+];
+// Each request: the step that triggers it, who it emails, and what it asks.
+// Email deactivation goes to Shane and Roger, the people the paper named.
+const REQUESTS: Array<{ step: string; to: string[]; label: string; subject: string; ask: string }> = [
+  {
+    step: "email_deactivation",
+    to: ["slowe@splashcarwashes.com", "rwilliams@splashcarwashes.com"],
+    label: "Request email deactivation",
+    subject: "Please deactivate a Splash email: {field.employee}",
+    ask: "Please deactivate this splashcarwashes.com email address: {field.email_to_deactivate}"
+  },
+  {
+    step: "divvy_deactivation",
+    to: ["bvalentine@splashcarwashes.com"],
+    label: "Request Divvy deactivation",
+    subject: "Please deactivate Divvy: {field.employee}",
+    ask: "Please deactivate their Divvy access and card."
+  },
+  {
+    step: "isolved",
+    to: ["payroll@splashcarwashes.com", "slowe@splashcarwashes.com"],
+    label: "Request iSolved manager access removed",
+    subject: "Please remove iSolved manager access: {field.employee}",
+    ask: "Please remove their iSolved manager access."
+  },
+  {
+    step: "spot_ai",
+    to: ["rwilliams@splashcarwashes.com"],
+    label: "Request Spot AI access removed",
+    subject: "Please remove Spot AI access: {field.employee}",
+    ask: "Please remove Spot AI access for this email address: {field.spot_ai_email}"
+  }
 ];
 const MICROLOGIC: Array<[string, string]> = [
   ["inactive", "Employee account made inactive"],
@@ -263,11 +299,6 @@ const PROPERTY: Array<[string, string]> = [
   ["vehicle", "Company vehicle"],
   ["tools", "Company tools"],
   ["key_card", "Company key card for the office suite"]
-];
-const ACCOUNTS: Array<[string, string]> = [
-  ["wb_mason", "W.B. Mason"],
-  ["grainger", "Grainger"],
-  ["sonnys", "Sonny's"]
 ];
 const opts = (list: Array<[string, string]>) => list.map(([value, label]) => ({ label, value }));
 
@@ -282,10 +313,19 @@ C.push({
   text: "Checklist",
   level: "h3",
   helpText:
-    "Tick each step when it's done. You can save and come back as steps get finished. Steps marked \"if necessary\" can stay unticked when they don't apply; say why in Notes.",
+    "Tick each step when it's done. You can save and come back as steps get finished. Steps marked \"if necessary\" or \"if applicable\" can stay unticked when they don't apply; say why in Notes. Each \"Request\" you tick is emailed to the person who handles it when you submit the checklist, so submit as soon as you can.",
   required: false
 } as Field);
 C.push({ key: "steps", type: "multi", label: "Completed steps", required: false, options: opts(STEPS) } as Field);
+C.push({
+  key: "email_to_deactivate",
+  type: "email",
+  label: "Splash email address to deactivate",
+  helpText: "Their personal splashcarwashes.com address, not the site's.",
+  required: true,
+  noAutofill: true,
+  ...C.when("steps", "email_deactivation")
+} as Field);
 C.push({
   key: "micrologic_steps",
   type: "multi",
@@ -304,12 +344,12 @@ C.push({
   ...C.when("steps", "property")
 } as Field);
 C.push({
-  key: "accounts_changed",
-  type: "multi",
-  label: "Business accounts: access removed and password changed",
-  required: false,
-  options: opts(ACCOUNTS),
-  ...C.when("steps", "business_accounts")
+  key: "spot_ai_email",
+  type: "email",
+  label: "Email address that had Spot AI access",
+  required: true,
+  noAutofill: true,
+  ...C.when("steps", "spot_ai")
 } as Field);
 C.push({
   key: "notes",
@@ -355,8 +395,24 @@ const CHECKLIST_WORKFLOW: FormWorkflow = {
         "The signed checklist is attached.",
         "This is a confidential personnel record. Please don't forward it."
       ].join("\n\n"),
-      transitions: [{ to: "filed", label: "Sent" }]
+      transitions: [{ to: `request_${REQUESTS[0]!.step}`, label: "Sent" }]
     },
+    // One email per request, sent only when its step is ticked (send_if).
+    ...REQUESTS.map((r, i) => ({
+      id: `request_${r.step}`,
+      label: r.label,
+      kind: "email" as const,
+      send_if: { field_key: "steps", equals: [r.step] },
+      recipients: [{ type: "static_emails" as const, emails: r.to }],
+      subject_template: r.subject,
+      body_template: [
+        "{field.completed_by_name} ({field.completed_by_email}) is completing the termination checklist for {field.employee} at {field.site_name}, terminated {field.termination_date}.",
+        r.ask,
+        "Please reply to {field.completed_by_email} once it's done.",
+        "This is a confidential personnel matter. Please don't forward it."
+      ].join("\n\n"),
+      transitions: [{ to: i + 1 < REQUESTS.length ? `request_${REQUESTS[i + 1]!.step}` : "filed", label: "Sent" }]
+    })),
     { id: "filed", label: "Filed", kind: "outcome", tint: "neutral", transitions: [] }
   ]
 };
@@ -415,8 +471,17 @@ function checklistBoxes(): PdfBox[] {
     [55.5, 319.5], [55.5, 341.1], [54.6, 362.1], [55.5, 425.1], [55.5, 443.7], [55.5, 467.0],
     [50.4, 590.6], [54.6, 673.1], [55.5, 696.3], [55.5, 715.1]
   ];
-  if (BOX_XY.length !== STEPS.length) throw new Error("checklist boxes and steps out of step");
-  STEPS.forEach(([value], i) => {
+  // Which step ticks each paper box. The paper predates the 2026-11-16
+  // rewording, so a box ticks for the step that replaced its line, and page 2
+  // spells out what was actually done (below). Divvy's paper box ticks for the
+  // card; the deactivation request is listed on page 2 only.
+  const PAPER = [
+    "unemployment", "cobra", "last_paycheck", "location_keys", "email_deactivation", "divvy_card",
+    "alarm_codes", "building_locks", "micrologic", "connect_team", "isolved", "property",
+    "procuredesk", "spot_ai", "kiosk", "paperwork_sent"
+  ];
+  if (BOX_XY.length !== PAPER.length) throw new Error("checklist boxes and paper lines out of step");
+  PAPER.forEach((value, i) => {
     const [x, y] = BOX_XY[i]!;
     add(0, x, y, 12.9, 14.2, { type: "check", key: "steps", value });
   });
@@ -425,7 +490,6 @@ function checklistBoxes(): PdfBox[] {
     list.forEach(([value], i) => add(0, 93, tops[i]! + 1, 11, 12, { type: "check", key, value }));
   sub("micrologic_steps", MICROLOGIC, [389, 410]);
   sub("property_recovered", PROPERTY, [493, 514, 534, 555, 576]);
-  sub("accounts_changed", ACCOUNTS, [617, 638, 659]);
   // Page 2: Notes on the three ruled lines (baselines ~2pt above each rule),
   // then the signature on its line, the date, and the signer's printed name.
   // The rules are rows of underscores whose baselines sit at ~88.5 / 102.5 / 116.5.
@@ -433,6 +497,23 @@ function checklistBoxes(): PdfBox[] {
   add(1, 98, 161, 200, 25, { type: "field", key: "signature" });
   add(1, 316, 176, 250, 13, { type: "field", key: "completed_by_name" }, { font_size: 10 });
   add(1, 68, 202, 220, 13, { type: "submitted_date" }, { font_size: 10 });
+  // Page 2 is blank below the date: the steps whose wording changed since the
+  // paper was printed, as the online form asked them, with what was entered.
+  add(1, 36, 250, 400, 14, { type: "text", text: "As recorded on the online form:" }, { font_size: 11 });
+  const ROWS: Array<[string, string, string?]> = [
+    ["email_deactivation", "Personal Splash email deactivation requested", "email_to_deactivate"],
+    ["divvy_card", "Physical Divvy card recovered"],
+    ["divvy_deactivation", "Divvy deactivation requested (Blayne)"],
+    ["isolved", "iSolved manager access removal requested (Daina, Shane)"],
+    ["procuredesk", "ProcureDesk password changed"],
+    ["spot_ai", "Spot AI access removal requested (Roger)", "spot_ai_email"]
+  ];
+  ROWS.forEach(([value, label, detail], i) => {
+    const y = 272 + i * 20;
+    add(1, 40, y, 11, 12, { type: "check", key: "steps", value });
+    add(1, 58, y, 300, 13, { type: "text", text: label }, { font_size: 10 });
+    if (detail) add(1, 330, y, 246, 13, { type: "field", key: detail }, { font_size: 10 });
+  });
   return b;
 }
 
@@ -565,8 +646,11 @@ checkBoxes(REPORT_SLUG, reportSchema, rBoxes);
 checkBoxes(CHECKLIST_SLUG, checklistSchema, cBoxes);
 
 const header = `-- Generated by scripts/gen-termination.ts -- edit that, not this file.
--- NOT YET APPLIED. Needs supabase/forms-secret-links-and-drafts-01.sql first
--- (link_key / email_drafts columns).
+-- APPLIED via psql 2026-11-15 (both forms created as drafts, test mode). Needs
+-- supabase/forms-secret-links-and-drafts-01.sql first (link_key / email_drafts).
+-- 2026-11-16: checklist draft schema re-applied via Supabase MCP (request steps
+-- with send_if). The forms worker must be DEPLOYED before the checklist is
+-- republished -- an older worker drops send_if and every request email sends.
 --
 -- HR recipients: ${HR_TO.join(", ")}${HR_TO.length === 1 && HR_TO[0] === OPERATOR ? "  <-- PLACEHOLDER: regenerate with HR_TO=<Daina>,<Shane>" : ""}
 -- Test mode: every email goes only to ${TEST_TO} until switched off on the Settings tab.
@@ -605,6 +689,8 @@ select f.slug, f.audience, f.status, f.scope_location_field_key, f.email_drafts,
 writeFileSync(
   "supabase/termination-forms-02-documents.sql",
   `-- Generated by scripts/gen-termination.ts -- edit that, not this file.
+-- APPLIED 2026-11-15 (PDFs in R2, form_pdf_templates rows inserted directly);
+-- checklist part re-applied 2026-11-16 via Supabase MCP (new steps, page-2 block).
 -- Run AFTER uploading each PDF on its form's Documents tab, named EXACTLY:
 --   ${REPORT_SLUG}:    "${REPORT_DOC}"     (Splash_Termination_Form.pdf)
 --   ${CHECKLIST_SLUG}: "${CHECKLIST_DOC}"  (Termination_Checklist.pdf)
