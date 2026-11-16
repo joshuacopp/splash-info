@@ -126,7 +126,7 @@ export function renderFormBody(args: RenderBodyArgs): string {
     : "";
 
   return `${testBanner}
-<form action="/forms/api/submit/${escapeHtml(args.form.publicKey ?? args.form.slug)}" method="post" enctype="multipart/form-data" class="forms-body"${args.form.emailDrafts ? ' data-email-drafts="1"' : ""}>
+<form action="/forms/api/submit/${escapeHtml(args.form.publicKey ?? args.form.slug)}" method="post" enctype="multipart/form-data" class="forms-body"${args.form.emailDrafts ? ' data-email-drafts="1"' : ""}${args.form.noBrowserDrafts ? ' data-no-browser-drafts="1"' : ""}>
   <input type="hidden" name="pending_submission_id" value="${escapeHtml(args.pendingSubmissionId)}" />
   ${fieldsHtml}
   ${turnstileWidget}

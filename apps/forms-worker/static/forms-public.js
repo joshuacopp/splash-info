@@ -42,6 +42,10 @@
         // site tablets, and the forms using this hold personnel details.
         clearDraft(slug);
         wireSaveLater(formEl, slug);
+      } else if (formEl.getAttribute("data-no-browser-drafts") === "1") {
+        // Confidential form (HR report etc.): keep nothing in this browser,
+        // and clear anything an older page version left behind.
+        clearDraft(slug);
       } else {
         maybeRenderResumeBanner(formEl, slug);
         wireAutosave(formEl, slug);

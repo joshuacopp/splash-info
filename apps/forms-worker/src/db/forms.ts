@@ -35,10 +35,11 @@ interface FormRow {
   test_email_to?: string | null;
   link_key?: string | null;
   email_drafts?: boolean | null;
+  scope_location_field_key?: string | null;
 }
 
 const FORM_SELECT =
-  "id,slug,title,description,audience,status,current_version_id,draft_version_id,notify_webhook,success_message,turnstile_required,test_email_to,link_key,email_drafts";
+  "id,slug,title,description,audience,status,current_version_id,draft_version_id,notify_webhook,success_message,turnstile_required,test_email_to,link_key,email_drafts,scope_location_field_key";
 
 /** The secret link applies to link-only forms only. A form that was given a
  *  key and later switched to internal / public goes back to its slug. */
@@ -61,7 +62,11 @@ function rowToFormMeta(row: FormRow): FormMeta {
     testMode: !!row.test_email_to,
     turnstileRequired: row.turnstile_required,
     publicKey: activeLinkKey(row) ?? row.slug,
-    emailDrafts: row.email_drafts === true
+    emailDrafts: row.email_drafts === true,
+    // Confidential forms (HR reports, personnel records) keep no copy of the
+    // answers in the browser: on a shared site tablet a half-typed report
+    // would otherwise come back as a "Resume" banner for the next person.
+    noBrowserDrafts: row.scope_location_field_key === "none:confidential"
   };
 }
 

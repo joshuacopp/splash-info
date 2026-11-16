@@ -659,6 +659,9 @@ export interface FormMeta {
   publicKey?: string;
   /** 2026-11-15 -- forms.email_drafts: "Save and continue later" by email. */
   emailDrafts?: boolean;
+  /** 2026-11-16 -- confidential form (scope 'none:confidential'): the public
+   *  page keeps no localStorage autosave / resume banner. Public path only. */
+  noBrowserDrafts?: boolean;
 }
 
 // Submission payload is keyed by field.key. Per-field value shape varies
