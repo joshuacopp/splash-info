@@ -33,6 +33,8 @@
       wireLookups(formEl, slug);
       wirePriceGrids(formEl, slug);
       wireEmployees(formEl, slug);
+      wireAttendances(formEl, slug);
+      wireRequiredTopicsAll(formEl, slug);
       wireMultiMax(formEl);
       wireConditionals(formEl);
 
@@ -85,7 +87,9 @@
     }
   }
 
-  function uploadSignature(pad, format, slug, pendingId, fieldKey, hiddenInput, wrap) {
+  // `onSaved` (optional) receives the r2_key -- attendance rows keep theirs in
+  // a JSON input rather than a hidden input of their own.
+  function uploadSignature(pad, format, slug, pendingId, fieldKey, hiddenInput, wrap, onSaved) {
     if (pad.isEmpty()) return;
     var blob;
     if (format === "svg") {
@@ -112,7 +116,8 @@
           showError(wrap, res.body.error || "Failed to save signature");
           return;
         }
-        hiddenInput.value = res.body.r2_key;
+        if (hiddenInput) hiddenInput.value = res.body.r2_key;
+        if (onSaved) onSaved(res.body.r2_key);
         showStatus(wrap, "Signature saved");
       })
       .catch(function () { showError(wrap, "Failed to save signature. Please try again."); });
@@ -1410,6 +1415,329 @@
     // A draft resume rewrites the hidden value and fires `change` on it.
     hidden.addEventListener("change", showChosen);
     showChosen();
+  }
+
+  // Attendance sheet (2026-11-18). Rows of {employee search + signature}.
+  // The answer is ONE hidden JSON input ([{employee, sig}]), so autosave and
+  // draft resume treat it like any other named input; on resume its `change`
+  // rebuilds the rows. Rows are only ever ADDED: each row's index names the
+  // R2 key its signature uploads under (`${key}__sig_${n}`), so removing a
+  // row would shift later rows onto someone else's signature. A row left
+  // blank is ignored at submit.
+  function wireAttendances(formEl, slug) {
+    var wraps = formEl.querySelectorAll('[data-field-type="attendance"]');
+    Array.prototype.forEach.call(wraps, function (wrap) {
+      wireAttendance(formEl, slug, wrap);
+    });
+  }
+
+  function wireAttendance(formEl, slug, wrap) {
+    var fieldKey = wrap.getAttribute("data-field-key");
+    var keyName = wrap.getAttribute("data-emp-key-field");
+    var allowTyped = wrap.getAttribute("data-emp-allow-typed") || "1";
+    var initial = parseInt(wrap.getAttribute("data-att-initial") || "5", 10) || 5;
+    var max = parseInt(wrap.getAttribute("data-att-max") || "80", 10) || 80;
+    var master = wrap.querySelector('[data-att-value="1"]');
+    var list = wrap.querySelector('[data-att-rows="1"]');
+    var addBtn = wrap.querySelector('[data-att-add="1"]');
+    if (!fieldKey || !keyName || !master || !list || !addBtn) return;
+
+    var rows = [];
+    var restoring = false;
+    var syncing = false;
+
+    function sync() {
+      if (restoring) return;
+      var data = rows.map(function (r) { return { employee: r.employee, sig: r.sig }; });
+      syncing = true;
+      master.value = JSON.stringify(data);
+      master.dispatchEvent(new Event("change", { bubbles: true }));
+      syncing = false;
+    }
+
+    function addRow() {
+      var i = rows.length;
+      if (i >= max) return null;
+      var row = { employee: null, sig: "", empHidden: null, li: null, sigBox: null, pad: null };
+
+      var li = document.createElement("li");
+      li.className = "att-row";
+      var title = document.createElement("p");
+      title.className = "att-row-title";
+      title.textContent = "Employee " + (i + 1);
+      li.appendChild(title);
+
+      // Same markup wireEmployee expects. The hidden input has NO name: the
+      // row's value reaches the server only through `master`.
+      var emp = document.createElement("div");
+      emp.setAttribute("data-field-key", fieldKey);
+      emp.setAttribute("data-emp-key-field", keyName);
+      emp.setAttribute("data-emp-allow-typed", allowTyped);
+      var empHidden = document.createElement("input");
+      empHidden.type = "hidden";
+      empHidden.setAttribute("data-emp-value", "1");
+      var chosen = document.createElement("div");
+      chosen.className = "emp-chosen";
+      chosen.setAttribute("data-emp-chosen", "1");
+      chosen.hidden = true;
+      var search = document.createElement("input");
+      search.type = "text";
+      search.className = "field-input";
+      search.autocomplete = "off";
+      search.setAttribute("data-emp-search", "1");
+      search.placeholder = "Type a name to search";
+      var results = document.createElement("div");
+      results.className = "emp-results";
+      results.setAttribute("data-emp-results", "1");
+      results.setAttribute("role", "listbox");
+      results.hidden = true;
+      var msg = document.createElement("p");
+      msg.className = "emp-msg";
+      msg.setAttribute("data-emp-msg", "1");
+      msg.hidden = true;
+      emp.appendChild(empHidden);
+      emp.appendChild(chosen);
+      emp.appendChild(search);
+      emp.appendChild(results);
+      emp.appendChild(msg);
+      li.appendChild(emp);
+
+      var sigBox = document.createElement("div");
+      var canvas = document.createElement("canvas");
+      canvas.className = "field-signature-canvas";
+      sigBox.appendChild(canvas);
+      var bar = document.createElement("div");
+      bar.className = "att-sig-bar";
+      var hint = document.createElement("span");
+      hint.textContent = "Sign above";
+      var clearBtn = document.createElement("button");
+      clearBtn.type = "button";
+      clearBtn.textContent = "Clear signature";
+      bar.appendChild(hint);
+      bar.appendChild(clearBtn);
+      sigBox.appendChild(bar);
+      li.appendChild(sigBox);
+
+      list.appendChild(li);
+      row.li = li;
+      row.sigBox = sigBox;
+      row.empHidden = empHidden;
+      rows.push(row);
+
+      wireEmployee(formEl, slug, emp);
+      empHidden.addEventListener("change", function () {
+        try {
+          var v = JSON.parse(empHidden.value || "null");
+          row.employee = v && typeof v.name === "string" ? v : null;
+        } catch (e) {
+          row.employee = null;
+        }
+        clearError(wrap);
+        sync();
+      });
+
+      // Size the drawing buffer to the box as displayed: signature_pad does
+      // not scale pointer positions, so a stretched canvas draws off the pen.
+      canvas.width = canvas.offsetWidth || 600;
+      canvas.height = canvas.offsetHeight || 140;
+      if (window.SignaturePad) {
+        var pad = new window.SignaturePad(canvas, { penColor: "#000000" });
+        row.pad = pad;
+        var debounce;
+        pad.addEventListener("endStroke", function () {
+          clearTimeout(debounce);
+          debounce = setTimeout(function () {
+            var pendingId = currentPendingId(formEl);
+            if (!pendingId) return;
+            uploadSignature(pad, "png", slug, pendingId, fieldKey + "__sig_" + i, null, sigBox, function (key) {
+              row.sig = key;
+              clearError(wrap);
+              sync();
+            });
+          }, 800);
+        });
+        clearBtn.addEventListener("click", function () {
+          pad.clear();
+          row.sig = "";
+          clearStatus(sigBox);
+          sync();
+        });
+      }
+
+      if (rows.length >= max) addBtn.disabled = true;
+      return row;
+    }
+
+    function restoreFrom(value) {
+      var data;
+      try {
+        data = JSON.parse(value || "[]");
+      } catch (e) {
+        return;
+      }
+      if (!Array.isArray(data)) return;
+      restoring = true;
+      for (var i = 0; i < data.length && i < max; i++) {
+        var row = rows[i] || addRow();
+        if (!row) break;
+        var d = data[i] || {};
+        var empVal = d.employee && typeof d.employee.name === "string" ? d.employee : null;
+        row.employee = empVal;
+        row.empHidden.value = empVal ? JSON.stringify(empVal) : "";
+        row.empHidden.dispatchEvent(new Event("change"));
+        row.sig = typeof d.sig === "string" ? d.sig : "";
+        if (row.sig && row.pad && row.pad.isEmpty()) {
+          showStatus(row.sigBox, "Signed earlier - this signature will be used. Sign again to replace it.");
+        }
+      }
+      restoring = false;
+    }
+
+    addBtn.addEventListener("click", function () {
+      var row = addRow();
+      sync();
+      if (row) {
+        var s = row.li.querySelector('[data-emp-search="1"]');
+        if (s) s.focus();
+      }
+    });
+    master.addEventListener("change", function () {
+      if (!syncing) restoreFrom(master.value);
+    });
+
+    for (var n = 0; n < initial; n++) addRow();
+    if (master.value) restoreFrom(master.value);
+  }
+
+  // Required topics (2026-11-18). The committee's list for the month of the
+  // form's date field, fetched whenever the date changes, with one "Covered"
+  // tick-box per topic. Ticks live in ONE hidden JSON input (the boxes have
+  // no name) so a draft resume restores them even before the list loads.
+  var MONTH_NAMES = ["January", "February", "March", "April", "May", "June", "July",
+    "August", "September", "October", "November", "December"];
+
+  function wireRequiredTopicsAll(formEl, slug) {
+    var wraps = formEl.querySelectorAll('[data-field-type="required_topics"]');
+    Array.prototype.forEach.call(wraps, function (wrap) {
+      wireRequiredTopics(formEl, slug, wrap);
+    });
+  }
+
+  function wireRequiredTopics(formEl, slug, wrap) {
+    var fieldKey = wrap.getAttribute("data-field-key");
+    var dateName = wrap.getAttribute("data-rt-date-field");
+    var hidden = wrap.querySelector('[data-rt-value="1"]');
+    var list = wrap.querySelector('[data-rt-list="1"]');
+    if (!fieldKey || !dateName || !hidden || !list) return;
+
+    var topics = [];
+    var month = null;
+    var seq = 0;
+    var selfUpdate = false;
+
+    function ticked() {
+      try {
+        var a = JSON.parse(hidden.value || "[]");
+        return Array.isArray(a) ? a : [];
+      } catch (e) {
+        return [];
+      }
+    }
+    function monthLabel(m) {
+      var parts = /^(\d{4})-(\d{2})$/.exec(m || "");
+      return parts ? MONTH_NAMES[parseInt(parts[2], 10) - 1] + " " + parts[1] : "this month";
+    }
+    function note(text) {
+      list.innerHTML = "";
+      var p = document.createElement("p");
+      p.className = "rt-empty";
+      p.textContent = text;
+      list.appendChild(p);
+    }
+    function render() {
+      if (!month) {
+        note("Enter the meeting date to see that month's required topics.");
+        return;
+      }
+      if (topics.length === 0) {
+        note("No required topics for " + monthLabel(month) + ".");
+        return;
+      }
+      var have = ticked();
+      list.innerHTML = "";
+      var head = document.createElement("p");
+      head.className = "rt-month";
+      head.textContent = "Required for " + monthLabel(month) + " - tick each one once it has been covered:";
+      list.appendChild(head);
+      topics.forEach(function (t) {
+        var label = document.createElement("label");
+        label.className = "rt-item";
+        var box = document.createElement("input");
+        box.type = "checkbox";
+        box.checked = have.indexOf(t) !== -1;
+        var text = document.createElement("span");
+        text.textContent = t;
+        var covered = document.createElement("span");
+        covered.className = "rt-item-covered";
+        covered.textContent = "Covered";
+        label.appendChild(box);
+        label.appendChild(text);
+        label.appendChild(covered);
+        box.addEventListener("change", function () {
+          var now = ticked().filter(function (x) { return x !== t; });
+          if (box.checked) now.push(t);
+          selfUpdate = true;
+          hidden.value = JSON.stringify(now);
+          hidden.dispatchEvent(new Event("change", { bubbles: true }));
+          selfUpdate = false;
+          clearError(wrap);
+        });
+        list.appendChild(label);
+      });
+    }
+    function dateValue() {
+      var el = formEl.querySelector('[name="' + cssAttrEscape(dateName) + '"]');
+      return el ? (el.value || "").trim() : "";
+    }
+    function load() {
+      var d = dateValue();
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) {
+        month = null;
+        topics = [];
+        render();
+        return;
+      }
+      var mySeq = ++seq;
+      fetch("/forms/api/required-topics/" + encodeURIComponent(slug), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ field_key: fieldKey, date: d })
+      })
+        .then(function (r) {
+          return r.json().then(function (j) {
+            if (!r.ok) throw new Error("topics");
+            return j;
+          });
+        })
+        .then(function (j) {
+          if (mySeq !== seq) return;
+          month = j.month || null;
+          topics = Array.isArray(j.topics) ? j.topics : [];
+          render();
+        })
+        .catch(function () {
+          if (mySeq !== seq) return;
+          note("Couldn't load the required topics. Check your connection, then change the date to try again.");
+        });
+    }
+
+    formEl.addEventListener("change", function (e) {
+      if (e.target && e.target.name === dateName) load();
+    });
+    hidden.addEventListener("change", function () {
+      if (!selfUpdate) render();
+    });
+    load();
   }
 
   function cssAttrEscape(s) {

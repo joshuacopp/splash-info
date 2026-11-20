@@ -194,6 +194,21 @@ const SHELL_CSS = `
   .emp-option-detail { display: block; font-size: 13px; color: #666; }
   .emp-option-typed { color: #1e88e5; font-weight: 600; }
   .emp-msg { font-size: 13px; color: #666; margin: 4px 0 0; }
+  .att-rows { list-style: none; margin: 0; padding: 0; counter-reset: att; }
+  .att-row { border: 1px solid #dfe5ee; border-radius: 8px; padding: 12px; margin-bottom: 12px; background: #fbfcfe; }
+  .att-row-title { font-weight: 600; font-size: 14px; color: #444; margin: 0 0 8px; }
+  .att-row .field-signature-canvas { height: 140px; margin-top: 8px; }
+  .att-sig-bar { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-top: 4px; font-size: 13px; color: #666; }
+  .att-sig-bar button { background: none; border: 0; color: #1e88e5; font-weight: 600; cursor: pointer; padding: 6px 4px; }
+  .att-add-btn { display: block; width: 100%; padding: 12px; border: 2px dashed var(--splash-cyan); border-radius: 8px; background: #f5fbfe; color: #0b5c86; font-weight: 600; font-size: 15px; cursor: pointer; }
+  .att-add-btn[disabled] { opacity: 0.5; cursor: default; }
+  .rt-list { border: 1px solid #dfe5ee; border-radius: 8px; background: #fbfcfe; padding: 4px 12px; }
+  .rt-item { display: flex; align-items: flex-start; gap: 10px; padding: 10px 0; border-top: 1px solid #eef1f6; font-size: 15px; cursor: pointer; }
+  .rt-item:first-of-type { border-top: 0; }
+  .rt-item input { width: 20px; height: 20px; margin-top: 1px; flex: none; }
+  .rt-item-covered { margin-left: auto; font-size: 13px; color: #888; white-space: nowrap; }
+  .rt-empty { margin: 8px 0; color: #666; font-size: 14px; }
+  .rt-month { margin: 8px 0 2px; font-size: 13px; color: #666; }
   .price-grid-empty { color: #666; font-style: italic; margin: 4px 0; }
   .price-grid-hint { font-size: 13px; color: #666; margin-top: 6px; }
   .price-grid-row { border: 1px solid #dfe5ee; border-radius: 6px; padding: 8px 12px; margin-bottom: 8px; background: #fff; }

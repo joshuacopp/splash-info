@@ -149,9 +149,11 @@ export async function handleEmployeeSearch(
   } catch {
     return jsonError(400, "bad_json");
   }
+  // Attendance rows search exactly like an employee field (same keyFieldKey /
+  // keyColumn), so either type is accepted here.
   const field = version.schema.fields.find(
-    (f) => f.key === body.field_key && f.type === "employee"
-  ) as EmployeeField | undefined;
+    (f) => f.key === body.field_key && (f.type === "employee" || f.type === "attendance")
+  ) as Pick<EmployeeField, "keyColumn"> | undefined;
   if (!field) return jsonError(400, "unknown_field");
 
   const q = typeof body.q === "string" ? body.q.trim().slice(0, 60) : "";
@@ -204,68 +206,102 @@ export async function resolveEmployees(
   payload: Record<string, unknown>
 ): Promise<ResolveResult> {
   const fields: Record<string, string> = {};
-  for (const f of schema.fields) {
-    if (f.type !== "employee") continue;
-    const raw = payload[f.key];
-    if (raw === undefined || raw === null || raw === "") {
-      delete payload[f.key];
-      continue;
-    }
-    if (typeof raw !== "object" || Array.isArray(raw)) {
-      fields[f.key] = "Pick an employee from the list";
-      continue;
-    }
-    const r = raw as { id?: unknown; name?: unknown };
-    const id = typeof r.id === "string" && UUID_RE.test(r.id) ? r.id : null;
-    const name = typeof r.name === "string" ? r.name.replace(/\s+/g, " ").trim() : "";
-
-    try {
-      if (id) {
-        const person = await readPerson(env, id);
-        if (!person) {
-          fields[f.key] = "That employee could not be found. Search again.";
-          continue;
+  let currentKey = "";
+  try {
+    for (const f of schema.fields) {
+      currentKey = f.key;
+      if (f.type === "employee") {
+        const r = await resolveOne(env, f.allowTyped !== false, payload[f.key]);
+        if (r.kind === "blank") delete payload[f.key];
+        else if (r.kind === "error") fields[f.key] = r.message;
+        else payload[f.key] = r.value;
+        continue;
+      }
+      if (f.type === "attendance") {
+        // parseSubmitFormData has already dropped blank rows and refused
+        // half-filled ones; every remaining row has a name to check.
+        const rows = Array.isArray(payload[f.key]) ? (payload[f.key] as Array<Record<string, unknown>>) : [];
+        const seen = new Set<string>();
+        for (let i = 0; i < rows.length; i++) {
+          const row = rows[i]!;
+          const r = await resolveOne(env, f.allowTyped !== false, row.employee);
+          if (r.kind === "blank") {
+            fields[f.key] = `Row ${i + 1}: enter the employee's name`;
+            break;
+          }
+          if (r.kind === "error") {
+            fields[f.key] = `Row ${i + 1}: ${r.message}`;
+            break;
+          }
+          const dupKey = r.value.id ?? `typed:${r.value.name.toLowerCase()}`;
+          if (seen.has(dupKey)) {
+            fields[f.key] = `${r.value.name} is listed more than once`;
+            break;
+          }
+          seen.add(dupKey);
+          row.employee = r.value;
         }
-        const value: EmployeeValue = {
-          id,
-          name: person.display_name,
-          title: person.job_title,
-          site: person.location_label,
-          unverified: false
-        };
-        payload[f.key] = value;
-        continue;
       }
-
-      if (!name) {
-        delete payload[f.key];
-        continue;
-      }
-      if (f.allowTyped === false) {
-        fields[f.key] = "Pick an employee from the list";
-        continue;
-      }
-      if (name.length < 2 || name.length > 100) {
-        fields[f.key] = "Enter the employee's full name";
-        continue;
-      }
-      const near = await rpc<RosterPerson[]>(env, "employee_near_matches", { p_name: name });
-      if (near.length > 0) {
-        const n = near[0]!;
-        fields[f.key] =
-          `"${name}" looks like ${n.display_name}` +
-          (n.location_label ? ` (${n.location_label})` : "") +
-          ". Search for them and pick them from the list.";
-        continue;
-      }
-      const value: EmployeeValue = { id: null, name, title: null, site: null, unverified: true };
-      payload[f.key] = value;
-    } catch (err) {
-      console.error("[forms.employees] resolve failed", err);
-      return { ok: false, status: 502, fields: { [f.key]: "Couldn't check the employee. Try again." } };
     }
+  } catch (err) {
+    console.error("[forms.employees] resolve failed", err);
+    return { ok: false, status: 502, fields: { [currentKey]: "Couldn't check the employee. Try again." } };
   }
   return Object.keys(fields).length ? { ok: false, status: 422, fields } : { ok: true };
+}
+
+type OneResult =
+  | { kind: "blank" }
+  | { kind: "error"; message: string }
+  | { kind: "ok"; value: EmployeeValue };
+
+/**
+ * One picked-or-typed employee: `{id, name}` (picked) or `{id: null, name}`
+ * (typed). A picked id is re-read from the roster -- name, title and location
+ * come from there, never from the page. A typed name is refused when typing is
+ * not allowed or when it closely matches a current employee. Throws on a
+ * lookup failure (the caller turns that into a 502).
+ */
+async function resolveOne(env: SupabaseEnv, allowTyped: boolean, raw: unknown): Promise<OneResult> {
+  if (raw === undefined || raw === null || raw === "") return { kind: "blank" };
+  if (typeof raw !== "object" || Array.isArray(raw)) {
+    return { kind: "error", message: "Pick an employee from the list" };
+  }
+  const r = raw as { id?: unknown; name?: unknown };
+  const id = typeof r.id === "string" && UUID_RE.test(r.id) ? r.id : null;
+  const name = typeof r.name === "string" ? r.name.replace(/\s+/g, " ").trim() : "";
+
+  if (id) {
+    const person = await readPerson(env, id);
+    if (!person) return { kind: "error", message: "That employee could not be found. Search again." };
+    return {
+      kind: "ok",
+      value: {
+        id,
+        name: person.display_name,
+        title: person.job_title,
+        site: person.location_label,
+        unverified: false
+      }
+    };
+  }
+  if (!name) return { kind: "blank" };
+  if (!allowTyped) return { kind: "error", message: "Pick an employee from the list" };
+  if (name.length < 2 || name.length > 100) {
+    return { kind: "error", message: "Enter the employee's full name" };
+  }
+  const near = await rpc<RosterPerson[]>(env, "employee_near_matches", { p_name: name });
+  if (near.length > 0) {
+    const n = near[0]!;
+    return {
+      kind: "error",
+      message:
+        `"${name}" looks like ${n.display_name}` +
+        (n.location_label ? ` (${n.location_label})` : "") +
+        ". Search for them and pick them from the list."
+    };
+  }
+  return { kind: "ok", value: { id: null, name, title: null, site: null, unverified: true } };
 }
 
 async function readPerson(env: SupabaseEnv, id: string): Promise<RosterPerson | null> {

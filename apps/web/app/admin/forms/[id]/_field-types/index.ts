@@ -32,6 +32,8 @@ import * as locationMod from "./location";
 import * as lookup from "./lookup";
 import * as packagePriceGrid from "./package-price-grid";
 import * as employee from "./employee";
+import * as attendance from "./attendance";
+import * as requiredTopics from "./required-topics";
 
 export interface InspectorProps {
   field: Field;
@@ -72,7 +74,9 @@ export const FIELD_TYPE_REGISTRY: FieldTypeModule[] = [
   locationMod,
   lookup,
   packagePriceGrid,
-  employee
+  employee,
+  attendance,
+  requiredTopics
 ] as unknown as FieldTypeModule[];
 
 export function defaultConfigFor(type: FieldType): Omit<Field, "id" | "key"> {

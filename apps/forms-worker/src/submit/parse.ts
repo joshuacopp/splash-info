@@ -16,6 +16,7 @@ import {
   actionItemInputName,
   actionItemNoteInputName,
   isFieldVisible,
+  ATTENDANCE_MAX_ROWS,
   type FormSchema
 } from "@splash/forms-schema";
 
@@ -121,6 +122,52 @@ export function parseSubmitFormData(
       } catch {
         payload[field.key] = "__unparseable__";
       }
+      continue;
+    }
+
+    if (field.type === "attendance") {
+      // One hidden input of JSON written by wireAttendance:
+      // [{employee: {id, name} | null, sig: r2_key | ""}, ...]. Rows with
+      // neither a name nor a signature are blank lines on the sheet and are
+      // dropped here; anything else is carried forward for checkAttendance
+      // (R2 + half-filled rows) and resolveEmployees (names).
+      const raw = formData.get(field.key);
+      let rows: unknown[] = [];
+      if (typeof raw === "string" && raw.trim() !== "") {
+        try {
+          const parsed = JSON.parse(raw) as unknown;
+          if (Array.isArray(parsed)) rows = parsed.slice(0, ATTENDANCE_MAX_ROWS);
+        } catch {
+          rows = [];
+        }
+      }
+      payload[field.key] = rows
+        .map((r) => {
+          const o = (r && typeof r === "object" ? r : {}) as { employee?: unknown; sig?: unknown };
+          const emp = o.employee && typeof o.employee === "object" ? o.employee : null;
+          const hasName = !!emp && typeof (emp as { name?: unknown }).name === "string" &&
+            ((emp as { name: string }).name.trim() !== "");
+          const sig = typeof o.sig === "string" ? o.sig : "";
+          return { employee: hasName ? emp : null, signature: sig ? { r2_key: sig } : null };
+        })
+        .filter((r) => r.employee !== null || r.signature !== null);
+      continue;
+    }
+
+    if (field.type === "required_topics") {
+      // Hidden JSON array of the topics ticked as covered. The month's list is
+      // read by the server (resolveRequiredTopics), never taken from the page.
+      const raw = formData.get(field.key);
+      let ticked: string[] = [];
+      if (typeof raw === "string" && raw.trim() !== "") {
+        try {
+          const parsed = JSON.parse(raw) as unknown;
+          if (Array.isArray(parsed)) ticked = parsed.filter((t): t is string => typeof t === "string");
+        } catch {
+          ticked = [];
+        }
+      }
+      payload[field.key] = { ticked };
       continue;
     }
 

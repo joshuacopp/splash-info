@@ -17,6 +17,8 @@ import {
   siteLabel
 } from "@splash/forms-schema/package-price";
 import { formatEmployeeValue, isEmployeeValue } from "@splash/forms-schema/employee";
+import { formatAttendanceValue, isAttendanceValue } from "@splash/forms-schema/attendance";
+import { formatRequiredTopicsValue, isRequiredTopicsValue } from "@splash/forms-schema/required-topics";
 import type { SubmissionFile } from "../../../../_lib/worker-fetch";
 
 interface Props {
@@ -169,6 +171,48 @@ function FieldValue({
             </span>
           )}
         </span>
+      ) : (
+        <span className="text-splash-navy/50">—</span>
+      );
+
+    case "attendance":
+      // Each person's name over their signature. The image comes straight
+      // from the row's own r2_key (one file per row, not one per field).
+      return isAttendanceValue(value) && value.length > 0 ? (
+        <ol className="grid gap-3 sm:grid-cols-2">
+          {value.map((row, i) => {
+            const url = `/forms/admin/api/files/${encodeR2Key(row.signature.r2_key)}`;
+            return (
+              <li key={row.signature.r2_key} className="rounded border border-gray-light p-2">
+                <p className="text-sm">
+                  {i + 1}. {formatEmployeeValue(row.employee)}
+                </p>
+                <a href={url} target="_blank" rel="noreferrer">
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img src={url} alt={`Signature of ${row.employee.name}`} className="mt-1 max-h-16 rounded border border-gray-light bg-white" />
+                </a>
+              </li>
+            );
+          })}
+        </ol>
+      ) : (
+        <span className="text-splash-navy/50">—</span>
+      );
+
+    case "required_topics":
+      return isRequiredTopicsValue(value) ? (
+        value.topics.length === 0 ? (
+          <span>{formatRequiredTopicsValue(value)}</span>
+        ) : (
+          <div>
+            <p className="text-sm text-splash-navy/70">{formatRequiredTopicsValue(value).split(":")[0]} &mdash; all ticked as covered</p>
+            <ul className="ml-5 list-disc">
+              {value.topics.map((t) => (
+                <li key={t}>{t}</li>
+              ))}
+            </ul>
+          </div>
+        )
       ) : (
         <span className="text-splash-navy/50">—</span>
       );

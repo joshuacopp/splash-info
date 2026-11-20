@@ -33,6 +33,9 @@ import type {
 import {
   formatEmployeeValue,
   formatPriceGridValue,
+  formatRequiredTopicsValue,
+  isAttendanceValue,
+  isRequiredTopicsValue,
   isEmployeeValue,
   isFieldVisible,
   isPriceGridValue
@@ -181,6 +184,33 @@ export async function drawPayload(
       );
       continue;
     }
+    if (field.type === "attendance") {
+      // A count line, then each person's name over their signature, smaller
+      // than a lone signature so a 30-person sheet stays a few pages.
+      const rows = isAttendanceValue(value) ? value : [];
+      drawLabelValue(doc, cursor, fonts, field.label, rows.length ? `${rows.length} signed` : "No one signed");
+      for (let r = 0; r < rows.length; r++) {
+        const row = rows[r]!;
+        const who = row.employee.unverified
+          ? `${row.employee.name} (typed)`
+          : formatEmployeeValue(row.employee);
+        await renderSignature(doc, cursor, fonts, `${r + 1}. ${who}`, row.signature, input.bucket, {
+          maxWidth: 200,
+          maxHeight: 60
+        });
+      }
+      continue;
+    }
+    if (field.type === "required_topics") {
+      drawLabelValue(
+        doc,
+        cursor,
+        fonts,
+        field.label,
+        isRequiredTopicsValue(value) ? formatRequiredTopicsValue(value) : "-"
+      );
+      continue;
+    }
     if (field.type === "package_price_grid") {
       // One line per package. drawLabelValue wraps and sanitizes, which turns
       // the formatter's arrow into "->" for Helvetica's WinAnsi encoding.
@@ -294,7 +324,8 @@ async function renderSignature(
   fonts: Fonts,
   label: string,
   value: unknown,
-  bucket: R2Like
+  bucket: R2Like,
+  size: { maxWidth: number; maxHeight: number } = { maxWidth: 300, maxHeight: 120 }
 ): Promise<void> {
   const r2Key = readR2Key(value);
   if (!r2Key) {
@@ -313,7 +344,7 @@ async function renderSignature(
   cursor.y -= 14;
   try {
     const image = await fetchAndEmbedR2Image(doc, bucket, r2Key);
-    drawImageScaled(doc, cursor, image, { maxWidth: 300, maxHeight: 120 });
+    drawImageScaled(doc, cursor, image, size);
   } catch (err) {
     cursor.page.drawText("(signature unavailable)", {
       x: MARGIN,

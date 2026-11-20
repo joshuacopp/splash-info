@@ -179,6 +179,38 @@ export function payloadValidatorFor(field: Field): z.ZodTypeAny | null {
       return field.required ? value : value.nullable().optional();
     }
 
+    case "attendance": {
+      // parseSubmitFormData dropped fully blank rows and refused half-filled
+      // ones; the submit handler re-checked every name against the roster and
+      // every signature against R2. This is the shape + count check.
+      const row = z.object({
+        employee: z.object({
+          id: z.string().uuid().nullable(),
+          name: z.string().trim().min(2, "Enter a name").max(100),
+          title: z.string().max(200).nullable(),
+          site: z.string().max(200).nullable(),
+          unverified: z.boolean()
+        }),
+        signature: z.object({
+          r2_key: z.string().regex(/^form-submission-files\//, "Invalid signature reference"),
+          format: z.enum(["png", "svg"])
+        })
+      });
+      const min = field.minRows ?? (field.required ? 1 : 0);
+      const list = z.array(row).max(80, "Too many rows");
+      return min > 0
+        ? list.min(min, min === 1 ? "At least one employee must sign" : `At least ${min} employees must sign`)
+        : list.optional();
+    }
+
+    case "required_topics":
+      // Built and checked entirely by the submit handler (resolveRequiredTopics),
+      // which reads the month's list itself and refuses an un-ticked topic.
+      return z.object({
+        month: z.string().regex(/^\d{4}-\d{2}$/),
+        topics: z.array(z.string())
+      });
+
     case "package_price_grid": {
       // The submit handler has already normalised prices, filled blank new
       // prices from current, and checked every package exists at the site --

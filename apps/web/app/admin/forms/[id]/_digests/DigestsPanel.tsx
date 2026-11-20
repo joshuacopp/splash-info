@@ -57,7 +57,7 @@ function isChoice(f: Field): boolean {
   return f.type === "radio" || f.type === "dropdown" || f.type === "multi";
 }
 function isShowable(f: Field): boolean {
-  return !["heading", "image", "signature", "file", "hidden", "package_price_grid"].includes(f.type);
+  return !["heading", "image", "signature", "file", "hidden", "package_price_grid", "attendance", "required_topics"].includes(f.type);
 }
 
 function metricValue(m: DigestMetric): string {

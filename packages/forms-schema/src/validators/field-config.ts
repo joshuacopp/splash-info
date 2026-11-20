@@ -13,6 +13,7 @@
 // than render half a form.
 
 import { z } from "zod";
+import { isRequiredTopicListKey } from "../required-topics.js";
 
 // Common base every field-config schema spreads in.
 const fieldBaseSchema = {
@@ -226,6 +227,24 @@ export const employeeFieldSchema = z.object({
   allowTyped: z.boolean().optional()
 });
 
+
+export const attendanceFieldSchema = z.object({
+  ...fieldBaseSchema,
+  type: z.literal("attendance"),
+  keyFieldKey: z.string(),
+  keyColumn: z.enum(["pricing_simple.location_code", "pricing_simple.site"]),
+  allowTyped: z.boolean().optional(),
+  initialRows: z.number().int().min(1).max(40).optional(),
+  minRows: z.number().int().min(0).max(40).optional()
+});
+
+export const requiredTopicsFieldSchema = z.object({
+  ...fieldBaseSchema,
+  type: z.literal("required_topics"),
+  listKey: z.string().min(1),
+  dateFieldKey: z.string()
+});
+
 // -----------------------------------------------------------------------------
 // Discriminated union + form schema
 // -----------------------------------------------------------------------------
@@ -249,7 +268,9 @@ export const fieldSchema = z.discriminatedUnion("type", [
   locationFieldSchema,
   lookupFieldSchema,
   packagePriceGridFieldSchema,
-  employeeFieldSchema
+  employeeFieldSchema,
+  attendanceFieldSchema,
+  requiredTopicsFieldSchema
 ]);
 
 // -----------------------------------------------------------------------------
@@ -477,15 +498,37 @@ export const formSchemaSchema = z
       }
     }
 
-    // An employee picker with no site field could never list anyone.
+    // An employee picker (or attendance sheet) with no site field could never
+    // list anyone.
     for (let i = 0; i < data.fields.length; i++) {
       const f = data.fields[i];
-      if (!f || f.type !== "employee") continue;
+      if (!f || (f.type !== "employee" && f.type !== "attendance")) continue;
       if (!visibilityKeys.has(f.keyFieldKey) || f.keyFieldKey === f.key) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
           path: ["fields", i, "keyFieldKey"],
           message: `employee field "${f.key}" must name the site field it searches`
+        });
+      }
+    }
+
+    // Required topics read their month from a DATE field, and name a known list.
+    for (let i = 0; i < data.fields.length; i++) {
+      const f = data.fields[i];
+      if (!f || f.type !== "required_topics") continue;
+      const dateField = data.fields.find((c) => c.key === f.dateFieldKey);
+      if (!dateField || dateField.type !== "date") {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["fields", i, "dateFieldKey"],
+          message: `required topics "${f.key}" must name the date field whose month picks the topics`
+        });
+      }
+      if (!isRequiredTopicListKey(f.listKey)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["fields", i, "listKey"],
+          message: `required topics "${f.key}" names an unknown list "${f.listKey}"`
         });
       }
     }
@@ -845,6 +888,23 @@ const employeeFieldSchemaDraft = z.object({
   allowTyped: z.boolean().optional()
 });
 
+const attendanceFieldSchemaDraft = z.object({
+  ...fieldBaseSchemaDraft,
+  type: z.literal("attendance"),
+  keyFieldKey: z.string(),
+  keyColumn: z.enum(["pricing_simple.location_code", "pricing_simple.site"]),
+  allowTyped: z.boolean().optional(),
+  initialRows: z.number().int().min(1).max(40).optional(),
+  minRows: z.number().int().min(0).max(40).optional()
+});
+
+const requiredTopicsFieldSchemaDraft = z.object({
+  ...fieldBaseSchemaDraft,
+  type: z.literal("required_topics"),
+  listKey: z.string(),
+  dateFieldKey: z.string()
+});
+
 const packagePriceGridFieldSchemaDraft = z.object({
   ...fieldBaseSchemaDraft,
   type: z.literal("package_price_grid"),
@@ -873,7 +933,9 @@ export const fieldSchemaDraft = z.discriminatedUnion("type", [
   locationFieldSchemaDraft,
   lookupFieldSchemaDraft,
   packagePriceGridFieldSchemaDraft,
-  employeeFieldSchemaDraft
+  employeeFieldSchemaDraft,
+  attendanceFieldSchemaDraft,
+  requiredTopicsFieldSchemaDraft
 ]);
 
 // Brief 120 — draft variant accepts a partial workflow (operator may save

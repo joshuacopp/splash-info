@@ -30,6 +30,10 @@ import type {
 } from "@splash/forms-schema";
 import {
   formatEmployeeValue,
+  formatAttendanceValue,
+  formatRequiredTopicsValue,
+  isAttendanceValue,
+  isRequiredTopicsValue,
   formatPriceGridValue,
   isEmployeeValue,
   isPriceGridValue
@@ -726,6 +730,10 @@ function displayText(field: Field, value: unknown): string {
       return isPriceGridValue(value) ? formatPriceGridValue(value) : "";
     case "employee":
       return isEmployeeValue(value) ? formatEmployeeValue(value) : "";
+    case "attendance":
+      return isAttendanceValue(value) ? formatAttendanceValue(value) : "";
+    case "required_topics":
+      return isRequiredTopicsValue(value) ? formatRequiredTopicsValue(value) : "";
     default:
       return String(value);
   }
@@ -1008,6 +1016,8 @@ function stringifyPayloadValue(
   if (typeof v === "string") return options?.get(v) ?? v;
   if (typeof v === "number" || typeof v === "boolean") return String(v);
   if (isEmployeeValue(v)) return formatEmployeeValue(v);
+  if (isAttendanceValue(v) && v.length > 0) return formatAttendanceValue(v);
+  if (isRequiredTopicsValue(v)) return formatRequiredTopicsValue(v);
   // One CSV cell: the multi-line rendering flattened to "; "-separated.
   if (isPriceGridValue(v)) {
     return formatPriceGridValue(v)

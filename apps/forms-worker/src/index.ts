@@ -116,6 +116,7 @@ import { handleListVersions } from "./admin/versions.js";
 import { handlePendingApprovals } from "./admin/pending-approvals.js";
 import { handleOpenSigningPage } from "./approval-links/sign-route.js";
 import { handleMyRequests } from "./admin/my-requests.js";
+import { handleRequiredTopicsLookup, handleRequiredTopicsAdmin } from "./required-topics/index.js";
 import { handleUserSearch } from "./admin/users-search.js";
 import { handleShareFormEmail } from "./admin/share-email.js";
 import { handleListActionItemQuestions } from "./admin/action-item-questions.js";
@@ -299,6 +300,13 @@ export default {
       return handleEmployeeSearch(env, req, employeesMatch[1]);
     }
 
+    // POST /forms/api/required-topics/{slug} — this month's committee-set
+    // topics for a required_topics field (src/required-topics/).
+    const topicsMatch = url.pathname.match(/^\/forms\/api\/required-topics\/([^/]+)$/);
+    if (topicsMatch && topicsMatch[1] && req.method === "POST") {
+      return handleRequiredTopicsLookup(env, req, topicsMatch[1]);
+    }
+
     // POST /forms/api/packages/{slug} — package names for a price grid.
     const packagesMatch = url.pathname.match(/^\/forms\/api\/packages\/([^/]+)$/);
     if (packagesMatch && packagesMatch[1] && req.method === "POST") {
@@ -453,6 +461,13 @@ export default {
       req.method === "GET"
     ) {
       return handlePendingApprovals(env, req);
+    }
+
+    // GET/PUT /forms/admin/api/required-topics — monthly required topics
+    //   (safety committee). Any session reads; admin tier or the list's
+    //   access tag edits.
+    if (url.pathname === "/forms/admin/api/required-topics") {
+      return handleRequiredTopicsAdmin(env, req);
     }
 
     // Brief 126 — GET /forms/admin/api/my-requests

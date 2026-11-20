@@ -19,6 +19,8 @@ import {
   isPriceGridValue
 } from "@splash/forms-schema/package-price";
 import { formatEmployeeValue, isEmployeeValue } from "@splash/forms-schema/employee";
+import { formatAttendanceValue, isAttendanceValue } from "@splash/forms-schema/attendance";
+import { formatRequiredTopicsValue, isRequiredTopicsValue } from "@splash/forms-schema/required-topics";
 
 const TRUNCATE_AT = 80;
 
@@ -80,6 +82,20 @@ export default function AnswerCell({ field, value }: Props) {
         </span>
       ) : (
         <span className="text-splash-navy/40">—</span>
+      );
+
+    case "attendance":
+      return isAttendanceValue(value) && value.length > 0 ? (
+        <span title={formatAttendanceValue(value)}>{value.length} signed</span>
+      ) : (
+        <Em />
+      );
+
+    case "required_topics":
+      return isRequiredTopicsValue(value) ? (
+        <PlainText value={formatRequiredTopicsValue(value)} />
+      ) : (
+        <Em />
       );
 
     case "package_price_grid":

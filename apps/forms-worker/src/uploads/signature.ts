@@ -13,7 +13,7 @@
 // chooses which). MIME is derived from `field.format` for the same reason.
 
 import { isOriginAllowed, jsonError } from "@splash/http";
-import type { SignatureField } from "@splash/forms-schema";
+import { parseAttendanceSignatureKey, type SignatureField } from "@splash/forms-schema";
 import type { Env } from "../index.js";
 import { HARD_LIMITS } from "../limits.js";
 import { getFormBySlug, getCurrentVersion } from "../db/forms.js";
@@ -64,12 +64,20 @@ export async function handleSignatureUpload(
   if (!fieldKey) return jsonError(400, "missing_field_key");
   if (!(sigEntry instanceof Blob)) return jsonError(400, "no_signature");
 
-  const field = version.schema.fields.find(
+  // A plain signature field, or one ROW of an attendance sheet
+  // (`${key}__sig_${n}` -- see attendance.ts). Each row gets its own key so
+  // the fixed filename below cannot make one row overwrite another.
+  const sigField = version.schema.fields.find(
     (f) => f.key === fieldKey && f.type === "signature"
   ) as SignatureField | undefined;
-  if (!field) {
+  const rowRef = sigField ? null : parseAttendanceSignatureKey(fieldKey);
+  const attendanceField = rowRef
+    ? version.schema.fields.find((f) => f.key === rowRef.fieldKey && f.type === "attendance")
+    : undefined;
+  if (!sigField && !attendanceField) {
     return jsonError(400, `unknown_field: "${fieldKey}" is not a signature field on this form`);
   }
+  const field: Pick<SignatureField, "format"> = sigField ?? { format: "png" };
 
   const blob = sigEntry;
   if (blob.size === 0) return jsonError(400, "empty_signature");

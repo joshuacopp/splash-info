@@ -9,6 +9,8 @@
     ".": "./src/index.ts",
     "./package-price": "./src/package-price.ts",
     "./employee": "./src/employee.ts",
+    "./attendance": "./src/attendance.ts",
+    "./required-topics": "./src/required-topics.ts",
     "./approver-view": "./src/approver-view.ts",
     "./digest": "./src/digest.ts",
     "./pdf-template": "./src/pdf-template.ts"

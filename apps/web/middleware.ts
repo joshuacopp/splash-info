@@ -120,6 +120,7 @@ const ADMIN_KNOWN_SUBPATHS = new Set<string>([
   "scorm-builder",
   "sds-catalog",
   "signups",
+  "safety-topics",
   "site-status",
   "supply-orders",
   "sysadmin",

@@ -53,6 +53,8 @@ import { parseSubmitFormData } from "./parse.js";
 import { deleteDraftsForSubmission } from "../drafts/index.js";
 import { resolvePriceGrids } from "./price-grids.js";
 import { resolveEmployees } from "../lookup/employees.js";
+import { checkAttendance } from "./attendance.js";
+import { resolveRequiredTopics } from "../required-topics/index.js";
 import { verifyTurnstile } from "./turnstile.js";
 import { renderSuccessPage } from "./success.js";
 import { impersonationBannerHtml } from "../render/impersonation-banner.js";
@@ -270,6 +272,22 @@ export async function handleSubmit(
     }
   }
 
+  // Attendance sheets: per-row signatures (own R2 prefix per row) and
+  // half-filled rows. See submit/attendance.ts.
+  const attendance = await checkAttendance(env, form.id, pendingSubmissionId, version.schema, payload);
+  if (!attendance.ok) {
+    if (attendance.error) return jsonError(attendance.status, attendance.error);
+    return new Response(
+      JSON.stringify({ error: "validation_failed", fields: attendance.fields }),
+      { status: attendance.status, headers: { "Content-Type": "application/json" } }
+    );
+  }
+  totalBytes += attendance.bytes;
+  if (totalBytes > HARD_LIMITS.PER_SUBMISSION_MAX_BYTES) {
+    return jsonError(413, "submission_too_large");
+  }
+  fileRowsToInsert.push(...attendance.fileRows);
+
   // -----------------------------------------------------------------
   // Brief 93 — server-side lookup re-resolve.
   //
@@ -387,6 +405,16 @@ export async function handleSubmit(
     return new Response(
       JSON.stringify({ error: "validation_failed", fields: employees.fields }),
       { status: employees.status, headers: { "Content-Type": "application/json" } }
+    );
+  }
+
+  // Required topics: the month's committee list, read for the SUBMITTED date,
+  // must all be ticked. See src/required-topics/.
+  const topics = await resolveRequiredTopics(env, version.schema, payload);
+  if (!topics.ok) {
+    return new Response(
+      JSON.stringify({ error: "validation_failed", fields: topics.fields }),
+      { status: topics.status, headers: { "Content-Type": "application/json" } }
     );
   }
 

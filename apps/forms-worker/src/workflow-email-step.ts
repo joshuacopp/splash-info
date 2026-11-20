@@ -39,6 +39,10 @@ import {
   answerMatches,
   flaggedFieldKeys,
   formatEmployeeValue,
+  formatAttendanceValue,
+  formatRequiredTopicsValue,
+  isAttendanceValue,
+  isRequiredTopicsValue,
   formatPriceGridValue,
   isEmployeeValue,
   isPriceGridValue,
@@ -522,11 +526,8 @@ export async function cascadeThroughEmailSteps(
         recipientRuntime
       );
       const subject = testNote && !renderedSubject.startsWith("[TEST]") ? `[TEST] ${renderedSubject}` : renderedSubject;
-      const renderedBody = renderTemplate(
-        stage.body_template ?? "",
-        ctx.schema,
-        ctx.payload,
-        recipientRuntime
+      const renderedBody = plainTextActionCallouts(
+        renderTemplate(stage.body_template ?? "", ctx.schema, ctx.payload, recipientRuntime)
       );
       // Brief 134 — auto-derive an HTML body from the same operator-
       // authored plain-text template. Wrap the rendered fragment in
@@ -761,7 +762,9 @@ function normaliseSubmitterEmailSource(
  *   {field.<grid>.sites}    — a multi-site price grid's sites, comma-joined
  *
  * Brief 127 — template syntax is intentionally simple. No conditionals,
- * no markdown — just placeholder substitution. Operators can write raw
+ * no markdown — just placeholder substitution. One exception: a body
+ * paragraph starting "!!" renders as an ACTION REQUIRED callout (red box in
+ * HTML, framed in plain text). Operators can write raw
  * HTML in body_template if they need formatting; escape responsibility
  * is theirs.
  */
@@ -886,14 +889,44 @@ export function renderTemplateHtml(
     // built it via the per-token helpers above); the rest is
     // operator-authored plain text and must be escaped to keep
     // user-supplied `<` / `>` / `&` from leaking into the DOM.
-    const escaped = escapeOutsideSentinels(p, TOKEN_OPEN, TOKEN_CLOSE);
+    // A paragraph starting "!!" is an ACTION callout: a red-bordered box
+    // nobody scrolls past (e.g. the warning notice's "upload to iSolved
+    // within 24 hours"). The plain-text body frames the same paragraph via
+    // `plainTextActionCallouts`.
+    const action = ACTION_PREFIX.test(p);
+    const escaped = escapeOutsideSentinels(action ? p.replace(ACTION_PREFIX, "") : p, TOKEN_OPEN, TOKEN_CLOSE);
     // Single newlines inside the paragraph become `<br>`. Do this
     // after escaping so the literal "\n" sequences haven't been
     // touched.
     const withBreaks = escaped.replace(/\n/g, "<br>");
+    if (action) {
+      out.push(
+        `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin: 0 0 20px 0;"><tr>` +
+          `<td style="padding: 14px 16px; background-color: #fdecec; border: 3px solid #c81e1e; border-radius: 6px;">` +
+          `<p style="margin: 0 0 6px 0; font-size: 13px; font-weight: 700; letter-spacing: 0.06em; color: #c81e1e;">ACTION REQUIRED</p>` +
+          `<p style="margin: 0; font-size: 17px; line-height: 1.45; font-weight: 700; color: #7f1d1d;">${withBreaks}</p>` +
+          `</td></tr></table>`
+      );
+      continue;
+    }
     out.push(`<p style="margin: 0 0 16px 0; font-size: 15px; line-height: 1.55; color: #1f2937;">${withBreaks}</p>`);
   }
   return out.join("\n");
+}
+
+/** Body paragraphs that start with "!!" render as an ACTION REQUIRED box. */
+const ACTION_PREFIX = /^\s*!!\s*/;
+
+/** Plain-text twin of the HTML action callout: frames each "!!" paragraph. */
+export function plainTextActionCallouts(body: string): string {
+  return body
+    .split(/\n\n+/)
+    .map((p) =>
+      ACTION_PREFIX.test(p)
+        ? `******** ACTION REQUIRED ********\n${p.replace(ACTION_PREFIX, "")}\n*********************************`
+        : p
+    )
+    .join("\n\n");
 }
 
 function renderTokenHtml(
@@ -1453,6 +1486,8 @@ function renderPayloadSummary(
  */
 export function resolveDisplayValue(field: Field | undefined, value: unknown): string {
   if (value == null || value === "") return "";
+  if (field?.type === "attendance" && isAttendanceValue(value)) return formatAttendanceValue(value);
+  if (isRequiredTopicsValue(value)) return formatRequiredTopicsValue(value);
   if (isPriceGridValue(value)) return formatPriceGridValue(value);
   if (isEmployeeValue(value)) return formatEmployeeValue(value);
   // radio stores a dropdown-shaped payload; without it here, emails printed

@@ -367,9 +367,14 @@ const workflow: FormWorkflow = {
         { type: "payload_field", field_key: "supervisor_email" }
       ]),
       attach_warning_notice: true,
-      subject_template: `${T}Employee warning notice: {field.employee} at {field.site_name}`,
+      // Operator, 2026-11-20: the iSolved upload must be unmissable, so it is
+      // in the subject and is the first thing in the body, as a "!!" ACTION
+      // REQUIRED box. ONE email goes to HRT + RM + supervisor, so it is
+      // addressed to the supervisor by name.
+      subject_template: `${T}ACTION: upload to iSolved within 24 hrs - warning notice: {field.employee} at {field.site_name}`,
       body_template: [
         LIVE ? "" : "TEST - when live this goes to the site's HRT, the RM and the supervisor.",
+        "!! {field.supervisor_name}: upload the attached PDF to {field.employee}'s record in iSolved within 24 hours.",
         "{field.supervisor_name} issued an employee warning notice to {field.employee} at {field.site_name} on {field.warning_date}.",
         "The signed Warning Notice and the Notice of Negative Information are attached. If the employee's copy was not emailed to them, the supervisor hands it over in a sealed envelope.",
         "This is a confidential personnel record."

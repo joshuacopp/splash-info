@@ -98,6 +98,7 @@ export const NAV = [
   // ---- Operations / Other Tools ----
   { id: "golden-ticket", group: "operations", subgroup: "other-tools", title: "Golden Ticket", href: "/admin/golden-ticket" },
   { id: "pending-approvals", group: "operations", subgroup: "other-tools", title: "Pending Approvals", href: "/admin/approvals" },
+  { id: "safety-topics", group: "operations", subgroup: "other-tools", title: "Safety Meeting Topics", href: "/admin/safety-topics" },
   { id: "site-status", group: "operations", subgroup: "other-tools", title: "Site Status", href: "/admin/site-status" },
   { id: "action-items", group: "operations", subgroup: "other-tools", title: "Action Items", href: "/action-items" },
   { id: "forms-fill", group: "operations", subgroup: "other-tools", title: "Fill Out a Form", href: "/forms" },

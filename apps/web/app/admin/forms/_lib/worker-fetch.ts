@@ -1017,3 +1017,42 @@ export async function listPdfTemplatesAdmin(
     return [];
   }
 }
+
+// =============================================================================
+// Required topics (2026-11-18) -- /admin/safety-topics
+// =============================================================================
+
+export interface RequiredTopicsMonth {
+  month: string; // "2026-12"
+  topics: string[];
+  updated_at: string | null;
+  updated_by_email: string | null;
+}
+
+export interface RequiredTopicsResponse {
+  list: string;
+  label: string;
+  can_edit: boolean;
+  current_month: string;
+  months: RequiredTopicsMonth[];
+}
+
+/** null on 401 / any failure -- the page shows a sign-in / unavailable card. */
+export async function getRequiredTopicsAdmin(list: string): Promise<RequiredTopicsResponse | null> {
+  const resp = await callForms(`/forms/admin/api/required-topics?list=${encodeURIComponent(list)}`);
+  if (!resp.ok) return null;
+  return (await resp.json()) as RequiredTopicsResponse;
+}
+
+export async function putRequiredTopicsAdmin(
+  list: string,
+  month: string,
+  topics: string[]
+): Promise<{ status: number; body: Record<string, unknown> }> {
+  const resp = await callForms("/forms/admin/api/required-topics", {
+    method: "PUT",
+    jsonBody: { list, month, topics }
+  });
+  const body = (await resp.json().catch(() => ({}))) as Record<string, unknown>;
+  return { status: resp.status, body };
+}

@@ -30,6 +30,8 @@ import { renderLocation } from "./location.js";
 import { renderLookup } from "./lookup.js";
 import { renderPackagePriceGrid } from "./package-price-grid.js";
 import { renderEmployee } from "./employee.js";
+import { renderAttendance } from "./attendance.js";
+import { renderRequiredTopics } from "./required-topics.js";
 
 /**
  * Brief 176 — the "Create action item" checkbox.
@@ -113,5 +115,7 @@ function renderFieldBody(field: Field, ctx: RenderBodyArgs): string {
     case "lookup":      return renderLookup(field, ctx);
     case "package_price_grid": return renderPackagePriceGrid(field, ctx);
     case "employee":    return renderEmployee(field, ctx);
+    case "attendance":  return renderAttendance(field, ctx);
+    case "required_topics": return renderRequiredTopics(field, ctx);
   }
 }

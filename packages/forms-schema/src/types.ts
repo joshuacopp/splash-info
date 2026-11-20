@@ -19,6 +19,8 @@ export type FieldType =
   | "location"
   | "package_price_grid"
   | "employee"
+  | "attendance"
+  | "required_topics"
   | "hidden"
   | "heading"      // display-only, no payload
   | "image";       // display-only, no payload
@@ -380,6 +382,40 @@ export interface EmployeeField extends FieldBase {
   allowTyped?: boolean;
 }
 
+/**
+ * Attendance sheet (2026-11-18, Monthly Safety Meeting): a growing list of
+ * rows, each an employee picker (same roster search as `employee`) plus a
+ * signature. Starts with `initialRows` empty rows and an "+ Add employee"
+ * button, so a big crew is not stuck at a fixed count and a small crew does
+ * not face 43 empty boxes.
+ *
+ * Payload is `AttendanceRow[]` (see attendance.ts). Rows left completely
+ * blank are dropped; a row with a name but no signature (or the reverse) is
+ * refused. `required` means at least `minRows` signed rows (default 1).
+ */
+export interface AttendanceField extends FieldBase {
+  type: "attendance";
+  /** KEY of the field naming the site, as on `employee`. */
+  keyFieldKey: string;
+  keyColumn: LookupKeyColumn;
+  allowTyped?: boolean;     // default true
+  initialRows?: number;     // default 5
+  minRows?: number;         // default 1 when required, else 0
+}
+
+/**
+ * Committee-set topics for the month of another (date) field's value -- see
+ * required-topics.ts. Every listed topic must be ticked as covered. Payload is
+ * `RequiredTopicsValue`.
+ */
+export interface RequiredTopicsField extends FieldBase {
+  type: "required_topics";
+  /** Which list (REQUIRED_TOPIC_LISTS key). */
+  listKey: string;
+  /** KEY of the date field whose month picks the list. */
+  dateFieldKey: string;
+}
+
 // -----------------------------------------------------------------------------
 // The full discriminated union.
 // -----------------------------------------------------------------------------
@@ -403,7 +439,9 @@ export type Field =
   | LocationField
   | LookupField
   | PackagePriceGridField
-  | EmployeeField;
+  | EmployeeField
+  | AttendanceField
+  | RequiredTopicsField;
 
 // Form schema = ordered list of fields. Order is implicit (array index).
 // Brief 120 adds an optional `workflow` block — forms without a workflow

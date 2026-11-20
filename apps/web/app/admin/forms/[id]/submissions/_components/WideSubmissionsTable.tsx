@@ -13,6 +13,8 @@ import Link from "next/link";
 import type { Field } from "@splash/forms-schema";
 import { formatPriceGridValue, isPriceGridValue } from "@splash/forms-schema/package-price";
 import { formatEmployeeValue, isEmployeeValue } from "@splash/forms-schema/employee";
+import { formatAttendanceValue, isAttendanceValue } from "@splash/forms-schema/attendance";
+import { formatRequiredTopicsValue, isRequiredTopicsValue } from "@splash/forms-schema/required-topics";
 import type { SubmissionListItem } from "../../../_lib/worker-fetch";
 import StatusPill from "./StatusPill";
 import AnswerCell from "./AnswerCell";
@@ -65,6 +67,10 @@ function toSearchText(field: Field, value: unknown): string {
       return isPriceGridValue(value) ? formatPriceGridValue(value) : "";
     case "employee":
       return isEmployeeValue(value) ? formatEmployeeValue(value) : "";
+    case "attendance":
+      return isAttendanceValue(value) ? formatAttendanceValue(value) : "";
+    case "required_topics":
+      return isRequiredTopicsValue(value) ? formatRequiredTopicsValue(value) : "";
     default:
       return String(value);
   }

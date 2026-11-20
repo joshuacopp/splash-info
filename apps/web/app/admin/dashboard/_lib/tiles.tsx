@@ -595,6 +595,19 @@ export const TILES: ReadonlyArray<Tile> = [
     visibleTo: (s, ctx) => isAdminTier(s) || ctx.formAccessTags.includes("golden_ticket")
   },
   {
+    id: "safety-topics",
+    group: "operations",
+    subgroup: "other-tools",
+    eyebrow: "Safety",
+    title: "Safety Meeting Topics",
+    description: "Set the topics every site must cover at its monthly safety meeting.",
+    href: "/admin/safety-topics",
+    icon: clipboardCheckIcon,
+    // Admin tier, or the safety_committee access tag. Anyone signed in may
+    // READ the page, but only these people need the tile.
+    visibleTo: (s, ctx) => isAdminTier(s) || ctx.formAccessTags.includes("safety_committee")
+  },
+  {
     id: "site-status",
     group: "operations",
     subgroup: "other-tools",
