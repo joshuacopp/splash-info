@@ -4,6 +4,7 @@ import {
   normalizeGiveawayPhone,
   normalizeGiveawayPlate,
   parseGiveawaySettings,
+  parseGiveawaySiteNumber,
   readGiveawayFields
 } from "@splash/forms-schema";
 import { giveawayState } from "./data.js";
@@ -32,6 +33,13 @@ describe("parseGiveawaySettings", () => {
     expect(r).toEqual({ ok: false, error: expect.stringContaining("at least one field") });
   });
 
+  it("site alone isn't something to enter; a missing site mode means Off", () => {
+    const siteOnly = { ...fields({ phone: "off" }), site: { mode: "required" } };
+    expect(parseGiveawaySettings({ title: "x", fields: siteOnly, sms_consent: "off" }).ok).toBe(false);
+    const r = parseGiveawaySettings({ title: "x", fields: fields(), sms_consent: "off" });
+    expect(r.ok && r.value.fields.site).toEqual({ mode: "off" });
+  });
+
   it("refuses an end date before the start date", () => {
     const r = parseGiveawaySettings({ title: "x", fields: fields(), sms_consent: "off", starts_on: "2026-12-10", ends_on: "2026-12-01" });
     expect(r.ok).toBe(false);
@@ -55,6 +63,13 @@ describe("entry normalising", () => {
     expect(normalizeGiveawayPhone("+1 607 555 0123")).toBe("6075550123");
     expect(normalizeGiveawayPhone("555-0123")).toBeNull();
     expect(normalizeGiveawayPhone("1075550123")).toBeNull();
+  });
+
+  it("site number: 1-3 digits", () => {
+    expect(parseGiveawaySiteNumber(" 122 ")).toBe(122);
+    expect(parseGiveawaySiteNumber("011")).toBe(11);
+    expect(parseGiveawaySiteNumber("1222")).toBeNull();
+    expect(parseGiveawaySiteNumber("12a")).toBeNull();
   });
 
   it("plate: upper-case, spaces and dashes dropped", () => {

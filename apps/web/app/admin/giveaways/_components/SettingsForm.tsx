@@ -23,6 +23,7 @@ const INPUT =
   "w-full rounded-splash-sm border border-gray-light bg-white px-3 py-2 text-sm text-splash-navy focus:border-splash-blue focus:outline-none";
 
 const HINT: Record<GiveawayFieldKey, string> = {
+  site: "Customer types the 3-digit site number; the site's name shows as they type. A tablet link with ?site= fills it in for them.",
   name: "",
   email: "",
   phone: "10-digit US number.",

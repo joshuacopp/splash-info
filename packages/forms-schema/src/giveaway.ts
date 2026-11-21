@@ -8,8 +8,15 @@
 // values through the `@splash/forms-schema/giveaway` subpath. The package root
 // uses `.js` specifiers Next's webpack cannot resolve.
 
-export const GIVEAWAY_FIELD_KEYS = ["name", "email", "phone", "plate", "barcode"] as const;
+// "site" is the customer typing the 3-digit site number (the entry page shows
+// the site's name as they type). It fills the entry's site_number / site_name,
+// winning over the link's ?site=N, which only pre-fills the box. It is not an
+// entry detail on its own: it never counts as "something to enter" and is never
+// a one-per-person key.
+export const GIVEAWAY_FIELD_KEYS = ["site", "name", "email", "phone", "plate", "barcode"] as const;
 export type GiveawayFieldKey = (typeof GIVEAWAY_FIELD_KEYS)[number];
+/** The fields that identify the person entering. */
+export const GIVEAWAY_PERSON_KEYS = ["name", "email", "phone", "plate", "barcode"] as const;
 
 export const GIVEAWAY_FIELD_MODES = ["off", "optional", "required"] as const;
 export type GiveawayFieldMode = (typeof GIVEAWAY_FIELD_MODES)[number];
@@ -23,6 +30,7 @@ export interface GiveawayFieldSetting {
 export type GiveawayFields = Record<GiveawayFieldKey, GiveawayFieldSetting>;
 
 export const GIVEAWAY_FIELD_DEFAULT_LABEL: Record<GiveawayFieldKey, string> = {
+  site: "Site number",
   name: "Name",
   email: "Email",
   phone: "Phone number",
@@ -59,6 +67,7 @@ export interface GiveawaySettings {
 /** A new giveaway: phone only (the common case). */
 export function defaultGiveawayFields(): GiveawayFields {
   return {
+    site: { mode: "off" },
     name: { mode: "off" },
     email: { mode: "off" },
     phone: { mode: "required" },
@@ -116,6 +125,8 @@ export function parseGiveawaySettings(input: unknown): { ok: true; value: Giveaw
   const fields = {} as GiveawayFields;
   for (const k of GIVEAWAY_FIELD_KEYS) {
     const v = (fieldsIn[k] ?? {}) as { mode?: unknown; label?: unknown };
+    // Site was added after launch: a caller that doesn't send it means Off.
+    if (k === "site" && (v.mode === undefined || v.mode === "")) v.mode = "off";
     if (!(GIVEAWAY_FIELD_MODES as readonly string[]).includes(String(v.mode))) {
       return { ok: false, error: `Choose Off, Optional or Required for ${GIVEAWAY_FIELD_DEFAULT_LABEL[k]}.` };
     }
@@ -125,7 +136,7 @@ export function parseGiveawaySettings(input: unknown): { ok: true; value: Giveaw
     }
     fields[k] = label && label !== GIVEAWAY_FIELD_DEFAULT_LABEL[k] ? { mode: v.mode as GiveawayFieldMode, label } : { mode: v.mode as GiveawayFieldMode };
   }
-  if (GIVEAWAY_FIELD_KEYS.every((k) => fields[k].mode === "off")) {
+  if (GIVEAWAY_PERSON_KEYS.every((k) => fields[k].mode === "off")) {
     return { ok: false, error: "Turn on at least one field, or there is nothing to enter." };
   }
 
@@ -159,6 +170,12 @@ export function normalizeGiveawayPhone(s: string): string | null {
 export function formatGiveawayPhone(d: string | null | undefined): string {
   if (!d || !/^\d{10}$/.test(d)) return d ?? "";
   return `(${d.slice(0, 3)}) ${d.slice(3, 6)}-${d.slice(6)}`;
+}
+
+/** "122" / "11" / "011" -> 122 / 11 / 11; anything else null. */
+export function parseGiveawaySiteNumber(s: string): number | null {
+  const t = s.trim();
+  return /^\d{1,3}$/.test(t) ? Number(t) : null;
 }
 
 /** Upper-case letters and digits only (spaces and dashes dropped), 1-10 long, or null. */

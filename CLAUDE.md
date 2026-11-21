@@ -3380,6 +3380,12 @@ URL-based — service bindings don't apply to those.
   customer saw. Access: admin tier or the `giveaways` grant, which no form
   carries -- sysadmin offers it from `FEATURE_ACCESS_TAGS`
   (apps/sysadmin-worker); add a future feature-only tag there too.
+  The optional Site number field (2026-11-21) is the customer typing the
+  3-digit site; the page shows the name from a site list embedded in the page
+  and the server re-checks it. It fills site_number / site_name, beats the
+  link's `?site=` (which only pre-fills it), and is NOT a person field: it
+  never satisfies "at least one field" and is never a one-per-person key
+  (`GIVEAWAY_PERSON_KEYS`).
 - **Employee field** (2026-11-13, PLAN_FORMS_PERSONNEL.md phase 2) - form
   field type `employee`: searches the Beekeeper roster of the site another
   field names (011 / 101 = office groups) via `POST /forms/api/employees/{slug}`.

@@ -7,7 +7,9 @@
 // The token is giveaways.token: the link is the only gate, like the site
 // status link. `?site=N` stamps the entry with the tablet's site; a number that
 // isn't a real site is ignored rather than refused, so a mistyped link still
-// takes entries.
+// takes entries. When the giveaway turns on the Site number field, the customer
+// types the site instead (pre-filled from `?site=N`), the page shows the site's
+// name as they type from a list embedded in the page, and the typed site wins.
 //
 // SHARED TABLET: every input is autocomplete="off" and nothing is kept in the
 // browser. A successful entry redirects (303) to a GET, so a refresh never
@@ -20,15 +22,17 @@ import { isOriginAllowed } from "@splash/http";
 import { isValidEmail } from "@splash/types/email-validate";
 import {
   GIVEAWAY_FIELD_KEYS,
+  GIVEAWAY_PERSON_KEYS,
   GIVEAWAY_SMS_CONSENT_TEXT,
   effectiveSmsConsent,
   giveawayFieldLabel,
   normalizeGiveawayPhone,
   normalizeGiveawayPlate,
+  parseGiveawaySiteNumber,
   type GiveawayFieldKey
 } from "@splash/forms-schema";
 import type { Env } from "../index.js";
-import { getSite } from "../site-status/data.js";
+import { getSite, listSites } from "../site-status/data.js";
 import {
   easternToday,
   findDuplicate,
@@ -62,6 +66,7 @@ label{display:block;font-weight:700;font-size:17px;margin:16px 0 6px}.req{color:
 input[type=text],input[type=email],input[type=tel]{width:100%;font-size:20px;padding:12px;border:1px solid #b8c4d2;border-radius:8px;background:#fff;color:var(--navy)}
 input.bad{border-color:var(--red);border-width:2px}
 .fielderr{color:var(--red);font-size:15px;margin-top:4px}
+.sitename{font-size:16px;margin-top:6px;min-height:22px;color:var(--green);font-weight:700}.sitename.none{color:var(--red);font-weight:400}
 .consent{display:flex;gap:12px;align-items:flex-start;margin-top:20px;padding:14px;border:1px solid var(--line);border-radius:8px;background:#f7f9fb;font-size:14px;line-height:1.45;font-weight:400}
 .consent input{width:26px;height:26px;flex:0 0 auto;margin:0}
 button,.btn{display:block;width:100%;border:0;border-radius:10px;padding:16px;font-size:20px;font-weight:700;color:#fff;background:var(--blue);cursor:pointer;text-decoration:none;text-align:center;margin-top:22px}
@@ -116,6 +121,7 @@ function selfUrl(url: URL, extra: Record<string, string> = {}): string {
 type Values = Partial<Record<GiveawayFieldKey, string>> & { sms?: boolean };
 
 const INPUT: Record<GiveawayFieldKey, string> = {
+  site: `type="text" maxlength="3" inputmode="numeric" pattern="[0-9]{1,3}" spellcheck="false"`,
   name: `type="text" maxlength="100" autocapitalize="words"`,
   email: `type="email" maxlength="254" inputmode="email" autocapitalize="off" spellcheck="false"`,
   phone: `type="tel" maxlength="20" inputmode="tel"`,
@@ -123,8 +129,43 @@ const INPUT: Record<GiveawayFieldKey, string> = {
   barcode: `type="text" maxlength="64" autocapitalize="characters" spellcheck="false"`
 };
 
-function renderForm(g: Giveaway, url: URL, values: Values, errors: Record<string, string>, topError?: string): string {
+type SiteNames = Map<number, string>;
+
+/** Site number -> name, for the Site number field. Empty if the list can't be read (submit still checks). */
+async function siteNames(env: Env, g: Giveaway): Promise<SiteNames> {
+  if (g.fields.site.mode === "off") return new Map();
+  try {
+    return new Map((await listSites(env)).map((s) => [s.site_number, s.site]));
+  } catch (err) {
+    console.error("[giveaways] site list failed", err);
+    return new Map();
+  }
+}
+
+function siteLine(names: SiteNames, typed: string): string {
+  const n = parseGiveawaySiteNumber(typed);
+  const name = n === null ? undefined : names.get(n);
+  return name ? esc(name) : "";
+}
+
+// Shows the site's name under the box as the number is typed. The list rides in
+// a <script type="application/json"> so no site name is ever parsed as code.
+const SITE_SCRIPT = `<script>(function(){var i=document.getElementById("gw-site"),o=document.getElementById("gw-site-name"),d=document.getElementById("gw-sites");if(!i||!o||!d)return;var m=JSON.parse(d.textContent||"{}");function u(){var v=i.value.trim(),n=/^[0-9]{1,3}$/.test(v)?m[String(Number(v))]:null;if(n){o.textContent=n;o.className="sitename"}else if(v.length===3){o.textContent="No site with that number.";o.className="sitename none"}else{o.textContent="";o.className="sitename"}}i.addEventListener("input",u);u()})();</script>`;
+
+function renderForm(
+  g: Giveaway,
+  url: URL,
+  values: Values,
+  errors: Record<string, string>,
+  topError?: string,
+  names: SiteNames = new Map()
+): string {
   const parts: string[] = [];
+  // A blank form pre-fills the site from the tablet's link.
+  if (g.fields.site.mode !== "off" && values.site === undefined) {
+    const linkSite = parseGiveawaySiteNumber(url.searchParams.get("site") ?? "");
+    if (linkSite !== null && names.has(linkSite)) values = { ...values, site: String(linkSite).padStart(3, "0") };
+  }
   for (const k of GIVEAWAY_FIELD_KEYS) {
     const f = g.fields[k];
     if (f.mode === "off") continue;
@@ -133,8 +174,14 @@ function renderForm(g: Giveaway, url: URL, values: Values, errors: Record<string
     parts.push(
       `<label for="gw-${k}">${esc(giveawayFieldLabel(g.fields, k))} ${req ? `<span class="req">*</span>` : `<span class="opt">(optional)</span>`}</label>` +
         `<input id="gw-${k}" name="${k}" ${INPUT[k]} autocomplete="off"${req ? " required" : ""}${err ? ` class="bad" aria-invalid="true"` : ""} value="${esc(values[k] ?? "")}">` +
+        (k === "site" ? `<div id="gw-site-name" class="sitename" aria-live="polite">${siteLine(names, values.site ?? "")}</div>` : "") +
         (err ? `<div class="fielderr">${esc(err)}</div>` : "")
     );
+  }
+  if (g.fields.site.mode !== "off") {
+    const map: Record<string, string> = {};
+    for (const [n, name] of names) map[String(n)] = name;
+    parts.push(`<script type="application/json" id="gw-sites">${JSON.stringify(map).replace(/</g, "\\u003c")}</script>${SITE_SCRIPT}`);
   }
   const consent = effectiveSmsConsent(g);
   if (consent !== "off") {
@@ -169,7 +216,7 @@ export async function handleGiveawayPage(env: Env, url: URL, token: string): Pro
   if (state === "ended" || state === "archived") {
     return page(g.title, `<div class="card">${header(g)}<p class="muted">This giveaway has ended. Thanks for your interest!</p></div>`);
   }
-  return page(g.title, renderForm(g, url, {}, {}));
+  return page(g.title, renderForm(g, url, {}, {}, undefined, await siteNames(env, g)));
 }
 
 const BARCODE_RE = /^[A-Za-z0-9 ._/#:+-]{1,64}$/;
@@ -192,9 +239,27 @@ export async function handleGiveawayPost(env: Env, req: Request, url: URL, token
   const values: Values = { sms: fd.get("sms_consent") === "1" };
   for (const k of GIVEAWAY_FIELD_KEYS) values[k] = raw(k).slice(0, 254);
 
+  const names = await siteNames(env, g);
+  const form = (v: Values, e: Record<string, string>, top: string) => renderForm(g, url, v, e, top, names);
+
   const errors: Record<string, string> = {};
-  const clean: Record<GiveawayFieldKey, string | null> = { name: null, email: null, phone: null, plate: null, barcode: null };
-  for (const k of GIVEAWAY_FIELD_KEYS) {
+  const clean: Record<(typeof GIVEAWAY_PERSON_KEYS)[number], string | null> = { name: null, email: null, phone: null, plate: null, barcode: null };
+  let typedSite: { site_number: number; site: string } | null = null;
+  if (g.fields.site.mode !== "off") {
+    const v = values.site ?? "";
+    if (v === "") {
+      if (g.fields.site.mode === "required") errors.site = "Enter the 3-digit site number.";
+    } else {
+      const n = parseGiveawaySiteNumber(v);
+      let site: { site_number: number; site: string } | null = null;
+      if (n !== null && names.has(n)) site = { site_number: n, site: names.get(n)! };
+      // The list couldn't be read: that's not the customer's fault, so check the one number directly.
+      else if (n !== null && names.size === 0) site = await getSite(env, n).catch(() => null);
+      if (!site) errors.site = "Check the site number: no site has that number.";
+      else typedSite = { site_number: site.site_number, site: site.site };
+    }
+  }
+  for (const k of GIVEAWAY_PERSON_KEYS) {
     const mode = g.fields[k].mode;
     const v = values[k] ?? "";
     if (mode === "off" || v === "") {
@@ -239,12 +304,12 @@ export async function handleGiveawayPost(env: Env, req: Request, url: URL, token
     errors.phone = "Enter your phone number to get texts, or untick the box.";
   }
 
-  const anyValue = GIVEAWAY_FIELD_KEYS.some((k) => clean[k] !== null);
+  const anyValue = GIVEAWAY_PERSON_KEYS.some((k) => clean[k] !== null);
   if (Object.keys(errors).length === 0 && !anyValue) {
-    return page(g.title, renderForm(g, url, values, {}, "Fill in at least one box to enter."), 422);
+    return page(g.title, form(values, {}, "Fill in at least one box to enter."), 422);
   }
   if (Object.keys(errors).length > 0) {
-    return page(g.title, renderForm(g, url, values, errors, "Check the highlighted boxes."), 422);
+    return page(g.title, form(values, errors, "Check the highlighted boxes."), 422);
   }
 
   try {
@@ -252,10 +317,10 @@ export async function handleGiveawayPost(env: Env, req: Request, url: URL, token
       const dup = await findDuplicate(env, { giveaway_id: g.id, ...clean });
       if (dup) {
         const what = giveawayFieldLabel(g.fields, dup).toLowerCase();
-        return page(g.title, renderForm(g, url, {}, {}, `This ${what} has already been entered in this giveaway. One entry per person.`), 409);
+        return page(g.title, form({}, {}, `This ${what} has already been entered in this giveaway. One entry per person.`), 409);
       }
     }
-    const site = await siteFrom(env, url);
+    const site = typedSite ?? (g.fields.site.mode === "off" ? await siteFrom(env, url) : null);
     await insertEntry(env, {
       giveaway_id: g.id,
       site_number: site?.site_number ?? null,
@@ -268,7 +333,7 @@ export async function handleGiveawayPost(env: Env, req: Request, url: URL, token
     });
   } catch (err) {
     console.error("[giveaways] entry failed", err);
-    return page(g.title, renderForm(g, url, values, {}, "Something went wrong saving your entry. Try again."), 502);
+    return page(g.title, form(values, {}, "Something went wrong saving your entry. Try again."), 502);
   }
 
   return new Response(null, { status: 303, headers: { Location: selfUrl(url, { done: "1" }), "Cache-Control": "no-store" } });
