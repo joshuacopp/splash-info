@@ -361,6 +361,16 @@ const ticketIcon: ReactNode = (
   </svg>
 );
 
+const giftIcon: ReactNode = (
+  <svg {...SvgProps}>
+    <rect x="3" y="8" width="18" height="4" rx="1" />
+    <path d="M5 12v8h14v-8" />
+    <line x1="12" y1="8" x2="12" y2="20" />
+    <path d="M12 8c-1.5-3-5-3.5-5-1.5S10 8 12 8z" />
+    <path d="M12 8c1.5-3 5-3.5 5-1.5S14 8 12 8z" />
+  </svg>
+);
+
 const cogIcon: ReactNode = (
   <svg {...SvgProps}>
     <circle cx="12" cy="12" r="3.2" />
@@ -606,6 +616,18 @@ export const TILES: ReadonlyArray<Tile> = [
     // Admin tier, or the safety_committee access tag. Anyone signed in may
     // READ the page, but only these people need the tile.
     visibleTo: (s, ctx) => isAdminTier(s) || ctx.formAccessTags.includes("safety_committee")
+  },
+  {
+    id: "giveaways",
+    group: "operations",
+    subgroup: "other-tools",
+    eyebrow: "Marketing",
+    title: "Giveaways",
+    description: "Set up giveaway contests customers enter on the site tablet, and download the entries.",
+    href: "/admin/giveaways",
+    icon: giftIcon,
+    // Admin tier, or the giveaways access tag. The worker still decides access.
+    visibleTo: (s, ctx) => isAdminTier(s) || ctx.formAccessTags.includes("giveaways")
   },
   {
     id: "site-status",

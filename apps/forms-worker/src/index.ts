@@ -21,6 +21,9 @@
 //   POST   /forms/api/employees/{slug}                — roster search for an Employee field
 //   GET    /forms/approve/{token}                     — emailed no-sign-in approval page
 //   POST   /forms/approve/{token}                     — record an emailed approval/denial
+//   GET    /forms/giveaway/{token}                    — giveaway entry page (site tablet)
+//   POST   /forms/giveaway/{token}                    — record a giveaway entry
+//   *      /forms/admin/api/giveaways[...]            — giveaway setup + entries (src/giveaways/admin.ts)
 //   GET    /forms/admin/api/forms                     — Brief 94: list forms
 //   POST   /forms/admin/api/forms                     — Brief 94: create form
 //   GET    /forms/admin/api/forms/{id}                — Brief 94: get form detail
@@ -192,6 +195,8 @@ import {
   handleSiteLinkPost
 } from "./site-status/public.js";
 import { runOverdueCheck } from "./site-status/actions.js";
+import { handleGiveawayPage, handleGiveawayPost } from "./giveaways/public.js";
+import { handleGiveawaysAdmin } from "./giveaways/admin.js";
 
 export interface Env {
   SUPABASE_URL: string;
@@ -324,6 +329,17 @@ export default {
     if (siteLinkMatch && siteLinkMatch[1]) {
       if (req.method === "GET") return handleSiteLinkPage(env, req, url, siteLinkMatch[1]);
       if (req.method === "POST") return handleSiteLinkPost(env, req, url, siteLinkMatch[1]);
+    }
+    // Giveaway contests (2026-11-20, src/giveaways/). The public entry page is
+    // two segments, so it can't collide with /forms/{slug}.
+    const giveawayMatch = url.pathname.match(/^\/forms\/giveaway\/([A-Za-z0-9_-]{20,64})$/);
+    if (giveawayMatch && giveawayMatch[1]) {
+      if (req.method === "GET") return handleGiveawayPage(env, url, giveawayMatch[1]);
+      if (req.method === "POST") return handleGiveawayPost(env, req, url, giveawayMatch[1]);
+    }
+    if (url.pathname === "/forms/admin/api/giveaways" || url.pathname.startsWith("/forms/admin/api/giveaways/")) {
+      const r = await handleGiveawaysAdmin(env, req, url);
+      if (r) return r;
     }
     if (url.pathname.startsWith("/forms/admin/api/site-status/")) {
       const r = await handleSiteStatusAdmin(env, req, url);

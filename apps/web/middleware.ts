@@ -121,6 +121,7 @@ const ADMIN_KNOWN_SUBPATHS = new Set<string>([
   "sds-catalog",
   "signups",
   "safety-topics",
+  "giveaways",
   "site-status",
   "supply-orders",
   "sysadmin",

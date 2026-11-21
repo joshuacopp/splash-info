@@ -25,6 +25,7 @@ export * from "./employee.js";
 export * from "./attendance.js";
 export * from "./required-topics.js";
 export * from "./digest.js";
+export * from "./giveaway.js";
 export * from "./pdf-template.js";
 export { approverFields, answerMatches } from "./approver-view.js";
 export * from "./validators/index.js";

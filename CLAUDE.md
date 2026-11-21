@@ -3366,6 +3366,20 @@ URL-based — service bindings don't apply to those.
   carries the reopen link. `site_status_settings.test_email_to` = test mode
   (one [TEST] email listing intended recipients). "Equipment down"
   (`site_down_items`) is board-only and never emails.
+- **Giveaways** (2026-11-20) - Contests customers enter on the site tablet,
+  set up at `/admin/giveaways` WITHOUT the form builder: the entry fields are
+  FIXED (name / email / phone / plate / barcode, `packages/forms-schema/src/giveaway.ts`)
+  and each giveaway only sets each one Off / Optional / Required (+ label
+  override). Served by splash-forms `src/giveaways/`, tables in
+  `supabase/giveaways-01.sql`. Public page `/forms/giveaway/{token}[?site=N]`
+  -- the token is the only gate (rotate with "Make a new link"). Shared-tablet
+  rules: autocomplete off, no browser storage, 303 after an entry, values never
+  in the URL. The SMS consent box shows only when phone is on; an entry that
+  ticks it stores the EXACT wording in `sms_consent_text` -- if
+  `GIVEAWAY_SMS_CONSENT_TEXT` is ever reworded, old entries keep what the
+  customer saw. Access: admin tier or the `giveaways` grant, which no form
+  carries -- sysadmin offers it from `FEATURE_ACCESS_TAGS`
+  (apps/sysadmin-worker); add a future feature-only tag there too.
 - **Employee field** (2026-11-13, PLAN_FORMS_PERSONNEL.md phase 2) - form
   field type `employee`: searches the Beekeeper roster of the site another
   field names (011 / 101 = office groups) via `POST /forms/api/employees/{slug}`.

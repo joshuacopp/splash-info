@@ -3465,6 +3465,14 @@ async function fetchFormAccessTags(
  *  (golden-ticket-01.sql): one tag table, one checkbox list. That read is
  *  fail-soft on its own -- before that migration the column does not exist,
  *  and a missing JotForm tag must not hide the custom-form ones. */
+/**
+ * Access tags that belong to a FEATURE rather than to a form, so no forms row
+ * carries them and they would otherwise never be offered here. Granted the
+ * same way (form_access_grants) and checked by the feature's own worker code.
+ *   giveaways -- /admin/giveaways (apps/forms-worker/src/giveaways/admin.ts)
+ */
+const FEATURE_ACCESS_TAGS: readonly string[] = ["giveaways"];
+
 async function fetchGrantableFormAccessTags(env: Env): Promise<string[]> {
   const headers = {
     apikey: env.SUPABASE_SERVICE_KEY,
@@ -3487,7 +3495,7 @@ async function fetchGrantableFormAccessTags(env: Env): Promise<string[]> {
   } else {
     console.warn("[sysadmin] jotform_forms access_tag read failed", jotResp?.status);
   }
-  const set = new Set<string>();
+  const set = new Set<string>(FEATURE_ACCESS_TAGS);
   for (const r of rows) if (r.access_tag) set.add(r.access_tag);
   return [...set].sort();
 }

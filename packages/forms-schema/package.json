@@ -13,7 +13,8 @@
     "./required-topics": "./src/required-topics.ts",
     "./approver-view": "./src/approver-view.ts",
     "./digest": "./src/digest.ts",
-    "./pdf-template": "./src/pdf-template.ts"
+    "./pdf-template": "./src/pdf-template.ts",
+    "./giveaway": "./src/giveaway.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
